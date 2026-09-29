@@ -48,7 +48,7 @@ must start with that test.
 | 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | done: 5 high, 4 medium, 3 low |
 | 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | done: 1 high, 3 medium, 4 low |
 | 7 | Cryptography, key management and worker IPC | done: 1 high, 1 medium, 4 low |
-| 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | pending |
+| 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | done: 1 high, 2 medium, 5 low |
 | 9 | Media repository and thumbnailer | pending |
 | 10 | Database, persistence and migrations | pending |
 | 11 | Configuration, observability, logging and packaging | pending |
@@ -1877,4 +1877,210 @@ the claim that `sodium_init` is unchecked.
 - Not audited: the frame serialisers in `federation_ipc_frames.cpp`, and TLS private-key
   handling.
 - The thumbnail-worker pipe framing was skimmed only; see Area 9.
+
+---
+
+## Area 8 — Process isolation and platform hardening
+
+**Result:** 8 findings confirmed: 1 high, 2 medium, 5 low. Four were adjusted downward.
+The verifier demonstrated the kernel semantics behind ISO-1 with a scratch program on
+this host.
+
+**Prior fixes that hold:**
+- #319 (no `execve` in the worker profile) and #428.
+- ADR-0042 (minimal worker environment).
+- 0.12.5 findings 21 and 22.
+- ADR-0062 parts 1–3 as written.
+- ADR-0071.
+- The M-08 decoder profile.
+- The BPF architecture guard, which also defeats the x32 bypass.
+- `KILL_PROCESS` as the default seccomp action.
+- No `ptrace`, `bpf`, `userfaultfd`, `keyctl`, `mount` or `unshare` in any allowlist.
+
+The thumbnail decoder is not affected by ISO-1: it creates no threads and installs its
+filter first.
+
+### ISO-1 — The worker's seccomp and Landlock sandbox does not cover the logger threads, which start before it is applied
+
+- **Severity:** high (federation worker); low (main process, whose own filter allows
+  `execve`)
+- **Attacker:** A5
+- **Verdict:** confirmed; re-checked by the orchestrator and demonstrated by the verifier
+- **Location:**
+  - `include/merovingian/observability/logger.hpp:178-182`, `:334-338`
+  - `src/federation_worker/main.cpp:134`, `:183`, `:213`
+  - `src/platform/seccomp_hardening.cpp:790`, `:818`, `:829-853`
+  - `src/platform/landlock_hardening.cpp:273-286`
+- **Rule:**
+  - `src/platform/AGENTS.md` rule 1.
+  - ADR-0062 part 3: "A compromised worker … can no longer open any of those directly
+    off disk".
+  - The code comments say hardening runs "before … starts threads" (`main.cpp:205-206`,
+    `runtime_hardening.cpp:596`).
+- **Path:**
+  1. The worker's first `LOG_INFO` (`main.cpp:134`) constructs `SingleLog`. Its
+     constructor always starts two writer threads.
+  2. Landlock (`:183`) and the worker seccomp filter (`:213`) are then installed with
+     flags 0. Both apply to the calling thread only; no `SECCOMP_FILTER_FLAG_TSYNC` is
+     used anywhere in the repository.
+  3. The two logger threads therefore keep only the filter inherited from main, which
+     allows `execve`, `open`, `socket` and `connect`. They have no Landlock ruleset and
+     no worker filter.
+  4. With code execution in any worker thread, the attacker installs a signal handler
+     (`rt_sigaction` is allowed) and aims it at a logger thread with `tgkill` (also
+     allowed).
+  5. The handler then runs unconfined. It can read the master key, the database URI
+     file and TLS keys, or `execve` a shell.
+  6. The self-check reads `/proc/self/status`, which reports the thread-group leader
+     only, so it cannot see this.
+  7. No test covers multi-threaded enforcement.
+- **Impact:**
+  - The federation worker's documented containment can be bypassed with syscalls its own
+    allowlist permits.
+  - Stealing the master key and the database's encrypted signing secret yields the
+    server's signing key.
+- **Fix:**
+  - Make sure no thread exists before hardening: start the logger's writers lazily or
+    explicitly, and move the worker's first log line after seccomp.
+  - Install seccomp with `SECCOMP_FILTER_FLAG_TSYNC`, and treat failure as fatal.
+  - Landlock has no equivalent on older kernels, so the ordering is what matters there.
+  - Extend the self-check to every `/proc/self/task/<tid>/status`.
+- **Test:** GIVEN a process that has already logged WHEN the worker hardening sequence is
+  applied THEN every task reports `Seccomp: 2` and `NoNewPrivs: 1` AND a pre-existing
+  thread cannot `execve` or open the master-key path.
+
+### ISO-2 — A compromised worker can kill, freeze or resource-starve the main process
+
+- **Severity:** medium · **Attacker:** A5 · **Verdict:** confirmed
+- **Location:**
+  - `src/platform/seccomp_hardening.cpp:589-591`, `:620`
+  - `src/homeserver/worker_supervisor.cpp:425`
+  - `include/merovingian/platform/landlock_hardening.hpp:133`
+- **Detail:**
+  - `kill`, `tkill`, `tgkill` and `prlimit64` are allowed with no argument filtering.
+  - The worker runs as the same uid as main.
+  - Landlock is capped at ABI 3, so signal scoping (ABI 6) is never used.
+  - `kill(getppid(), SIGSTOP)` freezes main without a crash, so systemd's
+    `Restart=on-failure` never fires.
+  - `prlimit64` can lower main's `RLIMIT_NOFILE` or `RLIMIT_AS`.
+  - `docs/threat-model.md` does not mention this path.
+- **Fix:**
+  - Run the worker under a distinct uid.
+  - Otherwise, argument-filter these syscalls to the worker's own process, remove `kill`
+    and `tkill`, and use `LANDLOCK_SCOPE_SIGNAL` on ABI 6 and later.
+- **Test:** GIVEN the worker filter WHEN it calls `kill(getppid(), 0)` or
+  `prlimit64(getppid(), …)` THEN the call is denied.
+
+### ISO-3 — The worker supervisor stops respawning after a single failed restart
+
+- **Severity:** medium (availability) · **Attacker:** A3 can induce the crash; the spawn
+  failure is environmental · **Verdict:** confirmed
+- **Location:** `src/homeserver/worker_supervisor.cpp:461-543`
+- **Path:**
+  1. After a crash, `worker_pid_` is set to -1.
+  2. If `spawn_and_connect` then throws (`EAGAIN`, `ENOMEM`, `EMFILE`, or the binary is
+     missing during an upgrade), the exception is only logged.
+  3. The next loop iteration calls `waitpid(-1, WNOHANG)`. Depending on what else is
+     running, that:
+     - exits the supervisor thread on `ECHILD`, permanently;
+     - returns 0 forever, so no respawn is ever attempted; or
+     - reaps a sibling shard's child, whose own supervisor then exits.
+- **Impact:** a shard stays at 503 until the server restarts. `docs/threat-model.md:469`
+  promises automatic restarts with exponential back-off.
+- **Fix:**
+  - Never call `waitpid(-1)`.
+  - Treat `worker_pid_ <= 0` as "spawn needed" and retry with back-off.
+  - Reset the back-off only after a minimum uptime.
+- **Test:**
+  - GIVEN a worker exits and the next spawn fails once WHEN the condition clears THEN the
+    supervisor respawns AND `healthy()` becomes true.
+  - GIVEN two shards WHEN shard A's respawn fails THEN shard B's child is not reaped.
+
+### ISO-4 — On SQLite the worker can write to main's database
+
+- **Severity:** low (SQLite is documented for small installations) · **Attacker:** A5 ·
+  **Verdict:** adjusted from medium
+- **Location:** `src/database/sqlite_store.cpp:148`;
+  `src/platform/landlock_hardening.cpp:329-330`; `docs/threat-model.md:429-442`
+- **Detail:**
+  - Directory read-write access is documented as necessary for WAL.
+  - The residual-risk text says only "readable". A compromised worker can also change
+    main's system of record, for example admin flags or room state.
+- **Fix:** correct the wording. Better, require PostgreSQL when the worker is enabled, or
+  open the database `SQLITE_OPEN_READONLY` with a separate `-shm` grant.
+- **Test:** GIVEN SQLite and the worker under Landlock WHEN it opens the database for
+  writing THEN the open fails.
+
+### ISO-5 — The thumbnail decoder inherits main's environment and stderr, and its output is not checked
+
+- **Severity:** low · **Verdict:** adjusted
+- **Location:** `src/media/thumbnailer.cpp:462`, `:527-532`;
+  `src/core/file_descriptor.cpp:222-224`
+- **Fix:**
+  - Use the minimal worker environment.
+  - Point fd 2 at `/dev/null`.
+  - Validate the PNG signature and IHDR dimensions in the parent.
+- **Test:** GIVEN a decoder response that is not a PNG matching the reported size WHEN
+  main processes it THEN it returns 502.
+
+### ISO-6 — No umask is set, and the registration token is written before it is `chmod`ed
+
+- **Severity:** low · **Attacker:** A6 · **Verdict:** adjusted
+- **Location:**
+  - `src/database/sqlite_store.cpp:139-148`
+  - `include/merovingian/observability/logger.hpp:270` (the log file follows symlinks
+    and is not `O_CLOEXEC`)
+  - `packaging/deb/postinst:16-21`
+  - `packaging/systemd/merovingian.service`
+- **Detail:** the packaged `0750` directories mask this. Unpackaged installs get `0755`
+  and `0644` files.
+- **Fix:**
+  - Call `umask(0077)` early in each executable, and set `UMask=0077` in the unit.
+  - Create the database and log file with `O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC`, mode
+    0600.
+  - In the package scripts, write the token under `umask 077`.
+- **Test:** GIVEN a fresh `sqlite_path` in a new directory WHEN the store opens THEN the
+  file is 0600 and the directory is 0700.
+
+### ISO-7 — Secret files are checked with `lstat` and then opened again by path, with no owner check
+
+- **Severity:** low · **Attacker:** A6 (only with a misconfigured directory) ·
+  **Verdict:** adjusted
+- **Location:** `src/platform/file_metadata.cpp:56`, `:81-93`; `src/main.cpp:196-211`;
+  `src/crypto/master_key.cpp:37-40`; `src/homeserver/worker_pool.cpp:1016`
+- **Fix:** use the pattern `auth_service.cpp:563` already uses: `open(O_NOFOLLOW|O_CLOEXEC)`,
+  then `fstat`, then require `st_uid == geteuid()` and mode 0400, then read from the same
+  descriptor.
+- **Test:** GIVEN a secret path that is a symlink, or a file owned by another uid WHEN it
+  is loaded THEN loading fails.
+
+### ISO-8 — The systemd unit omits address-family, umask and kernel-protection directives, and the worker may open any socket family
+
+- **Severity:** low · **Verdict:** confirmed
+- **Location:** `packaging/systemd/merovingian.service`;
+  `src/platform/seccomp_hardening.cpp:491`
+- **Fix:**
+  - Add `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `UMask=0077`,
+    `ProtectKernelTunables=`, `ProtectKernelModules=`, `ProtectKernelLogs=`,
+    `ProtectControlGroups=` and `RestrictNamespaces=`.
+  - Argument-filter `socket()` domains in the worker profile.
+  - Document that the worker's PostgreSQL role must use password authentication, not
+    peer authentication, because Landlock does not govern AF_UNIX `connect`.
+- **Test:** GIVEN the worker filter WHEN it calls `socket(AF_ALG, …)` THEN it is killed.
+
+### Area 8 — hardening notes
+
+- `posix_spawn` of the federation worker does not use `closefrom`, and relies on every
+  descriptor being `CLOEXEC`. The log `ofstream` is not `CLOEXEC`.
+- The restart back-off resets to 1 s immediately after a successful spawn, so it never
+  grows for a crash loop.
+- `ioctl` and `fcntl` are unrestricted in both profiles. `PR_SET_MDWE` is not used, so
+  outside systemd there is no W^X enforcement.
+- `apply_linux_capability_bounding_set` returns success even if every
+  `PR_CAPBSET_DROP` fails (`runtime_hardening.cpp:405-409`).
+
+### Area 8 — coverage gaps
+
+- Not examined: `src/platform/elf_probe.cpp`, BSD pledge and Capsicum behaviour beyond a
+  static read, and the OpenRC and BSD `rc.d` scripts.
 
