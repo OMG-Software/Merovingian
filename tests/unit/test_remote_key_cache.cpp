@@ -127,6 +127,13 @@ struct SignedKeyResponse final
     return {signed_body.output, public_key_base64};
 }
 
+// A fetch time one day before `valid_until_ts`, so the 7-day trust cap
+// (rooms/v5.md) leaves the published value in place.
+[[nodiscard]] auto fetched_one_day_before(std::uint64_t valid_until_ts) -> std::uint64_t
+{
+    return valid_until_ts - (24U * 60U * 60U * 1000U);
+}
+
 } // namespace
 
 // --- Valid self-signed key response accepted ----------------------------------
@@ -298,7 +305,8 @@ SCENARIO("Remote key cache persists and retrieves verified keys", "[federation][
 
         WHEN("the response is cached")
         {
-            auto const cached = merovingian::federation::cache_remote_server_keys(open_result.store, response);
+            auto const cached = merovingian::federation::cache_remote_server_keys(
+                open_result.store, response, fetched_one_day_before(response.valid_until_ts));
 
             THEN("storage succeeds and the matching key is retrievable")
             {
@@ -332,7 +340,8 @@ SCENARIO("Remote key cache persists and retrieves verified keys", "[federation][
 
         WHEN("the parsed response is cached and retrieved")
         {
-            REQUIRE(merovingian::federation::cache_remote_server_keys(open_result.store, parsed.response));
+            REQUIRE(merovingian::federation::cache_remote_server_keys(
+                open_result.store, parsed.response, fetched_one_day_before(parsed.response.valid_until_ts)));
             auto const found =
                 merovingian::federation::find_cached_remote_key(open_result.store, "real.example.org", "ed25519:auto");
 
@@ -350,7 +359,8 @@ SCENARIO("Remote key cache persists and retrieves verified keys", "[federation][
                 // Spec MUST: public_key_bytes MUST be exactly crypto_sign_PUBLICKEYBYTES (32) bytes.
                 // Do NOT remove/change - a wrong size causes libsodium Ed25519 verification to fail or crash.
                 REQUIRE(found->public_key_bytes.size() == crypto_sign_PUBLICKEYBYTES);
-                // Spec MUST: valid_until_ts MUST be preserved verbatim from the original key response.
+                // Spec MUST: valid_until_ts is the lesser of the published value and 7 days after the
+                // fetch (rooms/v5.md); fetched one day before it, the published value is kept verbatim.
                 // Do NOT remove/change - a truncated expiry causes premature key refresh loops.
                 REQUIRE(found->valid_until_ts == 2000000000000ULL);
             }
@@ -455,7 +465,8 @@ SCENARIO("Remote key resolver caches the first fetch and serves later requests f
         auto const parsed = merovingian::federation::parse_and_verify_remote_key_response(signed_response.body,
                                                                                           "federated.example.org");
         REQUIRE(parsed.ok);
-        REQUIRE(merovingian::federation::cache_remote_server_keys(open_result.store, parsed.response));
+        REQUIRE(merovingian::federation::cache_remote_server_keys(
+            open_result.store, parsed.response, fetched_one_day_before(parsed.response.valid_until_ts)));
 
         WHEN("the resolver is asked for a known cached server/key pair")
         {
@@ -758,7 +769,8 @@ SCENARIO("make_persistent_remote_key_resolver via CachedServerDiscovery serves a
         auto const parsed =
             merovingian::federation::parse_and_verify_remote_key_response(signed_response.body, "192.0.2.41");
         REQUIRE(parsed.ok);
-        REQUIRE(merovingian::federation::cache_remote_server_keys(open_result.store, parsed.response));
+        // Fetched at the resolver clock's time, so the 7-day cap leaves it fresh.
+        REQUIRE(merovingian::federation::cache_remote_server_keys(open_result.store, parsed.response, 1'000'000U));
 
         auto network = CountingDiscoveryNetwork{};
         network.addresses_to_return = {/*ok=*/true, {"192.0.2.41"}, {}};

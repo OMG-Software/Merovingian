@@ -2590,11 +2590,11 @@ SCENARIO("Client-server admin safety routes manage persisted policy rules", "[ho
             auto const list = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/admin/safety/policy_rules", token, {}});
             auto const blocked_download = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + content_uri, token, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + content_uri, token, {}});
             auto const del = merovingian::homeserver::handle_client_server_request(
                 runtime, {"DELETE", "/_matrix/client/v3/admin/safety/policy_rules/media/" + content_uri, token, {}});
             auto const unblocked_download = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + content_uri, token, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + content_uri, token, {}});
 
             THEN("the rule is durable and immediately changes the media workflow")
             {
@@ -4356,17 +4356,23 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
                 REQUIRE(response.response.body.find(R"("default":"12")") != std::string::npos);
             }
 
-            THEN("m.room_versions lists every server-supported version (1-12) as stable")
+            THEN("m.room_versions lists every server-supported version (3-12) as stable")
             {
                 // The server must advertise every version rooms::room_version_policy.cpp
                 // implements, not a hardcoded subset — a stale list here previously
                 // caused federation joins to fail against any room not on 10/11/12,
                 // since the outbound make_join ver= list came from the same source.
-                for (auto const* version : {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+                for (auto const* version : {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
                 {
                     auto const expected = "\"" + std::string{version} + "\":\"stable\"";
                     REQUIRE(response.response.body.find(expected) != std::string::npos);
                 }
+            }
+
+            THEN("m.room_versions does not list versions 1 and 2, which are not supported (ADR-0076)")
+            {
+                REQUIRE(response.response.body.find(R"("1":)") == std::string::npos);
+                REQUIRE(response.response.body.find(R"("2":)") == std::string::npos);
             }
         }
 
@@ -5682,19 +5688,15 @@ SCENARIO("Media download returns raw bytes with Content-Type and ignores query p
         auto const media_id = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
         REQUIRE(!media_id.empty());
 
-        WHEN("the v3 download endpoint is called with ?allow_redirect=true")
+        WHEN("the legacy v3 download endpoint is called with ?allow_redirect=true")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"GET", "/_matrix/media/v3/download/example.org/" + media_id + "?allow_redirect=true", token, {}});
 
-            THEN("the response is 200 with the raw bytes and a matching Content-Type header")
+            THEN("the response is 404 because new uploads are not visible on the legacy endpoint")
             {
-                REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body == uploaded_bytes);
-                REQUIRE(!response.response.body.empty());
-                REQUIRE(response.response.body.find('|') == std::string::npos);
-                REQUIRE(response_header(response.response, "Content-Type") == "text/plain");
+                REQUIRE(response.response.status == 404U);
             }
         }
 
@@ -8439,13 +8441,11 @@ SCENARIO("Rate limit buckets are isolated per source IP", "[homeserver][client-s
     }
 }
 
-// Spec: Matrix CS API v1.19
-// Section: Rate limiting / trusted-proxy headers
-// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#rate-limiting
-//
-// If the direct peer is a configured trusted proxy the server MUST
-// use the leftmost X-Forwarded-For address for rate-limit keying so
-// the entire downstream network is not collapsed into a single bucket.
+// Project rule (the Matrix spec does not define X-Forwarded-For handling):
+// when the direct peer is a configured trusted proxy, the rate-limit key is
+// the client address the proxy reports, so the downstream network is not
+// collapsed into a single bucket. Which X-Forwarded-For entry that is is
+// pinned by the "rightmost untrusted" scenario below.
 SCENARIO("Trusted-proxy X-Forwarded-For is used for rate-limit keying", "[homeserver][client-server][rate-limit]")
 {
     GIVEN("a runtime with one trusted proxy and a 1-request-per-60s cap")
@@ -8508,6 +8508,139 @@ SCENARIO("Trusted-proxy X-Forwarded-For is used for rate-limit keying", "[homese
                 // Spec MUST: same forwarded IP shares one bucket.
                 REQUIRE(r_s1.response.status != 429U);
                 REQUIRE(r_s2.response.status == 429U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// One /register request from `remote_addr` with the given X-Forwarded-For
+// headers (each a separate header line); returns the HTTP status.
+[[nodiscard]] auto register_status(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view username,
+                                   std::string remote_addr, std::vector<std::string> const& forwarded_for)
+    -> std::uint16_t
+{
+    auto request = merovingian::homeserver::LocalHttpRequest{"POST",
+                                                             "/_matrix/client/v3/register",
+                                                             {},
+                                                             std::string{R"({"username":")"} + std::string{username} +
+                                                                 R"(","password":"P@ssw0rd1!"})"};
+    request.remote_addr = std::move(remote_addr);
+    for (auto const& value : forwarded_for)
+    {
+        request.headers.push_back({"X-Forwarded-For", value});
+    }
+    return merovingian::homeserver::handle_client_server_request(runtime, request).response.status;
+}
+
+} // namespace
+
+// 0.12.13 audit item 4: rate-limit buckets group IPv6 clients by
+// server.http.ipv6_client_prefix_length (default /64), since one end site is
+// handed a whole /64; IPv4 addresses are keyed as they are.
+SCENARIO("Rate-limit buckets group IPv6 clients by prefix and key IPv4 clients by address",
+         "[homeserver][client-server][rate-limit][security][rate_limit_keys]")
+{
+    GIVEN("a runtime with a 1-request-per-60s cap and the default /64 grouping")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("two addresses in one /64 send a request each")
+        {
+            auto const first = register_status(runtime, "v6a", "2001:db8:1:2::1", {});
+            auto const second = register_status(runtime, "v6b", "2001:db8:1:2:ffff::2", {});
+
+            THEN("they share one bucket")
+            {
+                REQUIRE(first != 429U);
+                REQUIRE(second == 429U);
+            }
+        }
+
+        WHEN("addresses in different /64s send a request each")
+        {
+            auto const first = register_status(runtime, "v6c", "2001:db8:1:2::1", {});
+            auto const second = register_status(runtime, "v6d", "2001:db8:1:3::1", {});
+
+            THEN("each has its own bucket")
+            {
+                REQUIRE(first != 429U);
+                REQUIRE(second != 429U);
+            }
+        }
+
+        WHEN("two IPv4 addresses send a request each")
+        {
+            auto const first = register_status(runtime, "v4a", "198.51.100.1", {});
+            auto const second = register_status(runtime, "v4b", "198.51.100.2", {});
+
+            THEN("each has its own bucket")
+            {
+                REQUIRE(first != 429U);
+                REQUIRE(second != 429U);
+            }
+        }
+    }
+}
+
+// 0.12.13 audit item 4 (decided by the user on 2026-09-27): behind a trusted
+// proxy the client is the rightmost X-Forwarded-For entry that is not itself a
+// trusted proxy. A proxy that appends (nginx $proxy_add_x_forwarded_for) keeps
+// whatever the client sent on the left, so the leftmost entry is the client's
+// own choice and must never pick the bucket. Multiple X-Forwarded-For header
+// lines form one list, in order (RFC 9110 §5.3).
+SCENARIO("Behind trusted proxies the rate-limit key is the rightmost untrusted X-Forwarded-For entry",
+         "[homeserver][client-server][rate-limit][security][rate_limit_keys]")
+{
+    GIVEN("a runtime trusting proxies 10.0.0.1 and 10.0.0.2, with a 1-request-per-60s cap")
+    {
+        auto cfg = registration_enabled_config();
+        cfg.server().trusted_proxies = {"10.0.0.1", "10.0.0.2"};
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("one client sends twice, prefixing a different spoofed address each time")
+        {
+            auto const first = register_status(runtime, "sp1", "10.0.0.1", {"198.51.100.66, 203.0.113.40"});
+            auto const second = register_status(runtime, "sp2", "10.0.0.1", {"198.51.100.77, 203.0.113.40"});
+
+            THEN("both requests fall in the real client's bucket")
+            {
+                REQUIRE(first != 429U);
+                REQUIRE(second == 429U);
+            }
+        }
+
+        WHEN("a client reaches the server through two trusted proxies")
+        {
+            auto const first = register_status(runtime, "ch1", "10.0.0.1", {"203.0.113.50, 10.0.0.2"});
+            auto const same_client = register_status(runtime, "ch2", "10.0.0.1", {"203.0.113.50, 10.0.0.2"});
+            auto const other_client = register_status(runtime, "ch3", "10.0.0.1", {"203.0.113.51, 10.0.0.2"});
+
+            THEN("the key skips the trusted hop and identifies the client")
+            {
+                REQUIRE(first != 429U);
+                REQUIRE(same_client == 429U);
+                REQUIRE(other_client != 429U);
+            }
+        }
+
+        WHEN("the header arrives as two lines, the first carrying a spoofed address")
+        {
+            auto const first = register_status(runtime, "ml1", "10.0.0.1", {"198.51.100.88", "203.0.113.60"});
+            auto const second = register_status(runtime, "ml2", "10.0.0.1", {"198.51.100.99", "203.0.113.60"});
+
+            THEN("the lines form one list and the real client's bucket is used")
+            {
+                REQUIRE(first != 429U);
+                REQUIRE(second == 429U);
             }
         }
     }

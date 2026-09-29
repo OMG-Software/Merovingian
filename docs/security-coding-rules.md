@@ -384,7 +384,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/federation/AGENTS.md`.
 
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
-  server supplies inline. The cache fetches from `/_matrix/key/v2/server` and enforces TTL.**
+  server supplies inline. The cache fetches from `/_matrix/key/v2/server` and trusts a key for
+  at most 7 days after the fetch. From room v5 an event's signing key must be valid at the
+  event's own `origin_server_ts`, not the current time; v1-v4 ignore `valid_until_ts`
+  (ADR-0075).**
   A key past its `valid_until_ts` must not be used to authenticate a *new* PDU or request —
   the cache's stale-key fallback exists only so callers can distinguish "known but
   unreachable" from "never seen," not to authenticate new traffic.
@@ -401,6 +404,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   further events) would mean an event that explicitly failed the room's authorization rules
   still has a real effect.
   Source: `src/federation/AGENTS.md`.
+
+- **Main re-verifies every PDU a federation worker relays, with its own key resolver,
+  before the runtime lock is taken, and builds the envelope from the verified event rather
+  than the worker's framed fields.** A new worker-to-main relay that carries a PDU must do
+  the same (`handle_pdu_ingest_request` in `src/homeserver/worker_pool.cpp` is the pattern).
+  Why: the worker is the process most exposed to hostile input. Until 0.12.13 main trusted
+  its signature check, so a compromised worker could inject events impersonating any
+  sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
+  Source: `src/homeserver/AGENTS.md`.
 
 - **Never relay a remote server's answer about users to a client unfiltered. Keep only
   the users you asked that server about, and only records that describe the user they are
@@ -684,6 +696,28 @@ quickly finding everything a given `AGENTS.md` file contributed.
   hardening regression in the build pipeline go unnoticed indefinitely.
   Source: `src/platform/AGENTS.md`.
 
+- **The federation worker's Landlock ruleset opt-out (`allow_without_landlock`) covers only
+  "this kernel has no Landlock" — never "Landlock is present but broken".** A ruleset-create,
+  add-rule, or `landlock_restrict_self` failure on a kernel that does support Landlock is
+  always fatal, regardless of the opt-out.
+  Why: an opt-out scoped to genuine kernel unavailability lets old-kernel deployments keep
+  running without silently widening to cover a different failure mode (a broken ruleset,
+  which would mean the sandbox never applied even though the operator believed only the
+  "old kernel" case was being accepted). This mirrors the fail-closed seccomp policy in
+  ADR-0041.
+  Source: `src/platform/AGENTS.md`, `src/federation_worker/AGENTS.md`,
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
+
+- **Landlock path rules for the federation worker must come from
+  `build_worker_landlock_rules()`, derived from the worker's own config copy or a documented,
+  best-effort fixed system path — never a hard-coded secret file path.**
+  Why: the whole point of the ruleset is to name the paths the worker's own config exposes
+  (the SQLite database directory) plus generic OS-integration paths, and to *never* name the
+  master key file, either database URI file, or TLS private keys. A second, drifting
+  hard-coded list is exactly the kind of duplication that silently diverges from the first.
+  Source: `src/platform/AGENTS.md`,
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
+
 ## Sync
 
 - **Use `stream_token.hpp` — never parse or construct sync tokens manually.**
@@ -849,13 +883,14 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
-| `src/homeserver/AGENTS.md` | HTTP and network boundary |
+| `src/homeserver/AGENTS.md` | HTTP and network boundary; Federation |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |
 | `migrations/AGENTS.md` | Database |
 | `src/config/AGENTS.md` | Secrets and logging |
 | `src/observability/AGENTS.md` | Secrets and logging |
 | `src/platform/AGENTS.md` | Platform hardening |
+| `src/federation_worker/AGENTS.md` | Platform hardening |
 | `src/sync/AGENTS.md` | Sync |
 | `src/trust_safety/AGENTS.md` | Trust and safety |
 | `packaging/AGENTS.md` | Packaging and deployment |

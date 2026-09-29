@@ -11,7 +11,12 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `014`.
+Current highest: `017`. Schema version `16` (`016_media_legacy_endpoint_visibility.sql`)
+ALTERs `legacy_endpoint_visible` onto `media` (ADR-0068). Schema version `17`
+(`017_token_rotation_lineage.sql`) ALTERs `predecessor_hash` onto
+`refresh_tokens` and `predecessor_refresh_hash` onto `access_tokens` so a
+refreshed token pair records the refresh token it replaced (ADR-0074); it adds
+no table, so the federation worker allowlist classification is unchanged.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -87,6 +92,45 @@ flags: a deactivated account can never log in again, and its row is retained so
 the localpart is never reissued. Adding the column also required naming the
 columns explicitly in `insert_user` — the previous bare `INSERT INTO users
 VALUES (...)` would have broken silently on the sixth column.
+
+  Schema version `15` (`015_event_graph_state.sql`, ADR-0064) is Phase A of
+spec-conformant PDU ingestion with delta state groups: it adds the storage
+the later ingestion phases need, without changing ingestion behaviour. It
+adds `events.status` (`'accepted' | 'soft_failed' | 'rejected' | 'outlier'`,
+defaulting existing rows to `'accepted'`); extends the pre-existing but
+vestigial `state_groups` table (`state_group_id`, `room_id` only, never
+populated by any code path) with `parent_state_group_id` and `delta_depth`,
+turning it into the root of a delta chain — a group is either a full
+snapshot (`parent_state_group_id = ''`, `delta_depth = '0'`) or a delta from
+its parent, capped at `events::max_state_group_delta_depth` hops before a
+fresh snapshot is forced; and adds three new tables: `state_group_state`
+(a group's own delta or snapshot rows), `event_state_groups` (which group
+holds the state after a given event), and `forward_extremities` (a room's
+current DAG leaves). `state_group_edges` is untouched and remains vestigial.
+Like every other nullable-in-spirit column in this schema (e.g.
+`state_transitions.previous_event_id`), `parent_state_group_id` is stored as
+`TEXT NOT NULL DEFAULT ''` with the empty string as the "no parent, this is
+a snapshot" sentinel, not a SQL `NULL` — consistent with the rest of this
+file and with `database::PreparedStatement`/`BoundValue`, which has no NULL
+parameter representation. The migration seeds every pre-existing room with
+one snapshot state group (deterministic id `'seed:' || room_id`) built from
+its `current_state`, attaches it to the room's current forward extremities
+(the events `event_edges` names as nobody's `prev_event_id`), and leaves
+older events with no state group — a later phase treats those as outliers.
+That seeding step, and phase B's future per-event children lookup, filter
+`event_edges` by `prev_event_id` alone — outside the leading column of its
+`(event_id, prev_event_id)` primary key, so unindexed this was a full table
+scan per probe (O(events × edges) for the seed step alone on an upgrading
+database). `015_event_graph_state.sql` therefore also creates
+`event_edges_prev_event_id ON event_edges (prev_event_id)`, the project's
+first index, positioned before the seed statements so seeding itself uses
+it; `state_groups` gets no equivalent room_id index because no store
+function queries it by `room_id` (every lookup is by `state_group_id`, its
+primary key). Every `INSERT`/`ALTER` is idempotency-guarded (`WHERE NOT
+EXISTS` / `ADD COLUMN` is itself only run once by the migration runner's
+version tracking), so re-running the migration chain is a no-op. See
+`docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md` and
+`docs/database-persistence.md`.
 
 ## File format
 

@@ -47,14 +47,35 @@ namespace
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
     }
 
+    // IPv4 non-public ranges used for SSRF rejection. Includes loopback (127/8),
+    // RFC 1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), CGNAT
+    // (100.64/10), multicast (224/4), reserved/future-use (240/4), and the
+    // unspecified address 0.0.0.0.
     [[nodiscard]] auto ipv4_is_private_or_loopback(std::uint32_t address) noexcept -> bool
     {
         auto const first = static_cast<std::uint8_t>((address >> 24U) & 0xFFU);
         auto const second = static_cast<std::uint8_t>((address >> 16U) & 0xFFU);
-        return first == 0U || first == 10U || first == 127U || (first == 169U && second == 254U) ||
-               (first == 172U && second >= 16U && second <= 31U) || (first == 192U && second == 168U);
+        if (first == 0U || first == 10U || first == 127U || (first == 169U && second == 254U) ||
+            (first == 172U && second >= 16U && second <= 31U) || (first == 192U && second == 168U))
+        {
+            return true;
+        }
+        // CGNAT (RFC 6598) and multicast/reserved space.
+        if (first == 100U && second >= 64U && second <= 127U)
+        {
+            return true;
+        }
+        if (first >= 224U)
+        {
+            return true;
+        }
+        return false;
     }
 
+    // IPv6 non-public ranges used for SSRF rejection. Includes unspecified (::/128),
+    // loopback (::1/128), ULA (fc00::/7), link-local (fe80::/10), NAT64 well-known
+    // prefix (64:ff9b::/96), multicast (ff00::/8), and IPv4-mapped variants of the
+    // IPv4 ranges above.
     [[nodiscard]] auto ipv6_is_private_or_loopback(in6_addr const& address) noexcept -> bool
     {
         auto const* bytes = address.s6_addr;
@@ -68,6 +89,12 @@ namespace
                                  bytes[15] == std::uint8_t{1U};
         auto const is_unique_local = (bytes[0] & 0xFEU) == 0xFCU;
         auto const is_link_local = bytes[0] == 0xFEU && (bytes[1] & 0xC0U) == 0x80U;
+        // Well-known NAT64 prefix 64:ff9b::/96.
+        auto const is_nat64 = bytes[0] == 0x00U && bytes[1] == 0x64U && bytes[2] == 0xFFU && bytes[3] == 0x9BU &&
+                              std::all_of(bytes + 4U, bytes + 8U, [](auto byte) noexcept {
+                                  return byte == std::uint8_t{0U};
+                              });
+        auto const is_multicast = bytes[0] == 0xFFU;
         auto const is_v4_mapped = std::all_of(bytes, bytes + 10U,
                                               [](auto byte) noexcept {
                                                   return byte == std::uint8_t{0U};
@@ -76,7 +103,7 @@ namespace
         auto const mapped_v4 = (static_cast<std::uint32_t>(bytes[12]) << 24U) |
                                (static_cast<std::uint32_t>(bytes[13]) << 16U) |
                                (static_cast<std::uint32_t>(bytes[14]) << 8U) | static_cast<std::uint32_t>(bytes[15]);
-        return is_unspecified || is_loopback || is_unique_local || is_link_local ||
+        return is_unspecified || is_loopback || is_unique_local || is_link_local || is_nat64 || is_multicast ||
                (is_v4_mapped && ipv4_is_private_or_loopback(mapped_v4));
     }
 
@@ -119,13 +146,20 @@ auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> boo
         return ipv6_is_private_or_loopback(v6);
     }
     // Fallback for inputs inet_pton cannot parse as a literal IP (e.g. the
-    // hostname "localhost"). The numeric private ranges — including 172.16/12 —
-    // are handled exactly by the inet_pton path above; a string-prefix guess for
-    // 172. here would both over-block public 172.1-172.3 and under-block the rest
-    // of 172.16/12, so it is intentionally omitted.
+    // hostname "localhost"). The numeric private/loopback/reserved/CGNAT ranges
+    // are handled exactly by the inet_pton path above; a string-prefix guess
+    // for 172. or 100. would both over-block public addresses and under-block
+    // the intended ranges, so they are intentionally omitted.
     return address == "localhost" || starts_with(address, "127.") || starts_with(address, "10.") ||
            starts_with(address, "192.168.") || starts_with(address, "169.254.") || starts_with(address, "fc") ||
            starts_with(address, "fd");
+}
+
+auto address_set_allowed(std::vector<std::string> const& addresses) noexcept -> bool
+{
+    return !addresses.empty() && std::ranges::none_of(addresses, [](std::string const& address) {
+        return ip_address_is_private_or_loopback(address);
+    });
 }
 
 auto federation_discovery_policy(RemoteServerRecord const& remote) -> FederationDiscoveryDecision

@@ -74,7 +74,7 @@ only direct dependencies built from vendored subprojects when absent.
 | Library | Debian/Ubuntu (`apt`) | Fedora/RHEL (`dnf`) | OpenSUSE (`zypper`) | FreeBSD (`pkg`) | OpenBSD (`pkg_add`) | NetBSD (`pkgin`) |
 |---|---|---|---|---|---|---|
 | libsodium | `libsodium-dev` | `libsodium-devel` | `libsodium-devel` | `libsodium` | `libsodium` | `libsodium` |
-| OpenSSL | `libssl-dev` | `openssl-devel` | `libopenssl-devel` | `openssl` | `openssl` (LibreSSL base) | `openssl` |
+| OpenSSL | `libssl-dev` | `openssl-devel` | `libopenssl-devel` | `openssl` | `openssl` (LibreSSL base) | base system (not pkgsrc `openssl`: pkgsrc's `curl` and `postgresql17-client` link the base OpenSSL, and a second one breaks the link) |
 | PostgreSQL libpq | `libpq-dev` | `libpq-devel` | `postgresql-devel` | `postgresql17-client` | `postgresql-client` | `postgresql17-client` |
 | libcurl | `libcurl4-openssl-dev` | `libcurl-devel` | `libcurl-devel` | `curl` | `curl` | `curl` |
 | libpng | `libpng-dev` | `libpng-devel` | `libpng16-devel` | `png` | `png` | `png` |
@@ -176,10 +176,17 @@ Runtime hardening is platform-specific and reported by the startup self-check
 | Control | Linux | FreeBSD | OpenBSD | NetBSD |
 |---|---|---|---|---|
 | seccomp-bpf syscall filter | enabled | n/a | n/a | n/a |
+| Landlock filesystem restriction (federation worker only) | enabled (wired 0.12.13, ADR-0062 part 3) | n/a | n/a | n/a |
 | ELF RELRO / BIND_NOW / noexec stack probe | enabled | enabled | enabled | enabled |
 | pledge / unveil | n/a | n/a | enabled (wired in 0.10.7) | n/a |
 | Capsicum | n/a | enabled (wired in 0.10.7) | n/a | n/a |
 | Resource limits, no-new-privs, core-dump policy | enabled / alpha exception | partial | partial | partial |
+
+Landlock applies only to the federation worker (`merovingian-fed-worker`), not
+the main `merovingian-server` process — see [hardening.md](hardening.md),
+"What is intentionally deferred". On kernels without Landlock (older than
+Linux 5.13, or disabled at boot), the worker refuses to start unless
+`federation.worker.allow_without_landlock=true` is set.
 
 The sandboxed thumbnail worker applies its own `setrlimit` clamps and (on Linux)
 the seccomp filter regardless of platform; where those facilities are

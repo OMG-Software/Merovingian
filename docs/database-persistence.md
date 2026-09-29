@@ -105,6 +105,13 @@ remaining work before PostgreSQL-backed production operation.
   (`crypto::constant_time_equal`, backed by `sodium_memcmp`) for the access and
   refresh token lookups, so a database-equivalent match does not branch on the
   fixed-length hash bytes.
+- `PersistentStore::server_signing_keys` has its own lock,
+  `server_signing_keys_mutex` (0.12.13). The remote-key resolver stores and
+  reads keys from federation relay threads and from backfill with the runtime
+  mutex released, so after start-up hydration the vector is touched only
+  through `store_server_signing_key`, `find_server_signing_key` and
+  `snapshot_server_signing_keys` (a copy for callers that iterate). The lock is
+  never held across the database write or a network call.
 - Binary payload columns are `BLOB` (#448): `media_blobs.bytes` holds raw media
   content and `server_signing_keys.secret_key` holds encrypted key material
   (`BLOB NOT NULL DEFAULT ''`, empty = no secret persisted). Both were folded
@@ -391,6 +398,235 @@ remaining work before PostgreSQL-backed production operation.
   (user_id, password_hash, locked, suspended, admin, deactivated) VALUES
   (...)`), so a future schema change to `users` fails loudly (wrong
   parameter count) rather than silently binding a value to the wrong column.
+- **Phase A of spec-conformant PDU ingestion (schema version `15`, migration
+  `migrations/015_event_graph_state.sql`, ADR-0064): delta state groups,
+  forward extremities, and event status.** This is storage plumbing only —
+  it does not change how PDUs are ingested, how local events pick
+  `prev_events`, or what clients see; that is later phases. Adds:
+  - `events.status` — `TEXT NOT NULL DEFAULT 'accepted'`, one of
+    `'accepted' | 'soft_failed' | 'rejected' | 'outlier'` (spec: "Checks
+    performed on receipt of a PDU"). `set_event_status`/`find_event_status`
+    get/set it, validating the value and mirroring the change into the
+    in-memory `PersistentEvent::status` field (appended as that struct's
+    last member, defaulting to `"accepted"`, so no existing brace-init call
+    site needed to change).
+  - The pre-existing `state_groups` table (created at v1 but never
+    populated or read by any code path before this — confirmed vestigial by
+    grep) gains `parent_state_group_id` (`TEXT NOT NULL DEFAULT ''`) and
+    `delta_depth` (`TEXT NOT NULL DEFAULT '0'`), turning it into the root of
+    a delta chain. Like every other nullable-in-spirit column in this
+    schema (e.g. `state_transitions.previous_event_id`), the empty string is
+    the "no parent, this is a snapshot" sentinel rather than a SQL `NULL` —
+    `PreparedStatement`/`BoundValue` has no NULL parameter representation,
+    and this keeps the convention consistent with the rest of the schema.
+    In C++, `PersistentStateGroup::parent_state_group_id` is
+    `std::optional<std::string>` (`nullopt` ⇔ the empty-string sentinel).
+    `state_group_edges` (also created at v1, also vestigial) is
+    deliberately left alone — see "Federation worker least-privilege role"
+    below for whether it should eventually be dropped.
+  - `state_group_state (state_group_id, event_type, state_key, event_id)` —
+    one group's own rows: the full state for a snapshot group
+    (`parent_state_group_id` empty), or just the changed entries for a
+    delta group.
+  - `event_state_groups (event_id PRIMARY KEY, state_group_id)` — maps an
+    event to the group holding the room's state immediately after it.
+  - `forward_extremities (room_id, event_id)` — a room's current DAG
+    leaves.
+  - **Index:** `event_edges_prev_event_id ON event_edges (prev_event_id)` —
+    the project's first index. `event_edges`' primary key is `(event_id,
+    prev_event_id)`, which cannot serve a lookup keyed on `prev_event_id`
+    alone; the migration's own `seed_forward_extremities` step probes
+    exactly that (is this event anybody's `prev_event_id`?) once per event,
+    and phase B's future ingest-time "children of this event" lookup needs
+    the same shape. Without the index both are a full table scan per probe
+    — O(events × edges) for the seed step alone. The index is created
+    before the seed statements run, so seeding itself uses it; confirmed
+    by `EXPLAIN QUERY PLAN` in
+    `tests/integration/test_state_groups_flow.cpp`'s "event_edges has a
+    usable index for prev_event_id lookups" scenario. `state_groups` gets
+    no matching `room_id` index: every store function that reads it
+    (`find_state_group`, `read_state_group_full_state`,
+    `create_or_reuse_state_group`'s parent lookup) looks up by
+    `state_group_id`, its primary key — nothing queries it by `room_id`.
+
+  Store API ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp)):
+  `create_or_reuse_state_group(store, room_id, new_state_group_id,
+  parent_state_group_id, full_state)` builds the group that will hold
+  `full_state` — reusing `parent_state_group_id` unchanged when `full_state`
+  is exactly the parent's own state (read via `read_state_group_full_state`,
+  never re-derived by re-diffing the raw rows a second way), writing a full
+  snapshot when there is no parent, the parent's `delta_depth + 1` would
+  exceed `events::max_state_group_delta_depth` (100), or `full_state` is
+  missing a key the parent has (deltas never encode deletions — state
+  resolution never drops a key present in any fork, so this should not
+  happen, but a missing parent key is handled safely rather than assumed
+  impossible), and otherwise writing only the changed entries as a delta.
+  Fails closed (returns `nullopt`) if the named parent does not resolve.
+  `read_state_group_full_state(store, state_group_id)` walks parent links
+  back to the snapshot and applies every delta on the chain, newest first;
+  bounded to `max_state_group_delta_depth + 1` hops and cycle-detected — a
+  missing group, a cycle, or an over-long chain returns `nullopt`, never a
+  partial map. `find_state_group` returns a group's own row (not its
+  resulting state). `update_forward_extremities(store, room_id, event_id,
+  prev_event_ids, accepted)` removes `prev_event_ids` from and adds
+  `event_id` to the room's extremity set when `accepted` is true, and is a
+  no-op when false (soft-failed/rejected events never become extremities
+  and never remove one); `find_forward_extremities` reads the current set.
+  All four are implemented for SQLite, PostgreSQL, and the in-memory store's
+  write-through path (the `PersistentStoreBackend::memory` backend commits
+  trivially, so unit tests exercise the in-memory bookkeeping directly —
+  see `tests/unit/test_state_groups.cpp`).
+
+  The migration seeds every pre-existing room in portable SQL (`INSERT ...
+  SELECT ... WHERE NOT EXISTS (...)`, idempotency-guarded so re-running the
+  migration chain is a no-op): one snapshot state group per room
+  (deterministic id `'seed:' || room_id`) built from its `current_state`,
+  attached via `event_state_groups` to the room's current forward
+  extremities (the events `event_edges` names as nobody's `prev_event_id`,
+  seeded into `forward_extremities`). Events older than a room's
+  extremities get no state group at seed time — a later phase treats them
+  as outliers if it ever reaches them. Integration coverage
+  (`tests/integration/test_state_groups_flow.cpp`) brings a real SQLite
+  database to v14 by replaying the compiled migration catalog by hand
+  (every v1–v14 statement happens to be parameter-free, so plain
+  `sqlite3_exec` suffices), seeds a room at that shape, then opens the
+  store through the public API so migration 015 runs for real and asserts
+  the seeded snapshot/extremities/mappings/statuses; a PostgreSQL-gated
+  scenario (skips without `MEROVINGIAN_TEST_POSTGRESQL_URI`, like every
+  other live-database scenario in this suite) checks the new tables exist
+  after bootstrap.
+- **Phase B1 of spec-conformant PDU ingestion (0.12.13, ADR-0064): the phase
+  A tables are now written and read on the live ingest path**, not just
+  seeded for pre-existing rooms. New module
+  [`merovingian::homeserver::state_bookkeeping`](../include/merovingian/homeserver/state_bookkeeping.hpp)
+  (`src/homeserver/state_bookkeeping.cpp`):
+  - `compute_state_before(store, room_id, policy, prev_event_ids)` — the
+    state immediately before an event: a single `prev_event`'s own
+    after-state directly (`find_event_state_group` +
+    `read_state_group_full_state`, no resolution needed); several
+    `prev_events` resolved via `events::resolve_state_v2` over their
+    after-states. Fails closed (`StateBeforeResult::ok = false`) if any
+    `prev_event` has no recorded state group, or resolution itself does
+    (ADR-0063's walk cap) — never silently substitutes current state.
+  - `compute_state_after(state_before, event_id, event_type, state_key)` —
+    `state_before` plus the event itself when it is a state event.
+  - `record_event_state(store, room_id, event_id, prev_event_ids,
+    state_after)` — creates or reuses the after-state group (chained off
+    `prev_event_ids.front()`'s own group as the delta parent, so unchanged
+    state reuses it per `create_or_reuse_state_group`'s own dedup), maps
+    `event_id` to it, and updates forward extremities.
+  - `recompute_current_state(store, room_id, policy)` — current state as
+    the resolution over the room's forward extremities (one extremity: its
+    after-state directly; several: `resolve_state_v2`), diffed against the
+    cached `current_state` and written only where changed, through
+    `database::store_state` — the same call every other state write already
+    used, so `state_transitions` (`unsigned.replaces_state`) and the
+    existing sync wake-up path (`SyncNotifier::publish`, called by the
+    ingest caller on an accepted result) stay correct with no separate
+    "state diff" plumbing. `current_state` is a cache of this result, never
+    an independent write target, from this path onward.
+
+  Wired into `ingest_pdu_event` (`src/homeserver/local_http_router.cpp`):
+  state-before is computed before the event is persisted (a missing
+  prev-state fails the PDU closed with the new
+  `federation::PduIngestionStatus::missing_prev_state` — not a rejection;
+  the transaction it arrived in still returns 200 per spec, since a
+  delayed-but-legitimate PDU is indistinguishable from one whose history we
+  have not fetched yet); the after-state group, forward-extremity update,
+  and current-state recomputation happen after the event is durably stored,
+  logged-but-non-fatal on failure (the same trade-off the pre-existing
+  membership-persistence step in the same function already makes for the
+  same reason: the raw event is already committed, so failing the PDU here
+  would only cause pointless retries).
+
+  **Phase B1 completion (same 0.12.13 branch, follow-up commits):** every
+  local and inbound-accepted event path now goes through this bookkeeping,
+  not just `ingest_pdu_event`.
+  - `homeserver::store_local_event` (`state_bookkeeping.hpp`/`.cpp`) is the
+    choke point every locally created event must go through — runs the same
+    compute-state-before / store / record-after-state / recompute sequence
+    as `ingest_pdu_event`, but every failure is a hard failure (the request
+    fails), since a local event has not yet been told "success" to anyone.
+    `homeserver::forward_extremities_for_new_event` gives local events their
+    `prev_events` from the room's real forward extremities (capped at the
+    spec's 20 per event, `events::max_prev_events_per_event`, highest depth
+    kept) instead of the previous, DAG-unaware "last event pushed into
+    `store.events`" heuristic. `persist_composed_event` (`room_service.cpp`
+    — used by `create_room`'s initial-state chain, invite/join composition,
+    and every ordinary send/state-send/redaction) calls it instead of
+    `database::store_event_with_state` directly.
+  - `local_http_router.cpp`'s `membership_acceptor` (a remote user's
+    `send_join`/`send_leave`/`send_knock` into a room we are resident in —
+    the same trust boundary as `ingest_pdu_event`) gets the identical
+    state-before check and after-state/current-state bookkeeping.
+    `invite_handler`'s invite-event store gets explicit `status =
+    "outlier"` (it is never part of this server's own timeline).
+  - The federated-join flow (`join_room`/`perform_federated_join`,
+    `room_service.cpp`) now seeds a snapshot state group from the
+    `send_join` response's state (stored as `status = "outlier"` events by
+    `ingest_send_join_state`, which returns the full state map alongside
+    the joined-members list), gives the join event an after-state group
+    chained off that snapshot (`homeserver::record_event_state_with_parent`,
+    `record_event_state` generalised to an explicit parent group), and
+    makes it the room's sole forward extremity — so the first inbound PDU
+    after a join no longer hits `missing_prev_state`.
+  - A source-tree guard test (`tests/unit/test_store_event_choke_point.cpp`)
+    fails the build if `database::store_event_with_state(` appears anywhere
+    in `src/` outside a reviewed, counted allowlist.
+  - `PduStateConflictContext` / `state_conflict_resolver` (the older,
+    never-production-reached conflict-resolution plumbing this phase was
+    meant to replace) are still left in place unchanged and unused —
+    phase B2 removes them.
+
+  A real bug was found and fixed along the way: `database::store_state`'s
+  `state_transitions` insert had no `ON CONFLICT` handling, but its primary
+  key is `(room_id, event_type, state_key, event_id)` — state resolution
+  making an event current again after it was already superseded once (the
+  spec's "reverts to an older event" case) re-inserts that same key, which
+  both backends reject as a duplicate row; the write is now an upsert
+  (`ON CONFLICT (...) DO UPDATE SET previous_event_id = excluded.previous_event_id`),
+  with the in-memory `state_transition_index` mirror updated to match.
+
+  Tests: `tests/unit/test_state_bookkeeping.cpp`,
+  `tests/unit/test_pdu_ingestion_state_groups.cpp`,
+  `tests/unit/test_local_event_state_bookkeeping.cpp`, and
+  `tests/unit/test_store_event_choke_point.cpp` (all
+  `[pdu_ingestion][state_groups]`) cover the module directly, end-to-end
+  through `ingest_pdu_event`, end-to-end through local send/create paths,
+  and the source-tree guard, respectively;
+  `tests/integration/test_join_room_flow.cpp` covers the federated-join
+  seeding end to end; `tests/unit/test_sync_handler.cpp` covers a
+  resolution-driven reactivation reaching an incremental `/sync` client.
+- **Token rotation lineage (schema version `17`, migration
+  `migrations/017_token_rotation_lineage.sql`, ADR-0074).** `refresh_tokens`
+  gains `predecessor_hash` and `access_tokens` gains
+  `predecessor_refresh_hash` (both `TEXT NOT NULL DEFAULT ''`, via `ALTER
+  TABLE`). A token pair minted by `POST /refresh` records the hash of the
+  refresh token it replaced, which stays valid until the pair is first used
+  (see `docs/auth-identity.md`). Both backends store and hydrate the columns;
+  `database::revoke_refresh_tokens_with_predecessor` supersedes an unused
+  pair when a refresh is retried. The downgrade step drops both columns.
+  Hydration (`homeserver::hydrate_local_database`) also copies each access
+  token's `expires_at` into its session; before 0.12.13 it did not, so
+  expiry was not enforced after a restart.
+- **M05 authenticated-media storage (schema version `16`, migration
+  `migrations/016_media_legacy_endpoint_visibility.sql`,
+  [ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md)).**
+  The `media` table gains a `legacy_endpoint_visible` column (`TEXT NOT NULL
+  DEFAULT 'true'`) via an `ALTER TABLE` migration, keeping the v1 `media`
+  table definition historically intact exactly like v14's `users.deactivated`
+  addition. New local uploads are stored with `legacy_endpoint_visible = false`
+  (see `docs/media-repository.md`); the unauthenticated
+  `/_matrix/media/v3/download` and `/thumbnail` routes treat a `false` value
+  as a 404, while authenticated `/_matrix/client/v1/media/...` routes ignore it
+  and serve the media. Existing rows default to `'true'`, so pre-upgrade
+  unauthenticated links keep working. The runtime migration path uses the
+  compiled catalog in `src/database/migration.cpp` (upgrade step version
+  `16` "media_legacy_endpoint_visibility"; downgrade step version `15`
+  "drop_media_legacy_endpoint_visibility"); `schema::current_schema_version()`
+  returns `16U`. Adding a column to the `media` table does not affect the
+  federation worker table classification: `media` remains in
+  `worker_never_reads_tables`, so the worker allowlist needs no change.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark
@@ -596,3 +832,206 @@ These remain deferred:
    `packaging/postgresql/provision-roles.sql` for the stricter alternative
    (never grant the login role membership of the migration role; run
    migrations out-of-band and leave `database.migration_role` unset).
+
+## Federation worker least-privilege role (ADR-0062 part 2)
+
+The out-of-process federation worker (`merovingian-fed-worker`,
+`src/federation_worker/`) is the process most exposed to hostile input (see
+`src/federation_worker/AGENTS.md`). Before 0.12.13 finding N1 part 2, it
+opened the database with the *same* PostgreSQL login as main, so a
+compromised worker could `SELECT` `server_signing_keys.secret_key` (still
+ciphertext, but exactly what decrypts it once the operator master key is
+recovered by an unrelated bug — see ADR-0062 part 1) and every other
+credential-bearing table, even though no worker code path ever reads them.
+
+Two independent mechanisms close this, together:
+
+1. **A separate login, not `SET ROLE`.** `SET ROLE`-based separation was
+   rejected for this boundary specifically: a session holding the *login*
+   role that granted a restricted role can always `RESET ROLE` back to it,
+   so a compromised worker holding the original login credential gains
+   nothing from a restricted role it can trivially undo. Only a distinct
+   login credential the worker process never holds in the first place is a
+   real boundary — see ADR-0062's "Options considered and rejected". The new
+   config key `federation.worker.database_uri_file` names a secret file
+   holding this login's connection URI. Main reads and validates it exactly
+   like `database.uri_file` (owner-only, regular file, TOCTOU-safe —
+   `validate_existing_secret_file_metadata` in `src/main.cpp`) and hands the
+   bytes to each worker shard over a third inherited pipe fd
+   (`homeserver::kWorkerDbUriFd`, `--db-uri-fd` on the child's argv) — the
+   worker itself never opens this file. `federation_worker::
+   apply_worker_database_uri` then sets `database.worker_conninfo_override`
+   on the worker's own in-memory `Config` copy and clears `uri_file`,
+   `runtime_role`, and `migration_role`: the separate role connects
+   directly with its own grants, never attempting a `SET ROLE` against roles
+   it was never made a member of. `packaging/postgresql/
+   provision-federation-worker-role.sql` provisions the role; see that
+   file's header comment for the full GRANT SQL and the reasoning behind
+   each statement. It grants `SELECT` only — never `INSERT`/`UPDATE`/
+   `DELETE` — since the worker's own `PersistentStore` is a read-only
+   snapshot for room-scoped federation reads and every write it needs is
+   relayed to main over IPC (`src/federation_worker/AGENTS.md` rule 3; the
+   one exception found during review is `state_conflict_resolver`, covered
+   below).
+
+2. **A load profile, so the worker never pulls unlisted data into its own
+   memory regardless of which credential it holds.**
+   `database::TableLoadProfile` and `database::table_load_profile_includes`
+   (`include/merovingian/database/persistent_store.hpp`) decide which tables
+   `open_postgresql_persistent_store`'s row loader hydrates.
+   `TableLoadProfile::federation_worker` is an **allowlist**
+   (`database::federation_worker_table_allowlist`), not a denylist: a table
+   absent from it is excluded by default, so a future migration's new table
+   — secret-bearing or not — is unreadable by the worker until someone adds
+   it to the allowlist deliberately. The full allowlist, derived by tracing
+   every `FederationRuntimeState` callback the worker does NOT override to
+   the `PersistentStore` field it reads (see the array's own doc comment in
+   `persistent_store.hpp` for the file:line citation behind each row):
+
+   | Table | Why the worker needs it |
+   |---|---|
+   | `rooms` | `make_join`/`make_leave`/`make_knock` templates, `query/directory`, space hierarchy |
+   | `membership` | `query/directory` (servers joined to an aliased room), space hierarchy member counts |
+   | `current_state` | membership-template auth_events, `room_version_resolver`, `room_server_acl_provider`, space hierarchy join-rule/space checks |
+   | `events` | membership-template forward extremities, `backfill`, `state`, `state_ids`, `get_missing_events` |
+   | `event_edges` | `reconstruct_event_relations` populates `PersistentEvent::prev_event_ids` from this table — without it, every event's prev_events read back empty for the routes above |
+   | `event_auth` | same `reconstruct_event_relations` dependency, for `auth_event_ids` (auth-chain walks in `state`/`state_ids`) |
+   | `event_signatures` | same `reconstruct_event_relations` dependency, for `PersistentEvent::signatures` |
+   | `room_aliases` | `query/directory` (`find_room_alias`) |
+   | `server_signing_keys` | remote-key caching (`remote_key_cache_probe`/`remote_key_resolver`) — **column-restricted**, see below |
+   | `state_groups` | ADR-0064 phase A (0.12.13): the worker serves federation `/state` and `/state_ids` locally today from `current_state`/event relations; a later phase moves that to state groups, granted now so that phase needs no further role change |
+   | `state_group_state` | same ADR-0064 phase-A reasoning, for a group's own delta/snapshot rows |
+   | `event_state_groups` | same ADR-0064 phase-A reasoning, for the event → state group mapping |
+   | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read (currently derived from `events`) becomes sourced from here in a later phase |
+   | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
+
+   `server_signing_keys` needs a genuine caveat: the worker's remote-key
+   cache legitimately reads and writes this table (caching *other* servers'
+   public keys — `federation::find_cached_remote_key` /
+   `store_server_signing_key`, `src/homeserver/local_http_router.cpp:1857-
+   1871`), so excluding the whole table would break that. What must never be
+   exposed is this server's *own* `secret_key` column. The fix is
+   column-level, in two independent places: `load_persistent_rows`
+   (`src/database/postgresql_store.cpp`) uses a worker-specific 4-column
+   `SELECT` that never names `secret_key` at all, leaving
+   `PersistentServerSigningKey::secret_key` empty for every worker-loaded
+   row; and `provision-federation-worker-role.sql` grants
+   `SELECT (server_name, key_id, public_key, valid_until_ts)` — a
+   PostgreSQL column-level grant — so even a bug that widened the C++ query
+   back to five columns would be refused at the database. The worker's
+   *write* attempt (caching a freshly-fetched key) is expected to fail under
+   this SELECT-only grant; the caller already discards that result
+   (`std::ignore = cache_remote_server_keys(...)`,
+   `src/federation/remote_key_cache.cpp`) and simply re-fetches on the next
+   request, so the failure degrades performance, not correctness.
+
+   Every table PersistentStore can hold that is **not** in the allowlist is
+   read by NO worker-local code path — verified table by table during
+   review (not merely "probably relayed"), listed in full under "Every
+   table classified" below, since `TableLoadProfile` only gates the
+   PostgreSQL loader and SQLite's own loader is never exercised by a test
+   that could catch a wrong exclusion.
+
+   **One dormant write path found during review:** `state_conflict_resolver`
+   (`local_http_router.cpp:1255`, wired unconditionally by
+   `wire_federation_callbacks`, never overridden by the worker) calls
+   `database::store_state` — a write to `current_state` — when a PDU's
+   ingestion result carries a populated `state_conflict`. In the worker,
+   `pdu_sink` is *always* the IPC-relay override
+   (`federation_worker::deserialize_pdu_ingest_result`), which never
+   populates `PduIngestionResult::state_conflict`, so this resolver is
+   registered but never actually invoked from inside the worker today. It
+   is not relayed and not removed: `current_state` is already in the
+   allowlist for reads, the write path is currently unreachable, and — were
+   a future change to make it reachable — the SELECT-only grant would
+   refuse the `INSERT`/`UPDATE` rather than silently succeed, so the
+   failure mode stays fail-closed even if this invariant is ever broken by
+   accident.
+
+   `federation_worker_table_allowlist` (C++) and
+   `provision-federation-worker-role.sql`'s per-table `GRANT SELECT` list
+   are the two authoritative places for "which tables the worker can read"
+   and must name the exact same set — `tests/unit/test_worker_db_uri.cpp`
+   parses both from the source tree and asserts they match, so the two
+   cannot drift silently.
+
+### Every table classified
+
+`tests/unit/test_worker_db_uri.cpp` also asserts every table
+`migrations/*.sql` creates falls into exactly one of three buckets, so a new
+migration's table cannot go unclassified:
+
+- **Worker allowlist** (13 tables, profile-gated reads —
+  `database::federation_worker_table_allowlist`): `rooms`, `membership`,
+  `current_state`, `events`, `event_edges`, `event_auth`,
+  `event_signatures`, `room_aliases`, `server_signing_keys`
+  (column-restricted, see above), `state_groups`, `state_group_state`,
+  `event_state_groups`, `forward_extremities` (the last four added in
+  0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
+  is now moved out of the never-reads list below).
+- **Worker never reads** (43 tables): `users`, `devices`, `access_tokens`,
+  `refresh_tokens`, `federation_destinations`, `federation_transactions`,
+  `invites`, `state_transitions`, `sync_stream_watermark`,
+  `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
+  `cross_signing_keys`, `key_signatures`, `key_backup_versions`,
+  `key_backup_sessions`, `media`, `media_blobs`, `remote_media`,
+  `audit_log`, `admin_actions`, `policy_rules`, `account_data`,
+  `room_account_data`, `to_device_messages`, `device_list_changes`,
+  `presence_state`, `filters`, `profiles`, `account_threepids`,
+  `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
+  `login_tokens`, `appservice_txn_cursor`, plus six tables `schema.cpp`
+  declares but that no runtime code path (main's or the worker's) ever
+  populates or queries — `event_json`, `key_backups`, `push_rules`,
+  `rate_limits`, `room_versions`, `state_group_edges` — vestigial from
+  earlier schema iterations, confirmed by grep to appear nowhere outside
+  `schema.cpp`'s own DDL declarations. `state_group_edges` remains
+  vestigial after ADR-0064 phase A: the design uses parent links on
+  `state_groups` itself for the delta chain, not a separate edges table, so
+  phase A deliberately left it alone. Whether to drop it is an open
+  question for a later phase, not decided here.
+  `federation_destinations`/`federation_transactions` specifically are read
+  only by `federation::DispatchWorker`, which never starts in the worker
+  process: its construction (`local_http_router.cpp`, guarded inside the
+  same lazily-wired callback block) requires
+  `runtime.database.signing_secret_key` to hold a real 32-byte secret, and
+  the worker's runtime never loads one (`crypto_provider_overridden = true`,
+  per ADR-0015/ADR-0062 part 1) — the construction check fails and returns
+  before the worker ever touches either table, main or not. `profiles`,
+  `device_keys`/`one_time_keys`/`fallback_keys`/`cross_signing_keys`/
+  `key_signatures`, and `devices` are read only by
+  `profile_query_provider`/`device_keys_query_provider`/
+  `one_time_keys_claim_provider`/`user_devices_provider` — all four
+  overridden by the worker to relay to main over IPC instead
+  (`src/federation_worker/AGENTS.md` rule 3), so their default,
+  table-reading implementations are wired but never invoked inside the
+  worker.
+- **Read by every process, not profile-gated** (1 table): `schema_migrations`.
+
+**Explicit, logged opt-out:** `federation.worker.
+allow_shared_database_credentials=true` lets the worker share main's login
+when a separate role cannot be provisioned, restoring the pre-0.12.13-part-2
+behaviour. `config::validate()` rejects `database.backend=postgresql` with
+`security.federation.enabled=true` and an empty `database_uri_file` unless
+this is set (`src/config/config.cpp`), and `homeserver::WorkerPool::
+WorkerPool` logs `CRITICAL` on every startup while it applies, so the
+downgrade cannot go unnoticed. Ignored entirely for
+`database.backend=sqlite`: a single shared file offers no role boundary to
+separate, so the worker keeps opening the same file there and the load
+profile above is its only protection (see ADR-0062 part 2, "Positive
+Consequences").
+
+**Migration role never reachable from the worker.** The worker's own
+connection always passes empty `runtime_role`/`migration_role` to
+`open_postgresql_persistent_store` (cleared by `apply_worker_database_uri`),
+so it can never `SET ROLE` to `:migration_role` even if a compromised worker
+tried — and in the normal startup order the worker only ever connects after
+main has already brought the schema to `current_schema_version()`, so the
+migration branch inside `open_postgresql_persistent_store` (`schema.version <
+current_schema_version()`) is unreachable from a worker connection in
+practice regardless.
+
+**No role is created by a migration.** PostgreSQL roles are cluster-level
+objects, not part of any one database's schema, so — consistent with
+`provision-roles.sql` — `provision-federation-worker-role.sql` is a
+separate, operator-run provisioning script, never a file under
+`migrations/`.

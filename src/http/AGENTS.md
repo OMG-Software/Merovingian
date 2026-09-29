@@ -11,6 +11,8 @@ This module has no Matrix-specific logic — it is a transport layer only.
 | `request_limits.cpp` | `ClientApiLimits` — per-client rate-limit and body-size caps |
 | `rate_limit.cpp` | Token-bucket rate limiter; applied per IP before dispatching requests |
 | `connection_guard.cpp` | `SlowlorisPolicy` — slow-request detection and per-phase (awaiting / reading) connection close decisions |
+| `connection_limiter.cpp` | `ConnectionLimiter` — per-client cap on open connections, applied at accept time (ADR-0072); RAII `Slot` |
+| `client_address.cpp` | `client_address_key` — the key per-client limits count under (IPv6 grouped by prefix); shared by the connection cap and the rate limiter |
 | `keep_alive.cpp` | `KeepAlivePolicy` — idle timeout and the `max_connections` cap on parked keep-alive connections; `Connection` header handling |
 | `outbound_client.cpp` | Performs outbound HTTPS requests against a pre-resolved, pinned address |
 

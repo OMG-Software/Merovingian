@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -46,22 +47,46 @@ struct StateEventReference final
     canonicaljson::Value event_json{};
 };
 
-struct EventPowerData final
-{
-    std::int64_t sender_power{0};
-    std::int64_t origin_server_ts{0};
-};
-
 struct StateGroup final
 {
     std::string group_id{};
     std::vector<StateEventReference> state{};
 };
 
+// Fetches a single event (by id) that is not present in any submitted state
+// group, so the resolver can walk auth_events chains past the two forked
+// state snapshots it was handed. Returns nullopt when the event is unknown
+// to the caller (e.g. not yet persisted). The resolver treats any such miss
+// encountered while walking an auth chain as fatal to the whole resolution
+// (fail closed) rather than proceeding with a partial chain — see
+// resolve_state_v2.
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions ("Auth
+// chain", "Auth difference").
+using EventLookupFn = std::function<std::optional<StateEventReference>(std::string_view event_id)>;
+
 struct StateResolutionRequest final
 {
     std::string room_version{};
     std::vector<StateGroup> state_groups{};
+    EventLookupFn event_lookup{};
+    // Required for room v12 (MSC4291, StateResolutionAlgorithm::v2_1)
+    // resolutions: the m.room.create event is implicit in the room ID
+    // (rooms/v12.md rule 2 — "!" + the create event's own reference hash),
+    // and resolve_state_v2 derives the create event's id from this field
+    // and fetches it through `event_lookup` (or a submitted state group)
+    // to seed the iterative auth checks' otherwise-empty starting map —
+    // see resolve_state_v2's implementation comment. Left empty for a
+    // non-v12 resolution, which does not need it. A v12 resolution whose
+    // derived create event cannot be fetched fails closed (ADR-0063)
+    // rather than falling back to the state groups' own (spoofable)
+    // unconflicted agreement — but a v12 resolution given no `room_id` at
+    // all still falls back to that unconflicted agreement, for callers
+    // (this module's own unit tests) using synthetic event ids that do not
+    // follow the MSC4291 room_id convention. Every real production caller
+    // (compute_state_before, recompute_current_state) always supplies
+    // `room_id`, so that fallback is never reachable from untrusted
+    // federation input.
+    std::string room_id{};
 };
 
 struct StateResolutionResult final
@@ -88,15 +113,26 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
 [[nodiscard]] auto state_resolution_summary(StateResolutionResult const& result) -> std::string;
 
 [[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>;
-// `policy` decides how a sender's power level is read: room versions 1-9 accept
-// a power level encoded as a JSON string, v10+ require a real integer. The
-// ordering ranks events by sender power, so reading a v9 string level as absent
-// would demote the sender to users_default and let a lower-power event win.
-// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — "Values in
-// m.room.power_levels events must be integers".
+// Each candidate's sender power is read from the m.room.power_levels (and,
+// for v12, m.room.create) event in THAT CANDIDATE'S OWN auth_events — never
+// from the candidate's own new content, and never from a shared
+// unconflicted/resolved state map. `known_events` supplies auth_events
+// ancestors already present in the submitted state groups; `event_lookup`
+// (may be empty) supplies anything else. `policy` additionally decides how a
+// sender's power level is read once the power_levels event is found: room
+// versions 1-9 accept a power level encoded as a JSON string, v10+ require a
+// real integer, and v12 gives room creators (found via the create event in
+// the same auth_events) an effectively infinite level (MSC4289). Returns
+// nullopt when an auth_events entry needed to answer the question could not
+// be resolved — fail closed (ADR-0063), never order by a partially-known
+// chain.
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions, "Reverse
+// topological power ordering", rule 1 ("looking at their respective
+// auth_events"); "Values in m.room.power_levels events must be integers".
 [[nodiscard]] auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
-                                                  StateMap const& unconflicted, rooms::RoomVersionPolicy const& policy)
-    -> std::vector<StateEventReference>;
+                                                  EventJsonIndex const& known_events, EventLookupFn const& event_lookup,
+                                                  rooms::RoomVersionPolicy const& policy)
+    -> std::optional<std::vector<StateEventReference>>;
 
 // Spec (rooms/v10 — Definitions, Power events): a power event is an
 // m.room.power_levels or m.room.join_rules state event, or an m.room.member

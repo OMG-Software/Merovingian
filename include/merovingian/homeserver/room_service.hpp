@@ -133,15 +133,29 @@ struct SendJoinStateSplit final
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                               std::uint64_t max_response_bytes = 0U) -> std::pair<bool, std::string>;
 
+// ADR-0064 phase B1: joined_members is what callers used before (the user
+// IDs found with membership="join" among the ingested state entries);
+// state_entries is the full (event_type, state_key) -> event_id map of
+// every state event ingested — the room's state immediately BEFORE the
+// join event, used by join_room to seed a snapshot state group.
+struct SendJoinStateIngestResult final
+{
+    std::vector<std::string> joined_members{};
+    std::vector<database::PersistentStateGroupStateEntry> state_entries{};
+};
+
 // Ingests the `state` array from a send_join response. Every event is stored
-// in the persistent event graph. State events — identified by the PRESENCE of
+// in the persistent event graph, with status "outlier" (ADR-0064): these
+// events are not (yet) reachable by walking prev_events from anything we
+// hold, so they get no state group or forward extremity of their own — see
+// join_room, which builds one snapshot state group from the returned
+// state_entries instead. State events — identified by the PRESENCE of
 // the "state_key" field in the raw JSON, even when its value is "" — are also
 // written to the state table. This is the correct discriminator: the Matrix
 // spec defines any event with a "state_key" field as a state event, regardless
-// of whether that value is empty. Returns the user IDs found with
-// membership="join" among the ingested state entries.
+// of whether that value is empty.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy) -> std::vector<std::string>;
+                                          rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult;
 // Filters a send_join response's `state` or `auth_chain` array down to the
 // events whose Ed25519 signature verifies against their sender domain's
 // published signing key. A large room's state array carries one m.room.member

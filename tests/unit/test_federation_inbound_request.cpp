@@ -621,6 +621,11 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
             result.signed_event_json = request.invite_event_json;
             return result;
         };
+        // A v1 invite implies room version 1 or 2 unless the room's version is
+        // known locally; v1 and v2 are not supported (ADR-0076).
+        runtime.room_version_resolver = [](std::string_view) {
+            return std::string{"12"};
+        };
         auto request = signed_request(origin, key_id, token, invite_event_json);
         request.target = "/_matrix/federation/v1/invite/!room1:example.org/$event1:example.org";
         request.signature = merovingian::federation::make_federation_signature(
@@ -1128,10 +1133,16 @@ SCENARIO("Federation PDU authorization verifies JSON event signatures with the r
     }
 }
 
-SCENARIO("Federation PDU authorization rejects a PDU verified with an expired signing key",
+// Spec: rooms/v5.md "Signing key validity period" (unchanged through v12):
+// "servers MUST enforce the valid_until_ts property from a key request is at
+// least as large as the origin_server_ts for the event being validated." The
+// comparison is with the event's own timestamp, not the current time: this
+// scenario previously rejected a key expired "now" (a now_ts argument), which
+// the spec does not ask for; corrected with the user's approval (ADR-0075).
+SCENARIO("Federation PDU authorization judges a signing key's expiry against the event's origin_server_ts",
          "[federation][inbound][pdu][security]")
 {
-    GIVEN("a validly-signed PDU whose signing key has passed its valid_until_ts")
+    GIVEN("a validly-signed room v12 PDU sent at origin_server_ts 1")
     {
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
@@ -1140,40 +1151,28 @@ SCENARIO("Federation PDU authorization rejects a PDU verified with an expired si
         auto key = merovingian::federation::FederationKeyRecord{};
         key.server_name = origin;
         key.key_id = key_id;
-        // Key expired at ts=1000; the request/verification clock reads ts=2000 —
-        // this simulates remote_key_cache.cpp's `cache.stale_fallback` path, where
-        // a key that could not be refreshed is still handed to the caller.
-        key.valid_until_ts = 1000U;
         key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
 
-        WHEN("the PDU is authorized with a now_ts past the key's validity")
+        WHEN("its key expired at ts 1000, after the event was sent")
         {
-            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key, 2000U);
-
-            THEN("the PDU is rejected rather than admitted on an expired key")
-            {
-                REQUIRE_FALSE(decision.accepted);
-                REQUIRE(decision.reason == "sender domain signing key has expired");
-            }
-        }
-
-        WHEN("the same PDU is authorized with a now_ts before the key's expiry")
-        {
-            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key, 500U);
-
-            THEN("the PDU is accepted")
-            {
-                REQUIRE(decision.accepted);
-            }
-        }
-
-        WHEN("the PDU is authorized via the 3-arg overload (no now_ts, e.g. tests with no wall-clock context)")
-        {
+            key.valid_until_ts = 1000U;
             auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
 
-            THEN("the expiry check is skipped and the PDU is accepted on signature alone")
+            THEN("the PDU is accepted: the key was valid when the event was sent")
             {
                 REQUIRE(decision.accepted);
+            }
+        }
+
+        WHEN("its key's validity ended before the event was sent")
+        {
+            key.valid_until_ts = 0U;
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
+
+            THEN("the PDU is rejected")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.reason == "sender domain signing key expired before the event was sent");
             }
         }
     }
@@ -2210,8 +2209,7 @@ SCENARIO("A throttled key resolution is refused rather than served unverified",
         config.key_resolution_failure_ttl_seconds = 0U;
         auto runtime = merovingian::federation::make_federation_runtime_state(config);
         runtime.remote_key_resolver =
-            [](std::string_view,
-               std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            [](std::string_view, std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
             return std::nullopt;
         };
 
@@ -2230,8 +2228,7 @@ SCENARIO("A throttled key resolution is refused rather than served unverified",
     }
 }
 
-SCENARIO("Each source IP gets its own key-resolution budget",
-         "[federation][inbound][key-resolution][conformance]")
+SCENARIO("Each source IP gets its own key-resolution budget", "[federation][inbound][key-resolution][conformance]")
 {
     GIVEN("a runtime allowing one key resolution per source per minute")
     {
@@ -2543,90 +2540,86 @@ SCENARIO("A cache-served key resolution is not charged to the network budget",
 // while the consecutive-failures backoff and circuit breaker never fired.
 SCENARIO("Transactions whose PDUs are all rejected keep incrementing the "
          "peer's failure count",
-         "[federation][inbound][trust][security]") {
-  GIVEN("a known remote sending transactions whose only PDU fails PDU "
-        "authorization") {
-    REQUIRE(sodium_is_ready());
-    auto runtime = merovingian::federation::make_federation_runtime_state(
-        runtime_config());
-    auto const origin = std::string{"matrix.example.org"};
-    auto const key_id = std::string{"ed25519:auto"};
-    auto const token = std::string{"verify-token"};
-    merovingian::federation::upsert_remote(runtime,
-                                           remote_for(origin, key_id, token));
+         "[federation][inbound][trust][security]")
+{
+    GIVEN("a known remote sending transactions whose only PDU fails PDU "
+          "authorization")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
-    // Each transaction carries a distinct transaction id so the replay-dedup
-    // fast path (which legitimately resets the counter) is never taken. The
-    // PDU has no signatures, so authorize_federation_pdu rejects it and the
-    // transaction returns HTTP 200 with a per-PDU error.
-    auto const send_rejected_transaction = [&runtime, &origin, &key_id,
-                                            &token](std::string const &txn_id) {
-      auto request = signed_request(
-          origin, key_id, token,
-          transaction_body(origin, "{\"type\":\"m.room.message\"}"));
-      request.target = "/_matrix/federation/v1/send/" + txn_id;
-      request.signature = merovingian::federation::make_federation_signature(
-          request.origin, request.destination, request.method, request.target,
-          request.body,
-          merovingian::federation::test::keypair_from_seed(token).secret_key);
-      return merovingian::federation::handle_inbound_federation_request(
-          runtime, request);
-    };
-    auto const persisted_failures = [&runtime]() {
-      return runtime.remotes.front().trust.consecutive_failures;
-    };
+        // Each transaction carries a distinct transaction id so the replay-dedup
+        // fast path (which legitimately resets the counter) is never taken. The
+        // PDU has no signatures, so authorize_federation_pdu rejects it and the
+        // transaction returns HTTP 200 with a per-PDU error.
+        auto const send_rejected_transaction = [&runtime, &origin, &key_id, &token](std::string const& txn_id) {
+            auto request =
+                signed_request(origin, key_id, token, transaction_body(origin, "{\"type\":\"m.room.message\"}"));
+            request.target = "/_matrix/federation/v1/send/" + txn_id;
+            request.signature = merovingian::federation::make_federation_signature(
+                request.origin, request.destination, request.method, request.target, request.body,
+                merovingian::federation::test::keypair_from_seed(token).secret_key);
+            return merovingian::federation::handle_inbound_federation_request(runtime, request);
+        };
+        auto const persisted_failures = [&runtime]() {
+            return runtime.remotes.front().trust.consecutive_failures;
+        };
 
-    WHEN("three all-rejected transactions arrive in sequence") {
-      auto const first = send_rejected_transaction("txn-reject-1");
-      auto const after_first = persisted_failures();
-      auto const second = send_rejected_transaction("txn-reject-2");
-      auto const after_second = persisted_failures();
-      auto const third = send_rejected_transaction("txn-reject-3");
-      auto const after_third = persisted_failures();
-      auto const fourth = send_rejected_transaction("txn-reject-4");
+        WHEN("three all-rejected transactions arrive in sequence")
+        {
+            auto const first = send_rejected_transaction("txn-reject-1");
+            auto const after_first = persisted_failures();
+            auto const second = send_rejected_transaction("txn-reject-2");
+            auto const after_second = persisted_failures();
+            auto const third = send_rejected_transaction("txn-reject-3");
+            auto const after_third = persisted_failures();
+            auto const fourth = send_rejected_transaction("txn-reject-4");
 
-      THEN("the persisted failure count rises monotonically and the peer is "
-           "backed off") {
-        // Spec: per-PDU failures are reported at HTTP 200, never 4xx/5xx.
-        REQUIRE(first.status == 200U);
-        REQUIRE(second.status == 200U);
-        REQUIRE(third.status == 200U);
-        REQUIRE(first.body.find("\"error\"") != std::string::npos);
-        // The persisted count MUST grow, not reset to zero.
-        REQUIRE(after_first == 1U);
-        REQUIRE(after_second == 2U);
-        REQUIRE(after_third == 3U);
-        // Backoff / circuit breaker fires at three consecutive failures.
-        REQUIRE(fourth.status == 429U);
-        REQUIRE(fourth.body == "remote backoff required");
-      }
+            THEN("the persisted failure count rises monotonically and the peer is "
+                 "backed off")
+            {
+                // Spec: per-PDU failures are reported at HTTP 200, never 4xx/5xx.
+                REQUIRE(first.status == 200U);
+                REQUIRE(second.status == 200U);
+                REQUIRE(third.status == 200U);
+                REQUIRE(first.body.find("\"error\"") != std::string::npos);
+                // The persisted count MUST grow, not reset to zero.
+                REQUIRE(after_first == 1U);
+                REQUIRE(after_second == 2U);
+                REQUIRE(after_third == 3U);
+                // Backoff / circuit breaker fires at three consecutive failures.
+                REQUIRE(fourth.status == 429U);
+                REQUIRE(fourth.body == "remote backoff required");
+            }
+        }
+
+        AND_WHEN("a transaction whose PDUs are all accepted follows two rejected ones")
+        {
+            std::ignore = send_rejected_transaction("txn-reject-a");
+            std::ignore = send_rejected_transaction("txn-reject-b");
+            auto const before_success = persisted_failures();
+
+            auto good =
+                signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+            good.target = "/_matrix/federation/v1/send/txn-accept-1";
+            good.signature = merovingian::federation::make_federation_signature(
+                good.origin, good.destination, good.method, good.target, good.body,
+                merovingian::federation::test::keypair_from_seed(token).secret_key);
+            auto const accepted = merovingian::federation::handle_inbound_federation_request(runtime, good);
+
+            THEN("a fully successful transaction still resets the counter to zero")
+            {
+                REQUIRE(before_success == 2U);
+                REQUIRE(accepted.status == 200U);
+                REQUIRE(accepted.body == "{\"pdus\":{}}");
+                REQUIRE(persisted_failures() == 0U);
+            }
+        }
     }
-
-    AND_WHEN(
-        "a transaction whose PDUs are all accepted follows two rejected ones") {
-      std::ignore = send_rejected_transaction("txn-reject-a");
-      std::ignore = send_rejected_transaction("txn-reject-b");
-      auto const before_success = persisted_failures();
-
-      auto good = signed_request(
-          origin, key_id, token,
-          transaction_body(origin, signed_json_pdu(origin, key_id, token)));
-      good.target = "/_matrix/federation/v1/send/txn-accept-1";
-      good.signature = merovingian::federation::make_federation_signature(
-          good.origin, good.destination, good.method, good.target, good.body,
-          merovingian::federation::test::keypair_from_seed(token).secret_key);
-      auto const accepted =
-          merovingian::federation::handle_inbound_federation_request(runtime,
-                                                                     good);
-
-      THEN("a fully successful transaction still resets the counter to zero") {
-        REQUIRE(before_success == 2U);
-        REQUIRE(accepted.status == 200U);
-        REQUIRE(accepted.body == "{\"pdus\":{}}");
-        REQUIRE(persisted_failures() == 0U);
-      }
-    }
-  }
 }
 
 // Regression test for security audit finding M-05 (2026-09).
@@ -2642,47 +2635,46 @@ SCENARIO("Transactions whose PDUs are all rejected keep incrementing the "
 // real cryptography.
 SCENARIO("verify_inbound_federation_signature always performs the crypto check "
          "even when signature_verified is set",
-         "[federation][inbound][security]") {
-  GIVEN("a known remote and a request with a bad signature marked "
-        "signature_verified") {
-    REQUIRE(sodium_is_ready());
-    auto runtime = merovingian::federation::make_federation_runtime_state(
-        runtime_config());
-    auto const origin = std::string{"matrix.example.org"};
-    auto const key_id = std::string{"ed25519:auto"};
-    auto const token = std::string{"verify-token"};
-    merovingian::federation::upsert_remote(runtime,
-                                           remote_for(origin, key_id, token));
-    auto request = signed_request(origin, key_id, token, pdu_for(origin));
-    request.signature = "not-a-real-signature";
-    request.signature_verified = true;
+         "[federation][inbound][security]")
+{
+    GIVEN("a known remote and a request with a bad signature marked "
+          "signature_verified")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto request = signed_request(origin, key_id, token, pdu_for(origin));
+        request.signature = "not-a-real-signature";
+        request.signature_verified = true;
 
-    WHEN("the exported verifier is called") {
-      auto const result =
-          merovingian::federation::verify_inbound_federation_signature(runtime,
-                                                                       request);
+        WHEN("the exported verifier is called")
+        {
+            auto const result = merovingian::federation::verify_inbound_federation_signature(runtime, request);
 
-      THEN("the signature is checked and the request is rejected") {
-        // Spec MUST: a request whose X-Matrix signature does not verify
-        // is rejected. A caller-supplied bool cannot stand in for crypto.
-        REQUIRE_FALSE(result.accepted);
-        REQUIRE(result.error.status == 403U);
-      }
+            THEN("the signature is checked and the request is rejected")
+            {
+                // Spec MUST: a request whose X-Matrix signature does not verify
+                // is rejected. A caller-supplied bool cannot stand in for crypto.
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.error.status == 403U);
+            }
+        }
+
+        AND_WHEN("the worker entry point handles the same pre-verified request")
+        {
+            auto worker_request =
+                signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+            worker_request.signature = "not-a-real-signature";
+            worker_request.signature_verified = true;
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, worker_request);
+
+            THEN("the worker fast path still accepts it without re-verifying")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
     }
-
-    AND_WHEN("the worker entry point handles the same pre-verified request") {
-      auto worker_request = signed_request(
-          origin, key_id, token,
-          transaction_body(origin, signed_json_pdu(origin, key_id, token)));
-      worker_request.signature = "not-a-real-signature";
-      worker_request.signature_verified = true;
-      auto const response =
-          merovingian::federation::handle_inbound_federation_request(
-              runtime, worker_request);
-
-      THEN("the worker fast path still accepts it without re-verifying") {
-        REQUIRE(response.status == 200U);
-      }
-    }
-  }
 }

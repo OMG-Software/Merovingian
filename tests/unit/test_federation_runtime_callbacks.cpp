@@ -324,7 +324,9 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         }
     }
 
-    GIVEN("a runtime where pdu_sink rejects a PDU as a state conflict")
+    GIVEN("a runtime where pdu_sink rejects a PDU (ADR-0064 phase B2: rejected, not a state conflict — "
+          "the legacy rejected_state_conflict status is no longer produced by any production sink, but "
+          "must still be handled defensively by the per-PDU switch as a rejection)")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         auto const origin = std::string{"matrix.example.org"};
@@ -358,21 +360,21 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         {
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
-            THEN("the pdu_sink is invoked, the conflict is audited, and the transaction still returns 200")
+            THEN("the pdu_sink is invoked, the rejection is audited, and the transaction still returns 200")
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(*conflict_seen);
-                auto const has_conflict_audit = [&runtime] {
+                auto const has_rejected_audit = [&runtime] {
                     for (auto const& ev : runtime.audit_events)
                     {
-                        if (ev.event_type == "federation.pdu_state_conflict")
+                        if (ev.event_type == "federation.pdu_rejected")
                         {
                             return true;
                         }
                     }
                     return false;
                 }();
-                REQUIRE(has_conflict_audit);
+                REQUIRE(has_rejected_audit);
             }
         }
     }
@@ -1514,8 +1516,7 @@ namespace
 
 } // namespace
 
-SCENARIO("A typing EDU for a room this server is not in is rejected",
-         "[homeserver][federation][typing][security]")
+SCENARIO("A typing EDU for a room this server is not in is rejected", "[homeserver][federation][typing][security]")
 {
     GIVEN("a trusted remote and a server that is a member of one room only")
     {
@@ -1592,10 +1593,9 @@ SCENARIO("Typing state stays bounded when a peer floods a room it is legitimatel
 
             THEN("the oldest entry was evicted and the newest is present")
             {
-                auto const still_has_oldest =
-                    std::ranges::any_of(runtime->typing_users, [&oldest](auto const& entry) {
-                        return entry.user_id == oldest;
-                    });
+                auto const still_has_oldest = std::ranges::any_of(runtime->typing_users, [&oldest](auto const& entry) {
+                    return entry.user_id == oldest;
+                });
                 REQUIRE_FALSE(still_has_oldest);
                 REQUIRE(runtime->typing_users.back().user_id == "@overflow:matrix.example.org");
             }
@@ -1681,6 +1681,53 @@ SCENARIO("Receipt state stays bounded when a peer floods a room it is legitimate
                 });
                 REQUIRE_FALSE(still_has_oldest);
                 REQUIRE(runtime->receipts.back().user_id == "@overflow:matrix.example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("PDU sink overload is returned to the federation peer as a retryable 5xx",
+         "[federation][callbacks][pdu_sink][backpressure]")
+{
+    GIVEN("a runtime whose pdu_sink signals main overload")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"overload-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto sink_invoked = std::make_shared<bool>(false);
+        runtime.pdu_sink = [sink_invoked](merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            std::ignore = envelope;
+            *sink_invoked = true;
+            return {merovingian::federation::PduIngestionStatus::main_overloaded, "main at per-channel in-flight cap"};
+        };
+
+        auto const json_pdu = signed_json_pdu(origin, key_id, token);
+        auto request = merovingian::federation::SignedFederationRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/txn-overload-001";
+        request.origin = origin;
+        request.key_id = key_id;
+        request.destination = "local.example.org";
+        request.now_ts = 1000U;
+        request.canonical_json_verified = true;
+        request.body = transaction_body(origin, json_pdu);
+        request.signature = merovingian::federation::make_federation_signature(
+            origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the pdu_sink is invoked and the peer receives a retryable 503")
+            {
+                REQUIRE(*sink_invoked);
+                REQUIRE(response.status == 503U);
+                REQUIRE(response.body.find("M_UNKNOWN") != std::string::npos);
             }
         }
     }

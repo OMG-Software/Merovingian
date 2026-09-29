@@ -4,7 +4,6 @@
 #include "merovingian/config/config.hpp"
 
 #include "merovingian/auth/identity.hpp"
-
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/http/keep_alive.hpp"
 
@@ -615,6 +614,16 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                 {"server.http.keep_alive_max_connections", "keep-alive parked-connection cap must be 1..4096"});
         }
     }
+    // Per-client connection limits (ADR-0072). The parser already rejects
+    // out-of-range text; this catches a Config built in code.
+    if (http_transport.max_connections_per_ip == 0U || http_transport.max_connections_per_ip > 65535U)
+    {
+        findings.push_back({"server.http.max_connections_per_ip", "per-IP connection cap must be 1..65535"});
+    }
+    if (http_transport.ipv6_client_prefix_length == 0U || http_transport.ipv6_client_prefix_length > 128U)
+    {
+        findings.push_back({"server.http.ipv6_client_prefix_length", "IPv6 client prefix length must be 1..128"});
+    }
 
     // TURN configuration: if a server is supplied the operator must also
     // provide credentials so the endpoint can issue usable credentials.
@@ -856,6 +865,22 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"federation.worker.request_timeout_seconds",
                             "federation.worker.request_timeout_seconds must be greater than zero"});
+    }
+
+    // ADR-0062 part 2 (0.12.13 audit, finding N1): a PostgreSQL-backed
+    // federation worker must connect with a separate, least-privilege login,
+    // not main's own credentials -- SET ROLE was rejected for this (a
+    // session holding the login role can RESET ROLE right back). SQLite
+    // offers no role boundary to separate, so the requirement does not apply
+    // there. allow_shared_database_credentials is the explicit, logged
+    // opt-out; see homeserver::WorkerPool::WorkerPool.
+    if (config.database().backend == DatabaseBackend::postgresql && config.security().federation.enabled &&
+        config.federation_worker().database_uri_file.empty() &&
+        !config.federation_worker().allow_shared_database_credentials)
+    {
+        findings.push_back({"federation.worker.database_uri_file",
+                            "required when database.backend=postgresql and security.federation.enabled=true, "
+                            "unless federation.worker.allow_shared_database_credentials=true"});
     }
 
     if (config.security().registration.enabled && !config.security().registration.require_token)

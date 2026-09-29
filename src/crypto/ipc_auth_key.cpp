@@ -3,6 +3,7 @@
 
 #include "merovingian/crypto/ipc_auth_key.hpp"
 
+#include <algorithm>
 #include <string_view>
 
 #include <sodium.h>
@@ -76,6 +77,17 @@ auto derive_ipc_auth_key(std::span<std::uint8_t const> master_key_material) noex
     {
         return std::nullopt;
     }
+    return key;
+}
+
+auto ipc_auth_key_from_bytes(std::span<std::uint8_t const> key_bytes) noexcept -> std::optional<IpcAuthKey>
+{
+    if (key_bytes.size() != kIpcAuthKeyBytes)
+    {
+        return std::nullopt;
+    }
+    auto key = IpcAuthKey{};
+    std::copy(key_bytes.begin(), key_bytes.end(), key.bytes.begin());
     return key;
 }
 

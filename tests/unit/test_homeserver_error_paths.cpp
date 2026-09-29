@@ -184,9 +184,10 @@ SCENARIO("verify_local_user_password returns false for a wrong password", "[home
             auto const verified =
                 merovingian::homeserver::verify_local_user_password(runtime, login.value, "WrongPassword!");
 
-            THEN("verification returns false")
+            THEN("verification fails")
             {
-                REQUIRE_FALSE(verified);
+                REQUIRE_FALSE(verified.ok);
+                REQUIRE(verified.retry_after_ms == 0U);
             }
         }
 
@@ -195,9 +196,10 @@ SCENARIO("verify_local_user_password returns false for a wrong password", "[home
             auto const verified =
                 merovingian::homeserver::verify_local_user_password(runtime, login.value, "CorrectHorse7!");
 
-            THEN("verification returns true — confirming the positive path is exercised")
+            THEN("verification succeeds — confirming the positive path is exercised")
             {
-                REQUIRE(verified);
+                REQUIRE(verified.ok);
+                REQUIRE(verified.retry_after_ms == 0U);
             }
         }
     }

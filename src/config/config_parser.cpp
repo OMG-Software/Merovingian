@@ -228,6 +228,44 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        else if (key == "server.http.max_connections_per_ip")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > 65535U)
+                {
+                    add_parse_finding(findings, std::string{key}, "expected an integer in 1..65535");
+                }
+                else
+                {
+                    server.http.max_connections_per_ip = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected an integer in 1..65535");
+            }
+        }
+        else if (key == "server.http.ipv6_client_prefix_length")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > 128U)
+                {
+                    add_parse_finding(findings, std::string{key}, "expected an integer in 1..128");
+                }
+                else
+                {
+                    server.http.ipv6_client_prefix_length = static_cast<std::uint8_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected an integer in 1..128");
+            }
+        }
         else if (key == "server.turn.server")
         {
             server.turn.server = std::string{value};
@@ -916,6 +954,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "federation.worker.ipc_max_in_flight_requests")
+        {
+            if (!parse_u32_value(value, federation_worker.ipc_max_in_flight_requests))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "federation.worker.threads")
         {
             if (!parse_u32_value(value, federation_worker.threads))
@@ -944,6 +989,24 @@ namespace
         else if (key == "federation.worker.apply_hardening")
         {
             if (!parse_bool_value(value, federation_worker.apply_hardening))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
+            }
+        }
+        else if (key == "federation.worker.database_uri_file")
+        {
+            federation_worker.database_uri_file = std::string{value};
+        }
+        else if (key == "federation.worker.allow_shared_database_credentials")
+        {
+            if (!parse_bool_value(value, federation_worker.allow_shared_database_credentials))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
+            }
+        }
+        else if (key == "federation.worker.allow_without_landlock")
+        {
+            if (!parse_bool_value(value, federation_worker.allow_without_landlock))
             {
                 add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
             }

@@ -198,3 +198,105 @@ SCENARIO("Event envelope parsing ignores non-string signature values", "[events]
         }
     }
 }
+
+SCENARIO("Matrix identifier validation rejects identifiers longer than 255 bytes", "[events][limits][m03]")
+{
+    auto const long_localpart = std::string(250U, 'a');
+
+    WHEN("a user ID exceeds the 255-byte limit")
+    {
+        auto const long_user_id = std::string{"@"} + long_localpart + std::string{":example.org"};
+        REQUIRE(long_user_id.size() > merovingian::events::max_id_length_bytes);
+
+        THEN("matrix_id_is_valid fails closed")
+        {
+            REQUIRE_FALSE(merovingian::events::matrix_id_is_valid(long_user_id, '@'));
+        }
+    }
+
+    WHEN("a room ID exceeds the 255-byte limit")
+    {
+        auto const long_room_id = std::string{"!"} + long_localpart + std::string{":example.org"};
+        REQUIRE(long_room_id.size() > merovingian::events::max_id_length_bytes);
+
+        THEN("matrix_id_is_valid fails closed")
+        {
+            REQUIRE_FALSE(merovingian::events::matrix_id_is_valid(long_room_id, '!'));
+        }
+    }
+
+    WHEN("an event ID exceeds the 255-byte limit")
+    {
+        auto const long_event_id = std::string{"$"} + long_localpart + std::string{":example.org"};
+        REQUIRE(long_event_id.size() > merovingian::events::max_id_length_bytes);
+
+        THEN("matrix_id_is_valid fails closed")
+        {
+            REQUIRE_FALSE(merovingian::events::matrix_id_is_valid(long_event_id, '$'));
+        }
+    }
+
+    WHEN("an identifier is exactly at the 255-byte boundary")
+    {
+        auto const room_id = std::string{"!room:example.org"};
+        REQUIRE(room_id.size() <= merovingian::events::max_id_length_bytes);
+
+        THEN("matrix_id_is_valid accepts it")
+        {
+            REQUIRE(merovingian::events::matrix_id_is_valid(room_id, '!'));
+        }
+    }
+}
+
+SCENARIO("Event envelope parsing enforces the state_key length limit", "[events][limits][m03]")
+{
+    GIVEN("an otherwise valid state event whose state_key is 256 bytes")
+    {
+        auto object = make_minimal_event_object("!room:example.org", "@alice:example.org", "m.room.member");
+        object.push_back(merovingian::canonicaljson::make_member(
+            "state_key", merovingian::canonicaljson::Value{std::string(256U, 'a')}));
+        object.push_back(merovingian::canonicaljson::make_member(
+            "signatures", merovingian::canonicaljson::Value{
+                              merovingian::canonicaljson::Object{merovingian::canonicaljson::make_member(
+                                  "example.org",
+                                  merovingian::canonicaljson::Value{
+                                      merovingian::canonicaljson::Object{merovingian::canonicaljson::make_member(
+                                          "ed25519:auto", merovingian::canonicaljson::Value{std::string{"sig"}})}})}}));
+
+        WHEN("the envelope is parsed")
+        {
+            auto const result = parse_event_from_object(std::move(object));
+
+            THEN("parsing fails closed before any hashing")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.error.find("state_key") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a state event whose state_key is exactly 255 bytes")
+    {
+        auto object = make_minimal_event_object("!room:example.org", "@alice:example.org", "m.room.member");
+        object.push_back(merovingian::canonicaljson::make_member(
+            "state_key", merovingian::canonicaljson::Value{std::string(255U, 'a')}));
+        object.push_back(merovingian::canonicaljson::make_member(
+            "signatures", merovingian::canonicaljson::Value{
+                              merovingian::canonicaljson::Object{merovingian::canonicaljson::make_member(
+                                  "example.org",
+                                  merovingian::canonicaljson::Value{
+                                      merovingian::canonicaljson::Object{merovingian::canonicaljson::make_member(
+                                          "ed25519:auto", merovingian::canonicaljson::Value{std::string{"sig"}})}})}}));
+
+        WHEN("the envelope is parsed")
+        {
+            auto const result = parse_event_from_object(std::move(object));
+
+            THEN("the boundary value is accepted")
+            {
+                REQUIRE(result.error.empty());
+                REQUIRE(result.event.state_key.size() == 255U);
+            }
+        }
+    }
+}

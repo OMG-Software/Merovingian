@@ -268,7 +268,13 @@ jobs:
               done
               return 1
             }
-            install_packages clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+            install_packages clang meson ninja-build pkgconf git bison flex gmake libsodium postgresql17-client curl png libjpeg-turbo
+            # pkgsrc's curl and postgresql17-client link NetBSD's base OpenSSL
+            # (libssl.so.16); building against pkgsrc's openssl (libssl.so.3)
+            # would load two OpenSSLs in one process, which the werror link
+            # refuses. Remove it if the image already has it, so base headers,
+            # libraries and pkg-config files are the only OpenSSL in sight.
+            if /usr/sbin/pkg_info -e openssl >/dev/null 2>&1; then /usr/sbin/pkg_delete openssl; fi
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2
@@ -316,7 +322,13 @@ jobs:
               done
               return 1
             }
-            install_packages clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+            install_packages clang meson ninja-build pkgconf git bison flex gmake libsodium postgresql17-client curl png libjpeg-turbo
+            # pkgsrc's curl and postgresql17-client link NetBSD's base OpenSSL
+            # (libssl.so.16); building against pkgsrc's openssl (libssl.so.3)
+            # would load two OpenSSLs in one process, which the werror link
+            # refuses. Remove it if the image already has it, so base headers,
+            # libraries and pkg-config files are the only OpenSSL in sight.
+            if /usr/sbin/pkg_info -e openssl >/dev/null 2>&1; then /usr/sbin/pkg_delete openssl; fi
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2

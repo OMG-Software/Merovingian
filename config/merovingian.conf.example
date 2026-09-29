@@ -5,16 +5,16 @@
 # Server identity
 # server.name is the Matrix server name used in user IDs and federation.
 # public_baseurl is the HTTPS URL clients use to reach this homeserver.
-# trusted_proxies is a comma-separated list of reverse-proxy IPs that sanitize
-# X-Forwarded-For before passing traffic to Merovingian.  When a request
-# arrives from a trusted proxy, the rate limiter uses the leftmost
-# X-Forwarded-For value as the effective client IP instead of the raw peer
-# address.  Without this setting, all clients share one rate-limit bucket
-# (the proxy IP) and a single active Matrix client can exhaust the cap for
-# everyone.  For a typical same-host nginx/Apache/Traefik/HAProxy deployment:
+# trusted_proxies is a comma-separated list of reverse-proxy IPs whose
+# X-Forwarded-For entries are believed.  When a request arrives from a trusted
+# proxy, the rate limiter walks X-Forwarded-For from the right past trusted
+# proxies and uses the first other entry as the client IP (ADR-0073), so a
+# proxy that appends (nginx $proxy_add_x_forwarded_for) is safe: whatever the
+# client itself sent on the left is ignored.  Without this setting, all
+# clients share one rate-limit bucket (the proxy IP) and a single active
+# Matrix client can exhaust the cap for everyone.  For a typical same-host
+# nginx/Apache/Traefik/HAProxy deployment:
 #   server.trusted_proxies=127.0.0.1
-# The proxy MUST overwrite X-Forwarded-For with the direct peer IP it
-# received — never append to client-supplied values (see docs/configuration.md).
 server.name=matrix.example.org
 server.public_baseurl=https://matrix.example.org
 server.trusted_proxies=127.0.0.1
@@ -58,6 +58,17 @@ server.cors.max_age=86400
 server.http.keep_alive=true
 server.http.keep_alive_idle_seconds=15
 server.http.keep_alive_max_connections=8
+# Per-client connection cap (ADR-0072). One client address may hold at most
+# max_connections_per_ip (1..65535) open connections on the client and
+# federation listeners; a further connection is closed at accept time, before
+# a byte is read or a TLS handshake starts. IPv6 clients are grouped by
+# ipv6_client_prefix_length (1..128), since one site is usually handed a whole
+# /64; the rate limiter uses the same grouping. Addresses in
+# server.trusted_proxies are exempt: behind a reverse proxy every client
+# arrives from the proxy's address, so limit connections per client at the
+# proxy. Restart required.
+server.http.max_connections_per_ip=64
+server.http.ipv6_client_prefix_length=64
 
 # Identity Service API — third-party identifiers (3PIDs: email, msisdn)
 # Governs 3PID invites, bind, unbind and requestToken. All of it is OFF until
@@ -284,9 +295,43 @@ security.federation.join_response_max_size=64MiB
 federation.worker.threads=4
 federation.worker.relay_threads=32
 federation.worker.request_timeout_seconds=30
+federation.worker.ipc_max_in_flight_requests=256
 federation.worker.shards=2
 federation.worker.apply_hardening=true
 # federation.worker.binary=
+
+# Federation worker database credentials (ADR-0062 part 2, PostgreSQL only)
+# The worker is the process most exposed to hostile input, so it must never
+# connect to the database with the same login main uses: SET ROLE was
+# rejected for this boundary because a session holding the login role can
+# always RESET ROLE back to it. database_uri_file names an owner-only secret
+# file holding a connection URI for a SEPARATE, least-privilege login,
+# provisioned with packaging/postgresql/provision-federation-worker-role.sql
+# (grants SELECT only, and excludes server_signing_keys/users/access_tokens/
+# refresh_tokens/login_tokens/openid_tokens/account_threepids — see
+# docs/database-persistence.md, "Federation worker least-privilege role").
+# Required when database.backend=postgresql (the default); startup fails
+# validation if this is left empty without also setting the opt-out below.
+# Defaults to the placeholder path shown here (commented, matching
+# database.uri_file's own presentation above) — a fresh install still
+# validates for --dry-run inspection, but production deployments must
+# provision the file and role before starting for real. Not needed for
+# database.backend=sqlite, which offers no role boundary to separate.
+#federation.worker.database_uri_file=/etc/merovingian/fed-worker-db-uri
+#
+# allow_shared_database_credentials is the explicit, loudly-logged opt-out:
+# set it to true (and leave database_uri_file empty) to let the worker share
+# main's own PostgreSQL login instead of provisioning a separate role. Every
+# startup then logs CRITICAL, since this restores the pre-part-2 exposure.
+#federation.worker.allow_shared_database_credentials=true
+
+# ADR-0062 part 3: the worker restricts its own filesystem access with Linux
+# Landlock (requires Linux 5.13+ with Landlock enabled) before handling any
+# inbound request -- never the master key file, either database URI file, or
+# TLS private keys. On a kernel without Landlock the worker refuses to start
+# unless this is set true, in which case it runs with NO filesystem sandbox
+# and logs CRITICAL on every start.
+#federation.worker.allow_without_landlock=true
 
 # Media safety policy
 # max_upload_size bounds local uploads. Unknown MIME types are quarantined,
@@ -433,11 +478,11 @@ security.logging.redact_event_content=true
 security.logging.structured=true
 
 # At-rest secret protection
-# master_key_file must point to an owner-only file containing the raw key
-# material used to encrypt the Ed25519 signing secret before it is stored in
-# the database. When empty, fresh signing keys cannot be created; legacy
+# master_key_file must point to an owner-only (0400) file containing the raw
+# key material used to encrypt the Ed25519 signing secret before it is stored
+# in the database. When empty, fresh signing keys cannot be created; legacy
 # plaintext keys may still be loaded for migration.
-security.secrets.master_key_file=/etc/merovingian/master-key
+#security.secrets.master_key_file=/etc/merovingian/master-key
 
 # Client-server rate limits
 # Wall-clock per-IP and per-user caps keyed by normalized request target prefix.

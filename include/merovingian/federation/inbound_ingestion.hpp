@@ -33,40 +33,53 @@ struct InboundPduEnvelope final
     std::vector<std::string> auth_event_ids{};
     std::vector<events::EventSignature> signatures{};
     std::string json{};
+    // ADR-0064 phase C: the server that sent this PDU over federation. Used to
+    // fetch missing prev_events / auth_events and to request state from the
+    // origin when our own copy of the DAG is incomplete. Not present in the
+    // PDU JSON itself; set by the transaction handler before invoking pdu_sink.
+    std::string origin{};
 };
 
 enum class PduIngestionStatus : std::uint8_t
 {
     accepted,
     rejected_auth,
+    // Legacy status from the pre-ADR-0064 state-conflict-resolver plumbing
+    // (removed in phase B2 — see the ADR). No production sink produces this
+    // any more; kept only so the worker IPC wire format
+    // (worker_pool.cpp/worker_event_loop.cpp) stays a stable, exhaustive set.
     rejected_state_conflict,
     rejected_invalid,
     internal_error,
-};
-
-// Context surfaced by the sink when an incoming PDU forks the room's
-// resolved state. Carries the room version, the resolved state before
-// the PDU, and the state map proposed by the PDU's prev_events ancestry.
-// The federation core hands this to `state_conflict_resolver` to attempt
-// a merge through state-resolution v2 rather than silently accepting the
-// transaction with the conflict logged.
-struct PduStateConflictContext final
-{
-    std::string room_version{};
-    InboundPduEnvelope incoming_pdu{};
-    // Two state groups: index 0 is the room's currently resolved state,
-    // index 1 is the candidate state the incoming PDU's chain proposes.
-    std::vector<events::StateGroup> state_groups{};
+    // ADR-0064 phase B1: a prev_event this PDU depends on has no recorded
+    // state group (an older, pre-Phase-A event, or a genuine gap in our
+    // history of the room). The event is NOT stored — applying it would mean
+    // either guessing its state-before or silently substituting current
+    // state, both of which reintroduce delivery-order dependence. The spec
+    // treats a delayed-but-legitimate PDU the same as one we simply have not
+    // backfilled yet, so this is not a rejection: the transaction still
+    // returns 200 and a later phase is expected to fetch the gap
+    // (/get_missing_events, /state_ids) and retry.
+    missing_prev_state,
+    // ADR-0064 phase B2: the PDU passed auth against its own auth_events and
+    // against the state before it, but fails auth against the room's
+    // *current* (resolved) state. Spec: server-server-api.md "Soft failure".
+    // The event IS stored, given an after-state group, and takes part in
+    // state resolution as normal — it is never rejected — but it is not a
+    // forward extremity and is not relayed to clients, except that a
+    // soft-failed *state* event which resolution later admits into current
+    // state is shown to clients in the state section as usual.
+    soft_failed,
+    // ADR-0065 (0.12.13 audit, finding H2): main is at its per-channel IPC
+    // in-flight cap and explicitly rejected the pdu_ingest request. The
+    // transaction handler must answer the remote with a retryable 5xx.
+    main_overloaded,
 };
 
 struct PduIngestionResult final
 {
     PduIngestionStatus status{PduIngestionStatus::internal_error};
     std::string reason{};
-    // Populated only when status == rejected_state_conflict and the sink
-    // could build a resolution context. Empty otherwise, including for
-    // accepted PDUs or non-conflict rejections.
-    std::optional<PduStateConflictContext> state_conflict{};
     // Set by production sinks that allocate a stream_ordering for the event.
     // Zero when the result is not accepted or the sink does not assign one.
     std::uint64_t accepted_stream_ordering{0U};
@@ -76,33 +89,11 @@ struct PduIngestionResult final
 };
 
 // Production sink: appends the PDU to the persistent store after running
-// final consistency checks. State-conflict cases return
-// rejected_state_conflict and SHOULD populate `state_conflict` so the
-// federation core can run state-resolution v2 to merge the forks before
-// dropping the PDU on the floor.
+// the spec's full receipt-order checks (ADR-0064 phases B1/B2): hash
+// (redact on mismatch), auth against the PDU's own auth_events (reject),
+// auth against the state before the PDU (reject), and auth against current
+// state (soft-fail). See homeserver::ingest_pdu_event.
 using PduSink = std::function<PduIngestionResult(InboundPduEnvelope const&)>;
-
-// Resolver invoked on rejected_state_conflict. Returns either accepted
-// (the resolver merged the forks via state-res v2 and applied the result)
-// or rejected_state_conflict (resolution failed; the PDU is dropped and
-// the original conflict is audited).
-using StateConflictResolver = std::function<PduIngestionResult(PduStateConflictContext const&)>;
-
-// Runs Matrix state-resolution v2 against the two state groups in
-// `context` and returns the merged state. On success the federation
-// core calls the resolver's persistence path through `apply_resolved`;
-// `apply_resolved` is invoked once with the resolved state so the
-// caller (production: the runtime; tests: a fake) can commit the merge
-// before the federation handler counts the PDU as accepted.
-//
-// Returns the resolution result so callers can audit. The returned
-// PduIngestionResult mirrors what the federation handler will record:
-// `accepted` when state-res succeeded and `apply_resolved` returned true,
-// `rejected_state_conflict` otherwise.
-using ResolvedStateApplier = std::function<bool(std::vector<events::StateEventReference> const&)>;
-
-[[nodiscard]] auto apply_state_resolution_v2(PduStateConflictContext const& context,
-                                             ResolvedStateApplier const& apply_resolved) -> PduIngestionResult;
 
 enum class EduType : std::uint8_t
 {

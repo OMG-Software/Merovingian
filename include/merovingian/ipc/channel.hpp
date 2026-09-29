@@ -142,6 +142,18 @@ public:
     // Sends a one-way notification (no response expected). json_body: without "id"/"reply_to".
     auto send_notification(std::string_view json_body) -> void;
 
+    // Set the maximum number of in-flight requests this channel will accept from
+    // the peer. 0 means unbounded (the default). Must be called before start();
+    // changing it after start() is racy and is not supported.
+    auto set_max_in_flight(std::size_t cap) noexcept -> void;
+
+    // Try to acquire an in-flight slot. Returns false if the channel is already
+    // at max_in_flight. Must be paired with release_in_flight() on every path.
+    [[nodiscard]] auto try_acquire_in_flight() noexcept -> bool;
+
+    // Release a slot acquired by try_acquire_in_flight().
+    auto release_in_flight() noexcept -> void;
+
     [[nodiscard]] auto healthy() const noexcept -> bool;
 
     // Assembles a wire frame: {"id":N[,"reply_to":M][,<body fields>]}.
@@ -198,6 +210,12 @@ private:
     std::condition_variable dispatch_cv_{};
     std::deque<std::pair<std::uint64_t, std::string>> dispatch_queue_{};
     std::thread dispatch_thread_{};
+
+    // Per-channel cap on requests that have been received but not yet replied
+    // to. Enforced by the request handler (main-side WorkerPool), not by the
+    // channel itself, because the handler offloads real work to a thread pool.
+    std::size_t max_in_flight_{0U};
+    std::atomic<std::size_t> in_flight_{0U};
 };
 
 } // namespace merovingian::ipc

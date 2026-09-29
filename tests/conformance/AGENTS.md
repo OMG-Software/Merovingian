@@ -27,7 +27,6 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_canonicaljson_serializer.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | `test_client_server_conformance.cpp` | [Client-Server API](../../docs/matrix-v1.19-spec/client-server-api.md) |
 | `test_event_auth_rules.cpp` | [Auth Rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
-| `test_event_authorization.cpp` | [Auth Rules — Authorisation](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
 | `test_event_graph_conformance.cpp` | [SS API § Retrieving events](../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-events) (`/state/{roomId}`, `/state_ids/{roomId}`) · [§ Backfilling and retrieving missing events](../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) (`/backfill/{roomId}`) |
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.19-spec/client-server-api.md#forming-relationships-between-events) |
 | `test_events.cpp` | [SS API § Event Signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events) · [§ Content Hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
@@ -41,6 +40,8 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_notifications_conformance.cpp` | [CS API § Push Notifications](../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications) |
 | `test_outbound_delivery_conformance.cpp` | [SS API § Transactions](../../docs/matrix-v1.19-spec/server-server-api.md#transactions) · [§ EDUs](../../docs/matrix-v1.19-spec/server-server-api.md#edus) |
 | `test_pdu_format_conformance.cpp` | [SS API § PDUs](../../docs/matrix-v1.19-spec/server-server-api.md#pdus) |
+| `test_pdu_ingestion_conformance.cpp` | [SS API § Checks performed on receipt of a PDU](../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu) · [Room v12 § State resolution](../../docs/matrix-v1.19-spec/rooms/v12.md) (auth_events selection: m.room.create MUST NOT be selected) |
+| `test_pdu_signature_conformance.cpp` | [SS API § Validating hashes and signatures on received events](../../docs/matrix-v1.19-spec/server-server-api.md#validating-hashes-and-signatures-on-received-events) · [Room v5 § Signing key validity period](../../docs/matrix-v1.19-spec/rooms/v5.md) (key validity at `origin_server_ts`, 7-day cap) |
 | `test_presence_conformance.cpp` | [CS API § Presence](../../docs/matrix-v1.19-spec/client-server-api.md#presence) |
 | `test_push_notifications_conformance.cpp` | [CS API § Push Notifications](../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications) |
 | `test_read_markers_conformance.cpp` | [CS API § Read and unread markers](../../docs/matrix-v1.19-spec/client-server-api.md#read-and-unread-markers) |

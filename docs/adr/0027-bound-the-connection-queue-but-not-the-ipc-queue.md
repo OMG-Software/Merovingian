@@ -1,6 +1,6 @@
 # Bound the connection queue but not the IPC queue
 
-* Status: accepted
+* Status: superseded by ADR-0065 for the IPC pools only; the connection-queue half remains accepted
 * Date: 2026-09-06
 
 ## Context and Problem Statement

@@ -10,7 +10,6 @@ namespace merovingian::rooms
 
 enum class EventFormat : unsigned char
 {
-    room_v1_v2,
     room_v3_plus,
 };
 
@@ -30,8 +29,15 @@ enum class AuthRules : unsigned char
 
 enum class StateResolutionAlgorithm : unsigned char
 {
-    v1,
     v2,
+    // Room v12 (MSC4289/MSC4291): state resolution v2.1 — the iterative auth
+    // checks algorithm starts from an empty state map instead of the
+    // unconflicted state map, and the full conflicted set additionally
+    // includes the conflicted state subgraph.
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md — "State resolution"
+    // ("This state resolution algorithm is largely the same as the algorithm
+    // found in room version 2 with the following modifications").
+    v2_1,
 };
 
 enum class EventIdFormat : unsigned char
@@ -64,6 +70,35 @@ struct RoomVersionPolicy final
     // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md
     //       "Values in m.room.power_levels events must be integers"
     bool power_levels_require_integers{false};
+    // Which join rules the version's authorization rules define. A join rule
+    // a version does not define falls through to "Otherwise, reject".
+    //   knock            — rooms/v7.md: joins ("invite or knock") and the
+    //                      knock membership.
+    //   restricted       — rooms/v8.md: restricted joins via
+    //                      join_authorised_via_users_server.
+    //   knock_restricted — rooms/v10.md: joins ("restricted or
+    //                      knock_restricted") and knocks ("knock or
+    //                      knock_restricted").
+    bool knock_join_rule{false};
+    bool restricted_join_rule{false};
+    bool knock_restricted_join_rule{false};
+    // Redaction details finer than the RedactionRules buckets. The redacted
+    // form feeds the reference hash, so each must match the version exactly.
+    //   redaction_keeps_aliases — m.room.aliases keeps "aliases" (v1-v5;
+    //                             rooms/v6.md removed it).
+    //   redaction_keeps_join_authorisation — m.room.member keeps
+    //                             "join_authorised_via_users_server" (v9+;
+    //                             v8 keeps only "membership").
+    bool redaction_keeps_aliases{false};
+    bool redaction_keeps_join_authorisation{false};
+    // Room versions 1-4 ignore a signing key's valid_until_ts when checking an
+    // event's signatures. From v5 the key MUST still be valid at the event's
+    // origin_server_ts (rooms/v5.md, "Signing key validity period"). Off by
+    // default, so a version that forgets to set it enforces the check.
+    bool ignores_key_validity{false};
+    // Room v3 event IDs are the reference hash in standard Unpadded Base64
+    // (rooms/v3.md); v4 onwards use URL-safe base64 (rooms/v4.md).
+    bool event_id_url_safe_base64{true};
 };
 
 [[nodiscard]] auto known_room_versions() -> std::vector<RoomVersionPolicy>;

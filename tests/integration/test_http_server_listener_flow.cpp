@@ -4,6 +4,7 @@
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
@@ -113,16 +114,35 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
 }
 
 #if defined(__linux__)
-// Finds the server-side fd for a still-open accepted connection by matching
-// its peer port against `client_local_port` (the connecting client socket's
-// own local port, i.e. the port the server sees as its peer). There is no
-// production hook that exposes the accepted fd directly, so this scans the
-// process's own fd table — reliable as long as the connection is still open
-// when called, which the caller ensures by holding the request incomplete.
-// Linux-only: relies on /proc/self/fd, which isn't guaranteed on the
-// project's supported BSDs (see the SCENARIO below that uses this).
-[[nodiscard]] auto find_accepted_socket_fd(std::uint16_t client_local_port) -> int
+// Finds the server-side fd for the still-open connection `client_fd` made:
+// the socket whose local address is the client's peer and whose peer is the
+// client's local address, both address and port. Matching the port alone
+// found any socket in this process that happened to share it (a flake under
+// parallel load). There is no production hook that exposes the accepted fd directly, so this
+// scans the process's own fd table — reliable as long as the connection is
+// still open when called, which the caller ensures by holding the request
+// incomplete. Linux-only: relies on /proc/self/fd, which isn't guaranteed on
+// the project's supported BSDs (see the SCENARIO below that uses this).
+[[nodiscard]] auto find_accepted_socket_fd(int client_fd) -> int
 {
+    auto client_local = sockaddr_in{};
+    auto client_local_len = socklen_t{sizeof(client_local)};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::getsockname(client_fd, reinterpret_cast<sockaddr*>(&client_local), &client_local_len) != 0)
+    {
+        return -1;
+    }
+    auto client_peer = sockaddr_in{};
+    auto client_peer_len = socklen_t{sizeof(client_peer)};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::getpeername(client_fd, reinterpret_cast<sockaddr*>(&client_peer), &client_peer_len) != 0)
+    {
+        return -1;
+    }
+    auto const same_endpoint = [](sockaddr_in const& lhs, sockaddr_in const& rhs) {
+        return lhs.sin_family == AF_INET && rhs.sin_family == AF_INET && lhs.sin_port == rhs.sin_port &&
+               lhs.sin_addr.s_addr == rhs.sin_addr.s_addr;
+    };
     auto* dir = ::opendir("/proc/self/fd");
     if (dir == nullptr)
     {
@@ -141,14 +161,18 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
         {
             continue;
         }
+        auto local = sockaddr_in{};
+        auto local_len = socklen_t{sizeof(local)};
         auto peer = sockaddr_in{};
         auto peer_len = socklen_t{sizeof(peer)};
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        if (::getpeername(candidate, reinterpret_cast<sockaddr*>(&peer), &peer_len) != 0)
+        if (::getsockname(candidate, reinterpret_cast<sockaddr*>(&local), &local_len) != 0 ||
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            ::getpeername(candidate, reinterpret_cast<sockaddr*>(&peer), &peer_len) != 0)
         {
             continue;
         }
-        if (peer.sin_family == AF_INET && ntohs(peer.sin_port) == client_local_port)
+        if (same_endpoint(local, client_peer) && same_endpoint(peer, client_local))
         {
             found = candidate;
             break;
@@ -590,6 +614,12 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
                 }
             } server_thread_guard{shutdown, server_thread};
 
+            // Held open across the connect and the accept, then freed so the
+            // lookalike socket below lands on an fd number below the accepted
+            // one and the fd-table scan meets it first.
+            auto low_fd_reservation = merovingian::core::FileDescriptor{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+            REQUIRE(low_fd_reservation.valid());
+
             auto const client_fd = connect_loopback(port);
             REQUIRE(client_fd >= 0);
 
@@ -611,13 +641,48 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
             // to wait on directly.
             for (auto attempt = 0; attempt < 200 && accepted_fd < 0; ++attempt)
             {
-                accepted_fd = find_accepted_socket_fd(client_local_port);
+                accepted_fd = find_accepted_socket_fd(client_fd);
                 if (accepted_fd < 0)
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds{5});
                 }
             }
             REQUIRE(accepted_fd >= 0);
+
+            // A lookalike: another socket in this process, not close-on-exec,
+            // whose peer port equals the client's local port but on another
+            // loopback address. Under a parallel run any socket can look like
+            // this; a scan that matched on the peer port alone picked it up.
+            auto lookalike_listener =
+                merovingian::core::FileDescriptor{::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)};
+            REQUIRE(lookalike_listener.valid());
+            auto lookalike_address = sockaddr_in{};
+            lookalike_address.sin_family = AF_INET;
+            lookalike_address.sin_port = htons(client_local_port);
+            REQUIRE(::inet_pton(AF_INET, "127.0.0.2", &lookalike_address.sin_addr) == 1);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::bind(lookalike_listener.get(), reinterpret_cast<sockaddr const*>(&lookalike_address),
+                           sizeof(lookalike_address)) == 0);
+            REQUIRE(::listen(lookalike_listener.get(), 1) == 0);
+            low_fd_reservation.reset();
+            auto lookalike = merovingian::core::FileDescriptor{::socket(AF_INET, SOCK_STREAM, 0)};
+            REQUIRE(lookalike.valid());
+            REQUIRE(lookalike.get() < accepted_fd);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::connect(lookalike.get(), reinterpret_cast<sockaddr const*>(&lookalike_address),
+                              sizeof(lookalike_address)) == 0);
+
+            accepted_fd = find_accepted_socket_fd(client_fd);
+            REQUIRE(accepted_fd >= 0);
+
+            auto found_local = sockaddr_in{};
+            auto found_local_len = socklen_t{sizeof(found_local)};
+            auto found_peer = sockaddr_in{};
+            auto found_peer_len = socklen_t{sizeof(found_peer)};
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::getsockname(accepted_fd, reinterpret_cast<sockaddr*>(&found_local), &found_local_len) == 0);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::getpeername(accepted_fd, reinterpret_cast<sockaddr*>(&found_peer), &found_peer_len) == 0);
 
             auto const flags = ::fcntl(accepted_fd, F_GETFD, 0);
             REQUIRE(flags >= 0);
@@ -628,6 +693,14 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
             auto reader = PlainResponseReader{};
             std::ignore = receive_response(client_fd, reader);
             ::close(client_fd);
+
+            THEN("the socket inspected is the server's end of the client's connection")
+            {
+                REQUIRE(ntohs(found_local.sin_port) == port);
+                REQUIRE(found_local.sin_addr.s_addr == client_local.sin_addr.s_addr);
+                REQUIRE(ntohs(found_peer.sin_port) == client_local_port);
+                REQUIRE(found_peer.sin_addr.s_addr == client_local.sin_addr.s_addr);
+            }
 
             THEN("the accepted socket carries FD_CLOEXEC")
             {
@@ -685,18 +758,12 @@ SCENARIO("merovingian-server keeps accepted plain-HTTP sockets non-blocking",
             auto const client_fd = connect_loopback(port);
             REQUIRE(client_fd >= 0);
 
-            auto client_local = sockaddr_in{};
-            auto client_local_len = socklen_t{sizeof(client_local)};
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-            REQUIRE(::getsockname(client_fd, reinterpret_cast<sockaddr*>(&client_local), &client_local_len) == 0);
-            auto const client_local_port = ntohs(client_local.sin_port);
-
             REQUIRE(send_all(client_fd, "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n"));
 
             auto accepted_fd = -1;
             for (auto attempt = 0; attempt < 200 && accepted_fd < 0; ++attempt)
             {
-                accepted_fd = find_accepted_socket_fd(client_local_port);
+                accepted_fd = find_accepted_socket_fd(client_fd);
                 if (accepted_fd < 0)
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds{5});
@@ -930,7 +997,8 @@ SCENARIO("merovingian-server puts CORS headers on transport-layer error response
 
             auto const client_fd = connect_loopback(port);
             REQUIRE(client_fd >= 0);
-            auto oversized = std::string{"GET /_matrix/client/versions HTTP/1.1\r\nOrigin: https://app.example.com\r\n"};
+            auto oversized =
+                std::string{"GET /_matrix/client/versions HTTP/1.1\r\nOrigin: https://app.example.com\r\n"};
             // Never terminated: the head grows past the cap and the server
             // answers 413 without ever parsing a complete head.
             oversized.append("X-Filler: ");
@@ -1872,11 +1940,12 @@ SCENARIO("a TLS read returns on its deadline when the peer sends an incomplete r
                 {
                     return;
                 }
+                // Owns the accepted descriptor: TlsConnection only borrows it.
+                auto const owned_accepted = merovingian::core::SocketHandle{accepted};
                 auto accepted_result =
                     merovingian::homeserver::accept_tls_connection(*tls_context.context, accepted, io_timeout_ms);
                 if (!accepted_result.ok())
                 {
-                    ::close(accepted);
                     return;
                 }
                 handshake_ok = true;
@@ -1940,6 +2009,360 @@ SCENARIO("a TLS read returns on its deadline when the peer sends an incomplete r
                 // waiting for the rest of the record at all.
                 REQUIRE(second_read_ms >= 500);
                 REQUIRE(second_read_ms < 8000);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// 0.12.13 audit item 1 (ADR-0072): per-IP connection cap at accept time.
+
+enum class SourceConnect : std::uint8_t
+{
+    connected,
+    source_unavailable,
+    failed,
+};
+
+// Connects to 127.0.0.1:port from `source`, another loopback address. Linux
+// routes all of 127.0.0.0/8 to lo; a host without the alias reports
+// source_unavailable, which is the one precondition a scenario may skip on.
+[[nodiscard]] auto connect_from(char const* source, std::uint16_t port) -> std::pair<SourceConnect, int>
+{
+    auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+    {
+        return {SourceConnect::failed, -1};
+    }
+    auto local = sockaddr_in{};
+    local.sin_family = AF_INET;
+    local.sin_port = 0U;
+    if (::inet_pton(AF_INET, source, &local.sin_addr) != 1)
+    {
+        ::close(fd);
+        return {SourceConnect::failed, -1};
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::bind(fd, reinterpret_cast<sockaddr const*>(&local), sizeof(local)) != 0)
+    {
+        auto const unavailable = errno == EADDRNOTAVAIL;
+        ::close(fd);
+        return {unavailable ? SourceConnect::source_unavailable : SourceConnect::failed, -1};
+    }
+    auto remote = sockaddr_in{};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons(port);
+    remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::connect(fd, reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)) != 0)
+    {
+        ::close(fd);
+        return {SourceConnect::failed, -1};
+    }
+    return {SourceConnect::connected, fd};
+}
+
+// Sends one keep-alive request and returns the response ("" if the server
+// closed the connection without answering). A refused connection may already
+// be closed, so a failed send is not an error here.
+[[nodiscard]] auto request_on(int fd) -> std::string
+{
+    std::ignore = send_all(fd, "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    auto reader = PlainResponseReader{};
+    return receive_response(fd, reader);
+}
+
+// True when the server closes the connection within `wait` without being sent
+// anything: what a refused connection sees. An admitted one is still waiting
+// for the request (or the TLS handshake).
+[[nodiscard]] auto closed_by_server_within(int fd, std::chrono::milliseconds wait) -> bool
+{
+    auto timeout = timeval{};
+    timeout.tv_sec = static_cast<decltype(timeout.tv_sec)>(wait.count() / 1000);
+    timeout.tv_usec = static_cast<decltype(timeout.tv_usec)>((wait.count() % 1000) * 1000);
+    std::ignore = ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    auto byte = std::array<char, 1U>{};
+    auto const received = ::recv(fd, byte.data(), byte.size(), 0);
+    return received == 0 || (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+}
+
+// Stops the listener on every exit from a scenario, including a SKIP or a
+// failed REQUIRE: destroying a joinable std::thread would abort the binary.
+// ShutdownSignal::fire and ThreadPool::request_stop are both idempotent.
+class ServerStop final
+{
+public:
+    ServerStop(merovingian::net::ShutdownSignal& shutdown, std::thread& thread,
+               merovingian::net::ThreadPool& pool) noexcept
+        : m_shutdown{shutdown}
+        , m_thread{thread}
+        , m_pool{pool}
+    {
+    }
+    ServerStop(ServerStop const&) = delete;
+    auto operator=(ServerStop const&) -> ServerStop& = delete;
+    ServerStop(ServerStop&&) = delete;
+    auto operator=(ServerStop&&) -> ServerStop& = delete;
+    ~ServerStop()
+    {
+        m_shutdown.fire();
+        if (m_thread.joinable())
+        {
+            m_thread.join();
+        }
+        m_pool.request_stop();
+    }
+
+private:
+    merovingian::net::ShutdownSignal& m_shutdown;
+    std::thread& m_thread;
+    merovingian::net::ThreadPool& m_pool;
+};
+
+// Polls until `predicate` holds or `limit` passes; releasing a slot happens on
+// the server's worker thread once it sees the client's close.
+template <typename Predicate>
+[[nodiscard]] auto eventually(Predicate predicate, std::chrono::milliseconds limit) -> bool
+{
+    auto const deadline = std::chrono::steady_clock::now() + limit;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        if (predicate())
+        {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+    return predicate();
+}
+
+} // namespace
+
+SCENARIO("merovingian-server caps the connections one client address may hold open",
+         "[homeserver][http][listener][integration][security][connection_limit]")
+{
+    GIVEN("a plain-HTTP listener with a per-IP cap of two")
+    {
+        auto config = registration_enabled_config();
+        config.server().http.max_connections_per_ip = 2U;
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        // Declared after the runtime so it is destroyed first; see the
+        // keep-alive cap scenario above.
+        auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{8U};
+
+        WHEN("one address holds two connections open and tries a third, while another address connects")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+            auto const stop = ServerStop{shutdown, server_thread, pool};
+
+            // Each held connection completes one keep-alive request and is
+            // then parked by the server, still open and still counted.
+            auto const first_fd = connect_loopback(port);
+            auto const second_fd = connect_loopback(port);
+            REQUIRE(first_fd >= 0);
+            REQUIRE(second_fd >= 0);
+            auto const first_response = request_on(first_fd);
+            auto const second_response = request_on(second_fd);
+
+            auto const third_fd = connect_loopback(port);
+            REQUIRE(third_fd >= 0);
+            auto const third_response = request_on(third_fd);
+            ::close(third_fd);
+
+            auto const [other_status, other_fd] = connect_from("127.0.0.2", port);
+            if (other_status == SourceConnect::source_unavailable)
+            {
+                SKIP("127.0.0.2 is not a local address on this host");
+            }
+            REQUIRE(other_status == SourceConnect::connected);
+            auto const other_response = request_on(other_fd);
+            ::close(other_fd);
+
+            auto const held_count = runtime.connection_limiter->active("127.0.0.1");
+
+            // Closing a held connection frees its slot for the next one.
+            ::close(first_fd);
+            auto fourth_response = std::string{};
+            auto const fourth_admitted = eventually(
+                [&]() {
+                    auto const fd = connect_loopback(port);
+                    if (fd < 0)
+                    {
+                        return false;
+                    }
+                    fourth_response = request_on(fd);
+                    ::close(fd);
+                    return fourth_response.starts_with("HTTP/1.1 ");
+                },
+                std::chrono::milliseconds{5000});
+
+            ::close(second_fd);
+            auto const all_released = eventually(
+                [&]() {
+                    return runtime.connection_limiter->tracked_keys() == 0U;
+                },
+                std::chrono::milliseconds{5000});
+
+            shutdown.fire();
+            server_thread.join();
+            pool.request_stop();
+
+            THEN("the two held connections were served")
+            {
+                REQUIRE(first_response.starts_with("HTTP/1.1 "));
+                REQUIRE(second_response.starts_with("HTTP/1.1 "));
+            }
+
+            THEN("the third connection from the same address was closed without a response")
+            {
+                INFO("third response: " << third_response);
+                REQUIRE(third_response.empty());
+                REQUIRE(held_count == 2U);
+            }
+
+            THEN("the other address was served")
+            {
+                REQUIRE(other_response.starts_with("HTTP/1.1 "));
+            }
+
+            THEN("closing a held connection let a new one in, and closing all released every slot")
+            {
+                REQUIRE(fourth_admitted);
+                REQUIRE(all_released);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server does not cap connections from a trusted reverse proxy",
+         "[homeserver][http][listener][integration][connection_limit]")
+{
+    GIVEN("a per-IP cap of one and 127.0.0.3 configured as a trusted proxy")
+    {
+        auto config = registration_enabled_config();
+        config.server().http.max_connections_per_ip = 1U;
+        config.server().trusted_proxies = {"127.0.0.3"};
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{8U};
+
+        WHEN("the proxy holds one connection open and opens another")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+            auto const stop = ServerStop{shutdown, server_thread, pool};
+
+            auto const [first_status, first_fd] = connect_from("127.0.0.3", port);
+            if (first_status == SourceConnect::source_unavailable)
+            {
+                SKIP("127.0.0.3 is not a local address on this host");
+            }
+            REQUIRE(first_status == SourceConnect::connected);
+            auto const first_response = request_on(first_fd);
+            auto const [second_status, second_fd] = connect_from("127.0.0.3", port);
+            REQUIRE(second_status == SourceConnect::connected);
+            auto const second_response = request_on(second_fd);
+            ::close(first_fd);
+            ::close(second_fd);
+
+            shutdown.fire();
+            server_thread.join();
+            pool.request_stop();
+
+            THEN("both are served and no slot is counted for the proxy")
+            {
+                REQUIRE(first_response.starts_with("HTTP/1.1 "));
+                REQUIRE(second_response.starts_with("HTTP/1.1 "));
+                REQUIRE(runtime.connection_limiter->active("127.0.0.3") == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server caps connections per address on a TLS listener before the handshake",
+         "[homeserver][http][listener][tls][integration][security][connection_limit]")
+{
+    GIVEN("a TLS listener with a per-IP cap of one")
+    {
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+
+        auto config = registration_enabled_config();
+        config.server().http.max_connections_per_ip = 1U;
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{8U};
+
+        WHEN("one address holds a connection in the handshake and opens a second")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_tls_http(*tls_context.context, acceptor, runtime, shutdown, stats,
+                                                        merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+            auto const stop = ServerStop{shutdown, server_thread, pool};
+
+            auto const held_fd = connect_loopback(port);
+            REQUIRE(held_fd >= 0);
+            // The server now waits for this connection's ClientHello.
+            std::this_thread::sleep_for(std::chrono::milliseconds{200});
+            auto const second_fd = connect_loopback(port);
+            REQUIRE(second_fd >= 0);
+            auto const second_refused = closed_by_server_within(second_fd, std::chrono::milliseconds{2000});
+            auto const held_still_open = !closed_by_server_within(held_fd, std::chrono::milliseconds{200});
+            ::close(second_fd);
+            ::close(held_fd);
+            auto const all_released = eventually(
+                [&]() {
+                    return runtime.connection_limiter->tracked_keys() == 0U;
+                },
+                std::chrono::milliseconds{20000});
+
+            shutdown.fire();
+            server_thread.join();
+            pool.request_stop();
+
+            THEN("the second is closed at once, the held one stays open, and closing it released its slot")
+            {
+                REQUIRE(second_refused);
+                REQUIRE(held_still_open);
+                REQUIRE(all_released);
             }
         }
     }

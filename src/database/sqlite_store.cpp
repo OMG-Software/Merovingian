@@ -325,8 +325,7 @@ namespace
     // cannot change between the check and the apply.
     [[nodiscard]] auto migration_step_already_applied(sqlite3& connection, MigrationStep const& step) -> bool
     {
-        auto statement =
-            prepare(connection, "SELECT direction FROM schema_migrations WHERE version = ?1");
+        auto statement = prepare(connection, "SELECT direction FROM schema_migrations WHERE version = ?1");
         if (!statement.has_value())
         {
             return false;
@@ -456,8 +455,7 @@ namespace
 
     auto load_persistent_rows(sqlite3& connection, PersistentStore& store) -> bool
     {
-        return load_rows(connection,
-                         "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
+        return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
                          [&store](sqlite3_stmt& row) {
                              store.users.push_back(
                                  {column_text(row, 0), column_text(row, 1), text_is_true(column_text(row, 2)),
@@ -468,17 +466,23 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.devices.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
-               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked, expires_at FROM access_tokens",
+               load_rows(connection,
+                         "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_refresh_hash "
+                         "FROM access_tokens",
                          [&store](sqlite3_stmt& row) {
                              store.access_tokens.push_back({column_text(row, 0), column_text(row, 1),
                                                             column_text(row, 2), text_is_true(column_text(row, 3)),
-                                                            parse_expires_at(column_text(row, 4))});
+                                                            parse_expires_at(column_text(row, 4)),
+                                                            column_text(row, 5)});
                          }) &&
-               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked, expires_at FROM refresh_tokens",
+               load_rows(connection,
+                         "SELECT user_id, device_id, token_hash, revoked, expires_at, predecessor_hash "
+                         "FROM refresh_tokens",
                          [&store](sqlite3_stmt& row) {
                              store.refresh_tokens.push_back({column_text(row, 0), column_text(row, 1),
                                                              column_text(row, 2), text_is_true(column_text(row, 3)),
-                                                             parse_expires_at(column_text(row, 4))});
+                                                             parse_expires_at(column_text(row, 4)),
+                                                             column_text(row, 5)});
                          }) &&
                load_rows(connection,
                          "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM server_signing_keys",
@@ -525,11 +529,16 @@ namespace
                                                       parse_u64(column_text(row, 6))});
                          }) &&
                load_rows(connection,
-                         "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events",
+                         "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status FROM events",
                          [&store](sqlite3_stmt& row) {
-                             store.events.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                     column_text(row, 3), parse_u64(column_text(row, 4)),
-                                                     parse_u64(column_text(row, 5))});
+                             auto event = PersistentEvent{column_text(row, 0),
+                                                          column_text(row, 1),
+                                                          column_text(row, 2),
+                                                          column_text(row, 3),
+                                                          parse_u64(column_text(row, 4)),
+                                                          parse_u64(column_text(row, 5))};
+                             event.status = column_text(row, 6);
+                             store.events.push_back(std::move(event));
                          }) &&
                load_rows(connection, "SELECT event_id, prev_event_id FROM event_edges",
                          [&store](sqlite3_stmt& row) {
@@ -596,12 +605,13 @@ namespace
                load_rows(
                    connection,
                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, quarantined, "
-                   "removed FROM media",
+                   "removed, legacy_endpoint_visible FROM media",
                    [&store](sqlite3_stmt& row) {
                        store.local_media.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                                     parse_u64(column_text(row, 3)), column_text(row, 4),
                                                     column_text(row, 5), text_is_true(column_text(row, 6)),
-                                                    text_is_true(column_text(row, 7))});
+                                                    text_is_true(column_text(row, 7)),
+                                                    text_is_true(column_text(row, 8))});
                    }) &&
                load_rows(connection,
                          "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs",
@@ -804,7 +814,31 @@ namespace
                              entry.pending_txn_id = parse_u64(column_text(row, 3));
                              entry.pending_stream_ordering = parse_u64(column_text(row, 4));
                              store.appservice_txn_cursors.push_back(std::move(entry));
-                         });
+                         }) &&
+               load_rows(connection,
+                         "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentStateGroup entry{};
+                             entry.state_group_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             auto const parent_text = column_text(row, 2);
+                             entry.parent_state_group_id =
+                                 parent_text.empty() ? std::nullopt : std::optional<std::string>{parent_text};
+                             entry.delta_depth = static_cast<std::uint32_t>(parse_u64(column_text(row, 3)));
+                             store.state_groups.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT state_group_id, event_type, state_key, event_id FROM state_group_state",
+                         [&store](sqlite3_stmt& row) {
+                             store.state_group_state.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, state_group_id FROM event_state_groups",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_state_groups.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection, "SELECT room_id, event_id FROM forward_extremities", [&store](sqlite3_stmt& row) {
+                   store.forward_extremities.push_back({column_text(row, 0), column_text(row, 1)});
+               });
     }
 
     [[nodiscard]] auto bind_text_params(sqlite3_stmt& statement, std::vector<std::string> const& params) -> bool
@@ -891,13 +925,17 @@ namespace
                                                                    parse_u64(column_text(row, 6))});
                                    });
         ok = ok && load_rows_bound(connection,
-                                   "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM "
-                                   "events WHERE room_id = ?1",
+                                   "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status "
+                                   "FROM events WHERE room_id = ?1",
                                    {room_id_str}, [&](sqlite3_stmt& row) {
-                                       snapshot.events.push_back({column_text(row, 0), column_text(row, 1),
-                                                                  column_text(row, 2), column_text(row, 3),
-                                                                  parse_u64(column_text(row, 4)),
-                                                                  parse_u64(column_text(row, 5))});
+                                       auto event = PersistentEvent{column_text(row, 0),
+                                                                    column_text(row, 1),
+                                                                    column_text(row, 2),
+                                                                    column_text(row, 3),
+                                                                    parse_u64(column_text(row, 4)),
+                                                                    parse_u64(column_text(row, 5))};
+                                       event.status = column_text(row, 6);
+                                       snapshot.events.push_back(std::move(event));
                                    });
         ok = ok && load_rows_bound(connection,
                                    "SELECT room_id, event_type, state_key, event_id FROM current_state WHERE "
@@ -1148,7 +1186,8 @@ namespace detail
     {
         if (store.backend == PersistentStoreBackend::postgresql)
         {
-            return load_room_snapshot_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role, room_id);
+            return load_room_snapshot_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role,
+                                                      room_id);
         }
         if (store.backend != PersistentStoreBackend::sqlite)
         {

@@ -3,49 +3,49 @@
 This document describes the hardening defences Merovingian applies at build
 _time_, at startup, and while serving traffic. It covers defences that are
 cross_platform_ and defences that are _platform_specific_ (Linux, FreeBSD,
-NetBSD, OpenBSD, and the portable/service_manager profile).
+NetBSD, OpenBSD, and the portable/service-manager profile).
 
 For open hardening work and production-gating status, see
 [`todos/capability-gaps.md`](todos/capability-gaps.md).
 
-## Cross_platform defences
+## Cross-platform defences
 
 These defences are present on every supported platform, either inside the
-binary or in the service_manager configuration that ships with the packages.
+binary or in the service-manager configuration that ships with the packages.
 
-### Build_time toolchain hardening
+### Build-time toolchain hardening
 
-`meson.build` adds the following compile_and_link hardening whenever
+`meson.build` adds the following compile-and-link hardening whenever
 `-Dhardening=true` is set (the default for packages):
 
 | Defence | Where it lives | Notes |
 | --- | --- | --- |
 | Stack protector | `hardening_compile_flags` (`-fstack-protector-strong`) | Compiler inserts stack canaries. |
 | Stack clash protection | `hardening_compile_flags` (`-fstack-clash-protection`) | Guards against stack clash attacks. |
-| Control_flow protection | `hardening_compile_flags` (`-fcf-protection=full`) | CET/IBT on x86_64. |
+| Control-flow protection | `hardening_compile_flags` (`-fcf-protection=full`) | CET/IBT on x86_64. |
 | FORTIFY_SOURCE | `hardening_compile_flags` (`-D_FORTIFY_SOURCE=3`) when `optimization != '0'` | Checked libc wrappers. |
 | Hidden visibility | `hardening_compile_flags` (`-fvisibility=hidden`) | Limits ELF symbol exposure. |
-| Trivial auto_var init | `hardening_compile_flags` (`-ftrivial-auto-var-init=zero`) | Uninitialised locals are zeroed. |
-| Position_independent executable | `hardening_compile_flags` (`-fPIE`) and link args (`-pie`) | Enables ASLR. |
-| No_exec stack | `hardening_link_flags` (`-Wl,-z,noexecstack`) | ELF GNU_STACK note is non_executable. |
+| Trivial auto-var init | `hardening_compile_flags` (`-ftrivial-auto-var-init=zero`) | Uninitialised locals are zeroed. |
+| Position-independent executable | `hardening_compile_flags` (`-fPIE`) and link args (`-pie`) | Enables ASLR. |
+| No-exec stack | `hardening_link_flags` (`-Wl,-z,noexecstack`) | ELF GNU_STACK note is non-executable. |
 | RELRO + BIND_NOW | `hardening_link_flags` (`-Wl,-z,relro -Wl,-z,now`) on GNU/Linux | Full RELRO; dynamic relocations resolved at load time. |
-| Static PIE fallback | `scripts/build-static-linux.sh` (`-static-pie`) | Fully static, position_independent musl build for Linux. |
+| Static PIE fallback | `scripts/build-static-linux.sh` (`-static-pie`) | Fully static, position-independent musl build for Linux. |
 
-The startup hardening self_check probes the same flags at runtime:
+The startup hardening self-check probes the same flags at runtime:
 
 * `compiler hardening` checks for `__SSP__`/`__SSP_STRONG__`/`__SSP_ALL__`,
   `_FORTIFY_SOURCE > 0`, and `__PIE__`/`__pie__`.
 * `linker hardening`, `PIE`, and `RELRO` parse `/proc/self/exe` on Linux to
   confirm `PT_GNU_RELRO`, `DT_BIND_NOW`, and `PT_GNU_STACK` without `PF_X`.
-  Static or non_ELF builds report `unknown` rather than `disabled`.
+  Static or non-ELF builds report `unknown` rather than `disabled`.
 
 ### C++ memory and type safety
 
-The project uses C++26 with strict rules that reduce memory_safety bugs:
+The project uses C++26 with strict rules that reduce memory-safety bugs:
 
 * RAII everywhere; no raw `new`/`delete`, `malloc`/`free`.
 * Smart pointers for dynamic ownership; references preferred over pointers.
-* `core::FileDescriptor` is a move_only RAII wrapper that closes its fd on
+* `core::FileDescriptor` is a move-only RAII wrapper that closes its fd on
   destruction and provides `set_cloexec()`.
 * `core::SecretBuffer` holds signing-key material mlocked via `sodium_mlock`
   on construction and wiped on destruction with `sodium_munlock` (which
@@ -53,31 +53,31 @@ The project uses C++26 with strict rules that reduce memory_safety bugs:
   elide, unlike the prior `std::ranges::fill` dead store). Custom move-ctor
   and move-assign transfer the mlock to the destination and wipe the source,
   so the secret is never duplicated and never left pinned in a moved-from
-  object. It is move_only and non_copyable. `src/core` links libsodium.
+  object. It is move-only and non-copyable. `src/core` links libsodium.
 
 ### Cryptographic boundary
 
 All cryptography is delegated to libsodium. The project does not implement its
 own primitives.
 
-* `sodium_init()` is wrapped in per_module `static` `sodium_is_ready()` helpers
+* `sodium_init()` is wrapped in per-module `static` `sodium_is_ready()` helpers
   so it is called once and failures are checked (`src/events/event_signer.cpp`,
   `src/homeserver/auth_service.cpp`, `src/crypto/secret_box.cpp`, etc.).
 * Passwords and the registration token are hashed with Argon2id
   (`crypto_pwhash_str` / `crypto_pwhash_str_verify`).
-* Access_token HMAC and signing_secret encryption keys are derived from the
-  operator's master key with domain_separated libsodium generic hashes
+* Access-token HMAC and signing-secret encryption keys are derived from the
+  operator's master key with domain-separated libsodium generic hashes
   (`crypto_generichash`).
 * The Ed25519 server signing secret is stored encrypted at rest via
   `crypto::secret_box_encrypt` (XSalsa20-Poly1305 with a random nonce).
-* Constant_time comparison for fixed_size values uses `sodium_memcmp`. Variable
-  length secrets are compared by hashing both inputs with a domain_separated
-  `crypto_generichash` context and then comparing the fixed_size digests with
+* Constant-time comparison for fixed-size values uses `sodium_memcmp`. Variable
+  length secrets are compared by hashing both inputs with a domain-separated
+  `crypto_generichash` context and then comparing the fixed-size digests with
   `sodium_memcmp`, so the comparison does not leak the secret length.
-* Short_lived plaintext secrets are pinned while in use with `sodium_mlock` /
+* Short-lived plaintext secrets are pinned while in use with `sodium_mlock` /
   `sodium_munlock` and overwritten with zeros before release
-  (`src/homeserver/auth_service.cpp` registration_token handling).
-* The seccomp_bpf allowlist permits `mlock`, `munlock`, `mlockall`,
+  (`src/homeserver/auth_service.cpp` registration-token handling).
+* The seccomp-bpf allowlist permits `mlock`, `munlock`, `mlockall`,
   `munlockall`, and `getrandom` so libsodium can lock pages and fetch entropy.
 
 ### Configuration and secret file permissions
@@ -89,11 +89,15 @@ POSIX metadata:
 * Configuration and TLS certificate files must be regular files without group
   or other write or any execute bit (`is_secure_config_file`).
 * Secret files (master key, TLS private key, registration token) must be
-  regular owner_read_only, non_executable files with no group/other access
+  regular owner-read-only, non-executable files with no group/other access
   (`is_secure_secret_file`). Until 0.12.5 the predicate did not actually check
   `owner_write`, so `0600` was accepted despite this line; it now enforces what
   it documents, and operators upgrading from an earlier release need a one-time
   `chmod 0400` on each secret file (see `docs/user-manual.md`).
+* `security.secrets.master_key_file` was added to the startup metadata check in
+  0.12.13. Before then the file was opened with a plain `std::ifstream` without
+  an ownership, symlink, or file-kind check, so a group/world-readable or
+  swapped-in master key was silently accepted.
 
 - **Core-dump policy.** `setrlimit(RLIMIT_CORE, 0)` *and*, on Linux,
   `prctl(PR_SET_DUMPABLE, 0)` must both succeed. The prctl result was discarded
@@ -167,15 +171,15 @@ identical to an existing one. See
 
 ### Signal handling and graceful shutdown
 
-`src/net/shutdown_signal.cpp` installs a self_pipe and SIGINT/SIGTERM handlers.
-The handler does only signal_safe work: it writes one byte to the pipe and sets
+`src/net/shutdown_signal.cpp` installs a self-pipe and SIGINT/SIGTERM handlers.
+The handler does only signal-safe work: it writes one byte to the pipe and sets
 an atomic flag. The main thread unblocks `poll()` and initiates clean shutdown.
-`SIGPIPE` is ignored so a worker that dies mid_request cannot terminate the
+`SIGPIPE` is ignored so a worker that dies mid-request cannot terminate the
 parent.
 
-### Out_of_process thumbnail worker sandbox
+### Out-of-process thumbnail worker sandbox
 
-The main server **never** decodes untrusted image bytes in_process. It spawns
+The main server **never** decodes untrusted image bytes in-process. It spawns
 `merovingian-thumbnail-worker` via `fork()`/`execv()` (`src/media/thumbnailer.cpp`
 and `src/media/thumbnail_worker_main.cpp`):
 
@@ -192,40 +196,148 @@ and `src/media/thumbnail_worker_main.cpp`):
   * falls back to a capped `fcntl(F_GETFD)` scan of at most 1024 descriptors.
 * Before `execv()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
   so a compromised worker cannot escalate through setuid/setcap helpers.
-* Inside the worker, `harden()` clamps resources:
+* Inside the worker, `main()` calls `media::apply_decoder_hardening()`
+  (`include/merovingian/media/decoder_hardening.hpp`,
+  `src/media/decoder_hardening.cpp`) **before reading a single byte of
+  stdin**, and it is fail-closed (0.12.13 audit fix): the sequence clamps
+  resources, then installs the platform sandbox, and if any applicable
+  control fails the worker prints the failed control's name to stderr and
+  exits `1` without ever reading its input or invoking libpng/libjpeg-turbo.
+  Before 0.12.13, `harden()` discarded every hardening call's result with
+  `std::ignore`, so a sandbox that failed to install still let the worker
+  decode attacker-controlled bytes completely unconfined, silently. The
+  parent (`src/media/thumbnailer.cpp`) already treats a worker that exits
+  before producing output as a normal failed-thumbnail response (malformed/
+  empty worker response → HTTP 502), so this fails closed without any
+  parent-side change.
   * `RLIMIT_CPU` = 15 s in production release builds, 60 s in non-release builds, 120 s under sanitizers (ASan/UBSan/TSan are slow on CI QEMU);
   * `RLIMIT_FSIZE` = 64 MiB;
   * `RLIMIT_CORE` = 0;
   * `RLIMIT_NOFILE` = 16;
   * `RLIMIT_AS` = 768 MiB in production builds (skipped under sanitizers);
+    OpenBSD has no `RLIMIT_AS`, so there the same cap is `RLIMIT_DATA`, which
+    on OpenBSD also bounds anonymous `mmap` (how its `malloc` allocates);
   * `platform::apply_decoder_seccomp_filter()` is installed in production
     builds (skipped under sanitizers) — the decoder's own allowlist, not the
     general server filter and not `apply_worker_seccomp_filter()`; see
     "Thumbnail worker sandbox" above and
     [ADR-0053](adr/0053-the-thumbnail-decoder-gets-its-own-syscall-profile.md).
+  * Each control's syscall is behind an injectable function table
+    (`DecoderHardeningOps`) so `tests/unit/test_media_decoder_hardening.cpp`
+    can assert the fail-closed sequencing and the failed-control name for
+    every control without actually installing a broken sandbox in the test
+    process.
 * The worker rejects images whose width or height exceeds 4096 and whose pixel
   count exceeds the request's `max_pixels`.
 
-### Out_of_process federation worker IPC security
+### Out-of-process federation worker IPC security
 
-When `federation.worker.enabled=true`, `merovingian-server` spawns
-`merovingian-fed-worker` and communicates through an `AF_UNIX SOCK_STREAM`
-socket pair created with `SOCK_CLOEXEC` before the child is spawned via
-`posix_spawn`. The worker inherits the client fd at file descriptor 3 only;
-every other inherited fd is closed by the `posix_spawn` file actions.
+When federation is enabled, `merovingian-server` spawns `merovingian-fed-worker`
+and communicates through an `AF_UNIX SOCK_STREAM` socket pair created with
+`SOCK_CLOEXEC` before the child is spawned via `posix_spawn`. The worker
+inherits the client fd at file descriptor 3 (`--ipc-fd`), the read end of a
+one-shot pipe carrying the IPC auth key at file descriptor 4 (`--ipc-key-fd`,
+see below), and — when `database.backend=postgresql` and a separate worker
+database role applies (ADR-0062 part 2, see below) — the read end of a third
+one-shot pipe carrying that role's connection URI at file descriptor 5
+(`--db-uri-fd`). All three are placed by `posix_spawn_file_actions_adddup2`,
+which clears `FD_CLOEXEC` only on the child's copies. Every other fd is
+`FD_CLOEXEC` and does not survive the exec. None of the three sources is
+allowed to sit on fd 3, 4 or 5 in main: when one does (for example the socket
+pair returns fds 0 and 3 because main runs with stdin closed),
+`make_worker_ipc_socketpair` and `make_worker_secret_pipe` first move it past
+fd 5 with `F_DUPFD_CLOEXEC`. A source already on its own target would make
+the `adddup2` a same-fd `dup2`, which some libcs treat as a no-op that leaves
+`FD_CLOEXEC` set, and the worker would start without that fd; a source on
+another target would be overwritten before its own `dup2` ran.
 
 The channel is hardened against a local attacker who gains access to a
 separate process on the same host:
 
-* **Authenticated ephemeral encryption** (#318): every session uses a fresh
-  `crypto_kx_keypair` pair and `crypto_secretstream_xchacha20poly1305` AEAD, and
-  the key exchange itself is authenticated — both processes derive the same
-  32-byte IPC auth key from the operator master-key file (domain-separated label
-  `merovingian:ipc-channel-auth:1`) and MAC each other's ephemeral public keys
-  (and role) with `crypto_auth` before deriving session keys. A local process
-  that reaches the inherited fd without the master key cannot complete the
-  handshake or inject AEAD frames. The session keys are never stored or logged;
-  a captured IPC stream is useless after the session ends.
+* **Authenticated ephemeral encryption** (#318, key handoff redesigned
+  0.12.13 finding N1 / [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)):
+  every session uses a fresh `crypto_kx_keypair` pair and
+  `crypto_secretstream_xchacha20poly1305` AEAD, and the key exchange itself is
+  authenticated — both processes MAC each other's ephemeral public keys (and
+  role) with `crypto_auth`, keyed by the same 32-byte IPC auth key, before
+  deriving session keys. Through 0.12.12 both processes independently derived
+  that key from the operator master-key file (domain-separated label
+  `merovingian:ipc-channel-auth:1`), which meant the worker opened the master
+  key file itself. As of 0.12.13 **only main ever opens that file**: `WorkerPool`
+  derives the auth key once (`crypto::derive_ipc_auth_key`) and
+  `WorkerSupervisor::spawn_and_connect` writes exactly those 32 bytes into a
+  `pipe2(O_CLOEXEC)` pipe and closes its own write end
+  (`make_worker_key_pipe`). The read end stays `FD_CLOEXEC` in main — clearing
+  it in the multithreaded parent would let a concurrent spawn inherit the key —
+  and an `adddup2` file action places it at fd 4 in the child only
+  (`--ipc-key-fd 4`). The worker
+  (`federation_worker::read_ipc_auth_key`) reads exactly that many bytes,
+  requires EOF immediately after (rejecting a short or long write as
+  fail-closed rather than silently truncating or padding), and closes the fd.
+  A local process that reaches the inherited ipc-fd without a valid key on the
+  key-fd cannot complete the handshake or inject AEAD frames. The session keys
+  are never stored or logged; a captured IPC stream is useless after the
+  session ends.
+* **The worker's own config copy cannot reopen the master key file either**:
+  immediately after the key-fd read succeeds, `WorkerEventLoop::run()` calls
+  `federation_worker::clear_master_key_file()`, which empties
+  `security.secrets.master_key_file` on the worker's in-memory `config::Config`
+  before `homeserver::start_runtime()` is ever called — so no runtime code
+  path reachable inside the worker, today or added later, has a path string to
+  pass to `crypto::load_master_key_material`. See docs/threat-model.md,
+  "Operator master key reachable from the federation worker" — part 3 (Linux
+  Landlock, below) closes the filesystem-level residual gap this entry used
+  to record.
+* **A separate, least-privilege database login, delivered the same way**
+  (ADR-0062 part 2): when `database.backend=postgresql`,
+  `WorkerPool::WorkerPool` reads `federation.worker.database_uri_file` once
+  (same owner-only-file validation as `database.uri_file`) and hands each
+  `WorkerSupervisor` its own `core::SecretBuffer` copy of the bytes.
+  `spawn_and_connect` creates a third `pipe2(O_CLOEXEC)` pipe
+  (`homeserver::make_worker_db_uri_pipe`, a generalization of
+  `make_worker_key_pipe` that keeps the read end off all three fixed child fd
+  numbers), writes the URI, and adds a third `adddup2` onto fd 5
+  (`homeserver::kWorkerDbUriFd`, `--db-uri-fd 5`) — again only when a separate
+  URI actually applies; a SQLite backend or the
+  `allow_shared_database_credentials=true` opt-out means neither the flag nor
+  the pipe exist at all. The worker (`federation_worker::
+  read_worker_database_uri`) reads until EOF (bounded to 4096 bytes, unlike
+  the fixed-length auth key), rejects an empty or oversized result, and
+  `federation_worker::apply_worker_database_uri` sets the delivered URI as the
+  worker's own connection override while clearing `database.uri_file`,
+  `runtime_role`, and `migration_role` on its config copy — so the worker
+  never has a path to main's credentials file and never attempts a `SET ROLE`
+  onto a role it was never granted membership of.
+* **Linux Landlock filesystem restriction (ADR-0062 part 3):**
+  `federation_worker::main()` calls `platform::apply_worker_landlock()`
+  immediately before the worker seccomp filter below (Landlock's three
+  syscalls are not on that filter's allowlist — applying Landlock first
+  avoids adding a startup-only capability to it permanently) and before the
+  event loop opens the database or handles any inbound request. It queries
+  the kernel's Landlock ABI version, builds a rights mask downgraded to
+  whatever that ABI supports, and grants exactly the paths
+  `platform::build_worker_landlock_rules()` derives from the worker's own
+  config copy: the SQLite database directory (read-write, required, when
+  `database.backend=sqlite`) plus a fixed set of best-effort, read-only or
+  read-execute OS-integration paths (CA trust store candidates, resolver
+  configuration, NSS/dynamic-linker library directories, timezone data).
+  The master key file, both database URI files, and TLS private keys are
+  never in the rule set, and the worker refuses to start if any rule covers
+  one of them — a rule on a directory grants everything beneath it, so a
+  secret kept beside the SQLite database would otherwise be exposed. The CA
+  grants cover only the certificate stores, never all of `/etc/ssl` or
+  `/etc/pki`, which hold the conventional private-key directories. Because a
+  seccomp filter survives `execve`, the worker inherits the main server's
+  filter, which therefore allows the three Landlock syscalls. When the
+  running kernel has no Landlock support
+  (older than Linux 5.13, or disabled at boot), the worker refuses to start
+  unless `federation.worker.allow_without_landlock=true` is set, which logs
+  CRITICAL on every start — mirroring the fail-closed seccomp policy below;
+  any other Landlock failure (ruleset creation, a required rule, or
+  `landlock_restrict_self` itself) is always fatal regardless of that
+  opt-out. See
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md),
+  part 3, for the allowlist derivation.
 * **No peer credentials in transit** (#323): the main process verifies the
   inbound X-Matrix signature itself and forwards only the verified peer identity
   (`origin`/`key_id`/`sig_verified`); the raw peer `access_token` and
@@ -263,6 +375,18 @@ separate process on the same host:
   16 MiB-equivalent minimum; raising `join_response_max_size` raises the
   frame cap in lockstep, and both processes must restart to pick up a change
   (see `docs/user-manual.md`).
+* **Per-channel in-flight IPC cap** (0.12.13 finding H2 /
+  [ADR-0065](adr/0065-cap-in-flight-ipc-requests-per-channel.md)): each
+  worker channel is independently capped by
+  `federation.worker.ipc_max_in_flight_requests` (default `256`). Main counts
+  the requests it has accepted from that channel but not yet finished
+  responding to; a request that arrives at the cap is rejected immediately
+  with an explicit `main_overloaded` reply. The worker turns that reply into a
+  retryable `503 M_UNKNOWN` for the remote server, preserving Matrix retry
+  semantics, instead of silently dropping the request or queueing it on an
+  unbounded handler pool. The cap is per channel, not global, so one slow or
+  abusive worker cannot starve others and a crashed channel's count is released
+  with the channel.
 * **Worker-specific seccomp + runtime hardening** (#319): the worker applies
   `PR_SET_NO_NEW_PRIVS`, drops capabilities, sets resource limits, and installs
   a stricter seccomp-bpf filter (on top of the inherited server filter) that
@@ -302,24 +426,24 @@ separate process on the same host:
   over the IPC channel; only the main process writes to the persistent store
   and advances the authoritative `stream_ordering` counter.
 
-## Platform_specific defences
+## Platform-specific defences
 
 ### Linux
 
-Linux receives the richest set of in_process controls.
+Linux receives the richest set of in-process controls.
 
 | Defence | Implementation | Notes |
 | --- | --- | --- |
-| seccomp_bpf syscall allowlist | `src/platform/seccomp_hardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker. |
+| seccomp-bpf syscall allowlist | `src/platform/seccomp_hardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker. |
 | Architecture guard | `src/platform/seccomp_hardening.cpp` | Filter starts with an `AUDIT_ARCH_X86_64` or `AUDIT_ARCH_AARCH64` guard and fails closed on unsupported architectures. |
-| Fail_closed default | `src/platform/seccomp_hardening.cpp` | Unlisted syscalls return `SECCOMP_RET_KILL_PROCESS`. |
+| Fail-closed default | `src/platform/seccomp_hardening.cpp` | Unlisted syscalls return `SECCOMP_RET_KILL_PROCESS`. |
 | No new privileges | `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` | Applied by `apply_seccomp_filter()` and `apply_runtime_hardening_controls()`. |
 | Capability bounding set drop | `apply_linux_capability_bounding_set()` | Calls `prctl(PR_CAPBSET_DROP, cap, ...)` for every capability. |
 | Core dump policy | `apply_linux_core_dump_policy()` | `setrlimit(RLIMIT_CORE, {0, 0})` and `prctl(PR_SET_DUMPABLE, 0)`. |
-| Self_check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
+| Self-check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
 | systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, etc. |
 
-The seccomp_bpf filter is deliberately narrow: it allows only the syscalls the
+The seccomp-bpf filter is deliberately narrow: it allows only the syscalls the
 runtime actually needs. The filter is installed in `main.cpp` before
 `start_client_server` is called, so the database layer (SQLite) runs under the
 filter from its first access onwards.
@@ -433,7 +557,8 @@ apply via `rc.d` scripts.
 
 * The portable `setrlimit` gates are validated by the BSD hardening profile, and
   the thumbnail worker applies `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_CORE`,
-  `RLIMIT_NOFILE`, and `RLIMIT_AS`.
+  `RLIMIT_NOFILE`, and `RLIMIT_AS` (`RLIMIT_DATA` on OpenBSD, which has no
+  `RLIMIT_AS`).
 * The thumbnail worker fd sweep uses the capped `fcntl(F_GETFD)` fallback on
   every BSD instead of walking `/dev/fd`.
 * Service-manager scripts apply the privilege drop and filesystem restrictions:
@@ -452,10 +577,10 @@ profile:
 * requires that the hardening plan documents privilege drop, filesystem
   restrictions, resource limits, memory locking, random source, and signal
   handling;
-* applies **no** kernel_specific syscalls itself;
+* applies **no** kernel-specific syscalls itself;
 * relies on the service manager to drop privileges and confine the filesystem.
 
-## Startup hardening self_check
+## Startup hardening self-check
 
 `src/platform/hardening_self_check.cpp` is invoked from `src/main.cpp` after all
 platform hardening controls have been applied (seccomp-bpf, Linux capability
@@ -489,7 +614,7 @@ advertises:
 
 Hardening is exercised by automated tests:
 
-* `tests/unit/test_seccomp_hardening.cpp` asserts the fail_closed default action,
+* `tests/unit/test_seccomp_hardening.cpp` asserts the fail-closed default action,
   the architecture guard, that SQLite journal syscalls are allowed, that
   privilege-mutation syscalls (chmod, fchmod, fchmodat, umask, mkdir, truncate) remain denied,
   and that `clone3` (435), `close_range` (436), and `faccessat2` (439) are always present in
@@ -497,7 +622,7 @@ Hardening is exercised by automated tests:
 * `tests/unit/test_file_descriptor.cpp` exercises `FileDescriptor::set_cloexec()`
   and `close_all_file_descriptors_except()`.
 * `tests/unit/test_media_thumbnailer.cpp` covers the CLOEXEC pipe path and the
-  sandboxed worker round_trip.
+  sandboxed worker round-trip.
 * `tests/unit/test_runtime_hardening.cpp` validates profile accept/reject logic,
   including (0.12.1) `worker_hardening_unavailable_decision()` — the pure,
   syscall-free decision builder `apply_worker_hardening()` falls back to on
@@ -547,9 +672,15 @@ in-process syscalls:
 
 * In-process privilege drop (`setresgid`/`setresuid`) — the server must never run
   as root; the service manager supplies a dedicated user.
-* In-process Linux filesystem confinement (Landlock) — service-manager sandboxing
+* In-process Linux filesystem confinement (Landlock) **for the main
+  `merovingian-server` process** — service-manager sandboxing
   (systemd/OpenRC/FreeBSD rc.d) enforces filesystem restrictions; the
-  Merovingian hardening profile documents these requirements.
+  Merovingian hardening profile documents these requirements. The
+  **federation worker** is the exception: as of ADR-0062 part 3 (0.12.13) it
+  applies its own in-process Landlock ruleset (see "Out-of-process federation
+  worker IPC security" above) — the worker is the more exposed, more
+  frequently restarted process, so it gets an in-process control the main
+  process still relies on the service manager for.
 * A platform-specific in-process sandbox for the **federation worker**
   (`merovingian-fed-worker`) on FreeBSD/OpenBSD/NetBSD — unlike the main
   server, the worker has no pledge/unveil- or Capsicum-equivalent hardening

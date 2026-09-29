@@ -24,9 +24,9 @@
 // |  in test_client_server.cpp and test_auth_client_server_api.cpp.         |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
@@ -3337,6 +3337,168 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conform
     }
 }
 
+namespace
+{
+
+struct TokenPair final
+{
+    std::uint16_t status{0U};
+    std::string access_token{};
+    std::string refresh_token{};
+};
+
+[[nodiscard]] auto token_pair_from(merovingian::homeserver::DispatchResult const& result) -> TokenPair
+{
+    auto pair = TokenPair{result.response.status, {}, {}};
+    if (result.response.status == 200U)
+    {
+        auto const body = parse_object(result.response.body);
+        auto const* access = string_member(body, "access_token");
+        auto const* refresh = string_member(body, "refresh_token");
+        REQUIRE(access != nullptr);
+        REQUIRE(refresh != nullptr);
+        pair.access_token = *access;
+        pair.refresh_token = *refresh;
+    }
+    return pair;
+}
+
+[[nodiscard]] auto login_with_refresh(merovingian::homeserver::ClientServerRuntime& runtime,
+                                      std::string const& localpart) -> TokenPair
+{
+    REQUIRE(merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json(localpart, "CorrectHorse7!")})
+                .response.status == 200U);
+    auto const pair = token_pair_from(merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST",
+                  "/_matrix/client/v3/login",
+                  {},
+                  std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +
+                      R"(:example.org"},"password":"CorrectHorse7!","device_id":"RDEV","refresh_token":true})"}));
+    REQUIRE(pair.status == 200U);
+    return pair;
+}
+
+[[nodiscard]] auto refresh_with(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> TokenPair
+{
+    return token_pair_from(merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/refresh", {}, std::string{R"({"refresh_token":")"} + token + R"("})"}));
+}
+
+[[nodiscard]] auto whoami_status(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& access)
+    -> std::uint16_t
+{
+    return merovingian::homeserver::handle_client_server_request(
+               runtime, {"GET", "/_matrix/client/v3/account/whoami", access, {}})
+        .response.status;
+}
+
+} // namespace
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
+// "The old refresh token remains valid until the new access token or refresh
+// token is used, at which point the old refresh token is revoked." And
+// (#oauth-20-api, refresh tokens): the homeserver "MUST ensure that the client
+// is able to retry the refresh request in the case that the response to the
+// request is lost", and "SHOULD consider that the session is compromised if an
+// old, invalidated refresh token is used, and SHOULD revoke the session."
+// 0.12.13 audit item 6.
+SCENARIO("POST /refresh can be retried when its response is lost",
+         "[conformance][client-server][session][refresh_rotation]")
+{
+    GIVEN("a user logged in with a refresh token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const login = login_with_refresh(started.runtime, "rotate1");
+
+        WHEN("the refresh response never reaches the client and it refreshes again with the same token")
+        {
+            auto const lost = refresh_with(started.runtime, login.refresh_token);
+            auto const retried = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("the retry succeeds and its access token works")
+            {
+                // Spec MUST: the client is able to retry a refresh whose response was lost.
+                REQUIRE(lost.status == 200U);
+                REQUIRE(retried.status == 200U);
+                REQUIRE(whoami_status(started.runtime, retried.access_token) == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("Using the new tokens after POST /refresh retires the old refresh token",
+         "[conformance][client-server][session][refresh_rotation]")
+{
+    GIVEN("a user who has refreshed once")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const login = login_with_refresh(started.runtime, "rotate2");
+        auto const first = refresh_with(started.runtime, login.refresh_token);
+        REQUIRE(first.status == 200U);
+
+        WHEN("the new access token is used")
+        {
+            REQUIRE(whoami_status(started.runtime, first.access_token) == 200U);
+            auto const old_again = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("the old refresh token no longer works")
+            {
+                // Spec MUST: the old refresh token is revoked once the new access token is used.
+                REQUIRE(old_again.status == 401U);
+            }
+        }
+
+        WHEN("the new refresh token is used")
+        {
+            auto const second = refresh_with(started.runtime, first.refresh_token);
+            REQUIRE(second.status == 200U);
+            auto const old_again = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("the old refresh token no longer works")
+            {
+                // Spec MUST: the old refresh token is revoked once the new refresh token is used.
+                REQUIRE(old_again.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Presenting a retired refresh token revokes the session",
+         "[conformance][client-server][session][refresh_rotation][security]")
+{
+    GIVEN("a session that has rotated its refresh token twice")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const login = login_with_refresh(started.runtime, "rotate3");
+        auto const first = refresh_with(started.runtime, login.refresh_token);
+        REQUIRE(first.status == 200U);
+        auto const second = refresh_with(started.runtime, first.refresh_token);
+        REQUIRE(second.status == 200U);
+        REQUIRE(whoami_status(started.runtime, second.access_token) == 200U);
+
+        WHEN("someone presents the first, long-retired refresh token")
+        {
+            auto const replay = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("it is refused and the whole session, including the current tokens, is revoked")
+            {
+                REQUIRE(replay.status == 401U);
+                // Spec SHOULD: an old, invalidated refresh token means the session is compromised.
+                REQUIRE(whoami_status(started.runtime, second.access_token) == 401U);
+                REQUIRE(refresh_with(started.runtime, second.refresh_token).status == 401U);
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/refresh — advertised TTL matches enforced TTL ---
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
 //
@@ -4421,16 +4583,16 @@ SCENARIO("A suspended account may use only the key endpoints the spec permits",
                 // Not in the spec's permitted list: this publishes the account's
                 // own device identity and one-time keys, which is participation,
                 // not verification.
-                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/upload",
-                                          R"({"device_keys":{}})") == "M_USER_SUSPENDED");
+                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/upload", R"({"device_keys":{}})") ==
+                        "M_USER_SUSPENDED");
             }
 
             THEN("claiming one-time keys is refused")
             {
                 // Claiming an OTK opens an Olm session, which is a precursor to
                 // sending, not to verifying.
-                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/claim",
-                                          R"({"one_time_keys":{}})") == "M_USER_SUSPENDED");
+                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/claim", R"({"one_time_keys":{}})") ==
+                        "M_USER_SUSPENDED");
             }
 
             THEN("reading device-list changes is refused")
@@ -7061,8 +7223,10 @@ SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conform
 }
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaid
-// MUST return 200 with media content when the media ID exists.
-SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media", "[conformance][client-server][media]")
+// Legacy /_matrix/media/v3/download is frozen for media uploaded after the
+// authenticated-media upgrade; newly uploaded media returns 404.
+SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns 404 for newly uploaded media",
+         "[conformance][client-server][media]")
 {
     GIVEN("a running client-server with uploaded media")
     {
@@ -7095,12 +7259,11 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media",
         WHEN("GET /media/v3/download/{serverName}/{mediaId} is called with the uploaded media ID")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", download_target, token, {}});
+                started.runtime, {"GET", download_target, {}, {}});
 
-            THEN("the server returns 200 with the media content")
+            THEN("the server returns 404 because new uploads are hidden from the legacy endpoint")
             {
-                REQUIRE(response.response.status == 200U);
-                REQUIRE(!response.response.body.empty());
+                REQUIRE(response.response.status == 404U);
             }
         }
     }
@@ -7197,8 +7360,9 @@ SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED (implementation g
 }
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
-// MUST return 200 with thumbnail content when a thumbnail exists for the media ID.
-SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for uploaded media",
+// Legacy /_matrix/media/v3/thumbnail is frozen for media uploaded after the
+// authenticated-media upgrade; newly uploaded media returns 404.
+SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 for newly uploaded media",
          "[conformance][client-server][media]")
 {
     GIVEN("a running client-server with uploaded image media")
@@ -7233,13 +7397,9 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for u
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", thumbnail_target, token, {}});
 
-            THEN("the server returns 200 with thumbnail content or 404 if no thumbnail was generated")
+            THEN("the server returns 404 because new uploads are hidden from the legacy endpoint")
             {
-                // The server generates thumbnails for image content types on upload.
-                // If a thumbnail exists, the response is 200 with image data.
-                // If no thumbnail was generated (e.g., small images), the response is 404.
-                // Either way, the route must not return M_UNRECOGNIZED.
-                REQUIRE((response.response.status == 200U || response.response.status == 404U));
+                REQUIRE(response.response.status == 404U);
             }
         }
     }
@@ -7745,11 +7905,12 @@ SCENARIO("POST /createRoom with public_chat preset does not produce an encrypted
 // Spec: Matrix v1.19 — Room Versions
 // URL: ../../docs/matrix-v1.19-spec/rooms/index.md
 //
-// A server MUST support all stable room versions v1 through v12. This scenario
+// The server supports the stable room versions v3 through v12 (v1 and v2 are
+// not supported, ADR-0076; the spec lets a server choose). This scenario
 // exercises the runtime path: POST /createRoom with an explicit room_version,
 // followed by GET /rooms/{roomId}/state/m.room.create/ to verify the create
 // event records the requested version.
-SCENARIO("POST /createRoom accepts every stable room version v1 through v12",
+SCENARIO("POST /createRoom accepts every supported stable room version v3 through v12",
          "[conformance][client-server][rooms][room-versions]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -7758,7 +7919,7 @@ SCENARIO("POST /createRoom accepts every stable room version v1 through v12",
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        for (auto const* version : {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+        for (auto const* version : {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
         {
             WHEN("POST /createRoom requests room version " + std::string{version})
             {
@@ -7780,6 +7941,134 @@ SCENARIO("POST /createRoom accepts every stable room version v1 through v12",
                     auto const* room_version = string_member(state_body, "room_version");
                     REQUIRE(room_version != nullptr);
                     REQUIRE(*room_version == version);
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Section: Auth events selection
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#auth-events-selection
+//
+// For m.room.member: "If membership is join, invite or knock, the current
+// m.room.join_rules event, if any." Auth rule 3.2 (rooms/v12.md and earlier):
+// "If there are entries whose type and state_key don't match those specified
+// by the auth events selection algorithm ..., reject." A leave or ban naming
+// m.room.join_rules is therefore rejected by every conformant server.
+SCENARIO("Locally created membership events name m.room.join_rules only for join, invite and knock",
+         "[conformance][client-server][rooms][auth_events_selection]")
+{
+    GIVEN("a public room created by Alice, which Bob joins")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        auto const& store = started.runtime.homeserver.database.persistent_store;
+        auto const join_rules = std::ranges::find_if(store.state, [&](auto const& s) {
+            return s.room_id == room_id && s.event_type == "m.room.join_rules" && s.state_key.empty();
+        });
+        REQUIRE(join_rules != store.state.end());
+        auto const join_rules_id = join_rules->event_id;
+        auto const names_join_rules = [&](merovingian::canonicaljson::Object const& event) {
+            auto const* auth_events = object_member_as_array(event, "auth_events");
+            REQUIRE(auth_events != nullptr);
+            return std::ranges::any_of(*auth_events, [&](merovingian::canonicaljson::Value const& id) {
+                auto const* text = std::get_if<std::string>(&id.storage());
+                return text != nullptr && *text == join_rules_id;
+            });
+        };
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"})
+                    .response.status == 200U);
+        auto const bob_join = current_membership_event(store, room_id, "@bob:example.org");
+
+        WHEN("Bob leaves")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob, "{}"})
+                        .response.status == 200U);
+            auto const bob_leave = current_membership_event(store, room_id, "@bob:example.org");
+
+            THEN("the join names m.room.join_rules and the leave does not")
+            {
+                // Spec MUST: join_rules only for join, invite or knock.
+                REQUIRE(names_join_rules(bob_join));
+                REQUIRE_FALSE(names_join_rules(bob_leave));
+            }
+
+            THEN("neither names the room v12 create event")
+            {
+                // rooms/v12.md: "The m.room.create event MUST NOT be selected
+                // for auth_events on events."
+                auto const create = std::ranges::find_if(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.create";
+                });
+                REQUIRE(create != store.state.end());
+                for (auto const* event : {&bob_join, &bob_leave})
+                {
+                    auto const* auth_events = object_member_as_array(*event, "auth_events");
+                    REQUIRE(auth_events != nullptr);
+                    REQUIRE(std::ranges::none_of(*auth_events, [&](merovingian::canonicaljson::Value const& id) {
+                        auto const* text = std::get_if<std::string>(&id.storage());
+                        return text != nullptr && *text == create->event_id;
+                    }));
+                }
+            }
+        }
+
+        WHEN("Alice bans Bob")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", alice,
+                                          R"({"user_id":"@bob:example.org"})"})
+                        .response.status == 200U);
+            auto const bob_ban = current_membership_event(store, room_id, "@bob:example.org");
+
+            THEN("the ban does not name m.room.join_rules")
+            {
+                // Spec MUST: join_rules only for join, invite or knock.
+                REQUIRE_FALSE(names_join_rules(bob_ban));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/createRoom, room_version
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
+//
+// "If provided, the homeserver will return a 400 error with the errcode
+// M_UNSUPPORTED_ROOM_VERSION if it does not support the room version."
+// Room versions 1 and 2 are not supported (ADR-0076).
+SCENARIO("POST /createRoom refuses room versions 1 and 2 as unsupported",
+         "[conformance][client-server][rooms][room-versions][v1_v2_unsupported]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        for (auto const* version : {"1", "2"})
+        {
+            WHEN("POST /createRoom requests room version " + std::string{version})
+            {
+                auto const request_body = std::string{"{\"room_version\":\""} + version + "\"}";
+                auto const create = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, request_body});
+
+                THEN("the server returns 400 M_UNSUPPORTED_ROOM_VERSION")
+                {
+                    // Spec MUST: 400 M_UNSUPPORTED_ROOM_VERSION for an unsupported version.
+                    REQUIRE(create.response.status == 400U);
+                    auto const body = parse_object(create.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_UNSUPPORTED_ROOM_VERSION");
                 }
             }
         }
@@ -9081,8 +9370,8 @@ SCENARIO("POST /rooms/{roomId}/join accepts a valid third_party_signed join",
 
         auto const keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(keypair.has_value());
-        auto const secret_key =
-            std::string{reinterpret_cast<char const*>(keypair->secret_key.bytes().data()), keypair->secret_key.bytes().size()};
+        auto const secret_key = std::string{reinterpret_cast<char const*>(keypair->secret_key.bytes().data()),
+                                            keypair->secret_key.bytes().size()};
         auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
             {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
 
@@ -9115,6 +9404,42 @@ SCENARIO("POST /rooms/{roomId}/join accepts a valid third_party_signed join",
                 auto const* rid = string_member(body, "room_id");
                 REQUIRE(rid != nullptr);
                 REQUIRE(*rid == room_id);
+            }
+
+            // Spec (server-server-api.md, Auth events selection): for an invite
+            // whose content has third_party_invite, "the current
+            // m.room.third_party_invite event with state_key matching
+            // content.third_party_invite.signed.token".
+            THEN("the invite it created names the matching m.room.third_party_invite in auth_events")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const third_party_invite = std::ranges::find_if(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.third_party_invite" &&
+                           s.state_key == invite_token;
+                });
+                REQUIRE(third_party_invite != store.state.end());
+                auto const invite = std::ranges::find_if(store.events, [&](auto const& e) {
+                    if (e.room_id != room_id)
+                    {
+                        return false;
+                    }
+                    auto const event = parse_object(e.json);
+                    auto const* type = string_member(event, "type");
+                    auto const* state_key = string_member(event, "state_key");
+                    auto const* content = object_member_as_object(event, "content");
+                    auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                    return type != nullptr && *type == "m.room.member" && state_key != nullptr &&
+                           *state_key == "@bob:example.org" && membership != nullptr && *membership == "invite";
+                });
+                REQUIRE(invite != store.events.end());
+                auto const invite_event = parse_object(invite->json);
+                auto const* auth_events = object_member_as_array(invite_event, "auth_events");
+                REQUIRE(auth_events != nullptr);
+                REQUIRE(std::ranges::any_of(*auth_events, [&](merovingian::canonicaljson::Value const& id) {
+                    auto const* text = std::get_if<std::string>(&id.storage());
+                    return text != nullptr && *text == third_party_invite->event_id;
+                }));
             }
         }
     }
@@ -13657,6 +13982,127 @@ SCENARIO("POST /user_directory/search returns matching users", "[conformance][cl
     }
 }
 
+namespace
+{
+
+// user_ids of a /user_directory/search response, and its "limited" flag.
+struct DirectoryResult final
+{
+    std::vector<std::string> user_ids{};
+    bool limited{false};
+};
+
+[[nodiscard]] auto search_directory(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                    std::string const& body) -> DirectoryResult
+{
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/user_directory/search", token, body});
+    REQUIRE(response.response.status == 200U);
+    auto const parsed = parse_object(response.response.body);
+    auto const* results = object_member_as_array(parsed, "results");
+    REQUIRE(results != nullptr);
+    auto const* limited = bool_member(parsed, "limited");
+    REQUIRE(limited != nullptr);
+    auto result = DirectoryResult{{}, *limited};
+    for (auto const& entry : *results)
+    {
+        auto const* object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+        REQUIRE(object != nullptr);
+        auto const* user_id = string_member(*object, "user_id");
+        REQUIRE(user_id != nullptr);
+        result.user_ids.push_back(*user_id);
+    }
+    return result;
+}
+
+} // namespace
+
+// 0.12.13 audit item 5: a deactivated account can never log in again, so the
+// directory must not offer it as someone to contact.
+SCENARIO("POST /user_directory/search does not return deactivated accounts",
+         "[conformance][client-server][account-management][user_directory]")
+{
+    GIVEN("two users, one of whom has deactivated their account")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const bob_token = register_and_login(started.runtime, "bob");
+        std::ignore = register_and_login(started.runtime, "bobby");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/account/deactivate",
+                                      bob_token,
+                                      R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})",
+                                      {}})
+                    .response.status == 200U);
+
+        WHEN("the directory is searched for a term both user IDs match")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"bob"})");
+
+            THEN("only the active account is returned")
+            {
+                REQUIRE(std::ranges::find(result.user_ids, "@bob:example.org") == result.user_ids.end());
+                REQUIRE(std::ranges::find(result.user_ids, "@bobby:example.org") != result.user_ids.end());
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3user_directorysearch
+// Request "limit": "The maximum number of results to return. Defaults to 10."
+// Response "limited": "Indicates if the result list has been truncated by the
+// limit."
+SCENARIO("POST /user_directory/search returns at most limit results and reports truncation",
+         "[conformance][client-server][account-management][user_directory]")
+{
+    GIVEN("eleven users whose IDs match one search term")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        for (auto index = 0; index < 11; ++index)
+        {
+            std::ignore = register_and_login(started.runtime, "match" + std::to_string(index));
+        }
+
+        WHEN("the search asks for at most 3 results")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"match","limit":3})");
+
+            THEN("3 are returned and the list is reported as truncated")
+            {
+                // Spec MUST: no more than limit results; limited reports truncation.
+                REQUIRE(result.user_ids.size() == 3U);
+                REQUIRE(result.limited);
+            }
+        }
+
+        WHEN("the search gives no limit")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"match"})");
+
+            THEN("the default of 10 applies and the list is reported as truncated")
+            {
+                REQUIRE(result.user_ids.size() == 10U);
+                REQUIRE(result.limited);
+            }
+        }
+
+        WHEN("the limit is larger than the number of matches")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"match","limit":50})");
+
+            THEN("every match is returned and the list is not truncated")
+            {
+                REQUIRE(result.user_ids.size() == 11U);
+                REQUIRE_FALSE(result.limited);
+            }
+        }
+    }
+}
+
 // ============================================================================
 // 25     Room upgrade — POST /rooms/{roomId}/upgrade
 // ============================================================================
@@ -16355,7 +16801,7 @@ SCENARIO("Media downloads carry the spec's content-security headers", "[conforma
 
         auto const mxc_prefix = std::string_view{"mxc://"};
         auto const path = std::string_view{*content_uri}.substr(mxc_prefix.size());
-        auto const download_target = "/_matrix/media/v3/download/" + std::string{path};
+        auto const download_target = "/_matrix/client/v1/media/download/" + std::string{path};
 
         WHEN("the media is downloaded")
         {
@@ -16423,7 +16869,7 @@ SCENARIO("Media downloads of non-inline-safe types are served as attachments",
 
         auto const mxc_prefix = std::string_view{"mxc://"};
         auto const path = std::string_view{*content_uri}.substr(mxc_prefix.size());
-        auto const download_target = "/_matrix/media/v3/download/" + std::string{path};
+        auto const download_target = "/_matrix/client/v1/media/download/" + std::string{path};
 
         WHEN("the media is downloaded")
         {
@@ -16551,13 +16997,16 @@ SCENARIO("A deactivated account cannot refresh its session",
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register",
-                     {}, merovingian::tests::registration_json("carol", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("carol", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             started.runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@carol:example.org"},)"
              R"("password":"CorrectHorse7!","device_id":"CAROLDEV","refresh_token":true})"});
         REQUIRE(login.response.status == 200U);
@@ -16580,8 +17029,8 @@ SCENARIO("A deactivated account cannot refresh its session",
             REQUIRE(deactivated.response.status == 200U);
 
             auto const refreshed = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/refresh", {},
-                                  R"({"refresh_token":")" + refresh + R"("})"});
+                started.runtime,
+                {"POST", "/_matrix/client/v3/refresh", {}, R"({"refresh_token":")" + refresh + R"("})"});
 
             THEN("the refresh is refused rather than minting a new credential")
             {
@@ -16602,9 +17051,10 @@ SCENARIO("A locked-out login returns M_LIMIT_EXCEEDED with a retry delay",
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register",
-                     {}, merovingian::tests::registration_json("dave", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("dave", "CorrectHorse7!")})
                     .response.status == 200U);
 
         WHEN("the per-account failure threshold is exceeded")
@@ -16612,7 +17062,9 @@ SCENARIO("A locked-out login returns M_LIMIT_EXCEEDED with a retry delay",
             auto const attempt_login = [&started]() {
                 return merovingian::homeserver::handle_client_server_request(
                     started.runtime,
-                    {"POST", "/_matrix/client/v3/login", {},
+                    {"POST",
+                     "/_matrix/client/v3/login",
+                     {},
                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@dave:example.org"},)"
                      R"("password":"WrongPassword1!"})"});
             };

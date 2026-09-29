@@ -7,8 +7,8 @@ canonical JSON.
 
 Implemented now:
 
-- Matrix reference-hash event IDs for modern room versions using SHA-256 and
-  URL-safe unpadded Base64
+- Matrix reference-hash event IDs using SHA-256 and unpadded Base64: the
+  standard alphabet in room v3, URL-safe from v4
 - Matrix content-hash calculation that removes `unsigned`, `signatures`, and
   `hashes` before canonical JSON hashing
 - federated join and leave templates replace any existing `hashes` object
@@ -23,10 +23,20 @@ Implemented now:
   checking, and provider-backed verification against the signed payload
 - runtime-created room events now receive Matrix content hashes,
   reference-hash event IDs, and Ed25519 signatures before persistence
-- room-version policy registry for all stable room versions (v1-v12) used by
-  version-aware auth, redaction, and state-resolution lookups
+- room-version policy registry for the supported stable room versions (v3-v12)
+  used by version-aware auth, redaction, and state-resolution lookups. Versions
+  1 and 2 are not supported and are refused on every path (ADR-0076): their
+  event ID travels in the event rather than being a reference hash, and was
+  never implemented
 - room-version policy shape for event format, redaction rules, auth rules, state resolution, and event ID format
-- redaction with room-version-dependent top-level and event-content key retention
+- redaction with room-version-dependent top-level and event-content key retention.
+  Beyond the `RedactionRules` buckets (v1–v7, v8–v10, v11+), two
+  `RoomVersionPolicy` flags carry finer rules: `redaction_keeps_aliases`
+  (m.room.aliases keeps `aliases` in v1–v5 only; rooms/v6.md removed it) and
+  `redaction_keeps_join_authorisation` (m.room.member keeps
+  `join_authorised_via_users_server` from v9). No version keeps any
+  m.room.third_party_invite content (0.12.13; the redacted form feeds the
+  reference hash, so a divergence here changes event IDs)
 - `origin_server_ts` uses wall-clock Unix-epoch milliseconds per Matrix spec
 - event depth is persisted in the database and survives server restarts
 - full Matrix v6+ event authorization rules (14-step algorithm per spec
@@ -82,11 +92,16 @@ Implemented now:
   authorized against current room state before persistence; auth is
   conditional on the presence of a create event in room state to allow
   the simplified room-creation bootstrap flow
-- auth checking wired into the inbound federation PDU path: `pdu_sink` in
-  `local_http_router.cpp` runs `authorize_event_against_auth_events` against the
-  room's current resolved state before calling `store_event_with_state`; events
-  that fail auth return `rejected_auth` without a non-200 HTTP status (per Matrix
-  /send spec — non-200 causes the remote to back off all federation)
+- auth checking wired into the inbound federation PDU path: `pdu_sink`
+  (`ingest_pdu_event`, `local_http_router.cpp`) originally ran
+  `authorize_event_against_auth_events` against the room's current resolved
+  state only, before calling `store_event_with_state`; events that fail auth
+  return `rejected_auth` without a non-200 HTTP status (per Matrix /send spec
+  — non-200 causes the remote to back off all federation). **Superseded by
+  ADR-0064 phase B2** (above): the current-state check is now the *soft-fail*
+  step (step 6), run only after separate auth checks against the event's own
+  `auth_events` (step 4, reject) and the state before the event (step 5,
+  reject) — see "Phase B2: the receipt-order auth checks themselves" above.
 - auth checking wired into the federation membership endpoints — `send_join`,
   `send_leave`, and `send_knock` run the identical
   `authorize_event_against_auth_events` gate, against the room's current
@@ -115,6 +130,13 @@ Implemented now:
 - restricted-room join auth accepts a valid
   `content.join_authorised_via_users_server` when the named resident user is
   joined and has sufficient invite power
+- each join rule is recognised only in the room versions that define it
+  (`RoomVersionPolicy::knock_join_rule` v7+, `restricted_join_rule` v8+,
+  `knock_restricted_join_rule` v10+). From v10, `knock_restricted` joins
+  follow the restricted rule (rules 4.3.5) and knocks accept `knock` or
+  `knock_restricted`; before v7 a `knock` membership is rejected. A join rule
+  the version does not define, including the non-spec `restricted_v2`, falls
+  through to "Otherwise, reject" (0.12.13)
 - self-leave (`membership: "leave"`, sender matches state_key) is only
   authorized when the sender's current membership is `invite`, `join`, or
   `knock` — a banned or never-joined user cannot self-leave (which would
@@ -137,6 +159,19 @@ Implemented now:
 - unit coverage for content hashes, reference-hash event IDs, event envelope
   parsing, signing payloads, signature attachment/verification, redaction,
   room-version fixtures, full auth rule steps, and v2 state resolution
+- **inbound federation PDU size and field-count limits enforced before
+  hashing/authorization (0.12.13, M3).** Raw PDU JSON is capped at 65 536
+  bytes, `prev_events` at 20, and `auth_events` at 10, all checked in
+  `parse_inbound_pdu_envelope` before any content hashing or signature work.
+  `sender`, `room_id`, `state_key`, and `type` are capped at 255 bytes by
+  `matrix_id_is_valid` and `parse_event_envelope`. See
+  `include/merovingian/events/limits.hpp` and
+  [ADR-0067](adr/0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md).
+- **`content.m.federate: false` enforced for every room version (0.12.13,
+  M4).** Authorization rule step 3 now rejects cross-domain senders in v1–v5
+  rooms that disable federation, not only in v6+ and v12. When `m.federate`
+  is absent or `true`, cross-domain senders remain permitted in all versions.
+  Test: `tests/conformance/test_event_auth_rules.cpp` (`[m04]`).
 
 Not implemented yet:
 
@@ -222,7 +257,9 @@ and `docs/crypto-boundary.md`.
 event after removing `unsigned`, `signatures`, and `hashes`. `make_reference_hash`
 redacts the event, removes `unsigned` and `signatures`, canonicalizes, and
 calculates the SHA-256 reference hash. `make_reference_hash_event_id` prefixes
-the URL-safe unpadded Base64 reference hash with `$` for modern room versions.
+the unpadded Base64 reference hash with `$`: URL-safe from room v4, the standard
+alphabet in v3 (`RoomVersionPolicy::event_id_url_safe_base64`, rooms/v3.md).
+`make_reference_hash` itself always returns the URL-safe form.
 
 The redaction algorithm is room-version specific, so every entry point takes the
 event's own `RoomVersionPolicy` — including `make_content_hash_id`, which until
@@ -250,10 +287,82 @@ Runtime events store their immediate `prev_events`, current-state-derived
 Auth-event maps are built from current room state for authorization checking.
 The v2 state resolution algorithm resolves conflicting state using reverse
 topological power ordering for power events and the mainline ordering (based
-on the partially resolved power levels) for the remaining events.
+on the partially resolved power levels) for the remaining events. Room v12
+uses state-res v2.1: the same algorithm with three modifications (below).
 
-Two properties of that ordering are easy to get subtly wrong and are worth
-stating explicitly, because both were defects until 0.12.9:
+### Auth difference, full conflicted set, and the v12 conflicted state subgraph
+
+Until 0.12.13, `resolve_state_v2` only ever considered power events that
+appeared literally as one of the two conflicted state groups' entries. The
+spec's Algorithm step 1 is broader: *"Select the set X of all power events
+that appear in the **full conflicted set**"*, where the full conflicted set is
+the conflicted state set **plus the auth difference** — events reachable only
+through the `auth_events` chains of the conflicted events, not present as a
+literal value in either fork's state. A power-level change hidden this way
+(e.g. authorising a later ban) was silently invisible to the old resolver,
+letting the ban it authorised be dropped even though the promoting event was
+never actually in dispute — two conformant servers could resolve the same
+input differently. `StateResolutionRequest::event_lookup` gives the resolver a
+way to fetch those ancestor events (the persistent store, in production; see
+`homeserver::make_store_event_lookup`, `state_bookkeeping.cpp`, used by
+`compute_state_before` and `recompute_current_state`), and `resolve_state_v2`
+now computes ∪Ci − ∩Ci (the auth difference across the
+submitted state groups' full auth chains) before selecting X.
+
+Room v12 (state-res v2.1, `rooms::StateResolutionAlgorithm::v2_1`) makes three
+further changes (rooms/v12.md — "State resolution"):
+
+1. The iterative auth checks (Algorithm steps 2 and 4) start from an **empty**
+   state map instead of the unconflicted state map.
+2. A new **conflicted state subgraph** — the union of every path along
+   `auth_events` edges between any pair of events in the conflicted state set,
+   endpoints included — is computed.
+3. The full conflicted set additionally includes that subgraph.
+
+Modification 1 means almost nothing is present in the running state on the
+first pass for a v12 room, so the iterative auth checks' own fallback matters
+far more there: per the spec's "Iterative auth checks" definition, *"If a
+(event_type, state_key) key that is required for checking the authorisation
+rules is not present in the state, then the appropriate state event from the
+event's `auth_events` is used if the auth event is not rejected."*
+`build_auth_event_map_from_state` now implements this fallback for every
+slot (create, power_levels, join_rules, sender/target member,
+third_party_invite, authorising_user_member) — it did not before, which made
+v12 support incomplete regardless of the algorithm-selection fix, since the
+empty starting map meant almost every event's own auth context needed it.
+
+**0.12.13 (ADR-0064 phase B2) fix: the create-event deadlock this fallback
+cannot break for v12.** The fallback above reads a candidate event's OWN
+`auth_events` when the running state lacks a key — but rooms/v12.md rule 3.2
+requires every v12 event's `auth_events` to omit `m.room.create` (MSC4291:
+the create event is implicit in the room ID). With modification 1's empty
+starting map and no v12 event ever naming create in its own `auth_events`,
+`build_auth_event_map_from_state`'s create slot could never be filled by
+either path — every v12 candidate's very first iterative auth check would
+fail Step 2 ("room has no create event"), and no v12 room's state could ever
+be resolved at all. Fixed by seeding `resolved`'s `m.room.create` entry from
+`unconflicted` at v2.1 initialization: a room's create event cannot
+genuinely be in dispute (there is exactly one per room, and every submitted
+state group already agrees on it — that agreement is precisely why
+`partition_conflicted_state` places it in `unconflicted`, never
+`conflicted`), so seeding just this one invariant entry does not reintroduce
+anything modification 1's empty-start rule exists to guard against (mutable,
+genuinely-contestable state like membership or power levels).
+
+The auth-chain walk is bounded (`events::max_auth_chain_walk_events`,
+`include/merovingian/events/limits.hpp`) and **fails closed**: a missing or
+unreachable event, an over-budget walk, or an exhausted lookup returns an
+unresolved `StateResolutionResult` rather than resolving on a partial chain —
+`compute_state_before`/`recompute_current_state` (phase B1/B2, above) treat
+an unresolved result as `PduIngestionStatus::missing_prev_state`, not a
+rejection. This does not apply to the iterative auth checks' own `auth_events`
+fallback above, which is intentionally soft — an ancestor it cannot reach
+only fails that one candidate event's own auth check (as it already did
+before the fallback existed), not the whole resolution.
+
+Three properties of the ordering are easy to get subtly wrong and are worth
+stating explicitly, because all three were defects (the first two until
+0.12.9, the third until 0.12.13):
 
 - **Sender power is read through the room version's rules, not an integer-only
   accessor.** Room versions 1-9 permit power levels encoded as JSON strings and
@@ -269,9 +378,267 @@ stating explicitly, because both were defects until 0.12.9:
   `content.join_authorised_via_users_server` to validate the join. Omitting it
   made every valid restricted join in the conflicted set fail auth, which
   diverges room state across federation rather than merely rejecting one event.
+- **Sender power for the ordering comes from the candidate's OWN
+  `auth_events`, never from the candidate's own new content and never from a
+  shared state map.** Spec (rooms/v10.md — Reverse topological power
+  ordering, rule 1): power is read "looking at their respective
+  auth_events". Until 0.12.13, `power_level_from_event` read an
+  `m.room.power_levels` candidate's sender power from **that same event's
+  own new content** — a self-elevating power_levels event (one that grants
+  its own sender a level it does not actually hold) would rank itself by
+  the level it claims, not the level its own `auth_events` ancestor
+  actually grants it. Every other candidate's power was read from a shared
+  "unconflicted" state map, which is simply the wrong source: a candidate's
+  `auth_events` can name a different `m.room.power_levels` event than
+  whatever happens to be unconflicted at resolution time. Both cases are
+  fixed by `find_auth_ancestor_context` walking the candidate's own
+  `auth_events` (via the same fail-closed `AuthChainEventSource` used for
+  the auth difference) and feeding the result to
+  `events::effective_sender_power` (moved out of `authorization.cpp`'s
+  anonymous namespace and exposed publicly, so the ordering and the auth
+  rules read power identically, including MSC4289 creator-infinite power
+  for room v12). `reverse_topological_power_sort` correspondingly takes
+  `EventJsonIndex` + `EventLookupFn` instead of a `StateMap unconflicted`,
+  and returns `optional<vector<StateEventReference>>` — `nullopt` when an
+  `auth_events` entry needed to answer the question cannot be resolved
+  (fail closed, ADR-0063), never a default value guessed from a partial
+  chain. `mainline_order` was checked against the same defect class and
+  found not to have it: it already reads each event's own `auth_events`
+  power-levels ancestor (it never computes a power *level* at all, only a
+  mainline *position*), never a shared map.
 
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
+
+### Phase B1: state resolution wired into ingestion (ADR-0064)
+
+Until 0.12.13's phase B1, `resolve_state_v2` was correct in isolation (see
+above) but never ran on the production inbound-PDU path: `ingest_pdu_event`
+(`src/homeserver/local_http_router.cpp`) authorised each PDU against current
+state only and wrote its state straight into `current_state` — two
+concurrent, individually valid state events resolved as whichever arrived
+last, so resolved state could diverge from every other conformant server on
+the same DAG depending on delivery order.
+
+Phase B1 (`merovingian::homeserver::state_bookkeeping`,
+`include/merovingian/homeserver/state_bookkeeping.hpp`) makes state
+bookkeeping — not yet the receipt-order auth checks themselves, still B2 —
+spec-conformant for every event stored through `ingest_pdu_event`:
+
+- **State before an event** is the state resolution of the after-states of
+  its `prev_events`: a single `prev_event` needs no resolution, several do.
+  A `prev_event` with no recorded state group fails the PDU closed
+  (`federation::PduIngestionStatus::missing_prev_state`) rather than
+  guessing — the event is not stored, but per spec ("Transactions") a
+  transaction containing it must still return 200, since a delayed but
+  legitimate PDU looks identical to one whose history has not been fetched
+  yet.
+- **State after an event** is its state-before plus itself, if it is a
+  state event.
+- Every accepted event gets a delta state group for its after-state
+  (`database::create_or_reuse_state_group`, ADR-0064 phase A) and updates
+  the room's forward extremities.
+- **Current state** is a cache of the resolution over the forward
+  extremities, recomputed after each accepted event and diffed against the
+  previous cache so only changed `(event_type, state_key)` entries are
+  rewritten — through the same `database::store_state` every other state
+  write already used, so `state_transitions` and the existing sync
+  wake-up path need no separate "state changed" plumbing.
+
+See `docs/database-persistence.md`, "Phase B1 of spec-conformant PDU
+ingestion", for the exact functions. Phase B1 completion (same 0.12.13
+branch) extended this same bookkeeping to every local event-creation path
+(`homeserver::store_local_event`, the choke point `persist_composed_event`
+now calls) and to federated-join state seeding
+(`homeserver::record_event_state_with_parent`) — see that doc section for
+the full list of call sites.
+
+### Phase B2: the receipt-order auth checks themselves (ADR-0064)
+
+Phase B1 made the state model correct; `ingest_pdu_event` still authorised
+every inbound PDU against *current* state only, treated any auth failure as
+a hard rejection, and rejected (rather than redacted) a content-hash
+mismatch. Phase B2 runs the spec's six-step "Checks performed on receipt of
+a PDU" in order (steps 1–2, format and signature, are unchanged — format
+validation stays in `parse_inbound_pdu_envelope`/`authorize_federation_pdu`,
+run before `ingest_pdu_event`; for a PDU relayed by a federation worker, main
+re-verifies the signature itself before ingestion, ADR-0071):
+
+- **Step 3 (hash).** `events::verify_pdu_content_hash` failing no longer
+  rejects the event. `events::redact_event` (the room version's redaction
+  algorithm) is applied and processing continues with the redacted form,
+  which is the JSON that gets stored — `event_id`, `sender`, and every key
+  the redaction rules preserve are unaffected, since redaction is exactly
+  what the spec's reference-hash/event-ID derivation already treats the
+  event as (v3+ event IDs never depended on the pre-redaction `content`
+  anyway).
+- **Step 4 (auth against the PDU's own `auth_events`).** Before running the
+  auth-rule algorithm, `validate_auth_events_selection` enforces the spec's
+  "Auth events selection" list — the permitted `(type, state_key)` pairs an
+  event's `auth_events` may name (create unless v12-implicit, current
+  power_levels, the sender's own member event, and for `m.room.member`
+  additionally the target member, join_rules, third_party_invite, and the
+  restricted-join authorising member, each conditioned on the requested
+  membership; join_rules only for join, invite and knock). Events this
+  server creates follow the same list (`auth_events_for_room`, and the
+  `make_join`/`make_leave`/`make_knock` templates), since a conformant server
+  rejects any entry it does not name (0.12.13: leaves and bans used to carry
+  join_rules). v12 (MSC4291, rooms/v12.md rule 3.2) is a hard **MUST NOT**:
+  the create event is implicit in the room ID, and a v12 event naming it in
+  `auth_events` is rejected, not merely warned about — this is enforced
+  exactly as written, with no leniency for a "harmless" redundant reference.
+  A named entry of a disallowed
+  type, a duplicate `(type, state_key)`, or one from a different room is a
+  rejection. An entry
+  this store has no event for at all is `missing_prev_state` (the same
+  "awaiting backfill" gap as a missing `prev_event`), not a rejection —
+  phase C's fetch-then-request-state is what resolves it. Once selection
+  passes, the auth map is built from the *named* events (fetched from the
+  store), not current state — `build_pdu_auth_event_map` generalised to
+  `build_auth_event_map_from_entries` so the same code builds this map, the
+  state-before map, and the current-state map from whichever flat state
+  snapshot each step needs.
+- **Step 5 (auth against the state before the event)**, using phase B1's
+  `compute_state_before`. Failure rejects, same as step 4.
+- **Step 6 (auth against current state).** Failure here does not reject —
+  spec "Soft failure": the event is stored, given an after-state group, and
+  takes part in state resolution as normal, but it is never a forward
+  extremity and never relayed to clients (see "Client-delivery filtering"
+  below) — except that a soft-failed *state* event which resolution later
+  admits into current state is shown to clients in the state section as
+  usual.
+
+**Rejected and soft-failed events are both stored** — this is the one place
+phase B2 changes behaviour that was previously "at least safe": before this
+phase, a step-4/5 auth failure returned early without persisting the event
+at all, which broke the spec requirement that later events referencing a
+rejected event can still be authorised against it. `record_event_state`/
+`record_event_state_with_parent` (`state_bookkeeping.hpp`/`.cpp`) gained an
+`accepted` flag (default `true`, so every phase-B1 caller is unaffected):
+`false` still creates/reuses the event's after-state group and maps the
+event to it (so `compute_state_before` can still resolve a later event's
+`prev_event_ids` through it), but
+`database::update_forward_extremities`'s own `accepted` gate (already
+built for exactly this in phase B1's schema work) skips updating
+extremities — neither a rejected nor a soft-failed event is ever a forward
+extremity. What differs between the two is the after-state passed in: a
+rejected event's after-state is `state_before` unchanged (spec: "state...
+calculated as normal, except not updating with the rejected event"); a
+soft-failed event's is the normally-computed `compute_state_after` result
+(spec: "participate in state resolution as normal"), so a later accepted
+event chaining off it correctly propagates its state through
+`recompute_current_state` if resolution ever admits it.
+`PersistentEvent::status` (`"accepted"|"rejected"|"soft_failed"|"outlier"`,
+added in phase A but never set to the first two before this phase — the
+0.12.12 security-audit finding that motivated this ADR) is set accordingly
+at ingest time.
+
+**Client-delivery filtering.** Every path that serves room timeline events
+excludes `status == "rejected"` and `status == "soft_failed"`: `/sync`
+(`client_server.cpp`), MSC4186 sliding sync
+(`sync/sliding_sync_room_builder.cpp`), `GET .../messages`, `GET
+.../context/{eventId}` (both its `events_before`/`events_after` window and
+the target-event lookup, which 404s the same as a nonexistent event id),
+`GET .../event/{eventId}` (same 404), and search. Current-state delivery
+(the `/sync` `state` section, `required_state` in sliding sync) is driven
+entirely by `current_state`/`recompute_current_state` and is untouched by
+this filter, so a soft-failed state event resolution admits is still
+delivered there. Federation-facing reads
+(`src/federation/event_query.cpp`: `/event/<id>`, `/backfill`,
+`/get_missing_events`) are deliberately unfiltered, matching the spec:
+`/event/<id>` may return a soft-failed event, and `/backfill`/
+`/get_missing_events` only return one when the request itself references
+it — which those endpoints' existing depth/reference-driven scans already
+satisfy without a status check.
+
+**Transactions.** A transaction containing a mix of accepted, rejected, and
+soft-failed PDUs still returns 200 with per-PDU accounting (spec: "If an
+event in an incoming transaction is rejected, this should not cause the
+transaction request to be responded to with an error response").
+`PduIngestionStatus` gained `soft_failed`, threaded through the worker IPC
+status mapping (`src/homeserver/worker_pool.cpp`,
+`src/federation_worker/worker_event_loop.cpp`) and the `/send` transaction
+per-PDU switch (`src/federation/inbound_request.cpp`) alongside the
+existing `missing_prev_state`.
+
+**Dead plumbing removed.** `PduStateConflictContext`,
+`PduIngestionResult::state_conflict`, `StateConflictResolver`,
+`ResolvedStateApplier`, `runtime.federation.state_conflict_resolver`, and
+`federation::apply_state_resolution_v2` are gone — ADR-0064 identified them
+as unreachable (nothing ever set `state_conflict`, so the resolver was
+never invoked). `PduIngestionStatus::rejected_state_conflict` stays defined,
+unused by any production sink, purely so the worker IPC wire format remains
+a stable exhaustive set. `resolve_state_v2` itself is untouched: phase B1's
+`compute_state_before`/`recompute_current_state` remain its only callers.
+
+**Not covered by this phase.** The membership-acceptor path
+(`send_join`/`send_leave`/`send_knock` acceptance) still hard-rejects a
+content-hash mismatch instead of redacting, and does not run the
+auth_events/state-before/current-state three-way check — see
+`src/federation/AGENTS.md` and `docs/threat-model.md`.
+
+### Phase C: backfill of missing PDU references (ADR-0064)
+
+Phase C closes the gap left by phases A and B: an inbound PDU whose
+`prev_events` or `auth_events` are unknown to this server is no longer
+returned as `missing_prev_state` and forgotten. Instead, `ingest_pdu_event`
+checks for missing references and, when the PDU envelope carries an origin,
+fetches them from that origin before retrying the PDU.
+
+* `collect_missing_pdu_references` distinguishes two failure modes:
+  `auth_events` that are absent from the persistent store, and `prev_events`
+  that are absent or exist but have no recorded after-state group. A
+  `prev_event` without a state group cannot be used as a state-before anchor,
+  so it is treated as missing.
+* If any reference is missing, the room stripe lock and the runtime mutex are
+  released (via `RuntimeLockRelease` and a scoped stripe-lock reacquirer) and
+  `backfill_missing_pdu_references` performs outbound federation calls while the
+  server remains unlocked for other rooms.
+* The backfill strategy is `/_matrix/federation/v1/get_missing_events/{roomId}`
+  first, then per-event `/_matrix/federation/v1/event/{eventId}`. The
+  `/get_missing_events` call asks for up to 20 events; the whole PDU is allowed
+  at most 5 outbound calls. These caps prevent a malicious or delayed origin
+  from driving unbounded outbound work.
+* Every fetched event is verified independently: content hash (mismatch
+  redacts), Ed25519 signature, the `auth_events` selection check, and
+  authorisation against its own `auth_events`. A fetched event whose own
+  `prev_events` still lack state groups is dropped; its own state-before
+  cannot yet be computed, so it cannot safely serve as an anchor for another
+  event. Because of that, the `/get_missing_events` results are handled in
+  ascending `depth` order, not in the order the origin listed them, so a
+  parent is stored before any child that names it. An
+  `/event/{eventId}` response (per-reference or `/state_ids` snapshot) is kept
+  only if its ID, computed under the room version, is the one requested.
+* A verified event is stored as `status == "outlier"` with a recorded
+  after-state group (`accepted=false`). Outliers participate in later state
+  resolution and can become `prev_events` for subsequent PDUs, but they never
+  become forward extremities on their own.
+* If a `prev_event` still has no state group, `backfill_state_ids_snapshot`
+  asks the origin for `GET /_matrix/federation/v1/state_ids/{roomId}` at that
+  event (at most 1000 IDs in each list, and its own budget of 100 outbound
+  calls). Every named event not already stored is fetched and verified. A
+  snapshot state event whose own `prev_events` have no state is verified
+  instead through `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`,
+  against its own `auth_events` only (ADR-0069). An `/event_auth` entry skips
+  verification only if it is the very event already stored under its
+  `"event_id"` field (equal reference hash); a matching field alone proves
+  nothing, since the origin writes it. The snapshot is refused if it
+  names an event from another room, a `rejected` event, a non-state event, or
+  a duplicate `(type, state_key)`. The missing event is then authorised against
+  the verified snapshot as its state-before.
+* An event verified only against its own `auth_events` has an unknown
+  state-before, so it is stored as an outlier **with no state group**
+  (ADR-0070). A PDU that names it as a `prev_event` therefore triggers the
+  `/state_ids` fallback at that event rather than being authorised against a
+  state derived from the event's `auth_events`. Once a verified state before a
+  stored group-less event is known and the event passes auth against it, it
+  gains a state group and keeps its status.
+* If references remain missing after the capped attempt, the original PDU still
+  returns `missing_prev_state` and is not applied. Fail-closed is preserved;
+  backfill only turns a *resolvable* gap into accepted history.
+
+The membership-acceptor path does not yet run this backfill step — see the
+`src/federation/AGENTS.md` residual note and the threat-model entry for phase C.
 
 ### State at a requested event
 

@@ -24,8 +24,8 @@
 // (test_federation_runtime_callbacks.cpp) already does for the federation
 // path.
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
@@ -385,7 +385,7 @@ SCENARIO("A stalled trust-safety policy-server hook during media download leaves
         // mxc://<server_name>/<media_id> -> the download route only wants
         // "<server_name>/<media_id>".
         auto const download_target =
-            "/_matrix/media/v3/download/" + content_uri->substr(std::string_view{"mxc://"}.size());
+            "/_matrix/client/v1/media/download/" + content_uri->substr(std::string_view{"mxc://"}.size());
 
         WHEN("a media download is in flight, blocked on the policy-server round trip")
         {
@@ -438,7 +438,7 @@ SCENARIO("A stalled peer during a remote room join leaves the rest of the server
 
         auto const certificate = tls_mock::write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
-                                                                           certificate.private_key_file);
+                                                                            certificate.private_key_file);
         REQUIRE(tls_context.ok());
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
@@ -464,8 +464,8 @@ SCENARIO("A stalled peer during a remote room join leaves the rest of the server
             auto join_thread = std::thread{[&]() {
                 auto const target = std::string{"/_matrix/client/v3/join/%21room%3A"} + std::string{stalled_server} +
                                     "?server_name=" + std::string{stalled_server};
-                auto const response =
-                    merovingian::homeserver::handle_client_server_request(runtime, {"POST", target, access_token, "{}"});
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", target, access_token, "{}"});
                 join_status.store(response.response.status);
             }};
             auto const join_guard = tls_mock::ScopedThreadJoin{join_thread};
@@ -531,7 +531,7 @@ SCENARIO("A stalled identity server during a third-party invite leaves the rest 
         auto const identity_host = std::string{"is.localhost.test"};
         auto const certificate = tls_mock::write_test_tls_certificate(identity_host);
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
-                                                                           certificate.private_key_file);
+                                                                            certificate.private_key_file);
         REQUIRE(tls_context.ok());
         auto acceptor = merovingian::net::TcpAcceptor{};
         REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);

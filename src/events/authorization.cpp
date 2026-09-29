@@ -26,33 +26,6 @@ namespace merovingian::events
 namespace
 {
 
-    [[nodiscard]] auto auth_rule_name(rooms::AuthRules rules) noexcept -> char const*
-    {
-        switch (rules)
-        {
-        case rooms::AuthRules::room_v1:
-            return "room_v1";
-        case rooms::AuthRules::room_v6_plus:
-            return "room_v6_plus";
-        case rooms::AuthRules::room_v12:
-            // Distinct hook for auditability: v12 adds creator privilege (MSC4289)
-            // and implicit create (MSC4291) on top of the v6+ rule base.
-            return "room_v12";
-        }
-
-        return "unknown";
-    }
-
-    [[nodiscard]] auto requires_power_levels(std::string_view event_type) noexcept -> bool
-    {
-        return event_type != "m.room.create";
-    }
-
-    [[nodiscard]] auto requires_membership(std::string_view event_type) noexcept -> bool
-    {
-        return event_type == "m.room.member";
-    }
-
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -239,28 +212,6 @@ namespace
     // every integer power level, so comparisons treat their power as the maximum
     // representable value rather than a literal number from the power_levels event.
     constexpr auto creator_power = std::numeric_limits<std::int64_t>::max();
-
-    [[nodiscard]] auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
-                                              canonicaljson::Value const& create_event,
-                                              rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
-    {
-        // MSC4289: room creators hold an effectively infinite power level that is
-        // independent of (and overrides) any entry in the power_levels event.
-        if (user_is_room_creator(create_event, sender, policy))
-        {
-            return creator_power;
-        }
-        if (value_has_content(power_levels))
-        {
-            return extract_user_power_level(power_levels, sender, !policy.power_levels_require_integers);
-        }
-        auto const* creator = event_content_string(create_event, "creator");
-        if (creator != nullptr && sender == *creator)
-        {
-            return 100;
-        }
-        return 0;
-    }
 
     // Every candidate public key a third-party invite's "signed" blob may be
     // checked against: content.public_key (legacy single-key form) plus each
@@ -766,9 +717,33 @@ namespace
 
 } // namespace
 
-auto auth_rule_hook_name(rooms::RoomVersionPolicy const& policy) -> std::string
+// MSC4289: room creators hold an effectively infinite power level that is
+// independent of (and overrides) any entry in the power_levels event.
+// Exposed publicly (moved out of the anonymous namespace) so state
+// resolution's reverse topological power ordering can compute a sender's
+// power the same way the auth rules do, instead of re-implementing (and
+// getting wrong) the same default-level logic.
+// Spec: rooms/v10.md — Definitions, "Reverse topological power ordering",
+// rule 1 ("x's sender has greater power level than y's sender, when
+// looking at their respective auth_events").
+auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
+                            canonicaljson::Value const& create_event, rooms::RoomVersionPolicy const& policy) noexcept
+    -> std::int64_t
 {
-    return std::string{"auth_rules."} + auth_rule_name(policy.auth_rules);
+    if (user_is_room_creator(create_event, sender, policy))
+    {
+        return creator_power;
+    }
+    if (value_has_content(power_levels))
+    {
+        return extract_user_power_level(power_levels, sender, !policy.power_levels_require_integers);
+    }
+    auto const* creator = event_content_string(create_event, "creator");
+    if (creator != nullptr && sender == *creator)
+    {
+        return 100;
+    }
+    return 0;
 }
 
 auto membership_name(MembershipState membership) noexcept -> char const*
@@ -790,53 +765,6 @@ auto membership_name(MembershipState membership) noexcept -> char const*
     }
 
     return "unknown";
-}
-
-auto power_level_allows(PowerLevelPolicy policy) noexcept -> bool
-{
-    return policy.sender_power >= policy.required_power;
-}
-
-auto membership_policy_allows(MembershipPolicy policy) -> EventAuthorizationDecision
-{
-    if (policy.target_is_restricted)
-    {
-        return {false, "membership", "4", "target membership is restricted"};
-    }
-    if (policy.requested_membership == MembershipState::join && policy.target_is_sender)
-    {
-        return {true, "membership", "4", {}};
-    }
-    if (policy.requested_membership == MembershipState::invite)
-    {
-        if (policy.sender_power >= policy.invite_power)
-        {
-            return {true, "membership", "4", {}};
-        }
-        return {false, "membership", "4", "insufficient power to invite"};
-    }
-    if (policy.requested_membership == MembershipState::restricted)
-    {
-        if (policy.sender_power >= policy.restrict_power)
-        {
-            return {true, "membership", "4", {}};
-        }
-        return {false, "membership", "4", "insufficient power to restrict membership"};
-    }
-    if (policy.requested_membership == MembershipState::leave)
-    {
-        if (policy.target_is_sender)
-        {
-            return {true, "membership", "4", {}};
-        }
-        if (policy.sender_power >= policy.remove_power)
-        {
-            return {true, "membership", "4", {}};
-        }
-        return {false, "membership", "4", "insufficient power to remove another member"};
-    }
-
-    return {false, "membership", "4", "membership transition is not allowed"};
 }
 
 auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>
@@ -929,32 +857,6 @@ auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std
     return default_value;
 }
 
-auto authorize_event(rooms::RoomVersionPolicy const& policy, EventAuthorizationRequest const& request)
-    -> EventAuthorizationDecision
-{
-    auto const rule_hook = auth_rule_hook_name(policy);
-    if (policy.id != request.room_version)
-    {
-        return {false, rule_hook, "0", "room version mismatch"};
-    }
-    if (request.event_type.empty())
-    {
-        return {false, rule_hook, "0", "event type is required"};
-    }
-    if (!power_level_allows(request.power_level))
-    {
-        return {false, rule_hook, "0", "insufficient power level"};
-    }
-    if (requires_membership(request.event_type))
-    {
-        auto membership_decision = membership_policy_allows(request.membership);
-        membership_decision.rule_hook = rule_hook;
-        return membership_decision;
-    }
-
-    return {true, rule_hook, "0", {}};
-}
-
 auto authorize_event_against_auth_events(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy,
                                          AuthEventMap const& auth_events) -> EventAuthorizationDecision
 {
@@ -998,56 +900,54 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         return make_denied("2", "room has no create event");
     }
 
-    // Step 3: For v6+ and v12, only reject cross-domain senders when the room
-    // explicitly disables federation via content.m.federate = false. When m.federate
-    // is absent or true the check does not apply and cross-domain senders are permitted.
+    // Step 3: Reject cross-domain senders when the room explicitly disables
+    // federation via content.m.federate = false. When m.federate is absent or
+    // true the check does not apply and cross-domain senders are permitted.
+    // This rule applies to every room version, including room version 1.
     // Spec: Matrix Server-Server API v1.19 — Authorization Rules, Step 3.
     // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules
-    if (policy.auth_rules == rooms::AuthRules::room_v6_plus || policy.auth_rules == rooms::AuthRules::room_v12)
+    auto const* create_obj = value_is_object(auth_events.create);
+    auto is_non_federated = false;
+    if (create_obj != nullptr)
     {
-        auto const* create_obj = value_is_object(auth_events.create);
-        auto is_non_federated = false;
-        if (create_obj != nullptr)
+        auto const* content = object_member_as_object(*create_obj, "content");
+        if (content != nullptr)
         {
-            auto const* content = object_member_as_object(*create_obj, "content");
-            if (content != nullptr)
+            auto const* federate_val = object_member(*content, "m.federate");
+            if (federate_val != nullptr)
             {
-                auto const* federate_val = object_member(*content, "m.federate");
-                if (federate_val != nullptr)
-                {
-                    auto const* federate_bool = std::get_if<bool>(&federate_val->storage());
-                    is_non_federated = (federate_bool != nullptr && !*federate_bool);
-                }
+                auto const* federate_bool = std::get_if<bool>(&federate_val->storage());
+                is_non_federated = (federate_bool != nullptr && !*federate_bool);
             }
         }
+    }
 
-        if (is_non_federated)
+    if (is_non_federated)
+    {
+        auto const sender_domain = domain_of(*sender);
+        // v6–v10 rooms store the creator in content.creator; v11+ rooms (including v12)
+        // removed content.creator — use the create event's sender field as the fallback.
+        auto const* content_creator = event_content_string(auth_events.create, "creator");
+        std::string_view creator_domain_src;
+        if (content_creator != nullptr)
         {
-            auto const sender_domain = domain_of(*sender);
-            // v6–v10 rooms store the creator in content.creator; v11+ rooms (including v12)
-            // removed content.creator — use the create event's sender field as the fallback.
-            auto const* content_creator = event_content_string(auth_events.create, "creator");
-            std::string_view creator_domain_src;
-            if (content_creator != nullptr)
+            creator_domain_src = *content_creator;
+        }
+        else if (create_obj != nullptr)
+        {
+            auto const* create_sender = string_member(*create_obj, "sender");
+            if (create_sender != nullptr)
             {
-                creator_domain_src = *content_creator;
+                creator_domain_src = *create_sender;
             }
-            else if (create_obj != nullptr)
-            {
-                auto const* create_sender = string_member(*create_obj, "sender");
-                if (create_sender != nullptr)
-                {
-                    creator_domain_src = *create_sender;
-                }
-            }
-            if (creator_domain_src.empty())
-            {
-                return make_denied("3", "create event has no identifiable creator");
-            }
-            if (sender_domain != domain_of(creator_domain_src))
-            {
-                return make_denied("3", "sender domain does not match creator domain");
-            }
+        }
+        if (creator_domain_src.empty())
+        {
+            return make_denied("3", "create event has no identifiable creator");
+        }
+        if (sender_domain != domain_of(creator_domain_src))
+        {
+            return make_denied("3", "sender domain does not match creator domain");
         }
     }
 
@@ -1143,19 +1043,23 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 return make_denied("5", "user was not invited to this invite-only room");
             }
 
-            // knock join rule: knocked users can join if invited
-            if (join_rule == "knock")
+            // knock join rule (room v7+): "If the join_rule is invite or knock
+            // then allow if membership state is invite or join."
+            if (join_rule == "knock" && policy.knock_join_rule)
             {
                 if (membership_at_least_one_of(target_current_membership,
                                                {MembershipState::invite, MembershipState::join}))
                 {
                     return make_allowed("5");
                 }
-                return make_denied("5", "user was not invited to knock-restricted room");
+                return make_denied("5", "user was not invited to a knock room");
             }
 
-            // restricted / restricted_v2 join rules
-            if (join_rule == "restricted" || join_rule == "restricted_v2")
+            // restricted (room v8+) and knock_restricted (room v10+), rule
+            // 4.3.5: "If the join_rule is restricted or knock_restricted". A
+            // join rule the room version does not define is rejected below.
+            if ((join_rule == "restricted" && policy.restricted_join_rule) ||
+                (join_rule == "knock_restricted" && policy.knock_restricted_join_rule))
             {
                 if (membership_at_least_one_of(target_current_membership,
                                                {MembershipState::invite, MembershipState::join}))
@@ -1195,7 +1099,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 return make_allowed("5");
             }
 
-            return make_denied("5", "unknown join rule");
+            return make_denied("5", "join rule not defined by this room version");
         }
 
         // Step 5: knock membership — Spec § Authorization Rules, rule 5.
@@ -1207,6 +1111,12 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         //   • the room join_rule is "knock" or "knock_restricted"
         if (requested == MembershipState::knock)
         {
+            // Room versions before 7 define no knock membership: "Otherwise,
+            // the membership is unknown. Reject."
+            if (!policy.knock_join_rule)
+            {
+                return make_denied("5", "knock membership not defined by this room version");
+            }
             if (!target_is_sender)
             {
                 return make_denied("5", "cannot knock on behalf of another user");
@@ -1229,7 +1139,10 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     knock_join_rule = *rule;
                 }
             }
-            if (knock_join_rule == "knock" || knock_join_rule == "knock_restricted")
+            // v7-v9: "anything other than knock, reject"; v10+: "anything other
+            // than knock or knock_restricted, reject".
+            if (knock_join_rule == "knock" ||
+                (knock_join_rule == "knock_restricted" && policy.knock_restricted_join_rule))
             {
                 return make_allowed("5");
             }
@@ -1668,73 +1581,6 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     }
 
     return make_allowed("14");
-}
-
-auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSelection
-{
-    auto selection = AuthEventSelection{};
-
-    // v12 (MSC4291): the create event is implicit in the room ID and MUST NOT be
-    // listed in auth_events. For all earlier room versions create is always required.
-    // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md
-    auto const* policy = rooms::find_room_version_policy(request.room_version);
-    auto const create_is_implicit = (policy != nullptr && policy->create_event_is_room_id);
-
-    if (!create_is_implicit)
-    {
-        selection.required.push_back({AuthEventKind::create, "m.room.create", ""});
-    }
-
-    if (requires_power_levels(request.event_type))
-    {
-        selection.required.push_back({AuthEventKind::power_levels, "m.room.power_levels", ""});
-    }
-    if (request.event_type == "m.room.member")
-    {
-        selection.required.push_back({AuthEventKind::join_rules, "m.room.join_rules", ""});
-        selection.required.push_back({AuthEventKind::member, "m.room.member", request.state_key});
-    }
-    if (request.membership.third_party_invite)
-    {
-        selection.required.push_back(
-            {AuthEventKind::third_party_invite, "m.room.third_party_invite", request.state_key});
-    }
-
-    return selection;
-}
-
-auto auth_event_kind_name(AuthEventKind kind) noexcept -> char const*
-{
-    switch (kind)
-    {
-    case AuthEventKind::create:
-        return "create";
-    case AuthEventKind::power_levels:
-        return "power_levels";
-    case AuthEventKind::join_rules:
-        return "join_rules";
-    case AuthEventKind::member:
-        return "member";
-    case AuthEventKind::third_party_invite:
-        return "third_party_invite";
-    }
-
-    return "unknown";
-}
-
-auto auth_chain_contains(AuthChain const& chain, std::string_view event_id) noexcept -> bool
-{
-    return std::ranges::any_of(chain.event_ids, [event_id](std::string const& existing) {
-        return existing == event_id;
-    });
-}
-
-auto append_auth_chain_event(AuthChain& chain, std::string_view event_id) -> void
-{
-    if (!event_id.empty() && !auth_chain_contains(chain, event_id))
-    {
-        chain.event_ids.push_back(std::string{event_id});
-    }
 }
 
 } // namespace merovingian::events

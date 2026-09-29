@@ -88,8 +88,19 @@ struct AdminAuthResult
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view new_password, bool logout_devices = true)
     -> OperationResult;
+// Result of verifying a password during re-authentication (UIA). `ok` is true
+// only when the password is correct AND the account is not currently locked
+// out. `retry_after_ms` is non-zero when the per-account failed-login lockout
+// is active; callers MUST return 429 M_LIMIT_EXCEEDED in that case rather than
+// 401 UIA, because further guesses are pointless until the window expires.
+struct PasswordVerificationResult final
+{
+    bool ok{false};
+    std::uint64_t retry_after_ms{0U};
+};
+
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
-                                              std::string_view password) -> bool;
+                                              std::string_view password) -> PasswordVerificationResult;
 // Returns true when the presented access token exists in the session store but
 // has expired naturally (not revoked). Used by the client-server auth gate to
 // include soft_logout=true in the 401 body so clients use /refresh rather than

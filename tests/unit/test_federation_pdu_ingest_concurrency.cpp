@@ -8,6 +8,8 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -133,6 +135,25 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     store.events.push_back(
         {member_id, std::string{room_id}, "@alice:remote.example.org", member_json, 0U, 0U, {}, {}, {}});
     store.state.push_back({std::string{room_id}, "m.room.member", "@alice:remote.example.org", member_id});
+
+    // ADR-0064 phase B2: ingest_pdu_event now also authorises against the
+    // state immediately before the PDU (spec step 5, via
+    // homeserver::compute_state_before), which needs a real state group —
+    // not just the naive store.state rows above — matching
+    // seed_room_with_genesis_state_group in
+    // tests/unit/test_pdu_ingestion_state_groups.cpp.
+    auto const* policy = rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+    auto const genesis_state = std::vector<database::PersistentStateGroupStateEntry>{
+        {"", "m.room.create",       "",                          create_id},
+        {"", "m.room.power_levels", "",                          pl_id    },
+        {"", "m.room.member",       "@alice:remote.example.org", member_id},
+    };
+    auto const group_id = database::create_or_reuse_state_group(store, room_id, std::string{room_id} + ":genesis-group",
+                                                                std::nullopt, genesis_state);
+    REQUIRE(group_id.has_value());
+    REQUIRE(database::set_event_state_group(store, member_id, *group_id));
+    REQUIRE(database::update_forward_extremities(store, room_id, member_id, {}, true));
 }
 
 [[nodiscard]] auto make_message_pdu(std::string_view room_id, std::size_t seq)
@@ -154,8 +175,32 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     event_obj.push_back(
         canonicaljson::make_member("origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(1000 + seq)}));
     event_obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(3)}));
-    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
-    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+    // ADR-0064 phase B2: ingest_pdu_event now also authorises against the
+    // state immediately before the PDU (spec step 5), which needs a real
+    // prev_event with a recorded state group — seed_room's genesis tip.
+    // Every concurrently-sent message in a room names the same tip: the
+    // per-room stripe mutex already serializes ingestion for one room, so
+    // this does not weaken the concurrency coverage (still many threads
+    // racing to ingest into the same and different rooms), it just gives
+    // each message a resolvable state-before instead of the trivial empty
+    // one an empty prev_events list produced before this phase.
+    auto const member_id = std::string{room_id} + ":member";
+    auto prev_events_array = canonicaljson::Array{};
+    prev_events_array.push_back(canonicaljson::Value{member_id});
+    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_events_array)}));
+    // Named auth_events: alice's real power_levels/member events, matching
+    // seed_room's naming convention. m.room.create is deliberately NOT
+    // named: this room is v12 (MSC4291), where the create event is
+    // implicit in the room ID and naming it is itself a selection
+    // violation; ingest_pdu_event resolves it separately for v12.
+    auto const pl_id = std::string{room_id} + ":pl";
+    auto auth_event_ids = std::vector<std::string>{pl_id, member_id};
+    auto auth_events_array = canonicaljson::Array{};
+    for (auto const& id : auth_event_ids)
+    {
+        auth_events_array.push_back(canonicaljson::Value{id});
+    }
+    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_events_array)}));
 
     auto const hash = events::make_content_hash(canonicaljson::Value{event_obj});
     REQUIRE(hash.error.empty());
@@ -176,6 +221,8 @@ auto seed_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string_
     env.event_type = "m.room.message";
     env.origin_server_ts = static_cast<std::int64_t>(1000 + seq);
     env.depth = 3U;
+    env.prev_event_ids = {member_id};
+    env.auth_event_ids = std::move(auth_event_ids);
     env.json = serialized.output;
     return env;
 }

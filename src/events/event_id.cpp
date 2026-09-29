@@ -125,27 +125,40 @@ auto make_content_hash(canonicaljson::Value const& event) -> EventHashResult
     return sha256_base64(serialized.output, false);
 }
 
+namespace
+{
+
+    [[nodiscard]] auto encoded_reference_hash(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy,
+                                              bool url_safe) -> EventHashResult
+    {
+        auto redacted = redact_event(event, policy);
+        if (!redacted.error.empty())
+        {
+            return {{}, redacted.error};
+        }
+
+        auto const serialized = serialize_object_without(redacted.event, {"signatures", "unsigned"});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {{}, canonicaljson::canonical_json_error_name(serialized.error)};
+        }
+
+        return sha256_base64(serialized.output, url_safe);
+    }
+
+} // namespace
+
 auto make_reference_hash(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy) -> EventHashResult
 {
-    auto redacted = redact_event(event, policy);
-    if (!redacted.error.empty())
-    {
-        return {{}, redacted.error};
-    }
-
-    auto const serialized = serialize_object_without(redacted.event, {"signatures", "unsigned"});
-    if (serialized.error != canonicaljson::CanonicalJsonError::none)
-    {
-        return {{}, canonicaljson::canonical_json_error_name(serialized.error)};
-    }
-
-    return sha256_base64(serialized.output, true);
+    return encoded_reference_hash(event, policy, true);
 }
 
 auto make_reference_hash_event_id(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
     -> EventIdResult
 {
-    auto const hash = make_reference_hash(event, policy);
+    // rooms/v3.md: the event ID is the reference hash in Unpadded Base64;
+    // rooms/v4.md onwards use URL-safe base64.
+    auto const hash = encoded_reference_hash(event, policy, policy.event_id_url_safe_base64);
     if (!hash.error.empty())
     {
         return {{}, hash.error};

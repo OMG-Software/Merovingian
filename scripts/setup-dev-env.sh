@@ -172,7 +172,9 @@ package_list_for() {
             printf '%s\n' "llvm meson ninja pkgconf git perl bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo catch2 cppcheck"
             ;;
         pkgin)
-            printf '%s\n' "clang meson ninja-build pkg-config git python311 perl bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo catch2 cppcheck"
+            # No pkgsrc openssl: pkgsrc's curl and postgresql17-client link
+            # NetBSD's base OpenSSL, and linking a second one fails under werror.
+            printf '%s\n' "clang meson ninja-build pkg-config git python311 perl bison flex gmake libsodium postgresql17-client curl png libjpeg-turbo catch2 cppcheck"
             ;;
         *)
             fail "unsupported package manager: $1"

@@ -38,6 +38,25 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertNotIn("src/homeserver/main.cpp", workflow)
         self.assertNotIn("src/homeserver/main.cpp", codecov)
 
+    def test_coverage_measures_the_postgresql_store(self) -> None:
+        # GIVEN the coverage workflow.
+        self.assertTrue(COVERAGE_WORKFLOW.is_file(), "coverage workflow is missing")
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the full suite runs for coverage.
+        # THEN a live PostgreSQL is provided with the database and both roles
+        # handed to the tests, so the [postgresql] scenarios run instead of
+        # skipping and the PostgreSQL store is measured rather than reading as
+        # entirely uncovered.
+        self.assertIn("image: postgres:", workflow)
+        self.assertIn("MEROVINGIAN_TEST_POSTGRESQL_URI:", workflow)
+        self.assertIn("MEROVINGIAN_TEST_POSTGRESQL_MIGRATION_ROLE:", workflow)
+        self.assertIn("MEROVINGIAN_TEST_POSTGRESQL_RUNTIME_ROLE:", workflow)
+        self.assertIn("CREATE ROLE merovingian_migration", workflow)
+        self.assertIn("CREATE ROLE merovingian_runtime", workflow)
+        # AND hardening stays on, so the hardening paths remain measured.
+        self.assertNotIn("MEROVINGIAN_TEST_DISABLE_HARDENING", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

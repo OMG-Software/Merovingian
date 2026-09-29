@@ -300,6 +300,19 @@ threat it closes; the controls above are the standing defences these reinforce.
   refresh-token lookup reject expired tokens (audit reason `token expired`),
   forcing re-login/refresh. The advertised `expires_in_ms` now reads from the
   configured access-token lifetime so advertised == enforced.
+  **Regressed across restarts until 0.12.13:** `hydrate_local_database`
+  rebuilt each session without its `expires_at`, and `find_session` reads only
+  the session, so after any restart every access token was valid forever
+  again. Hydration now copies every field (test `[session_restart]`).
+
+- **Stolen refresh token used alongside the legitimate client (0.12.13,
+  audit item 6, ADR-0074):** rotation revoked the presented refresh token at
+  once — which also broke the spec's guarantee that a client whose response
+  was lost can retry — and nothing noticed an invalidated token being
+  presented again. Now the old token stays valid until the new pair is first
+  used, and presenting a refresh token that has been invalidated revokes the
+  device's whole session (the spec's SHOULD), so whichever party presents a
+  retired token ends the session for both and forces re-authentication.
 
 - **`SecretBuffer` wipe was elidable and moves left residue (#276):** the
   destructor used `std::ranges::fill(m_buffer, 0U)`, a dead store the compiler
@@ -339,32 +352,22 @@ threat it closes; the controls above are the standing defences these reinforce.
   signed value never crosses IPC is deferred (requires a `build_outbound_request`
   provider-abstraction refactor) for minimal additional security value.
 
-  **Main does not re-verify PDU Ed25519 signatures before persisting (#450,
-  accepted residual gap):** main's `pdu_sink` (wired in
-  `homeserver/local_http_router.cpp::ingest_pdu_event`, invoked directly for
-  same-process federation and relayed from the worker via
-  `homeserver/worker_pool.cpp`'s `pdu_ingest` IPC handler) runs
-  `events::authorize_event_against_auth_events` and
-  `events::verify_pdu_content_hash`, but does not independently re-run Ed25519
-  signature verification against the sender's published key. The worker is the
-  sole signature-verification boundary for the relay path
-  (`federation::authorize_federation_pdu` with a resolver-fetched key, in
-  `federation/inbound_request.cpp`, called before the transaction handler
-  invokes `pdu_sink`). This is consistent with the residual worker-trust model
-  above — the worker cannot forge a peer's identity and holds no signing
-  secret — but it means main, which holds the signing secret and owns the
-  authoritative store, trusts the worker's prior verification rather than
-  checking cryptographically for itself. If the worker's `remote_key_resolver`
-  is ever unwired, or a future bug relays before verifying, or the worker
-  process is compromised, main would persist a forged PDU into the event
-  graph. Accepted as a defense-in-depth gap rather than fixed with independent
-  re-verification: doing so would require plumbing the raw PDU and a
-  main-side-resolved remote key through to `ingest_pdu_event` (a different
-  shape than the `InboundPduEnvelope` it receives today), which is a larger
-  structural change than this gap's severity (LOW) warrants. Revisit if the
-  worker's trust model changes (e.g. #319/#323-style hardening is ever
-  weakened) or if `InboundPduEnvelope` gains a verified-signature carrier as
-  part of unrelated work.
+  **Main re-verifies the signature of every PDU a worker relays (#450,
+  resolved in 0.12.13, ADR-0071).** Until 0.12.13 main trusted the worker's
+  signature check: a compromised worker, or a future bug that relayed before
+  verifying, could have made main persist events impersonating any sender the
+  room's state authorised. Now `homeserver/worker_pool.cpp`'s
+  `handle_pdu_ingest_request`, `handle_membership_ingest_request` and
+  `handle_invite_ingest_request` each verify the signature of the sender's
+  server (`federation::authorize_federation_pdu`, the check the worker runs)
+  with a key main resolves through its own `remote_key_resolver`, before any
+  runtime lock is taken. The `/send` and membership envelopes are rebuilt from
+  the verified event rather than from the worker's separately framed fields,
+  and a frame whose event ID disagrees with the signed event is refused. The
+  worker's PostgreSQL role cannot write the key cache (ADR-0062), so a key
+  main uses is one main fetched or cached itself. Residual: the frame's
+  transport `origin` is still the worker's claim; it only chooses where main
+  backfills from, and everything fetched there is verified again.
 
 - **Signing secret in federation worker address space (v0.10.2):**
   in Phase 1 the worker loaded the server signing secret from the database, so a
@@ -374,6 +377,85 @@ threat it closes; the controls above are the standing defences these reinforce.
   `sign_response` frames, and `IpcEd25519Provider::verify` is unsupported in
   the worker. The private key exists only in the main process's locked
   `SecretBuffer`; worker compromise now leaks no long-lived signing material.
+
+- **Operator master key reachable from the federation worker (0.12.13 audit,
+  finding N1; part 1 of 3, this entry updated as later parts land):** the
+  worker never held the Matrix signing secret directly (see the entry above),
+  but it opened the same operator master-key file main does — to derive the
+  IPC channel's own auth key — and kept that path in its config for the rest
+  of its lifetime. A compromised worker could therefore read the master key
+  file itself and re-derive every key the master key protects: the
+  signing-secret secret-box key (`crypto::signing_secret_box_key`, which
+  decrypts `server_signing_keys.secret_key` at rest) and the access-token HMAC
+  keys (`crypto::derive_token_hmac_key[_v3]`), even though no worker code path
+  actually reaches the client-server or `GET /_matrix/key/v2/server` handlers
+  that use them today (`FederationProxy::handle` always serves
+  `/_matrix/key/v2/server` and `/_matrix/federation/v1/openid/userinfo` on
+  main, and the worker always installs a non-null `signing_override`, so
+  `ensure_runtime_server_signing_key` is never called there) — the exposure
+  was the *ability* to derive these keys from a file the worker had open, not
+  a reachable code path that used it. Part 1 (this entry) removes the file
+  access at the code level: `homeserver::WorkerSupervisor::spawn_and_connect`
+  derives the IPC auth key once (in `WorkerPool`'s constructor) and hands the
+  worker only those 32 derived bytes over a second inherited pipe fd
+  (`--ipc-key-fd`); `federation_worker::read_ipc_auth_key` reads exactly that
+  many bytes, requires EOF, and `federation_worker::clear_master_key_file`
+  empties `security.secrets.master_key_file` in the worker's own in-memory
+  config copy before `homeserver::start_runtime()` runs, so no code path in
+  the worker — today's or a future one — can open the file even by accident.
+  See [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
+
+  **Part 2, PostgreSQL: closed.** A PostgreSQL-backed worker now connects
+  with a *separate, least-privilege login* (`federation.worker.
+  database_uri_file`, provisioned by `packaging/postgresql/
+  provision-federation-worker-role.sql`), handed over a third inherited pipe
+  fd (`homeserver::kWorkerDbUriFd`) the same way the IPC auth key is — the
+  worker never opens that file itself. `SET ROLE`-based separation was
+  rejected: a session holding the login role that granted a restricted role
+  can always `RESET ROLE` back to it, so only a distinct login credential
+  closes this. The provisioned role has no `SELECT` on `server_signing_keys`
+  (or the other tables `database::table_load_profile_includes` excludes), so
+  a compromised worker with this role cannot read the encrypted `secret_key`
+  ciphertext at all, closing the residual gap the part-1 entry above
+  recorded. Independently, `database::TableLoadProfile::federation_worker`
+  (`RuntimeStartOptions::database_load_profile`, always set by
+  `WorkerEventLoop::run()`) means the worker never pulls that ciphertext —
+  or the other excluded tables' credential material — into its own process
+  memory even when running in the explicit, `CRITICAL`-logged
+  `allow_shared_database_credentials=true` opt-out mode. See
+  `docs/database-persistence.md`, "Federation worker least-privilege role",
+  for the full table list and the SQL.
+
+  **SQLite: not applicable, unchanged.** A single shared SQLite file offers
+  no role boundary to separate — the worker keeps opening the same file
+  there. Part 1's file-access removal is that backend's only protection for
+  the master key specifically; the load profile above still reduces (but,
+  for SQLite, does not eliminate — the file itself remains fully readable by
+  the worker process) how much credential material sits resident in the
+  worker's memory.
+
+  **Part 3, Linux Landlock: closed.** The worker now restricts its own
+  filesystem access with `platform::apply_worker_landlock()`
+  (`landlock_create_ruleset`/`landlock_add_rule`/`landlock_restrict_self`),
+  called from `federation_worker::main()` before the worker seccomp filter
+  and before the event loop opens the database or handles any inbound
+  request. The ruleset grants only the SQLite database directory (read-write,
+  required, when `database.backend=sqlite`) and a fixed set of best-effort,
+  read-only or read-execute OS-integration paths (CA trust store candidates,
+  resolver configuration, NSS/dynamic-linker library directories, timezone
+  data) — never the master key file, either database URI file, or TLS
+  private keys. A worker compromised through a memory-safety bug — as
+  opposed to one abusing a code path that intentionally reads a file — can no
+  longer open any of those directly off disk, closing the gap the entry above
+  used to record as residual. When the running kernel has no Landlock
+  support (older than Linux 5.13, or disabled at boot), the worker refuses to
+  start unless `federation.worker.allow_without_landlock=true` is set, which
+  logs CRITICAL on every start — mirroring ADR-0041's fail-closed seccomp
+  policy; any other Landlock failure is always fatal regardless of that
+  opt-out. See
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md),
+  part 3, for the allowlist derivation and the `strace` evidence it is based
+  on.
 
 - **Single worker as a chokepoint (v0.10.3, mitigated in v0.10.4):**
   Phase 1 used one federation worker for every room. A CPU-heavy room could
@@ -499,6 +581,15 @@ threat it closes; the controls above are the standing defences these reinforce.
   `federation::ip_address_is_valid()` (strict `inet_pton`-based IPv4/IPv6
   literal check) before trusting it; a missing or malformed value falls back
   to the direct peer address instead.
+- **A client choosing its own rate-limit bucket through X-Forwarded-For
+  (0.12.13 audit item 4, ADR-0073):** the limiter still used the *leftmost*
+  entry, which the client controls whenever a trusted proxy appends to the
+  header rather than overwriting it, so a client could prefix a fresh valid
+  address to each request and never be limited. It now walks the list from
+  the right past trusted proxies, and reads every header line as one list.
+  In the same change IPv6 clients are grouped by
+  `server.http.ipv6_client_prefix_length` (default /64), since one site is
+  handed a whole /64 and could otherwise rotate addresses within it.
 - **Admin media routes accepted unsanitized media IDs from the raw path
   suffix (2026-07 audit):** the `/_merovingian/admin/media/{quarantine,
   release,remove}` routes passed the raw path suffix directly as the media
@@ -537,7 +628,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   after a compromise and the old server became unreachable, an attacker
   holding the old private key could keep forging PDU signatures
   indefinitely. Fixed by rejecting PDUs verified against a key whose
-  `valid_until_ts` has passed as of the request's `now_ts`.
+  `valid_until_ts` has passed as of the request's `now_ts`. **Superseded in
+  0.12.13 by [ADR-0075](adr/0075-event-signing-key-validity-is-judged-at-origin-server-ts.md):**
+  that check compared with the current time, which the spec does not ask for
+  (it rejected valid historical events, and v1-v4 events on a field the spec
+  says MUST be ignored), and backfill skipped it. From room v5 a key must now
+  be valid at the event's own `origin_server_ts`, and a fetched key is cached
+  for at most 7 days (`min(valid_until_ts, fetched_at + 7 days)`, rooms/v5.md).
+  **Residual:** `origin_server_ts` is chosen by the sender, so someone holding
+  an old private key can still sign events backdated to within that key's
+  capped validity while its server is unreachable. The spec accepts this;
+  such events still have to pass the auth rules against the state before
+  them and against current state.
 - **Media content-sniffing was a no-op, defeating the declared/actual MIME
   mismatch quarantine (2026-07 audit):** `client_server.cpp` built the
   internal upload pipe body by copying the client-declared `Content-Type`
@@ -1054,6 +1156,21 @@ threat it closes; the controls above are the standing defences these reinforce.
   is in flight; it is released the moment the next request's first bytes
   arrive, so the cap bounds parked threads, not active requests.
 
+- **One host filling the global connection budget (0.12.13 audit item 1,
+  ADR-0072).** Admission was bounded only by the global queue depth and the
+  global parked keep-alive cap, and the per-IP rate limiter runs only once a
+  request is parsed, so one host could open connections just under the
+  slow-request thresholds and lock every other client out. Both accept loops
+  now admit a connection only while its client key (IPv6 grouped by
+  `server.http.ipv6_client_prefix_length`, default /64) holds fewer than
+  `server.http.max_connections_per_ip` (default 64) connections, and close a
+  refused socket before reading a byte or starting a TLS handshake. The slot
+  is RAII and released on every path that closes the connection.
+  **Residual:** addresses in `server.trusted_proxies` are exempt, so behind a
+  reverse proxy the per-client connection limit is the proxy's job; and many
+  distinct hosts can still share out the global budget — the cap bounds one
+  host's share, not a distributed flood.
+
 - **Outbound Application Service API transaction delivery is deliberately
   NOT SSRF-filtered the way federation/push/identity outbound calls are
   (v0.12.1, routed).** `appservice::AppserviceClient` (`src/appservice/
@@ -1301,6 +1418,35 @@ threats they represent, and the mitigations now in place:
 - **Restricted-room state diverged across federation.** V2 state resolution
   omitted `authorising_user_member`, so valid restricted joins failed auth.
   Mitigation: the auth-event map is populated from resolved state.
+- **State resolution could diverge from conformant servers by ignoring the
+  auth difference.** `resolve_state_v2` only ever considered power events
+  literally present in the two conflicted state groups, never the spec's full
+  conflicted set (conflicted state set + auth difference), so a power-level
+  change reachable only through a conflicted event's `auth_events` chain (e.g.
+  authorising a later ban) was invisible and its effect silently dropped.
+  Room v12 additionally needed the conflicted state subgraph and an empty
+  starting map for the iterative auth checks — support for those was missing
+  entirely. Mitigation (0.12.13): `resolve_state_v2` computes the auth
+  difference (and, for v12, the conflicted state subgraph) via a bounded,
+  fail-closed auth-chain walk (`StateResolutionRequest::event_lookup`,
+  `events::max_auth_chain_walk_events`); a missing or unreachable ancestor, or
+  an over-budget walk, resolves to `rejected_state_conflict` rather than a
+  partial result. See `docs/event-engine.md` and ADR-0063.
+- **Reverse topological power ordering could be manipulated by an event's own
+  content.** `power_level_from_event` read an `m.room.power_levels`
+  candidate's sender power from that SAME event's own new content — a
+  self-elevating power_levels event (granting its own sender a level it does
+  not actually hold) ranked itself by the claimed level, not its real one —
+  and read every other candidate's power from a shared "unconflicted" state
+  map that need not match the candidate's own `auth_events` ancestor.
+  Mitigation (0.12.13): power is now read from the `m.room.power_levels` (and,
+  for v12, `m.room.create`) event in the CANDIDATE'S OWN `auth_events`
+  (`find_auth_ancestor_context`, reusing `events::effective_sender_power` so
+  the ordering agrees with the auth rules on every default), fetched through
+  the same fail-closed `AuthChainEventSource` and cap as the auth difference;
+  an unresolvable `auth_events` entry fails the sort closed (ADR-0063) rather
+  than guessing a default. `mainline_order` was audited against the same
+  defect class and found not to have it. See `docs/event-engine.md`.
 - **State resolution could be ordered by the wrong power level.** The resolver
   read power levels integer-only while the auth path parsed room-v1-9 string
   values, letting a lower-power sender's event win. Mitigation: the resolver
@@ -1325,6 +1471,125 @@ threats they represent, and the mitigations now in place:
   backfill `limit`; Ed25519 secret material reaching libsodium unvalidated;
   guessable shared UIAA session ids; device IDs containing the key-ID separator;
   and transport-layer errors reaching browsers as opaque CORS failures.
+
+### PDU ingestion resolved state diverging by delivery order (v0.12.13, ADR-0064 phase B1)
+
+- **Room state could diverge from the rest of the federation depending on
+  the order PDUs happened to arrive in, and a peer that controls delivery
+  order could choose the outcome.** `ingest_pdu_event` authorised each
+  inbound PDU against current state only and wrote its state straight into
+  `current_state`; `resolve_state_v2` (see above) was correct but never ran
+  on this path, so two concurrent, individually valid state events resolved
+  as whichever committed last — a same-room-stripe race, not a spec
+  resolution. Mitigation (phase B1): `current_state` is now a cache of
+  `resolve_state_v2` run over the room's forward extremities, recomputed
+  after every accepted event (`merovingian::homeserver::state_bookkeeping`,
+  see `docs/event-engine.md` and `docs/database-persistence.md`). A
+  `prev_event` whose state we do not have recorded fails the PDU closed
+  (`missing_prev_state`) rather than guessing from current state, which
+  would have reintroduced the same order-dependence through a different
+  door.
+- **Phase B1 completion (same branch, follow-up commits): every local and
+  inbound-accepted event path, not just `ingest_pdu_event`.** A locally
+  created event previously got no after-state group or forward-extremity
+  update at all — a real federation regression versus pre-ADR-0064
+  behavior: the next inbound PDU naming it as a `prev_event` failed closed
+  with `missing_prev_state` and was dropped, and every inbound event in a
+  room joined after upgrading was lost the same way, because the join event
+  itself had no state group. Mitigation: `homeserver::store_local_event`
+  (the choke point `persist_composed_event`/`send_event` now goes through,
+  guarded by a source-tree test —
+  `tests/unit/test_store_event_choke_point.cpp` — that fails the build if a
+  new call site bypasses it), the same treatment for
+  `local_http_router.cpp`'s `membership_acceptor` (inbound
+  send_join/send_leave/send_knock acceptance), and federated-join snapshot
+  seeding in `join_room`. See `docs/database-persistence.md`, "Phase B1 of
+  spec-conformant PDU ingestion", for the full call-site list.
+- **Residual scope, unchanged by phase B1:** the receipt-order checks
+  themselves (auth against the state *before* the event vs. against current
+  state, soft-failure) are unaffected — `ingest_pdu_event` still authorises
+  only against current state, exactly as before; that is phase B2.
+
+### PDU ban-evasion accepted into client timelines (v0.12.13, ADR-0064 phase B2)
+
+- **A banned (or otherwise power-restricted) user could keep messages
+  reaching client timelines by having their server send events referencing
+  DAG history from before the ban, and there was no way to tell this from a
+  legitimately delayed event.** Before phase B2, `ingest_pdu_event`
+  authorised every inbound PDU against current state only; a PDU whose
+  `prev_events` pointed at a pre-ban tip passed that single check exactly
+  the same as a normal event and was accepted outright — same effect as if
+  the ban had never happened, for any message the banned user's server
+  chose to backdate this way. The spec is explicit that such an event
+  cannot simply be rejected (indistinguishable from a legitimately delayed
+  one) but also must not reach clients. Mitigation: `ingest_pdu_event` now
+  runs three checks in order — auth against the PDU's own `auth_events`,
+  auth against the state before the event, auth against current state — and
+  only the last is a soft failure rather than a rejection. A ban-evading PDU
+  passes the first two (the state it references genuinely predates the ban)
+  but fails the third (the room's actual resolved state has the sender
+  banned), so it is stored — participating in state resolution, so a later
+  event cannot use it to escape detection a second time — but never becomes
+  a forward extremity and is excluded from every client-facing timeline
+  (`/sync`, sliding sync, `/messages`, `/context`, `/event/{eventId}`,
+  search — see `docs/event-engine.md`, "Phase B2"). See
+  `tests/unit/test_pdu_ingestion_auth_checks.cpp`, "Ban evasion" scenario.
+- **Residual risk, unchanged by phase B2:** a soft-failed *state* event can
+  still be admitted into `current_state` if state resolution later favors it
+  — this is spec-mandated (resolution, not delivery-order tricks, decides
+  state), and is exactly what state-res v2's power/mainline ordering exists
+  to make deterministic and unexploitable; see "PDU ingestion resolved
+  state diverging by delivery order" above.
+- **Not covered by this phase:** the membership-acceptor path
+  (`send_join`/`send_leave`/`send_knock` acceptance,
+  `src/federation/inbound_request.cpp`) does not run this three-way check
+  and still hard-rejects a content-hash mismatch instead of redacting — see
+  `src/federation/AGENTS.md`.
+
+### Gaps in room history leaving inbound PDUs unapplied (v0.12.13, ADR-0064 phase C)
+
+- **A legitimate PDU whose `prev_events` or `auth_events` were not yet known to
+  this server was held as `missing_prev_state` indefinitely, even when the
+  sending server could have supplied the missing events.** Before phase C,
+  `ingest_pdu_event` failed closed at the first unknown reference and never
+  repaired the gap automatically. That was safe, but it partitioned the server
+  from rooms whose history arrived out of order or via a different peer.
+- **Mitigation:** the same path now attempts a bounded backfill from the PDU's
+  origin. It tries `POST /_matrix/federation/v1/get_missing_events/{roomId}`
+  (up to 20 events) and then `GET /_matrix/federation/v1/event/{eventId}` for
+  individual missing references, with a hard cap of 5 outbound calls per PDU.
+  Each returned event is verified independently — content hash, signature,
+  `auth_events` selection, and auth against its own `auth_events` — before it
+  is stored as an outlier with a recorded after-state group. An
+  `/event/{eventId}` answer must be the requested event (its computed ID must
+  match; 0.12.13), so an origin cannot use the fetch to plant an unrelated,
+  validly signed event. Events that fail
+  any check are dropped; if the cap is reached or references remain missing,
+  the original PDU still returns `missing_prev_state` and is not applied, so
+  unverified data never authorises a PDU.
+- **`/state_ids` fallback (ADR-0069, ADR-0070):** when those fetches cannot
+  close the gap, the origin is asked for the state at the missing event. Every
+  named event is verified before use, and the snapshot is refused if it names
+  an event from another room, a `rejected` event, a non-state event or a
+  duplicate `(type, state_key)`. A snapshot state event with no local
+  state-before is verified through `/event_auth` against its own `auth_events`
+  only.
+- **Threat considered and closed (ADR-0070):** as first implemented, such an
+  event was given an after-state of its own `auth_events` plus itself. A later
+  PDU naming it as a `prev_event` was then authorised against a thin state the
+  origin chose, rather than the room's state before it, leaving only the
+  current-state check and state resolution to stop, for example, a banned
+  user's event. Such an event now carries no state group, so a PDU building on
+  it must first obtain a verified state at it, or is held as
+  `missing_prev_state`. Test: `[event_auth_outlier]` in
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`.
+- **Residual risk, unchanged by phase C:** the membership-acceptor path
+  (`send_join`/`send_leave`/`send_knock`) does not backfill missing
+  references yet; a membership PDU with a gap still fails closed as
+  `missing_prev_state`. The `/get_missing_events` response is trusted only after
+  every returned event passes its own checks, but a malicious origin can still
+  omit events it is entitled to omit; state resolution against other forks is
+  the same residual risk every conformant server accepts.
 
 ## Security principles
 

@@ -327,9 +327,10 @@ auto PushGatewayClient::notify(std::string_view gateway_url, PushGatewayNotifica
     {
         // SSRF-safe resolution: never resolve DNS directly and never accept a
         // client-supplied address. The gateway URL is attacker-influenced (any
-        // client can register a pusher pointing anywhere), so this path is the
-        // same discovery boundary the identity-server and federation clients use.
-        auto const resolved = discovery_.upstream().lookup_addresses(parsed->host, parsed->port);
+        // client can register a pusher pointing anywhere), so we use the
+        // filtered lookup that rejects private/loopback/CGNAT/multicast/reserved
+        // addresses before any outbound connection is attempted.
+        auto const resolved = discovery_.lookup_addresses_filtered(parsed->host, parsed->port);
         if (!resolved.ok || resolved.addresses.empty())
         {
             return {false,

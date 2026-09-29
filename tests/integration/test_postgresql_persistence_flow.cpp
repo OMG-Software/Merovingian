@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include <merovingian/database/migration.hpp>
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/database/postgresql_store.hpp>
 #include <merovingian/database/schema.hpp>
@@ -56,6 +57,17 @@ namespace
 [[nodiscard]] auto migration_role_from_environment() -> std::string_view
 {
     return env_string("MEROVINGIAN_TEST_POSTGRESQL_MIGRATION_ROLE");
+}
+
+// ADR-0062 part 2 (0.12.13 audit, finding N1): the federation worker's
+// least-privilege PostgreSQL role. The CI workflow, when it provisions this
+// scenario, creates a role via packaging/postgresql/provision-federation-worker-role.sql
+// (SELECT only, no SELECT on server_signing_keys or the other tables
+// database::table_load_profile_includes excludes) and exposes its name here.
+// Locally, leaving it unset skips this scenario but still runs the rest.
+[[nodiscard]] auto worker_role_from_environment() -> std::string_view
+{
+    return env_string("MEROVINGIAN_TEST_POSTGRESQL_WORKER_ROLE");
 }
 
 } // namespace
@@ -465,6 +477,68 @@ SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL", "[databa
             {
                 REQUIRE(after_set == std::string{runtime_role});
                 REQUIRE_FALSE(ddl_attempt.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL federation worker role: the worker profile never selects secret_key even though "
+         "the role has column-restricted read access to server_signing_keys",
+         "[database][postgresql][integration][roles][worker_db_uri]")
+{
+    GIVEN("a live PostgreSQL URI, migration role, and a federation-worker role granted SELECT on "
+          "server_signing_keys' server_name/key_id/public_key/valid_until_ts columns but not secret_key "
+          "(packaging/postgresql/provision-federation-worker-role.sql)")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const migration_role = migration_role_from_environment();
+        auto const worker_role = worker_role_from_environment();
+        if (uri.empty() || migration_role.empty() || worker_role.empty())
+        {
+            SUCCEED("skipped: live PG URI, migration role, or "
+                    "MEROVINGIAN_TEST_POSTGRESQL_WORKER_ROLE env vars are not set");
+            return;
+        }
+
+        // Bring the schema to the current version first (as the migration
+        // role), the same precondition every other role-enforcement scenario
+        // in this file relies on, so the two opens below exercise only the
+        // row-hydration path, not a migration under an unexpected role.
+        {
+            auto migrator = merovingian::database::open_postgresql_persistent_store(uri, {}, migration_role);
+            REQUIRE(migrator.ok);
+        }
+
+        WHEN("the store opens under that role with TableLoadProfile::federation_worker")
+        {
+            auto const opened = merovingian::database::open_postgresql_persistent_store(
+                uri, worker_role, {}, merovingian::database::TableLoadProfile::federation_worker);
+
+            THEN("it succeeds, and no row's secret_key was ever hydrated into memory")
+            {
+                REQUIRE(opened.ok);
+                // server_signing_keys itself is allowlisted (the worker's
+                // remote-key cache legitimately reads other servers' rows),
+                // but the worker-profile query never selects the secret_key
+                // column at all -- every row loaded under this role and
+                // profile must therefore carry an empty secret_key,
+                // regardless of what the row actually holds in the database.
+                for (auto const& key : opened.store.server_signing_keys)
+                {
+                    REQUIRE(key.secret_key.empty());
+                }
+            }
+        }
+
+        WHEN("the same role is asked to open with TableLoadProfile::full instead")
+        {
+            auto const opened = merovingian::database::open_postgresql_persistent_store(
+                uri, worker_role, {}, merovingian::database::TableLoadProfile::full);
+
+            THEN("the open fails, because the unrestricted profile SELECTs columns and tables this "
+                 "least-privilege role was never granted (secret_key among them)")
+            {
+                REQUIRE_FALSE(opened.ok);
             }
         }
     }
@@ -966,6 +1040,13 @@ namespace
 // apply. Migrations are not written idempotently, so the column migration 14
 // adds is dropped alongside its schema_migrations row; re-applying the
 // migration is what restores both.
+// Leaves exactly the newest migration pending: runs that migration's own
+// downgrade step from the catalog and forgets its row. Undoing an older one
+// (this used to hard-code version 14) leaves a gap that the planner rightly
+// refuses ("migration versions must be contiguous") once newer migrations
+// exist, and the damaged schema then fails every later scenario. Idempotent:
+// Catch2 re-runs a WHEN once per leaf section, so a second call must find the
+// migration already pending rather than undo it twice.
 [[nodiscard]] auto make_migration_pending(std::string_view uri) -> bool
 {
     auto connection = merovingian::database::open_postgresql_connection(uri);
@@ -973,11 +1054,37 @@ namespace
     {
         return false;
     }
-    auto const dropped = connection.connection.execute(
-        {"drop_deactivated_column", "ALTER TABLE users DROP COLUMN IF EXISTS deactivated", {}});
+    auto const newest = merovingian::database::current_schema_version();
+    auto const newest_row = connection.connection.execute(
+        {"newest_migration_row",
+         "SELECT count(*) FROM schema_migrations WHERE version = '" + std::to_string(newest) + "'",
+         {}});
+    if (!newest_row.ok || newest_row.rows.size() != 1U || newest_row.rows.front().empty())
+    {
+        return false;
+    }
+    if (newest_row.rows.front().front() == "0")
+    {
+        return true;
+    }
+    auto const downgrades = merovingian::database::downgrade_migration_catalog();
+    auto const undo = std::ranges::find_if(downgrades, [newest](merovingian::database::MigrationStep const& step) {
+        return step.version + 1U == newest;
+    });
+    if (undo == downgrades.end())
+    {
+        return false;
+    }
+    for (auto const& statement : undo->statements)
+    {
+        if (!connection.connection.execute(statement).ok)
+        {
+            return false;
+        }
+    }
     auto const removed = connection.connection.execute(
-        {"forget_migration_row", "DELETE FROM schema_migrations WHERE version = '14'", {}});
-    return dropped.ok && removed.ok;
+        {"forget_migration_row", "DELETE FROM schema_migrations WHERE version = '" + std::to_string(newest) + "'", {}});
+    return removed.ok;
 }
 
 } // namespace

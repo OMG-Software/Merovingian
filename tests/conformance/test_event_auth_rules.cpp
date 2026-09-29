@@ -56,10 +56,9 @@ namespace
 [[nodiscard]] auto make_v1_non_federated_create_event(std::string_view creator) -> std::string
 {
     // Same as make_v1_create_event() but with content.m.federate set to false.
-    // Used in pre-v6 room contexts to test the absence of the domain check in v1,
-    // and in v6 contexts to verify that the domain check fires when federation is
-    // explicitly disabled. v1–v10 create events carry room_id; content.room_version
-    // is absent (introduced in v7).
+    // The sender-domain restriction in auth rule step 3 applies to every room
+    // version when federation is explicitly disabled. v1–v10 create events carry
+    // room_id; content.room_version is absent (introduced in v7).
     return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
            "\",\"room_id\":\"!room:example.org\",\"content\":{\"creator\":\"" + std::string{creator} +
            "\",\"m.federate\":false},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_events\":[],"
@@ -1465,6 +1464,130 @@ SCENARIO("Auth rules allow a restricted-room join when join_authorised_via_users
     }
 }
 
+namespace
+{
+
+// Authorizes @bob's join (or knock) under `version` with the given join rule.
+// `invited` gives @bob a current invite; `authorised` names @alice (joined,
+// with invite power) in content.join_authorised_via_users_server.
+[[nodiscard]] auto authorize_membership_under_join_rule(std::string_view version, std::string_view join_rule,
+                                                        std::string_view membership, bool invited, bool authorised)
+    -> bool
+{
+    auto const content = authorised ? std::string{"{\"membership\":\""} + std::string{membership} +
+                                          "\",\"join_authorised_via_users_server\":\"@alice:example.org\"}"
+                                    : std::string{"{\"membership\":\""} + std::string{membership} + "\"}";
+    auto const event_json =
+        std::string{"{\"type\":\"m.room.member\",\"state_key\":\"@bob:example.org\",\"sender\":\"@bob:example.org\","
+                    "\"room_id\":\"!room:example.org\",\"content\":"} +
+        content +
+        ",\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
+        "\"hashes\":{\"sha256\":\"hash\"}}";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* policy = merovingian::rooms::find_room_version_policy(version);
+    REQUIRE(policy != nullptr);
+    auto auth_events = merovingian::events::AuthEventMap{};
+    auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+    // @alice holds power 100 explicitly: only room v12 gives the creator
+    // infinite power, and rule 4.3.5.2 requires the authorising user to have
+    // invite power (50 here) in every version.
+    auth_events.power_levels =
+        merovingian::canonicaljson::parse_lossless(
+            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+            .value;
+    auth_events.join_rules =
+        merovingian::canonicaljson::parse_lossless(make_join_rules_event(std::string{join_rule})).value;
+    if (invited)
+    {
+        auth_events.target_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@bob:example.org", "invite"))
+                                        .value;
+    }
+    if (authorised)
+    {
+        auth_events.authorising_user_member = merovingian::canonicaljson::parse_lossless(
+                                                  make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                                  .value;
+    }
+    return merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events).allowed;
+}
+
+} // namespace
+
+// Spec: Matrix room versions v6, v7, v8, v9, v10 — Authorization rules,
+// m.room.member, membership join (rule 4.3) and knock (rule 4.7).
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// v6: "If the join_rule is invite then allow if membership state is invite or
+// join. If the join_rule is public, allow. Otherwise, reject." v7 adds knock to
+// the invite clause; v8 and v9 add "If the join_rule is restricted"; v10
+// changes it to "If the join_rule is restricted or knock_restricted". A knock
+// (v7+) is rejected if "the join_rule is anything other than knock" (v7-v9),
+// "anything other than knock or knock_restricted" (v10+). restricted_v2 is not
+// a join rule in any version.
+SCENARIO("Auth rules admit each join rule only in the room versions that define it",
+         "[events][auth][membership][join-rules][conformance][join_rule_versions]")
+{
+    struct Case final
+    {
+        char const* version;
+        char const* join_rule;
+        char const* membership;
+        bool invited;
+        bool authorised;
+        bool allowed;
+    };
+    // clang-format off
+    auto const cases = std::vector<Case>{
+        // v10 rule 4.3.5: knock_restricted behaves as restricted.
+        {"10", "knock_restricted", "join",  false, true,  true },
+        {"10", "knock_restricted", "join",  true,  false, true },
+        {"10", "knock_restricted", "join",  false, false, false},
+        {"11", "knock_restricted", "join",  false, true,  true },
+        {"12", "knock_restricted", "join",  false, true,  true },
+        // v8/v9 know restricted but not knock_restricted.
+        {"9",  "restricted",       "join",  false, true,  true },
+        {"9",  "knock_restricted", "join",  false, true,  false},
+        {"8",  "knock_restricted", "join",  true,  false, false},
+        // v7 knows neither.
+        {"7",  "restricted",       "join",  false, true,  false},
+        {"7",  "knock",            "join",  true,  false, true },
+        // v6 has no knock join rule.
+        {"6",  "knock",            "join",  true,  false, false},
+        // restricted_v2 is not a spec join rule.
+        {"12", "restricted_v2",    "join",  false, true,  false},
+        {"10", "restricted_v2",    "join",  true,  false, false},
+        // Knocks: v7-v9 need knock; v10+ accept knock_restricted too.
+        {"9",  "knock_restricted", "knock", false, false, false},
+        {"9",  "knock",            "knock", false, false, true },
+        {"10", "knock_restricted", "knock", false, false, true },
+        // v6 has no knock membership.
+        {"6",  "knock",            "knock", false, false, false},
+    };
+    // clang-format on
+
+    GIVEN("a room with a given version and join rule")
+    {
+        WHEN("@bob's membership event is authorized under each combination")
+        {
+            THEN("it is allowed exactly when that version's rules allow it")
+            {
+                for (auto const& row : cases)
+                {
+                    INFO("room version " << row.version << ", join_rule " << row.join_rule << ", membership "
+                                         << row.membership << ", invited " << row.invited << ", authorised "
+                                         << row.authorised);
+                    // Spec MUST: the version's own rule list decides the outcome.
+                    // CHECK, not REQUIRE, so a failure reports every row.
+                    CHECK(authorize_membership_under_join_rule(row.version, row.join_rule, row.membership, row.invited,
+                                                               row.authorised) == row.allowed);
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("Auth rules allow a kicked user to rejoin an invite-only room after a new invite",
          "[events][auth][membership][join-rules]")
 {
@@ -1631,28 +1754,32 @@ SCENARIO("Auth rules reject a user who is banned from joining", "[events][auth][
 }
 
 // ---------------------------------------------------------------------------
-// Room version 1 auth rules differ from v6+
+// Room version 1 auth rules: step 3 domain check when m.federate is false
 // Spec: ../../docs/matrix-v1.19-spec/rooms/v1.md#authorization-rules
 //
-// In room versions 1–5, there is NO sender-domain check (the v6 rule that
-// requires sender's domain to match the create event's creator domain does
-// not exist). A cross-domain sender is therefore allowed in v1 rooms, provided
-// all other rules are satisfied.
+// The sender-domain check is not a v6 innovation. Rule 3 in v1 already says:
+// "If the content of the m.room.create event in the room state has the property
+// m.federate set to false, and the sender domain of the event does not match
+// the sender domain of the create event, reject." The only difference from v6+
+// is that v1 rooms default to federated when the key is absent. A cross-domain
+// sender is therefore allowed in v1 rooms with m.federate absent, but rejected
+// when m.federate is explicitly false.
 // ---------------------------------------------------------------------------
 
-SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check before v6)",
+SCENARIO("Auth rules v1-v5: cross-domain sender is allowed when m.federate is absent",
          "[events][auth][room-version][v1]")
 {
-    GIVEN("a room version 1 room created by @alice:example.org with a sender from evil.org")
+    GIVEN("a federated room version 1 room created by @alice:example.org with a sender from evil.org")
     {
         // @eve:evil.org sends a message in a v1 room created by @alice:example.org.
-        // In v6+ this would be rejected at rule step 3 (domain mismatch).
-        // In v1 there is no such rule, so the event MUST be allowed.
+        // m.federate is absent, so the default-federated room permits cross-domain
+        // senders at rule step 3.
         auto const msg_json = make_message_event("@eve:evil.org");
         auto const parsed = merovingian::canonicaljson::parse_lossless(msg_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
-        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
+        // v3 uses the original (room v1) auth rules; v1 itself is not supported (ADR-0076).
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("3");
         REQUIRE(policy_v1 != nullptr);
 
         auto auth_events = merovingian::events::AuthEventMap{};
@@ -1672,40 +1799,49 @@ SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check be
             auto const decision =
                 merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v1, auth_events);
 
-            THEN("the event is allowed — v1 has no sender-domain check")
+            THEN("the event is allowed — absent m.federate means the room is federated")
             {
-                // Spec MUST: the v6 sender-domain rule does NOT apply in room versions 1–5.
-                // Cross-domain senders are valid in v1 rooms.
+                // Spec MUST: when m.federate is absent, the room is federated and
+                // cross-domain senders pass step 3 unconditionally in every version.
                 REQUIRE(decision.allowed);
             }
         }
+    }
+}
 
-        WHEN("the same event is authorized under room version 6 rules with m.federate:false")
+SCENARIO("Auth rules v1-v5: cross-domain sender is rejected when m.federate is false",
+         "[events][auth][room-version][v1][m04]")
+{
+    GIVEN("a non-federated room version 1 room created by @alice:example.org")
+    {
+        auto const msg_json = make_message_event("@eve:evil.org");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(msg_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        // v3 uses the original (room v1) auth rules; v1 itself is not supported (ADR-0076).
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("3");
+        REQUIRE(policy_v1 != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create =
+            merovingian::canonicaljson::parse_lossless(make_v1_non_federated_create_event("@alice:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
+                .value;
+        auth_events.sender_member =
+            merovingian::canonicaljson::parse_lossless(make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
+                .value;
+
+        WHEN("a cross-domain event is authorized under room version 1 rules")
         {
-            // v6+ introduces a sender-domain check, but it is CONDITIONAL on
-            // content.m.federate being false. Use a non-federated create event to
-            // show that v6+ does enforce the check in that configuration.
-            // v6 create events carry room_id (like all pre-v12 PDUs).
-            auto const* policy_v6 = merovingian::rooms::find_room_version_policy("6");
-            REQUIRE(policy_v6 != nullptr);
-            auto auth_events_nonfed = merovingian::events::AuthEventMap{};
-            auth_events_nonfed.create =
-                merovingian::canonicaljson::parse_lossless(make_v1_non_federated_create_event("@alice:example.org"))
-                    .value;
-            auth_events_nonfed.power_levels =
-                merovingian::canonicaljson::parse_lossless(
-                    make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
-                    .value;
-            auth_events_nonfed.sender_member =
-                merovingian::canonicaljson::parse_lossless(make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
-                    .value;
             auto const decision =
-                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v6, auth_events_nonfed);
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v1, auth_events);
 
-            THEN("the event is rejected at step 3 — v6+ enforces the domain check when m.federate is false")
+            THEN("the event is rejected at step 3 — m.federate:false blocks cross-domain senders in v1 too")
             {
-                // Spec MUST: the sender-domain check is introduced in room version 6,
-                // conditional on content.m.federate being false in the create event.
+                // Spec MUST: rooms/v1.md rule 3 applies the m.federate:false
+                // domain check to all room versions, not only v6+.
                 REQUIRE_FALSE(decision.allowed);
                 REQUIRE(decision.rule_step == "3");
             }
@@ -1733,7 +1869,8 @@ SCENARIO("Auth rules v1: create event is allowed when the room_id and sender sha
         auto const parsed = merovingian::canonicaljson::parse_lossless(create_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
-        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
+        // v3 uses the original (room v1) auth rules; v1 itself is not supported (ADR-0076).
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("3");
         REQUIRE(policy_v1 != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
 
@@ -1956,7 +2093,9 @@ SCENARIO("Auth rules: room version policies exist for all stable versions", "[ev
 {
     GIVEN("a request for each stable Matrix room version")
     {
-        auto constexpr stable_versions = std::array<char const*, 10>{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
+        // v1 and v2 are not supported (ADR-0076).
+        auto constexpr stable_versions =
+            std::array<char const*, 10>{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
 
         WHEN("each version policy is looked up")
         {
@@ -3227,10 +3366,11 @@ SCENARIO("Auth rules accept string-encoded power levels before room version 10",
 {
     GIVEN("a v9 room whose power_levels encode their values as strings")
     {
-        auto const prior = std::string_view{"{\"ban\":\"50\",\"kick\":\"50\",\"redact\":\"50\",\"invite\":\"0\","
-                                            "\"users_default\":\"0\",\"state_default\":\"50\","
-                                            "\"events_default\":\"0\","
-                                            "\"users\":{\"@admin:example.org\":\"100\",\"@alice:example.org\":\"50\"}}"};
+        auto const prior =
+            std::string_view{"{\"ban\":\"50\",\"kick\":\"50\",\"redact\":\"50\",\"invite\":\"0\","
+                             "\"users_default\":\"0\",\"state_default\":\"50\","
+                             "\"events_default\":\"0\","
+                             "\"users\":{\"@admin:example.org\":\"100\",\"@alice:example.org\":\"50\"}}"};
         auto const pl_json = make_power_levels_event_raw(
             "@alice:example.org", "{\"ban\":\"50\",\"kick\":\"25\",\"redact\":\"50\",\"invite\":\"0\","
                                   "\"users_default\":\"0\",\"state_default\":\"50\",\"events_default\":\"0\","

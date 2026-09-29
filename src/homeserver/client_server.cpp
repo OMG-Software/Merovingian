@@ -2768,15 +2768,15 @@ namespace
         // When remote_addr is empty (test-only paths that skip the
         // transport layer) we fall back to "unknown" so per-route
         // caps still apply.  When the direct peer is a configured
-        // trusted proxy we look for the leftmost X-Forwarded-For
-        // address instead, so the bucket isolates each downstream
-        // client rather than collapsing all traffic through the
-        // proxy into a single bucket.
-        auto const& trusted_proxies = rt.homeserver.config.server().trusted_proxies;
+        // trusted proxy the client is the rightmost X-Forwarded-For
+        // entry that is not a trusted proxy, so the bucket isolates
+        // each downstream client rather than collapsing all traffic
+        // through the proxy into a single bucket.
         // Single implementation shared with the federation key-resolution budget
-        // (see local_http_router.hpp): both need trusted-proxy resolution for the
-        // same reason, and two copies would be free to drift apart.
-        auto const effective_ip = effective_client_ip(req, trusted_proxies);
+        // (see local_http_router.hpp): both need trusted-proxy resolution and
+        // IPv6-prefix grouping for the same reason, and two copies would be
+        // free to drift apart.
+        auto const effective_ip = rate_limit_client_key(req, rt.homeserver.config.server());
         // Per-IP bucket keyed by (effective_ip, normalised_route) so
         // different endpoints get independent counters and route
         // templates (e.g. /rooms/{roomId}/send) coalesce into the
@@ -3817,6 +3817,16 @@ namespace
             for (auto const& event : store.events)
             {
                 if (event.room_id != room.room_id)
+                {
+                    continue;
+                }
+                // ADR-0064 phase B2: a rejected or soft-failed event is
+                // never relayed to clients (spec "Rejection", "Soft
+                // failure"). current_state delivery (the sync response's
+                // `state` section, built separately from store.state) is
+                // untouched — a soft-failed *state* event that resolution
+                // later admits into current state is still delivered there.
+                if (event.status == "rejected" || event.status == "soft_failed")
                 {
                     continue;
                 }
@@ -6526,6 +6536,12 @@ namespace
             {
                 continue;
             }
+            // ADR-0064 phase B2: /messages paginates the timeline, so a
+            // rejected or soft-failed event is excluded the same as sync's.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                continue;
+            }
             if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
                                                      trust_safety::event_json_is_state_event(event.json)))
             {
@@ -6674,10 +6690,20 @@ namespace
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            if (event.room_id == room_id)
+            if (event.room_id != room_id)
             {
-                entries.push_back(&event);
+                continue;
             }
+            // ADR-0064 phase B2: events_before/events_after page through the
+            // timeline, so a rejected or soft-failed event is excluded the
+            // same as sync's and /messages'. `target` itself is handled by
+            // the caller (a rejected/soft-failed target_event_id 404s before
+            // this function is even called), so it is always present here.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                continue;
+            }
+            entries.push_back(&event);
         }
         std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering < rhs->stream_ordering;
@@ -7003,10 +7029,20 @@ namespace
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            if (event.room_id == target.room_id)
+            if (event.room_id != target.room_id)
             {
-                entries.push_back(&event);
+                continue;
             }
+            // ADR-0064 phase B2: search result context pages through the
+            // timeline the same as GET /context, so a rejected or
+            // soft-failed event is excluded. `target` itself is a search
+            // match, and the match-scan loop already excludes those
+            // statuses, so it is always present here.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                continue;
+            }
+            entries.push_back(&event);
         }
         std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering < rhs->stream_ordering;
@@ -7139,6 +7175,13 @@ namespace
             // and a server-wide event disclosure, since unlike /messages the
             // scan is not otherwise bounded to one room by the request path.
             if (!joined_rooms.contains(event.room_id))
+            {
+                continue;
+            }
+            // ADR-0064 phase B2: search results are a timeline view, so a
+            // rejected or soft-failed event is excluded the same as
+            // sync/messages/context.
+            if (event.status == "rejected" || event.status == "soft_failed")
             {
                 continue;
             }
@@ -8005,8 +8048,21 @@ namespace
             {
                 return resp(401U, json_serialize(cs_uia));
             }
-            if (!verify_local_user_password(rt.homeserver, req.access_token, *cs_password))
+            auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
+            if (!password_verified.ok)
             {
+                if (password_verified.retry_after_ms > 0U)
+                {
+                    auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                        password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                    auto response = LocalHttpResponse{
+                        429U,
+                        matrix_error("M_LIMIT_EXCEEDED", "Too many failed password attempts. Please try again later.",
+                                     retry_after),
+                        {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
+                    apply_cors_headers(req, response, rt.cors);
+                    return response;
+                }
                 return resp(401U, json_serialize(cs_uia));
             }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
@@ -10282,8 +10338,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
         // Spec §5.5: logout_devices defaults to true — the server MUST revoke the
@@ -10336,8 +10400,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
         auto const result = deactivate_local_user(rt.homeserver, req.access_token);
@@ -10418,9 +10490,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             json_member("params", json_obj({})),
             json_member("session", json_str("account_threepid_add")),
         });
-        if (!body->password.has_value() ||
-            !verify_local_user_password(rt.homeserver, req.access_token, *body->password))
+        auto const password_verified =
+            body->password.has_value()
+                ? std::optional{verify_local_user_password(rt.homeserver, req.access_token, *body->password)}
+                : std::nullopt;
+        if (!password_verified.has_value() || !password_verified->ok)
         {
+            if (password_verified.has_value() && password_verified->retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified->retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
         auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", body->sid, body->client_secret);
@@ -11031,7 +11113,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && req.target == "/_matrix/client/v3/capabilities")
     {
         // Advertise every room version rooms::room_version_policy.cpp actually
-        // implements (v1-v12), not a hardcoded subset — clients use this list to
+        // implements (v3-v12; v1 and v2 are not supported, ADR-0076), not a hardcoded subset — clients use this list to
         // decide which versions are valid for room creation/upgrade, and a stale
         // list here is the same class of bug as the outbound make_join fix:
         // claiming less support than the server actually has.
@@ -11573,8 +11655,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
         auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
@@ -11624,8 +11714,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
         auto deleted_any = false;
@@ -12244,7 +12342,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
                     return current.room_id == path->room_id && current.event_id == path->event_id;
                 });
-                if (event == store.events.end())
+                // ADR-0064 phase B2: a rejected or soft-failed event is
+                // never relayed to clients (spec "Rejection", "Soft
+                // failure") — treated the same as not found, so a member
+                // cannot distinguish "never existed" from "was filtered".
+                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed")
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
@@ -12280,7 +12382,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
                     return current.room_id == path->room_id && current.event_id == path->event_id;
                 });
-                if (event == store.events.end())
+                // ADR-0064 phase B2: same fail-closed 404 as GET .../event/{eventId}
+                // above for a rejected or soft-failed target event.
+                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed")
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
@@ -13359,27 +13463,50 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const body = canonicaljson::parse_lossless(req.body);
         auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
         auto const* search_term = (body_obj != nullptr) ? string_member(*body_obj, "search_term") : nullptr;
+        // Spec: "limit — The maximum number of results to return. Defaults to
+        // 10." and "limited — Indicates if the result list has been truncated
+        // by the limit." A negative limit returns nothing.
+        auto const* limit_value = (body_obj != nullptr) ? object_member(*body_obj, "limit") : nullptr;
+        auto const* limit_int = limit_value != nullptr ? std::get_if<std::int64_t>(&limit_value->storage()) : nullptr;
+        auto const limit =
+            limit_int != nullptr ? static_cast<std::size_t>(std::max<std::int64_t>(*limit_int, 0)) : std::size_t{10U};
         auto results = canonicaljson::Array{};
+        auto limited = false;
         if (search_term != nullptr && !search_term->empty())
         {
+            auto const& store = rt.homeserver.database.persistent_store;
             auto const term_lower = to_lower(*search_term);
-            for (auto const& profile : rt.homeserver.database.persistent_store.profiles)
+            for (auto const& profile : store.profiles)
             {
-                if (to_lower(profile.displayname).find(term_lower) != std::string::npos ||
-                    to_lower(profile.user_id).find(term_lower) != std::string::npos)
+                if (to_lower(profile.displayname).find(term_lower) == std::string::npos &&
+                    to_lower(profile.user_id).find(term_lower) == std::string::npos)
                 {
-                    auto user_obj = canonicaljson::Object{};
-                    user_obj.push_back(json_member("user_id", json_str(profile.user_id)));
-                    user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
-                    user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
-                    results.push_back(canonicaljson::Value{std::move(user_obj)});
+                    continue;
                 }
+                // 0.12.13 audit item 5: a deactivated account can never log in
+                // again, so it is not offered as someone to contact.
+                if (std::ranges::any_of(store.users, [&profile](database::PersistentUser const& account) {
+                        return account.user_id == profile.user_id && account.deactivated;
+                    }))
+                {
+                    continue;
+                }
+                if (results.size() == limit)
+                {
+                    limited = true;
+                    break;
+                }
+                auto user_obj = canonicaljson::Object{};
+                user_obj.push_back(json_member("user_id", json_str(profile.user_id)));
+                user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
+                user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
+                results.push_back(canonicaljson::Value{std::move(user_obj)});
             }
         }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
                                  json_member("results", json_arr(std::move(results))),
-                                 json_member("limited", json_bool(false)),
+                                 json_member("limited", json_bool(limited)),
                              })));
     }
 

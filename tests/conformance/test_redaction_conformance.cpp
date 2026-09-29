@@ -30,6 +30,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -68,6 +69,77 @@ namespace
 } // namespace
 
 // ---------------------------------------------------------------------------
+// Spec: per-version redaction allow-lists
+// URL:  ../../docs/matrix-v1.19-spec/rooms/v5.md#redactions,
+//       ../../docs/matrix-v1.19-spec/rooms/v6.md#redactions ("All significant
+//       meaning for m.room.aliases has been removed from the redaction
+//       algorithm"), ../../docs/matrix-v1.19-spec/rooms/v8.md#redactions
+//       ("m.room.member allows key membership"),
+//       ../../docs/matrix-v1.19-spec/rooms/v9.md#redactions ("m.room.member
+//       allows keys membership, join_authorised_via_users_server").
+//
+// No version's list names m.room.third_party_invite, so its content is
+// stripped to {} everywhere. The redacted form feeds the reference hash, so
+// any difference here gives an event a different ID from other servers.
+// ---------------------------------------------------------------------------
+SCENARIO("Redaction keeps each content key only in the room versions whose algorithm lists it",
+         "[conformance][redaction][redaction_versions]")
+{
+    struct Case final
+    {
+        char const* version;
+        char const* type;
+        char const* content;
+        char const* expected_content;
+    };
+    auto constexpr aliases = R"({"aliases":["#a:x"],"other":1})";
+    auto constexpr member = R"({"membership":"join","join_authorised_via_users_server":"@a:x","other":1})";
+    auto constexpr third_party = R"({"display_name":"d","public_key":"k","signed":{"token":"t"}})";
+    // clang-format off
+    auto const cases = std::vector<Case>{
+        {"3",  "m.room.aliases",            aliases,     R"({"aliases":["#a:x"]})"},
+        {"5",  "m.room.aliases",            aliases,     R"({"aliases":["#a:x"]})"},
+        {"6",  "m.room.aliases",            aliases,     R"({})"},
+        {"7",  "m.room.aliases",            aliases,     R"({})"},
+        {"8",  "m.room.aliases",            aliases,     R"({})"},
+        {"10", "m.room.aliases",            aliases,     R"({})"},
+        {"11", "m.room.aliases",            aliases,     R"({})"},
+        {"7",  "m.room.member",             member,      R"({"membership":"join"})"},
+        {"8",  "m.room.member",             member,      R"({"membership":"join"})"},
+        {"9",  "m.room.member",             member,      R"({"join_authorised_via_users_server":"@a:x","membership":"join"})"},
+        {"10", "m.room.member",             member,      R"({"join_authorised_via_users_server":"@a:x","membership":"join"})"},
+        {"12", "m.room.member",             member,      R"({"join_authorised_via_users_server":"@a:x","membership":"join"})"},
+        {"5",  "m.room.third_party_invite", third_party, R"({})"},
+        {"10", "m.room.third_party_invite", third_party, R"({})"},
+        {"11", "m.room.third_party_invite", third_party, R"({})"},
+    };
+    // clang-format on
+
+    GIVEN("state events carrying listed and unlisted content keys")
+    {
+        WHEN("each is redacted under its room version")
+        {
+            THEN("the redacted content is exactly what that version's algorithm keeps")
+            {
+                for (auto const& row : cases)
+                {
+                    auto const event_json =
+                        std::string{R"({"event_id":"$ev:x","type":")"} + row.type +
+                        R"(","room_id":"!r:x","sender":"@a:x","state_key":"@a:x","origin_server_ts":1,"depth":1,)"
+                        R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"h"},"signatures":{},"content":)" +
+                        row.content + "}";
+                    auto const result = redact_event(event_json, row.version);
+                    auto const expected = std::string{R"("content":)"} + row.expected_content;
+                    INFO("room version " << row.version << ", " << row.type << ": " << result);
+                    // Spec MUST: strip every content key the version's list does not name.
+                    CHECK(result.find(expected) != std::string::npos);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Spec: v1–v10 redaction rules
 // URL:  ../../docs/matrix-v1.19-spec/rooms/v10.md#redactions
 //
@@ -77,14 +149,16 @@ namespace
 //   (v11 removes origin, membership, and prev_state from the protected set)
 //
 // Content fields preserved per event type:
-//   m.room.member:             membership, join_authorised_via_users_server (v8+)
+//   m.room.member:             membership; join_authorised_via_users_server
+//                               from v9 (rooms/v9.md; v8 keeps only membership)
 //   m.room.create:             creator
 //   m.room.join_rules:         join_rule, allow  (v8–v10; v1–v7 preserved only join_rule)
 //   m.room.power_levels:       ban, events, events_default, kick, redact,
 //                               state_default, users, users_default
 //                               (invite is NOT preserved until v11+)
 //   m.room.history_visibility: history_visibility
-//   m.room.aliases:            aliases
+//   m.room.aliases:            aliases in v1–v5 only (rooms/v6.md removed it)
+//   m.room.third_party_invite: nothing, in any version
 // ---------------------------------------------------------------------------
 
 SCENARIO("Redaction v1-v10: top-level fields are preserved as per spec", "[conformance][redaction][v10]")
@@ -586,12 +660,16 @@ SCENARIO("Redaction: m.room.history_visibility preserves history_visibility in a
 }
 
 // ---------------------------------------------------------------------------
-// Spec: m.room.aliases — preserved in v1–v10, NOT preserved in v11+
-// v10: aliases preserved; v11: not listed → stripped
+// Spec: m.room.aliases — preserved in v1–v5 only.
+// URL:  ../../docs/matrix-v1.19-spec/rooms/v6.md#redactions ("All significant
+//       meaning for m.room.aliases has been removed from the redaction
+//       algorithm"); the v10 and v11 content allow-lists have no
+//       m.room.aliases entry, so aliases is stripped in both.
+// Corrected in 0.12.13 (audit item 3, approved by the user): this scenario
+// previously required v10 to keep aliases.
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v11",
-         "[conformance][redaction][v10][v11][aliases]")
+SCENARIO("Redaction: m.room.aliases strips aliases in v10 and v11", "[conformance][redaction][v10][v11][aliases]")
 {
     GIVEN("an m.room.aliases event")
     {
@@ -606,10 +684,10 @@ SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v1
             auto const result_v10 = redact_event(event_json, "10");
             auto const result_v11 = redact_event(event_json, "11");
 
-            THEN("aliases is preserved in v10 but stripped in v11")
+            THEN("aliases is stripped in both versions")
             {
-                // Spec (v1-v10): m.room.aliases preserves aliases from content.
-                REQUIRE(has_field(result_v10, "aliases"));
+                // Spec MUST (v6+): m.room.aliases is not in the content allow-list.
+                REQUIRE_FALSE(has_field(result_v10, "aliases"));
                 REQUIRE_FALSE(has_field(result_v10, "extra"));
                 // Spec (v11+): m.room.aliases is no longer listed; the aliases field is stripped.
                 REQUIRE_FALSE(has_field(result_v11, "aliases"));
@@ -619,11 +697,16 @@ SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v1
 }
 
 // ---------------------------------------------------------------------------
-// Spec: m.room.third_party_invite — signed preserved in all versions
-// URL:  ../../docs/matrix-v1.19-spec/rooms/v10.md#redactions
+// Spec: m.room.third_party_invite — no content key is preserved in any version.
+// URL:  ../../docs/matrix-v1.19-spec/rooms/v10.md#redactions and
+//       ../../docs/matrix-v1.19-spec/rooms/v11.md#redactions: neither
+//       content allow-list names m.room.third_party_invite. v11's "signed"
+//       rule is for the third_party_invite key of m.room.member.
+// Corrected in 0.12.13 (audit item 3, approved by the user): this scenario
+// previously required signed to be kept.
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction: m.room.third_party_invite preserves signed from content",
+SCENARIO("Redaction: m.room.third_party_invite keeps no content keys",
          "[conformance][redaction][all-versions][third-party-invite]")
 {
     GIVEN("an m.room.third_party_invite event")
@@ -640,11 +723,11 @@ SCENARIO("Redaction: m.room.third_party_invite preserves signed from content",
             auto const result_v10 = redact_event(event_json, "10");
             auto const result_v11 = redact_event(event_json, "11");
 
-            THEN("signed is preserved in both versions; other content fields are stripped")
+            THEN("every content field is stripped in both versions")
             {
-                // Spec MUST: m.room.third_party_invite preserves signed from content.
-                REQUIRE(has_field(result_v10, "signed"));
-                REQUIRE(has_field(result_v11, "signed"));
+                // Spec MUST: m.room.third_party_invite is not in the content allow-list.
+                REQUIRE_FALSE(has_field(result_v10, "signed"));
+                REQUIRE_FALSE(has_field(result_v11, "signed"));
                 // display_name, public_key, and key_validity_url are stripped.
                 REQUIRE_FALSE(has_field(result_v10, "display_name"));
                 REQUIRE_FALSE(has_field(result_v11, "display_name"));

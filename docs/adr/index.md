@@ -30,7 +30,6 @@
 * [0024 - Decode untrusted images in a sandboxed child process](0024-decode-untrusted-images-in-a-sandboxed-child-process.md)
 * [0025 - Return not found rather than the original on thumbnail failure](0025-return-not-found-rather-than-the-original-on-thumbnail-failure.md)
 * [0026 - Refuse media uploads at capacity rather than evicting](0026-refuse-media-uploads-at-capacity-rather-than-evicting.md)
-* [0027 - Bound the connection queue but not the IPC queue](0027-bound-the-connection-queue-but-not-the-ipc-queue.md)
 * [0028 - Drop push deliveries at the concurrency cap](0028-drop-push-deliveries-at-the-concurrency-cap.md)
 * [0029 - Bound pusher delivery rather than registration](0029-bound-pusher-delivery-rather-than-registration.md)
 * [0030 - Key the pre-auth key resolution budget on source address](0030-key-the-pre-auth-key-resolution-budget-on-source-address.md)
@@ -65,6 +64,21 @@
 * [0059 - Serialise migrations per backend, not per abstraction](0059-serialise-migrations-per-backend-not-per-abstraction.md)
 * [0060 - Show an uploaded key signature only to the audience its uploader has](0060-show-an-uploaded-key-signature-only-to-its-owner-audience.md)
 * [0061 - Proxy remote cross-signing keys rather than caching them](0061-proxy-remote-cross-signing-keys-rather-than-caching-them.md)
+* [0062 - Federation worker holds no secret files; secrets arrive over inherited fds](0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
+* [0063 - Fail closed when the state-res v2/v2.1 auth-chain walk cannot reach an event](0063-fail-closed-on-unreachable-state-res-auth-chain-events.md)
+* [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md)
+* [0065 - Cap in-flight IPC requests per channel](0065-cap-in-flight-ipc-requests-per-channel.md)
+* [0066 - UI-auth password checks share the /login failed-login counter](0066-uia-password-checks-share-login-failed-login-counter.md)
+* [0067 - Enforce federation PDU size and field-count limits before hashing](0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md)
+* [0068 - Random media IDs and a per-row legacy-endpoint freeze marker](0068-random-media-ids-and-legacy-endpoint-freeze.md)
+* [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md) — amended by ADR-0070
+* [0070 - Events verified only against their auth_events carry no state](0070-event-auth-outliers-carry-no-state.md)
+* [0071 - Main re-verifies PDUs relayed by the federation worker](0071-main-re-verifies-pdus-relayed-by-the-federation-worker.md)
+* [0072 - Per-IP connection cap at accept time](0072-per-ip-connection-cap-at-accept-time.md)
+* [0073 - The client address is the rightmost untrusted X-Forwarded-For entry](0073-client-address-is-the-rightmost-untrusted-x-forwarded-for-entry.md)
+* [0074 - Refresh tokens retire on first use of their successor](0074-refresh-tokens-retire-on-first-use-of-their-successor.md)
+* [0075 - Event signing-key validity is judged at the event's origin_server_ts](0075-event-signing-key-validity-is-judged-at-origin-server-ts.md)
+* [0076 - Room versions 1 and 2 are not supported](0076-room-versions-1-and-2-are-not-supported.md)
 
 ## Rejected Records
 
@@ -72,7 +86,7 @@
 
 ## Superseded Records
 
-* None
+* [0027 - Bound the connection queue but not the IPC queue](0027-bound-the-connection-queue-but-not-the-ipc-queue.md) — superseded by ADR-0065 for the IPC pools only; the connection-queue half remains accepted
 
 ## Deprecated Records
 

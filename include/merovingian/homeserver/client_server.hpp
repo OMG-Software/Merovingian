@@ -6,6 +6,7 @@
 #include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/http/connection_limiter.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
@@ -127,6 +128,11 @@ struct ClientServerRuntime final
     // clock via the same borrowed reference.
     ClientServerClock clock{};
     std::unique_ptr<http::RateLimitEngine<ClientServerClock>> rate_limit_engine{nullptr};
+    // Per-client cap on open connections, applied at accept time by the
+    // client and federation listeners (ADR-0072). Heap-held so the runtime
+    // stays movable and admitted connections' slots keep a stable address;
+    // it outlives every pool task, like the runtime itself.
+    std::unique_ptr<http::ConnectionLimiter> connection_limiter{std::make_unique<http::ConnectionLimiter>()};
     // Owning pointer to the long-poll notifier. SyncNotifier holds a mutex
     // and condition_variable so it can't be copied or moved by value; a
     // unique_ptr keeps the runtime movable. Default-constructed runtimes

@@ -10,7 +10,8 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `repository.cpp` | Core media store: save, retrieve, deduplicate by content hash |
 | `security.cpp` | MIME type allow-list, size limits, quarantine policy |
 | `thumbnailer.cpp` | Generates thumbnails for image media |
-| `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed) |
+| `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `decoder_hardening.cpp` |
+| `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter), behind an injectable `DecoderHardeningOps` function table |
 | `runtime_media.cpp` | Wires the media service into the runtime |
 
 ## Internal body format
@@ -46,6 +47,18 @@ policy.
 
 The thumbnail worker runs as a separate sandboxed process (`thumbnail_worker_main.cpp`).
 Communication is via pipes. Do not load image decoding libraries in the main server process.
+
+`main()` calls `media::apply_decoder_hardening()` (`decoder_hardening.hpp`/`.cpp`) before
+reading a single byte of stdin, and the result is fail-closed: if any hardening control
+applicable on the current platform fails — a `setrlimit` call, or the platform sandbox
+(Linux seccomp decoder profile, OpenBSD `pledge`, FreeBSD `cap_enter`) — the worker writes
+the failed control's name to stderr and exits `1` without reading input or touching
+libpng/libjpeg-turbo. Never restore the old best-effort behaviour (`std::ignore`-discarded
+hardening calls); a sandbox that silently fails to install and then decodes untrusted bytes
+unconfined was a real, shipped bug (0.12.13 audit). The real syscalls sit behind
+`DecoderHardeningOps`, an injectable function table, so `apply_decoder_hardening()`'s
+fail-closed sequencing is unit-testable (`tests/unit/test_media_decoder_hardening.cpp`)
+without actually installing a broken sandbox inside the test binary.
 
 ## Key spec section
 

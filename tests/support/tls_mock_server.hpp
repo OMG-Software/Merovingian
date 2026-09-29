@@ -10,6 +10,7 @@
 // linked into production code.
 #pragma once
 
+#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "temp_directory.hpp"
@@ -257,10 +258,12 @@ inline auto run_one_shot_tls_server(merovingian::net::TcpAcceptor& acceptor,
     {
         return;
     }
+    // Owns the accepted descriptor: TlsConnection only borrows it, so without
+    // this every served connection stayed open for the rest of the run.
+    auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
     auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
     if (!tls_result.connection.has_value())
     {
-        ::close(client_fd);
         return;
     }
     auto& tls_connection = *tls_result.connection;
@@ -306,10 +309,12 @@ inline auto run_path_dispatch_tls_server(merovingian::net::TcpAcceptor& acceptor
         {
             return;
         }
+        // Owns the accepted descriptor: TlsConnection only borrows it, so without
+        // this every served connection stayed open for the rest of the run.
+        auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
         auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
         if (!tls_result.connection.has_value())
         {
-            ::close(client_fd);
             continue;
         }
         auto& connection = *tls_result.connection;
@@ -392,10 +397,12 @@ inline auto run_stalling_tls_server(merovingian::net::TcpAcceptor& acceptor,
         state.request_received.store(true);
         return;
     }
+    // Owns the accepted descriptor: TlsConnection only borrows it, so without
+    // this every served connection stayed open for the rest of the run.
+    auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
     auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
     if (!tls_result.connection.has_value())
     {
-        ::close(client_fd);
         state.request_received.store(true);
         return;
     }

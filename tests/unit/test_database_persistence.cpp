@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/database/connection.hpp"
 #include "merovingian/database/migration.hpp"
@@ -15,8 +16,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <latch>
 #include <optional>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -1036,8 +1039,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 14U);
-                REQUIRE(upgrade_plan.steps.size() == 14U);
+                REQUIRE(upgrade_plan.steps.size() == 17U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
@@ -1064,7 +1066,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[11].name == "login_tokens");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 14U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 17U);
                 // v12 (login_tokens) belongs to a sibling branch (SSO login);
                 // registered here only for chain contiguity — see
                 // migrations/AGENTS.md and schema.cpp's v12_table_names comment.
@@ -1074,9 +1076,15 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[12].name == "appservice_txn_cursor");
                 REQUIRE(upgrade_plan.steps[13].version == 14U);
                 REQUIRE(upgrade_plan.steps[13].name == "user_deactivation");
+                REQUIRE(upgrade_plan.steps[14].version == 15U);
+                REQUIRE(upgrade_plan.steps[14].name == "event_graph_state");
+                REQUIRE(upgrade_plan.steps[15].version == 16U);
+                REQUIRE(upgrade_plan.steps[15].name == "media_legacy_endpoint_visibility");
+                REQUIRE(upgrade_plan.steps[16].version == 17U);
+                REQUIRE(upgrade_plan.steps[16].name == "token_rotation_lineage");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 14U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 17U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
@@ -1091,32 +1099,39 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgraded.state.applied_migrations[11].name == "login_tokens");
                 REQUIRE(upgraded.state.applied_migrations[12].name == "appservice_txn_cursor");
                 REQUIRE(upgraded.state.applied_migrations[13].name == "user_deactivation");
+                REQUIRE(upgraded.state.applied_migrations[14].name == "event_graph_state");
+                REQUIRE(upgraded.state.applied_migrations[15].name == "media_legacy_endpoint_visibility");
+                REQUIRE(upgraded.state.applied_migrations[16].name == "token_rotation_lineage");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 14U);
-                // Downgrade walks v14->v0; the users.deactivated column drops
-                // first, then the appservice_txn_cursor table,
-                // drops first, then login_tokens, then the
-                // pushers_data_extra column, then the openid_tokens table,
-                // then notifications, then pushers, then the
-                // account_threepids column drop must precede the
-                // account_threepids table drop.
-                REQUIRE(downgrade_plan.steps[0].name == "drop_user_deactivation");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_appservice_txn_cursor");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_login_tokens");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_pushers_data_extra");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_openid_tokens");
-                REQUIRE(downgrade_plan.steps[5].name == "drop_notifications");
-                REQUIRE(downgrade_plan.steps[6].name == "drop_pushers");
-                REQUIRE(downgrade_plan.steps[7].name == "drop_account_threepids_columns");
-                REQUIRE(downgrade_plan.steps[8].name == "drop_account_threepids");
-                REQUIRE(downgrade_plan.steps[9].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[10].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[11].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[12].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[13].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 17U);
+                // Downgrade walks v17->v0; the v17 token-rotation columns drop
+                // first, then the v16 media column, then the v15 tables/columns
+                // (state groups, forward extremities, event status), then the
+                // users.deactivated column, then the appservice_txn_cursor
+                // table, then login_tokens, then the pushers_data_extra column,
+                // then the openid_tokens table, then notifications, then
+                // pushers, then the account_threepids column drop must precede
+                // the account_threepids table drop.
+                REQUIRE(downgrade_plan.steps[0].name == "drop_token_rotation_lineage");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_media_legacy_endpoint_visibility");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_event_graph_state");
+                REQUIRE(downgrade_plan.steps[3].name == "drop_user_deactivation");
+                REQUIRE(downgrade_plan.steps[4].name == "drop_appservice_txn_cursor");
+                REQUIRE(downgrade_plan.steps[5].name == "drop_login_tokens");
+                REQUIRE(downgrade_plan.steps[6].name == "drop_pushers_data_extra");
+                REQUIRE(downgrade_plan.steps[7].name == "drop_openid_tokens");
+                REQUIRE(downgrade_plan.steps[8].name == "drop_notifications");
+                REQUIRE(downgrade_plan.steps[9].name == "drop_pushers");
+                REQUIRE(downgrade_plan.steps[10].name == "drop_account_threepids_columns");
+                REQUIRE(downgrade_plan.steps[11].name == "drop_account_threepids");
+                REQUIRE(downgrade_plan.steps[12].name == "drop_backfill_state_transitions");
+                REQUIRE(downgrade_plan.steps[13].name == "drop_state_transitions");
+                REQUIRE(downgrade_plan.steps[14].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[15].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[16].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1198,6 +1213,51 @@ SCENARIO("migration 014_user_deactivation applies cleanly on top of a database a
                 // v14 ALTERs a column onto `users`; the table inventory is
                 // unchanged by it.
                 REQUIRE(applied.state.tables.size() == bootstrapped.state.tables.size());
+            }
+        }
+    }
+}
+
+SCENARIO("migration 015_event_graph_state applies cleanly on top of a database already at v14",
+         "[database][migration][state_groups]")
+{
+    GIVEN("a database already migrated to v14")
+    {
+        // Pinned, not derived from current_schema_version(): this scenario is
+        // about migration 015 specifically, so it must keep testing the
+        // v14 -> v15 step as later migrations are added.
+        auto const previous_version = std::uint32_t{14U};
+        auto const event_graph_state_version = std::uint32_t{15U};
+        auto const bootstrap_plan = merovingian::database::migration_plan_between(0U, previous_version);
+        auto const bootstrapped =
+            merovingian::database::apply_migration_plan(merovingian::database::SchemaState{}, bootstrap_plan);
+        REQUIRE(bootstrapped.ok);
+        REQUIRE(bootstrapped.state.version == previous_version);
+
+        WHEN("the incremental upgrade to v15 is planned and applied")
+        {
+            auto const plan =
+                merovingian::database::migration_plan_between(previous_version, event_graph_state_version);
+            auto const applied = merovingian::database::apply_migration_plan(bootstrapped.state, plan);
+
+            THEN("exactly one step runs and it adds exactly three new tables")
+            {
+                REQUIRE(plan.direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(plan.steps.size() == 1U);
+                REQUIRE(plan.steps[0].version == 15U);
+                REQUIRE(plan.steps[0].name == "event_graph_state");
+                REQUIRE(merovingian::database::migration_plan_is_valid(plan).valid);
+                REQUIRE(applied.ok);
+                REQUIRE(applied.state.version == event_graph_state_version);
+                // v15 ALTERs three columns (events.status,
+                // state_groups.parent_state_group_id,
+                // state_groups.delta_depth) and adds three brand-new tables
+                // (state_group_state, event_state_groups,
+                // forward_extremities).
+                REQUIRE(applied.state.tables.size() == bootstrapped.state.tables.size() + 3U);
+                REQUIRE(std::ranges::find(applied.state.tables, "state_group_state") != applied.state.tables.end());
+                REQUIRE(std::ranges::find(applied.state.tables, "event_state_groups") != applied.state.tables.end());
+                REQUIRE(std::ranges::find(applied.state.tables, "forward_extremities") != applied.state.tables.end());
             }
         }
     }
@@ -1879,8 +1939,7 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 14U);
-                REQUIRE(loaded.steps.size() == 14U);
+                REQUIRE(loaded.steps.size() == 17U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
@@ -1930,6 +1989,23 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 REQUIRE(loaded.steps[13].version == 14U);
                 REQUIRE(loaded.steps[13].name == "user_deactivation");
                 REQUIRE(loaded.steps[13].statements.size() == 1U);
+                REQUIRE(loaded.steps[14].version == 15U);
+                REQUIRE(loaded.steps[14].name == "event_graph_state");
+                // 3 ALTER (events.status, state_groups.parent_state_group_id,
+                // state_groups.delta_depth) + 3 CREATE TABLE
+                // (state_group_state, event_state_groups,
+                // forward_extremities) + 1 CREATE INDEX
+                // (event_edges_prev_event_id, the project's first index) + 4
+                // seed INSERT...SELECT statements.
+                REQUIRE(loaded.steps[14].statements.size() == 11U);
+                REQUIRE(loaded.steps[15].version == 16U);
+                REQUIRE(loaded.steps[15].name == "media_legacy_endpoint_visibility");
+                // ALTER TABLE media ADD COLUMN legacy_endpoint_visible ...
+                REQUIRE(loaded.steps[15].statements.size() == 1U);
+                REQUIRE(loaded.steps[16].version == 17U);
+                REQUIRE(loaded.steps[16].name == "token_rotation_lineage");
+                // ALTERs a predecessor column onto refresh_tokens and access_tokens.
+                REQUIRE(loaded.steps[16].statements.size() == 2U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -2007,9 +2083,18 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // The post-v1 tables (v2/v3/v4/v6/v8/v9/v10/v12) are counted
                 // in the current schema inventory, while v5, v7, v11 and v14
                 // add no tables -- v14 adds only the users.deactivated column.
+                // v15 (ADR-0064) adds three more brand-new tables
+                // (state_group_state, event_state_groups,
+                // forward_extremities) -- state_groups itself is a v1 table
+                // extended in place with two ALTERed columns, not a new
+                // table, so it does not add to this count.
+                // v16 (ADR-0068) also adds no new table; it ALTERs the
+                // `legacy_endpoint_visible` column onto the existing `media` table.
+                // v17 (ADR-0074) adds no new table either; it ALTERs a
+                // predecessor column onto refresh_tokens and access_tokens.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 14U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 54U);
+                REQUIRE(merovingian::database::current_schema_version() == 17U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 57U);
                 // data_extra_json column onto pushers (no new table),
                 // migration v12 adds the login_tokens table (a sibling
                 // branch's SSO login work, registered here only for
@@ -2020,8 +2105,8 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // schema inventory, while v5, v7, v11 and v14 add no tables --
                 // v14 adds only the users.deactivated column.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 14U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 54U);
+                REQUIRE(merovingian::database::current_schema_version() == 17U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 57U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());
@@ -2313,6 +2398,95 @@ SCENARIO("Server signing keys are looked up by server identity and key ID", "[da
                 REQUIRE(found_b->server_name == "server-b.org");
                 REQUIRE(found_b->public_key == "public-key-b");
                 REQUIRE_FALSE(not_found.has_value());
+            }
+        }
+    }
+}
+
+// The remote-key resolver stores and reads server signing keys from worker
+// relay threads and backfill with the runtime mutex released, so the store's
+// signing-key accessors must be safe to call concurrently (0.12.13, D2).
+SCENARIO("Server signing keys can be stored and looked up from many threads at once",
+         "[database][persistence][signing-key][concurrency]")
+{
+    GIVEN("an opened persistent store and writer and reader threads released together")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        constexpr auto writer_count = std::size_t{4U};
+        constexpr auto reader_count = std::size_t{4U};
+        constexpr auto keys_per_writer = std::size_t{500U};
+        auto const server_for = [](std::size_t writer) {
+            return "server-" + std::to_string(writer) + ".org";
+        };
+        auto const key_id_for = [](std::size_t index) {
+            return "ed25519:k" + std::to_string(index);
+        };
+
+        WHEN("every writer stores its own keys while readers look keys up")
+        {
+            auto start = std::latch{static_cast<std::ptrdiff_t>(writer_count + reader_count)};
+            auto store_failures = std::vector<std::size_t>(writer_count, 0U);
+            auto torn_reads = std::vector<std::size_t>(reader_count, 0U);
+            {
+                auto threads = merovingian::tests::JoiningThreads{};
+                for (auto writer = std::size_t{0U}; writer < writer_count; ++writer)
+                {
+                    threads.emplace_back([&, writer]() {
+                        start.arrive_and_wait();
+                        for (auto index = std::size_t{0U}; index < keys_per_writer; ++index)
+                        {
+                            if (!merovingian::database::store_server_signing_key(
+                                    store, {server_for(writer), key_id_for(index),
+                                            "public-" + std::to_string(writer) + "-" + std::to_string(index),
+                                            32503680000000ULL}))
+                            {
+                                ++store_failures[writer];
+                            }
+                        }
+                    });
+                }
+                for (auto reader = std::size_t{0U}; reader < reader_count; ++reader)
+                {
+                    threads.emplace_back([&, reader]() {
+                        start.arrive_and_wait();
+                        for (auto index = std::size_t{0U}; index < keys_per_writer; ++index)
+                        {
+                            auto const writer = index % writer_count;
+                            auto const found = merovingian::database::find_server_signing_key(store, server_for(writer),
+                                                                                              key_id_for(index));
+                            if (found.has_value() &&
+                                found->public_key != "public-" + std::to_string(writer) + "-" + std::to_string(index))
+                            {
+                                ++torn_reads[reader];
+                            }
+                        }
+                    });
+                }
+            }
+
+            THEN("every key is stored exactly once and no reader saw another key's value")
+            {
+                for (auto const failures : store_failures)
+                {
+                    REQUIRE(failures == 0U);
+                }
+                for (auto const torn : torn_reads)
+                {
+                    REQUIRE(torn == 0U);
+                }
+                for (auto writer = std::size_t{0U}; writer < writer_count; ++writer)
+                {
+                    for (auto index = std::size_t{0U}; index < keys_per_writer; ++index)
+                    {
+                        auto const found = merovingian::database::find_server_signing_key(store, server_for(writer),
+                                                                                          key_id_for(index));
+                        REQUIRE(found.has_value());
+                    }
+                }
+                REQUIRE(store.server_signing_keys.size() == writer_count * keys_per_writer);
             }
         }
     }

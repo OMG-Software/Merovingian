@@ -312,10 +312,11 @@ auto IdentityServerClient::perform(std::string_view base_url, std::string_view m
     }
     if (pinned.empty())
     {
-        // SSRF-safe resolution: the cached discovery network applies the operator
-        // deny_ip_ranges (private/loopback) before returning pinned addresses. We
-        // never resolve DNS in the client or accept a client-supplied address.
-        auto const resolved = discovery_.upstream().lookup_addresses(parsed->host, parsed->port);
+        // SSRF-safe resolution: the cached discovery network applies the expanded
+        // private/loopback/CGNAT/multicast/reserved filter before returning pinned
+        // addresses. We never resolve DNS in the client or accept a
+        // client-supplied address.
+        auto const resolved = discovery_.lookup_addresses_filtered(parsed->host, parsed->port);
         if (!resolved.ok || resolved.addresses.empty())
         {
             return {false,

@@ -28,16 +28,22 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/master_key.hpp"
+#include "../support/membership_fixture_support.hpp"
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/authorization.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -105,31 +111,54 @@ auto constexpr remote_key_seed = "m01-audit-remote-seed";
     return req;
 }
 
+// A signed m.room.member PDU together with the v12 event ID that the server
+// will derive from its reference hash. The URL path eventId is ignored by
+// membership_acceptor, but tests must use the real stored event_id when they
+// assert on the persistent event graph.
+struct SignedMembershipPdu final
+{
+    std::string json;
+    std::string event_id;
+};
+
 // Build a properly signed m.room.member PDU (join, leave, or knock) from the
 // remote server. Mirrors make_signed_join_body() in
 // tests/unit/test_federation_invite_join.cpp, generalised over `membership`.
 [[nodiscard]] auto make_signed_membership_body(std::string const& room_id, std::string const& sender,
                                                std::string const& state_key, std::string const& membership,
-                                               std::vector<std::string> const& auth_events = {}) -> std::string
+                                               std::vector<std::string> const& auth_events = {},
+                                               std::vector<std::string> const& prev_events = {}) -> SignedMembershipPdu
 {
-    auto auth_json = std::string{"["};
-    for (std::size_t i = 0U; i < auth_events.size(); ++i)
-    {
-        if (i != 0U)
+    auto const json_id_array = [](std::vector<std::string> const& ids) {
+        auto out = std::string{"["};
+        for (std::size_t i = 0U; i < ids.size(); ++i)
         {
-            auth_json += ',';
+            if (i != 0U)
+            {
+                out += ',';
+            }
+            out += "\"" + ids[i] + "\"";
         }
-        auth_json += "\"" + auth_events[i] + "\"";
-    }
-    auth_json += "]";
+        out += "]";
+        return out;
+    };
 
     auto const unsigned_json =
         std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id + "\",\"sender\":\"" + sender +
         "\",\"state_key\":\"" + state_key + "\",\"content\":{\"membership\":\"" + membership +
-        "\"},\"depth\":6,\"origin_server_ts\":2000,\"prev_events\":[],\"auth_events\":" + auth_json + "}";
+        "\"},\"depth\":6,\"origin_server_ts\":2000,\"prev_events\":" + json_id_array(prev_events) +
+        ",\"auth_events\":" + json_id_array(auth_events) + "}";
 
-    return merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
-                                                                 remote_key_seed, "12");
+    auto const signed_json = merovingian::federation::test::make_signed_event_json(
+        unsigned_json, remote_origin, remote_key_id, remote_key_seed, "12");
+
+    auto const parsed = merovingian::canonicaljson::parse_lossless(signed_json);
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const event_id = merovingian::events::make_reference_hash_event_id(parsed.value, *policy);
+    REQUIRE(!event_id.event_id.empty());
+    return {signed_json, event_id.event_id};
 }
 
 // Plant an invite event directly into the store (simulates a local user
@@ -140,22 +169,56 @@ auto plant_invite_event(merovingian::homeserver::HomeserverRuntime& runtime, std
                         std::string const& sender_user_id, std::string const& invited_user_id,
                         std::string const& invite_event_id) -> void
 {
-    auto pdu = merovingian::database::PersistentEvent{};
+    using namespace merovingian;
+
+    auto& store = runtime.database.persistent_store;
+    auto const* policy = rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+
+    auto const prev_events = tests::fixture_prev_event_ids(store, room_id);
+    auto const auth_events = tests::fixture_auth_event_ids(store, room_id, sender_user_id, true);
+
+    auto const json_id_array = [](std::vector<std::string> const& ids) {
+        auto out = std::string{"["};
+        for (std::size_t i = 0U; i < ids.size(); ++i)
+        {
+            if (i != 0U)
+            {
+                out += ',';
+            }
+            out += "\"" + ids[i] + "\"";
+        }
+        out += "]";
+        return out;
+    };
+
+    auto pdu = database::PersistentEvent{};
     pdu.event_id = invite_event_id;
     pdu.room_id = room_id;
     pdu.sender_user_id = sender_user_id;
+    pdu.prev_event_ids = prev_events;
+    pdu.auth_event_ids = auth_events;
     pdu.json =
         std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + invited_user_id +
         "\",\"content\":{\"membership\":\"invite\"},\"room_id\":\"" + room_id + "\",\"sender\":\"" + sender_user_id +
-        "\",\"event_id\":\"" + invite_event_id +
-        "\",\"depth\":5,\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"x\"},\"origin_server_ts\":1000}";
+        "\",\"event_id\":\"" + invite_event_id + "\",\"depth\":5,\"prev_events\":" + json_id_array(prev_events) +
+        ",\"auth_events\":" + json_id_array(auth_events) + ",\"hashes\":{\"sha256\":\"x\"},\"origin_server_ts\":1000}";
     pdu.depth = 5U;
     pdu.stream_ordering = runtime.database.next_stream_ordering++;
-    auto state = std::optional<merovingian::database::PersistentStateEvent>{
-        merovingian::database::PersistentStateEvent{room_id, "m.room.member", invited_user_id, invite_event_id}
+    auto state = std::optional<database::PersistentStateEvent>{
+        database::PersistentStateEvent{room_id, "m.room.member", invited_user_id, invite_event_id}
     };
-    REQUIRE(merovingian::database::store_event_with_state(runtime.database.persistent_store, std::move(pdu),
-                                                          std::move(state)));
+    REQUIRE(database::store_event_with_state(store, std::move(pdu), std::move(state)));
+
+    auto const state_before = homeserver::compute_state_before(store, room_id, *policy, prev_events);
+    REQUIRE(state_before.ok);
+    auto const state_after =
+        homeserver::compute_state_after(state_before.state, invite_event_id, "m.room.member", invited_user_id);
+    auto const group = homeserver::record_event_state(store, room_id, invite_event_id, prev_events, state_after, true);
+    REQUIRE(group.has_value());
+    REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
+
+    store.memberships.push_back({room_id, invited_user_id, "invite", 0U});
 }
 
 // True if `store` has a membership row for (room_id, user_id) with the given
@@ -214,18 +277,20 @@ SCENARIO("send_join is rejected for an uninvited remote user in an invite-only r
 
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
-        auto const uninvited_user = std::string{"@mallory:"} + remote_origin;
-        auto const join_event_id = std::string{"$m01_join_mallory:remote.example.org"};
-        auto const join_body = make_signed_membership_body(room_id, uninvited_user, uninvited_user, "join");
-
         auto const& store = runtime.database.persistent_store;
+        auto const uninvited_user = std::string{"@mallory:"} + remote_origin;
+        auto const join_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, uninvited_user, true);
+        auto const join_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+        auto const join_pdu = make_signed_membership_body(room_id, uninvited_user, uninvited_user, "join",
+                                                          join_auth_events, join_prev_events);
+
         auto const events_before = store.events.size();
 
         WHEN("the remote server delivers send_join for the uninvited user")
         {
-            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_event_id;
+            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime.federation, signed_put(target, join_body));
+                runtime.federation, signed_put(target, join_pdu.json));
 
             THEN("the join is refused with 403")
             {
@@ -237,9 +302,22 @@ SCENARIO("send_join is rejected for an uninvited remote user in an invite-only r
                 REQUIRE_FALSE(has_any_membership(store, room_id, uninvited_user));
             }
 
-            THEN("no event was persisted for the rejected join")
+            // ADR-0064 phase B2 / spec "Rejection": a rejected event IS
+            // stored — "Subsequent events from other servers that reference
+            // rejected events should be allowed if they still pass the auth
+            // rules" — it simply never updates state, never becomes a forward
+            // extremity, and is never shown to clients. The security property
+            // this scenario guards is the membership NOT being applied
+            // (asserted above), not the row being absent.
+            THEN("the rejected join is stored as rejected, but never applied to state")
             {
-                REQUIRE(store.events.size() == events_before);
+                REQUIRE(store.events.size() == events_before + 1U);
+                auto const stored =
+                    std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& e) {
+                        return e.event_id == join_pdu.event_id;
+                    });
+                REQUIRE(stored != store.events.end());
+                REQUIRE(stored->status == "rejected");
             }
         }
     }
@@ -274,15 +352,17 @@ SCENARIO("send_join is accepted for a remote user who holds a pending invite", "
 
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
-        auto const join_event_id = std::string{"$m01_join_carol:remote.example.org"};
-        auto const join_body =
-            make_signed_membership_body(room_id, invited_user, invited_user, "join", {invite_event_id});
+        auto const& store = runtime.database.persistent_store;
+        auto const join_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, invited_user, true);
+        auto const join_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+        auto const join_pdu = make_signed_membership_body(room_id, invited_user, invited_user, "join", join_auth_events,
+                                                          join_prev_events);
 
         WHEN("the remote server delivers send_join for the invited user")
         {
-            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_event_id;
+            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime.federation, signed_put(target, join_body));
+                runtime.federation, signed_put(target, join_pdu.json));
 
             THEN("the join is accepted")
             {
@@ -326,15 +406,18 @@ SCENARIO("send_join is accepted for an uninvited remote user in a public room", 
 
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
+        auto const& store = runtime.database.persistent_store;
         auto const uninvited_user = std::string{"@dave:"} + remote_origin;
-        auto const join_event_id = std::string{"$m01_join_dave:remote.example.org"};
-        auto const join_body = make_signed_membership_body(room_id, uninvited_user, uninvited_user, "join");
+        auto const join_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, uninvited_user, true);
+        auto const join_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+        auto const join_pdu = make_signed_membership_body(room_id, uninvited_user, uninvited_user, "join",
+                                                          join_auth_events, join_prev_events);
 
         WHEN("the remote server delivers send_join for the uninvited user")
         {
-            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_event_id;
+            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime.federation, signed_put(target, join_body));
+                runtime.federation, signed_put(target, join_pdu.json));
 
             THEN("the join is accepted because the room is public")
             {
@@ -380,17 +463,20 @@ SCENARIO("send_leave is rejected for a remote user who was never a member, and n
 
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
+        auto const& store = runtime.database.persistent_store;
         auto const non_member = std::string{"@eve:"} + remote_origin;
-        auto const leave_event_id = std::string{"$m01_leave_eve:remote.example.org"};
-        auto const leave_body = make_signed_membership_body(room_id, non_member, non_member, "leave");
+        auto const leave_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, non_member, true);
+        auto const leave_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+        auto const leave_pdu =
+            make_signed_membership_body(room_id, non_member, non_member, "leave", leave_auth_events, leave_prev_events);
 
         REQUIRE_FALSE(has_any_membership(runtime.database.persistent_store, room_id, non_member));
 
         WHEN("the remote server delivers send_leave for the non-member")
         {
-            auto const target = "/_matrix/federation/v2/send_leave/" + room_id + "/" + leave_event_id;
+            auto const target = "/_matrix/federation/v2/send_leave/" + room_id + "/" + leave_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime.federation, signed_put(target, leave_body));
+                runtime.federation, signed_put(target, leave_pdu.json));
 
             THEN("the leave is refused with 403")
             {

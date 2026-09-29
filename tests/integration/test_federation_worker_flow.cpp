@@ -8,22 +8,32 @@
 // |  sign-back channel, and in-process fallback when the worker is down.    |
 // +-------------------------------------------------------------------------+
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/master_key.hpp"
+#include "../support/membership_fixture_support.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/ipc/channel.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -81,6 +91,25 @@ using merovingian::http::OutboundRequest;
     return MEROVINGIAN_TEST_FEDERATION_WORKER;
 }
 
+// Derives the worker IPC auth key material a test hands directly to a
+// WorkerSupervisor it constructs itself (bypassing WorkerPool, which would
+// otherwise do this derivation once for every shard — see
+// WorkerPool::WorkerPool in src/homeserver/worker_pool.cpp). Mirrors that
+// same derivation from the same master key file so the standalone
+// WorkerSupervisor scenarios below authenticate against a real worker
+// exactly as WorkerPool-driven scenarios do.
+[[nodiscard]] auto derive_worker_ipc_auth_key_material(std::string const& master_key_path)
+    -> merovingian::core::SecretBuffer
+{
+    auto material = merovingian::crypto::load_master_key_material(master_key_path);
+    REQUIRE(material.has_value());
+    auto const key = merovingian::crypto::derive_ipc_auth_key(material->bytes());
+    REQUIRE(key.has_value());
+    return merovingian::core::SecretBuffer{
+        std::span<std::uint8_t const>{key->bytes.data(), key->bytes.size()}
+    };
+}
+
 [[nodiscard]] auto unique_temp_dir(std::string_view prefix) -> std::filesystem::path
 {
     auto rng = std::mt19937{std::random_device{}()};
@@ -136,6 +165,17 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
     // they do not regress if the worker allowlist is incomplete. The hardened
     // scenario below sets this true to validate the worker runs under the filter.
     fw.apply_hardening = false;
+    // ADR-0062 part 3: Landlock is applied unconditionally at worker startup,
+    // independent of apply_hardening above, so every scenario here spawns a
+    // real worker that attempts it. Setting the opt-out true only changes
+    // behaviour when the running kernel actually lacks Landlock (older than
+    // 5.13, or disabled at boot) -- on a kernel that has it, Landlock is
+    // still applied for real and every scenario below genuinely exercises the
+    // allowlist (this is deliberate: a missing CA/resolver/NSS path would
+    // surface here as outbound federation failing). Without this, every
+    // scenario in this file would refuse to start on any CI/dev kernel that
+    // predates Landlock, which is a regression this ADR must not introduce.
+    fw.allow_without_landlock = true;
 
     return Config{server, ListenersConfig{}, database, security, ClientRateLimitsConfig{}, LogModulesConfig{}, fw};
 }
@@ -161,6 +201,11 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
     // the bulk of scenarios run the worker unfiltered and do not regress.
     content += "federation.worker.apply_hardening=";
     content += config.federation_worker().apply_hardening ? "true" : "false";
+    content += "\n";
+    // ADR-0062 part 3: see the comment on make_federation_worker_config's
+    // fw.allow_without_landlock above.
+    content += "federation.worker.allow_without_landlock=";
+    content += config.federation_worker().allow_without_landlock ? "true" : "false";
     content += "\n";
     write_file(path, content);
 }
@@ -287,6 +332,113 @@ struct IpcTestChannelPair final
     REQUIRE(pair.server != nullptr);
     REQUIRE(pair.client != nullptr);
     return pair;
+}
+
+// Format a vector of event IDs as a JSON string array.
+[[nodiscard]] auto json_id_array(std::vector<std::string> const& ids) -> std::string
+{
+    auto out = std::string{"["};
+    for (std::size_t i = 0U; i < ids.size(); ++i)
+    {
+        if (i != 0U)
+        {
+            out += ',';
+        }
+        out += "\"" + ids[i] + "\"";
+    }
+    out += "]";
+    return out;
+}
+
+// Events relayed by a worker are signed as their sender's server with this
+// seed, and relay_key_resolver() gives main that server's matching key: main
+// re-verifies every relayed PDU's signature itself (ADR-0071).
+constexpr auto relay_key_seed = "federation-worker-flow-relay-seed";
+constexpr auto relay_key_id = "ed25519:auto";
+
+[[nodiscard]] auto server_of(std::string_view user_id) -> std::string
+{
+    auto const colon = user_id.find(':');
+    return colon == std::string_view::npos ? std::string{} : std::string{user_id.substr(colon + 1U)};
+}
+
+// Hashes and signs `unsigned_event_json` as the server `sender` belongs to.
+[[nodiscard]] auto sign_as_sender(std::string_view unsigned_event_json, std::string_view sender) -> std::string
+{
+    auto signed_json = merovingian::federation::test::make_signed_event_json(unsigned_event_json, server_of(sender),
+                                                                             relay_key_id, relay_key_seed, "10");
+    REQUIRE(!signed_json.empty());
+    return signed_json;
+}
+
+// The event ID a signed room-version-10 event hashes to.
+[[nodiscard]] auto event_id_of(std::string const& signed_event_json) -> std::string
+{
+    auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(signed_event_json, "10");
+    REQUIRE(envelope.has_value());
+    return envelope->event_id;
+}
+
+// Main's key resolver in these scenarios: every server's key is the one
+// derived from relay_key_seed, valid until 2100-01-01 (from room v5 a key
+// must still be valid at each event's origin_server_ts, ADR-0075).
+[[nodiscard]] auto relay_key_resolver()
+{
+    return [](std::string_view server_name,
+              std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+        if (key_id != relay_key_id)
+        {
+            return std::nullopt;
+        }
+        auto remote = merovingian::federation::FederationRemoteRuntime{};
+        remote.server_name = std::string{server_name};
+        remote.signing_key = {std::string{server_name}, relay_key_id, 4'102'444'800'000U,
+                              merovingian::federation::test::keypair_from_seed(relay_key_seed).public_key};
+        remote.discovery.server_name = std::string{server_name};
+        return remote;
+    };
+}
+
+// Build an m.room.member event JSON, hashed and signed as the sender's server,
+// so it passes main's signature re-verification and the PDU receipt checks run
+// by membership_acceptor.
+[[nodiscard]] auto make_membership_event_json(std::string_view room_id, std::string_view sender,
+                                              std::string_view state_key, std::string_view membership,
+                                              std::vector<std::string> const& prev_events,
+                                              std::vector<std::string> const& auth_events, std::int64_t depth,
+                                              std::int64_t origin_server_ts) -> std::string
+{
+    using namespace merovingian;
+
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{membership}}));
+
+    auto obj = canonicaljson::Object{};
+    obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
+    obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{origin_server_ts}));
+    obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
+    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
+    obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{state_key}}));
+    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+
+    auto prev_arr = canonicaljson::Array{};
+    for (auto const& id : prev_events)
+    {
+        prev_arr.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_arr)}));
+
+    auto auth_arr = canonicaljson::Array{};
+    for (auto const& id : auth_events)
+    {
+        auth_arr.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
+
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    return sign_as_sender(serialized.output, sender);
 }
 
 } // namespace
@@ -612,6 +764,7 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.membership_acceptor);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
 
         auto const room_id = std::string{"!membership-room:example.com"};
         // membership_acceptor runs the room's authorization rules before it
@@ -624,21 +777,41 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
             merovingian::database::store_room(runtime.database.persistent_store, {room_id, "@resident:example.com"}));
         {
             auto const creator = std::string{"@resident:example.com"};
-            auto seed_state = [&](std::string_view event_id, std::string_view type, std::string_view state_key,
-                                  std::string const& content_json, std::uint64_t ordering) {
-                auto event = merovingian::database::PersistentEvent{};
+            auto const* policy = merovingian::rooms::find_room_version_policy("10");
+            REQUIRE(policy != nullptr);
+
+            auto seed_state = [&, policy](std::string_view event_id, std::string_view type, std::string_view state_key,
+                                          std::string const& content_json, std::uint64_t ordering) {
+                using namespace merovingian;
+
+                auto& store = runtime.database.persistent_store;
+                auto const prev_events = tests::fixture_prev_event_ids(store, room_id);
+                auto const auth_events = tests::fixture_auth_event_ids(store, room_id, creator, false);
+
+                auto event = database::PersistentEvent{};
                 event.event_id = std::string{event_id};
                 event.room_id = room_id;
                 event.sender_user_id = creator;
                 event.depth = ordering;
                 event.stream_ordering = ordering;
+                event.prev_event_ids = prev_events;
+                event.auth_event_ids = auth_events;
                 event.json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + creator +
                              R"(","origin_server_ts":1000,"type":")" + std::string{type} + R"(","state_key":")" +
-                             std::string{state_key} + R"(","content":)" + content_json + "}";
-                auto state = merovingian::database::PersistentStateEvent{room_id, std::string{type},
-                                                                         std::string{state_key}, std::string{event_id}};
-                REQUIRE(merovingian::database::store_event_with_state(runtime.database.persistent_store,
-                                                                      std::move(event), state));
+                             std::string{state_key} + R"(","content":)" + content_json + R"(,"prev_events":)" +
+                             json_id_array(prev_events) + R"(,"auth_events":)" + json_id_array(auth_events) + "}";
+                auto state = database::PersistentStateEvent{room_id, std::string{type}, std::string{state_key},
+                                                            std::string{event_id}};
+                REQUIRE(database::store_event_with_state(store, std::move(event), state));
+
+                auto const state_before = homeserver::compute_state_before(store, room_id, *policy, prev_events);
+                REQUIRE(state_before.ok);
+                auto const state_after =
+                    homeserver::compute_state_after(state_before.state, event_id, type, std::string{state_key});
+                auto const group =
+                    homeserver::record_event_state(store, room_id, event_id, prev_events, state_after, true);
+                REQUIRE(group.has_value());
+                REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
             };
             // room_version must match the "room_version":"10" the ingest request
             // below declares, or the event is judged under the wrong rule set.
@@ -656,16 +829,18 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
         WHEN("a membership_ingest request shaped like a real worker's is handled")
         {
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    sender + R"(","content":{"membership":"join"}})";
+            auto& store = runtime.database.persistent_store;
+            auto const join_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, sender, false);
+            auto const join_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+
+            auto const event_json = make_membership_event_json(room_id, sender, sender, "join", join_prev_events,
+                                                               join_auth_events, 5, 1234);
             auto const request_json =
-                std::string{
-                    R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$placeholder-event-id")"} +
-                R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" + sender +
-                R"(","event_type":"m.room.member","state_key":")" + sender +
-                R"(","origin_server_ts":1234,"depth":0,"auth_event_ids":[],"prev_event_ids":[],"signatures":[],)" +
-                R"("json":)" +
+                std::string{R"({"type":"membership_ingest","endpoint":"send_join","event_id":")"} +
+                event_id_of(event_json) + R"(")" + R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" +
+                sender + R"(","event_type":"m.room.member","state_key":")" + sender +
+                R"(","origin_server_ts":1234,"depth":5,"auth_event_ids":)" + json_id_array(join_auth_events) +
+                R"(,"prev_event_ids":)" + json_id_array(join_prev_events) + R"(,"signatures":[],"json":)" +
                 [&] {
                     // Mirror ipc::ipc_json_str's escaping for the embedded event JSON.
                     auto escaped = std::string{'"'};
@@ -734,19 +909,17 @@ SCENARIO("handle_membership_ingest_request rejects a relayed join for a room mai
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.membership_acceptor);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
 
         WHEN("a membership_ingest request targets a room that was never stored")
         {
             auto const room_id = std::string{"!never-stored:example.com"};
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    sender + R"(","content":{"membership":"join"}})";
+            auto const event_json = make_membership_event_json(room_id, sender, sender, "join", {}, {}, 0, 1234);
             auto const request_json =
-                std::string{
-                    R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$placeholder-event-id")"} +
-                R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" + sender +
-                R"(","event_type":"m.room.member","state_key":")" + sender +
+                std::string{R"({"type":"membership_ingest","endpoint":"send_join","event_id":")"} +
+                event_id_of(event_json) + R"(")" + R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" +
+                sender + R"(","event_type":"m.room.member","state_key":")" + sender +
                 R"(","origin_server_ts":1234,"depth":0,"auth_event_ids":[],"prev_event_ids":[],"signatures":[],)" +
                 R"("json":)" + ipc_escape_json_string(event_json) + "}";
 
@@ -1194,6 +1367,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.invite_handler);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
 
         auto const target_user = std::string{"@local:"} + config.server().server_name;
         // invite_handler's local_user_exists() checks HomeserverRuntime::database.users
@@ -1206,9 +1380,8 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
         {
             auto const room_id = std::string{"!invite-room:matrix.example.org"};
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    target_user + R"(","content":{"membership":"invite"}})";
+            auto const event_json = make_membership_event_json(room_id, sender, target_user, "invite", {"$remote-prev"},
+                                                               {"$remote-create"}, 5, 1234);
 
             // Mirror ipc::ipc_json_str's escaping for the embedded event JSON,
             // same as the membership_ingest scenario above does.
@@ -1227,7 +1400,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
             };
 
             auto const request_json = std::string{R"({"type":"invite_ingest","room_id":)"} + escape(room_id) +
-                                      R"(,"event_id":"$placeholder-event-id","room_version":"10",)" +
+                                      R"(,"event_id":)" + escape(event_id_of(event_json)) + R"(,"room_version":"10",)" +
                                       R"("invite_event_json":)" + escape(event_json) +
                                       R"(,"invite_room_state_json":[]})";
 
@@ -1283,6 +1456,7 @@ SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.invite_handler);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
         // Deliberately do NOT register target_user in runtime.database.users.
 
         WHEN("an invite_ingest request targets a user who was never registered locally")
@@ -1290,14 +1464,13 @@ SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this
             auto const room_id = std::string{"!invite-room-404:matrix.example.org"};
             auto const sender = std::string{"@remote:matrix.example.org"};
             auto const target_user = std::string{"@nobody:"} + config.server().server_name;
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    target_user + R"(","content":{"membership":"invite"}})";
+            auto const event_json = make_membership_event_json(room_id, sender, target_user, "invite", {"$remote-prev"},
+                                                               {"$remote-create"}, 5, 1234);
 
             auto const request_json =
                 std::string{R"({"type":"invite_ingest","room_id":)"} + ipc_escape_json_string(room_id) +
-                R"(,"event_id":"$placeholder-event-id","room_version":"10",)" + R"("invite_event_json":)" +
-                ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
+                R"(,"event_id":)" + ipc_escape_json_string(event_id_of(event_json)) + R"(,"room_version":"10",)" +
+                R"("invite_event_json":)" + ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
 
             auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
 
@@ -2034,9 +2207,9 @@ SCENARIO("WorkerSupervisor::stop() returns promptly when the worker is healthy",
         auto started = start_runtime(config);
         REQUIRE(started.started);
 
-        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
-                                           config.federation_worker().request_timeout_seconds, 0U,
-                                           config.security().secrets.master_key_file};
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
         supervisor.start();
 
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
@@ -2087,9 +2260,9 @@ SCENARIO("WorkerSupervisor restarts an unexpectedly exited worker with exponenti
         auto started = start_runtime(config);
         REQUIRE(started.started);
 
-        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
-                                           config.federation_worker().request_timeout_seconds, 0U,
-                                           config.security().secrets.master_key_file};
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
         supervisor.start();
 
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
@@ -2150,9 +2323,9 @@ SCENARIO("WorkerSupervisor::stop() escalates to SIGKILL when the worker ignores 
         auto started = start_runtime(config);
         REQUIRE(started.started);
 
-        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
-                                           config.federation_worker().request_timeout_seconds, 0U,
-                                           config.security().secrets.master_key_file};
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
         supervisor.start();
 
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};

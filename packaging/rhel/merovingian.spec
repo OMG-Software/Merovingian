@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.12
+Version:        0.12.13
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Sep 28 2026 James Chapman <claude@ping.me.uk> - 0.12.13-1
+- fix(security): fixes from the 0.12.12 security audit; see CHANGELOG.md 0.12.13 for what is fixed and what is deferred
+
 * Fri Sep 11 2026 James Chapman <claude@ping.me.uk> - 0.12.12-1
 - docs: correct stale and inaccurate documentation found by a full audit against the code; add module guides for federation_worker, ipc and push
 

@@ -6,7 +6,9 @@
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/tls.hpp"
+#include "merovingian/http/client_address.hpp"
 #include "merovingian/http/connection_guard.hpp"
+#include "merovingian/http/connection_limiter.hpp"
 #include "merovingian/http/keep_alive.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/http/request_limits.hpp"
@@ -356,10 +358,21 @@ namespace
     // are buffered and served in order, one response at a time.
     // ---------------------------------------------------------------------
 
+    // ADR-0072: a connection's per-IP slot. It is shared, not unique, only
+    // because the pool tasks that carry a connection between threads are
+    // std::function and must be copyable; exactly one task owns the
+    // connection at a time, and the slot is released when the last of them
+    // (the one that closes the fd) is destroyed.
+    using SharedConnectionSlot =
+        std::shared_ptr<http::ConnectionLimiter::Slot>; // SHARED_PTR: reviewed — per-IP slot travels with the fd across
+                                                        // copyable pool tasks
+
     // Everything a connection-serving task needs. `runtime` and `stats`
     // outlive every pool task (main.cpp stops the pools before the runtime
     // is torn down). `owner_pool` is the pool whose worker runs this
     // connection's loop — used to bound shutdown latency while parked.
+    // `connection_slot` holds the connection's per-IP slot; every task that
+    // takes over the fd must take a copy with it.
     struct ConnectionContext final
     {
         ClientServerRuntime& runtime;
@@ -368,7 +381,43 @@ namespace
         net::ThreadPool* sync_pool;  // may be null (tests, no long-poll offload)
         net::ThreadPool* owner_pool; // may be null (direct serve_one calls)
         std::string peer_addr;
+        SharedConnectionSlot connection_slot; // null when exempt or not accepted here
     };
+
+    struct ConnectionAdmission final
+    {
+        bool admitted{false};
+        SharedConnectionSlot slot{};
+    };
+
+    // ADR-0072: decided at accept time, before a byte is read. A connection
+    // from an address in server.trusted_proxies is exempt, because a reverse
+    // proxy carries many clients over its own address; per-client limiting
+    // then relies on the proxy and on the per-IP rate limiter, which sees the
+    // forwarded address. Everything else is counted under its
+    // client_address_key and refused once that key holds
+    // server.http.max_connections_per_ip connections.
+    [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime, std::string const& peer_addr)
+        -> ConnectionAdmission
+    {
+        auto const& server = runtime.homeserver.config.server();
+        if (std::ranges::find(server.trusted_proxies, peer_addr) != server.trusted_proxies.end())
+        {
+            return {true, nullptr};
+        }
+        if (!runtime.connection_limiter)
+        {
+            return {false, nullptr};
+        }
+        auto slot = runtime.connection_limiter->try_acquire(
+            http::client_address_key(peer_addr, server.http.ipv6_client_prefix_length),
+            server.http.max_connections_per_ip);
+        if (!slot.has_value())
+        {
+            return {false, nullptr};
+        }
+        return {true, std::make_shared<http::ConnectionLimiter::Slot>(std::move(*slot))};
+    }
 
     enum class ServeOutcome : std::uint8_t
     {
@@ -1386,6 +1435,8 @@ namespace
                 auto* runtime_ptr = &ctx.runtime;
                 auto* stats_ptr = &ctx.stats;
                 auto peer_addr_copy = ctx.peer_addr;
+                // The per-IP slot goes wherever the fd goes (ADR-0072).
+                auto connection_slot = ctx.connection_slot;
                 auto const dispatch_mode = ctx.dispatch_mode;
                 auto* sync_pool_ptr = ctx.sync_pool;
                 auto* owner_pool_ptr = ctx.owner_pool;
@@ -1399,7 +1450,7 @@ namespace
                 auto submitted = sync_pool_ptr->submit([fd, write_fn = std::move(write_fn), runtime_ptr, stats_ptr,
                                                         request_copy = local_request, wait, notifier, sync_pool_ptr,
                                                         decision, idle_timeout_seconds, peer_addr_copy, dispatch_mode,
-                                                        owner_pool_ptr, tls]() mutable {
+                                                        owner_pool_ptr, tls, connection_slot]() mutable {
                     // Re-wait loop: after each notifier fire, call the handler with
                     // can_wait=true.  If the handler returns needs_wait the wakeup was
                     // caused by an event irrelevant to this connection (e.g. another
@@ -1508,11 +1559,12 @@ namespace
                             return false;
                         }
                         return owner_pool_ptr->submit([fd, tls, peer_addr_copy, dispatch_mode, sync_pool_ptr,
-                                                       owner_pool_ptr, runtime_ptr, stats_ptr] {
+                                                       owner_pool_ptr, runtime_ptr, stats_ptr, connection_slot] {
                             auto guard = core::SocketHandle{fd};
                             auto connection_ctx =
-                                ConnectionContext{*runtime_ptr,  *stats_ptr,     dispatch_mode,
-                                                  sync_pool_ptr, owner_pool_ptr, std::move(peer_addr_copy)};
+                                ConnectionContext{*runtime_ptr,   *stats_ptr,     dispatch_mode,
+                                                  sync_pool_ptr,  owner_pool_ptr, std::move(peer_addr_copy),
+                                                  connection_slot};
                             if (serve_connection(fd, tls, connection_ctx) == ServeOutcome::transferred)
                             {
                                 // The next long-poll (or its continuation) owns
@@ -1759,7 +1811,9 @@ auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, Http
     // per-call contract: with no owning pool the keep-alive policy disables
     // parking (see keep_alive_policy_for), so this serves a single round and
     // reports whether the fd was transferred to the sync pool.
-    auto connection_ctx = ConnectionContext{runtime, stats, dispatch_mode, sync_pool, nullptr, std::string{peer_addr}};
+    // Not an accept loop: the caller owns the connection and its admission.
+    auto connection_ctx =
+        ConnectionContext{runtime, stats, dispatch_mode, sync_pool, nullptr, std::string{peer_addr}, nullptr};
     return serve_connection(client_fd, nullptr, connection_ctx) == ServeOutcome::transferred;
 }
 
@@ -1835,27 +1889,39 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
         // close the fd immediately. Inside the lambda the fd is wrapped in a
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
-        auto fd = client.release();
-        auto submitted = pool.submit(
-            [&runtime, &stats, dispatch_mode, sync_pool, owner_pool = &pool, fd, peer_addr = std::move(peer_addr)] {
-                auto guard = core::SocketHandle{fd};
-                ++stats.accepted_connections;
-                auto connection_ctx =
-                    ConnectionContext{runtime, stats, dispatch_mode, sync_pool, owner_pool, std::move(peer_addr)};
-                auto const handed_off = serve_connection(fd, nullptr, connection_ctx) == ServeOutcome::transferred;
-                if (handed_off)
+        // ADR-0072: refuse before reading a byte once this client holds its
+        // share of connections; ~SocketHandle closes the refused fd.
+        auto admission = admit_connection(runtime, peer_addr);
+        if (!admission.admitted)
+        {
+            log_diagnostic(
+                "connection.per_ip_cap_reached",
                 {
-                    // The sync pool thread (or the keep-alive continuation it
-                    // submits back to this pool) owns the fd; do NOT shut it
-                    // down here.
-                    std::ignore = guard.release();
-                }
-                else
-                {
-                    std::ignore = ::shutdown(fd, SHUT_RDWR);
-                    // ~SocketHandle closes fd on both normal and exceptional exit.
-                }
+                    {"cap", std::to_string(runtime.homeserver.config.server().http.max_connections_per_ip), false}
             });
+            continue;
+        }
+        auto fd = client.release();
+        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, sync_pool, owner_pool = &pool, fd,
+                                      peer_addr = std::move(peer_addr), connection_slot = std::move(admission.slot)] {
+            auto guard = core::SocketHandle{fd};
+            ++stats.accepted_connections;
+            auto connection_ctx = ConnectionContext{
+                runtime, stats, dispatch_mode, sync_pool, owner_pool, std::move(peer_addr), connection_slot};
+            auto const handed_off = serve_connection(fd, nullptr, connection_ctx) == ServeOutcome::transferred;
+            if (handed_off)
+            {
+                // The sync pool thread (or the keep-alive continuation it
+                // submits back to this pool) owns the fd; do NOT shut it
+                // down here.
+                std::ignore = guard.release();
+            }
+            else
+            {
+                std::ignore = ::shutdown(fd, SHUT_RDWR);
+                // ~SocketHandle closes fd on both normal and exceptional exit.
+            }
+        });
         if (!submitted)
         {
             // Pool is stopped — close the fd that nobody will handle.
@@ -1927,50 +1993,63 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
         // close the fd immediately. Inside the lambda the fd is wrapped in a
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
+        // ADR-0072: refuse before the handshake once this client holds its
+        // share of connections; ~SocketHandle closes the refused fd.
+        auto admission = admit_connection(runtime, tls_peer_addr);
+        if (!admission.admitted)
+        {
+            log_diagnostic(
+                "tls.connection.per_ip_cap_reached",
+                {
+                    {"cap", std::to_string(runtime.homeserver.config.server().http.max_connections_per_ip), false}
+            });
+            continue;
+        }
         auto fd = client.release();
-        auto submitted = pool.submit([&tls_context, &runtime, &stats, dispatch_mode, sync_pool, owner_pool = &pool, fd,
-                                      tls_peer_addr = std::move(tls_peer_addr)] {
-            auto guard = core::SocketHandle{fd};
-            ++stats.accepted_connections;
-            auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
-            if (!accepted_tls.ok())
-            {
-                ++stats.rejected_requests;
-                log_diagnostic("tls.handshake.rejected", {
-                                                             {"reason", accepted_tls.error, false}
-                });
-                std::ignore = ::shutdown(fd, SHUT_RDWR);
-                return;
-                // ~SocketHandle closes fd on both normal and exceptional exit.
-            }
+        auto submitted =
+            pool.submit([&tls_context, &runtime, &stats, dispatch_mode, sync_pool, owner_pool = &pool, fd,
+                         tls_peer_addr = std::move(tls_peer_addr), connection_slot = std::move(admission.slot)] {
+                auto guard = core::SocketHandle{fd};
+                ++stats.accepted_connections;
+                auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
+                if (!accepted_tls.ok())
+                {
+                    ++stats.rejected_requests;
+                    log_diagnostic("tls.handshake.rejected", {
+                                                                 {"reason", accepted_tls.error, false}
+                    });
+                    std::ignore = ::shutdown(fd, SHUT_RDWR);
+                    return;
+                    // ~SocketHandle closes fd on both normal and exceptional exit.
+                }
 
-            // Build shared ownership via unique_ptr → shared_ptr conversion.
-            // Using shared_ptr{std::move(unique_ptr)} (not make_shared) allocates
-            // the control block separately (_Sp_counted_deleter), avoiding the
-            // GCC 16 -Warray-bounds false positive that fires when make_shared's
-            // _Sp_counted_ptr_inplace co-allocation is inlined. The connection
-            // stream (read phase, this thread), the sync-pool write lambda, and
-            // the keep-alive continuation that re-enters serve_connection each
-            // hold a copy; the last one to finish cleans up.
-            auto tls_unique = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
-            auto tls_shared = std::shared_ptr<TlsConnection>{// SHARED_PTR: reviewed — cross-thread TLS ownership
-                                                             std::move(tls_unique)};
+                // Build shared ownership via unique_ptr → shared_ptr conversion.
+                // Using shared_ptr{std::move(unique_ptr)} (not make_shared) allocates
+                // the control block separately (_Sp_counted_deleter), avoiding the
+                // GCC 16 -Warray-bounds false positive that fires when make_shared's
+                // _Sp_counted_ptr_inplace co-allocation is inlined. The connection
+                // stream (read phase, this thread), the sync-pool write lambda, and
+                // the keep-alive continuation that re-enters serve_connection each
+                // hold a copy; the last one to finish cleans up.
+                auto tls_unique = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
+                auto tls_shared = std::shared_ptr<TlsConnection>{// SHARED_PTR: reviewed — cross-thread TLS ownership
+                                                                 std::move(tls_unique)};
 
-            auto connection_ctx =
-                ConnectionContext{runtime, stats, dispatch_mode, sync_pool, owner_pool, std::move(tls_peer_addr)};
-            auto const transferred = serve_connection(fd, tls_shared, connection_ctx) == ServeOutcome::transferred;
-            if (transferred)
-            {
-                // The sync-pool thread now owns fd and holds tls_shared.
-                // Release the guard so the fd is not closed on this thread.
-                std::ignore = guard.release();
-            }
-            else
-            {
-                std::ignore = ::shutdown(fd, SHUT_RDWR);
-                // ~guard closes fd; ~tls_shared frees the TLS connection.
-            }
-        });
+                auto connection_ctx = ConnectionContext{
+                    runtime, stats, dispatch_mode, sync_pool, owner_pool, std::move(tls_peer_addr), connection_slot};
+                auto const transferred = serve_connection(fd, tls_shared, connection_ctx) == ServeOutcome::transferred;
+                if (transferred)
+                {
+                    // The sync-pool thread now owns fd and holds tls_shared.
+                    // Release the guard so the fd is not closed on this thread.
+                    std::ignore = guard.release();
+                }
+                else
+                {
+                    std::ignore = ::shutdown(fd, SHUT_RDWR);
+                    // ~guard closes fd; ~tls_shared frees the TLS connection.
+                }
+            });
         if (!submitted)
         {
             std::ignore = ::shutdown(fd, SHUT_RDWR);

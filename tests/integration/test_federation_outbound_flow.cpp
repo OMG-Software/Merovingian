@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/temp_directory.hpp"
+#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +22,7 @@
 #include <thread>
 #include <utility>
 
+#include <fcntl.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
@@ -201,10 +204,12 @@ auto run_one_shot_tls_server(merovingian::net::TcpAcceptor& acceptor,
     {
         return;
     }
+    // Owns the accepted descriptor: TlsConnection only borrows it, so without
+    // this every served connection stayed open for the rest of the run.
+    auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
     auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
     if (!tls_result.connection.has_value())
     {
-        ::close(client_fd);
         return;
     }
     auto& tls_connection = *tls_result.connection;
@@ -516,6 +521,90 @@ SCENARIO("OutboundClient refuses to follow a 3xx redirect from a federation peer
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.error == merovingian::http::OutboundError::redirect_rejected);
                 REQUIRE(result.response.status == 302U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Open descriptors in this process, counted portably (no /proc): probe each
+// number below the soft limit with fcntl(F_GETFD).
+[[nodiscard]] auto open_descriptor_count() -> std::size_t
+{
+    auto const limit = std::min<long>(::sysconf(_SC_OPEN_MAX), 65536L);
+    auto count = std::size_t{0U};
+    for (auto fd = 0; fd < static_cast<int>(limit); ++fd)
+    {
+        if (::fcntl(fd, F_GETFD) != -1)
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// Serves one "Connection: close" response from a fresh TLS server on its own
+// port and returns whether the call succeeded.
+[[nodiscard]] auto call_one_fresh_server(merovingian::http::OutboundClient& client,
+                                         merovingian::homeserver::TlsServerContext& tls_context,
+                                         std::string const& certificate_pem) -> bool
+{
+    auto acceptor = merovingian::net::TcpAcceptor{};
+    if (!acceptor.bind("127.0.0.1", 0U).ok)
+    {
+        return false;
+    }
+    auto const port = acceptor.bound_port();
+    auto const response = json_http_response("200 OK", R"({"ok":true})");
+    auto server_thread = std::thread{[&]() {
+        run_one_shot_tls_server(acceptor, tls_context, response);
+    }};
+    auto const result = client.perform(make_localhost_request(port, "localhost", certificate_pem));
+    server_thread.join();
+    return result.ok;
+}
+
+} // namespace
+
+// A completed outbound call must leave no descriptor behind on either side.
+// The test TLS servers used to leak every accepted socket (TlsConnection only
+// borrows its descriptor, and they closed it only when the handshake failed),
+// about one per call across the integration suite, until OpenBSD's low
+// descriptor limit made later tests unable to open sockets or files. The
+// client side matters just as much: OutboundClient keeps one libcurl handle per
+// thread for the thread's lifetime, so anything it retained per destination
+// would grow with every federation peer a server thread ever talks to.
+SCENARIO("OutboundClient does not accumulate descriptors across many destinations on one thread",
+         "[http][outbound][tls][integration][descriptor_leak]")
+{
+    GIVEN("a trusted TLS certificate and a series of servers that each answer once and close")
+    {
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto client = merovingian::http::OutboundClient{};
+
+        WHEN("one thread calls 8 distinct servers, and then 16 more")
+        {
+            auto calls_ok = true;
+            for (auto index = 0; index < 8; ++index)
+            {
+                calls_ok = call_one_fresh_server(client, *tls_context.context, certificate.certificate_pem) && calls_ok;
+            }
+            auto const after_first = open_descriptor_count();
+            for (auto index = 0; index < 16; ++index)
+            {
+                calls_ok = call_one_fresh_server(client, *tls_context.context, certificate.certificate_pem) && calls_ok;
+            }
+            auto const after_second = open_descriptor_count();
+
+            THEN("every call succeeds and the descriptor count does not grow with the number of destinations")
+            {
+                REQUIRE(calls_ok);
+                REQUIRE(after_second <= after_first);
             }
         }
     }

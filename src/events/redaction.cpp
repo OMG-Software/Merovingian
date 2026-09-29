@@ -57,7 +57,10 @@ namespace
     {
         if (event_type == "m.room.member")
         {
-            return key == "membership" || key == "join_authorised_via_users_server" ||
+            // join_authorised_via_users_server from v9 (rooms/v9.md; v8 keeps
+            // only membership); third_party_invite (its "signed" key) from v11.
+            return key == "membership" ||
+                   (policy.redaction_keeps_join_authorisation && key == "join_authorised_via_users_server") ||
                    (policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "third_party_invite");
         }
         if (event_type == "m.room.create")
@@ -86,16 +89,13 @@ namespace
         }
         if (event_type == "m.room.aliases")
         {
-            // Spec v1-v10: "aliases" key preserved. v11+: entire content stripped (no keys kept).
-            // ../../docs/matrix-v1.19-spec/rooms/v11.md#redactions
-            return policy.redaction_rules != rooms::RedactionRules::room_v11_plus && key == "aliases";
+            // v1-v5 keep "aliases"; rooms/v6.md removed m.room.aliases from
+            // the redaction algorithm, so v6+ strip the content to {}.
+            return policy.redaction_keeps_aliases && key == "aliases";
         }
-        if (event_type == "m.room.third_party_invite")
-        {
-            // Spec (all versions): m.room.third_party_invite preserves "signed" from content.
-            // URL: ../../docs/matrix-v1.19-spec/rooms/v10.md#redactions
-            return key == "signed";
-        }
+        // No version's list names m.room.third_party_invite, so its content
+        // is stripped entirely (the v11 "signed" rule is for the
+        // third_party_invite key of m.room.member, above).
         if (event_type == "m.room.redaction")
         {
             return policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "redacts";

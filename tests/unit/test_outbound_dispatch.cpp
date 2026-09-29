@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/master_key.hpp"
+#include "../support/membership_fixture_support.hpp"
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -425,15 +426,43 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
                                                               .state_key = bob_sender,
                                                               .event_id = "$inbound_bob_member"});
 
+        // ADR-0064 phase B2: ingest_pdu_event now also authorises against the
+        // PDU's own auth_events (spec step 4) and the state before it (step
+        // 5, via compute_state_before), so this fixture needs a real state
+        // group for $inbound_bob_member — not just the naive store.state
+        // rows above — matching what seed_room_with_genesis_state_group does
+        // in tests/unit/test_pdu_ingestion_state_groups.cpp.
+        {
+            auto& store = homeserver.database.persistent_store;
+            auto const genesis_state = std::vector<merovingian::database::PersistentStateGroupStateEntry>{
+                {"", "m.room.create", "",         "$inbound_create"    },
+                {"", "m.room.member", bob_sender, "$inbound_bob_member"},
+            };
+            auto const group_id = merovingian::database::create_or_reuse_state_group(
+                store, room_id_str, room_id_str + ":genesis-group", std::nullopt, genesis_state);
+            REQUIRE(group_id.has_value());
+            REQUIRE(merovingian::database::set_event_state_group(store, "$inbound_bob_member", *group_id));
+            REQUIRE(
+                merovingian::database::update_forward_extremities(store, room_id_str, "$inbound_bob_member", {}, true));
+        }
+
         WHEN("an inbound PDU is ingested through the pdu_sink")
         {
             auto envelope = merovingian::federation::InboundPduEnvelope{};
             envelope.event_id = "$test_inbound_event";
             envelope.room_id = room_id_str;
+            // Matches the create event's own content.room_version above.
+            // Left implicit before, but explicit here matters now: v12
+            // (MSC4291) is why m.room.create is NOT named in auth_events
+            // below — its event id is implicit in the room ID, and naming
+            // it is itself an ADR-0064 phase B2 selection violation.
+            envelope.room_version = "12";
             envelope.sender = bob_sender;
             envelope.event_type = "m.room.message";
             envelope.depth = 2U;
             envelope.origin_server_ts = static_cast<std::int64_t>(1000);
+            envelope.prev_event_ids = {"$inbound_bob_member"};
+            envelope.auth_event_ids = {"$inbound_bob_member"};
             // The auth check parses this JSON to read the event's sender/type,
             // so it must carry the same fields the envelope advertises, and the
             // ingest path now verifies the content hash.
@@ -695,9 +724,27 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
             envelope.event_type = "m.room.member";
             envelope.state_key = remote_user;
             envelope.depth = 10U;
+            // A realistic join names the room's selected auth events and its
+            // forward extremities: ADR-0064 phase B2 authorises an inbound
+            // membership against its own auth_events and the state before it,
+            // so an event with neither is rejected, as a conformant peer's
+            // never would be. v12 rooms omit the create event by rule.
+            auto const fx_ids = [](std::vector<std::string> const& ids) {
+                auto out = std::string{"["};
+                for (std::size_t i = 0U; i < ids.size(); ++i)
+                {
+                    out += (i == 0U ? "" : ",");
+                    out += "\"" + ids[i] + "\"";
+                }
+                return out + "]";
+            };
+            auto const& fx_store = runtime.homeserver.database.persistent_store;
+            envelope.prev_event_ids = merovingian::tests::fixture_prev_event_ids(fx_store, id);
+            envelope.auth_event_ids = merovingian::tests::fixture_auth_event_ids(fx_store, id, remote_user, true);
             envelope.json =
-                "{\"auth_events\":[],\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
-                "\"prev_events\":[],\"room_id\":\"" +
+                "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
+                ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
+                "\"prev_events\":" + fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" +
                 id + "\",\"sender\":\"" + remote_user + "\",\"state_key\":\"" + remote_user +
                 "\",\"type\":\"m.room.member\"}";
 
@@ -794,9 +841,27 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
             envelope.event_type = "m.room.member";
             envelope.state_key = remote_user;
             envelope.depth = 10U;
+            // A realistic join names the room's selected auth events and its
+            // forward extremities: ADR-0064 phase B2 authorises an inbound
+            // membership against its own auth_events and the state before it,
+            // so an event with neither is rejected, as a conformant peer's
+            // never would be. v12 rooms omit the create event by rule.
+            auto const fx_ids = [](std::vector<std::string> const& ids) {
+                auto out = std::string{"["};
+                for (std::size_t i = 0U; i < ids.size(); ++i)
+                {
+                    out += (i == 0U ? "" : ",");
+                    out += "\"" + ids[i] + "\"";
+                }
+                return out + "]";
+            };
+            auto const& fx_store = runtime.homeserver.database.persistent_store;
+            envelope.prev_event_ids = merovingian::tests::fixture_prev_event_ids(fx_store, id);
+            envelope.auth_event_ids = merovingian::tests::fixture_auth_event_ids(fx_store, id, remote_user, true);
             envelope.json =
-                "{\"auth_events\":[],\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
-                "\"prev_events\":[],\"room_id\":\"" +
+                "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
+                ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
+                "\"prev_events\":" + fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" +
                 id + "\",\"sender\":\"" + remote_user + "\",\"state_key\":\"" + remote_user +
                 "\",\"type\":\"m.room.member\"}";
 

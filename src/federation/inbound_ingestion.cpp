@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/events/state_resolution.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -91,6 +92,13 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
         });
         return std::nullopt;
     }
+    if (pdu_json.size() > events::max_event_size_bytes)
+    {
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "PDU exceeds 65536 byte size limit", false}
+        });
+        return std::nullopt;
+    }
     auto const parsed = canonicaljson::parse_lossless(pdu_json);
     if (parsed.error != canonicaljson::ParseError::none)
     {
@@ -163,10 +171,26 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
 
     if (auto const* prev_value = find_member(*root, "prev_events"); prev_value != nullptr)
     {
+        if (auto const* prev_array = std::get_if<canonicaljson::Array>(&prev_value->storage());
+            prev_array != nullptr && prev_array->size() > events::max_prev_events_per_event)
+        {
+            log_diagnostic("pdu.parse.rejected", {
+                                                     {"reason", "prev_events exceeds 20 event limit", false}
+            });
+            return std::nullopt;
+        }
         out.prev_event_ids = extract_string_array(*prev_value);
     }
     if (auto const* auth_value = find_member(*root, "auth_events"); auth_value != nullptr)
     {
+        if (auto const* auth_array = std::get_if<canonicaljson::Array>(&auth_value->storage());
+            auth_array != nullptr && auth_array->size() > events::max_auth_events_per_event)
+        {
+            log_diagnostic("pdu.parse.rejected", {
+                                                     {"reason", "auth_events exceeds 10 event limit", false}
+            });
+            return std::nullopt;
+        }
         out.auth_event_ids = extract_string_array(*auth_value);
     }
     // Spec: Room Version 12 (MSC4291) — the m.room.create event MUST NOT appear
@@ -314,37 +338,6 @@ auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view orig
     out.content_json = std::string{content_json};
     out.origin = std::string{origin};
     return out;
-}
-
-auto apply_state_resolution_v2(PduStateConflictContext const& context, ResolvedStateApplier const& apply_resolved)
-    -> PduIngestionResult
-{
-    if (context.room_version.empty())
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: room version missing", {}};
-    }
-    auto const* policy = rooms::find_room_version_policy(context.room_version);
-    if (policy == nullptr)
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: unknown room version", {}};
-    }
-    if (context.state_groups.empty())
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: no state groups", {}};
-    }
-    auto request = events::StateResolutionRequest{context.room_version, context.state_groups};
-    auto const resolution = events::resolve_state_v2(request, *policy);
-    if (!resolution.resolved)
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2 failed: " + resolution.reason, {}};
-    }
-    if (apply_resolved && !apply_resolved(resolution.resolved_state))
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: applier rejected merged state", {}};
-    }
-    return {PduIngestionStatus::accepted,
-            "state-res v2: merged " + std::to_string(resolution.resolved_state.size()) + " state events",
-            {}};
 }
 
 } // namespace merovingian::federation

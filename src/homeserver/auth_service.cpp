@@ -1274,17 +1274,40 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
 
     auto const now = std::chrono::system_clock::now();
     auto const refresh = std::ranges::find_if(runtime.database.persistent_store.refresh_tokens,
-                                              [&refresh_hashes, now](database::PersistentRefreshToken const& row) {
-                                                  return matches_any_token_hash(row.token_hash, refresh_hashes) &&
-                                                         !row.revoked && !is_expired(row.expires_at, now);
+                                              [&refresh_hashes](database::PersistentRefreshToken const& row) {
+                                                  return matches_any_token_hash(row.token_hash, refresh_hashes);
                                               });
-    if (refresh == runtime.database.persistent_store.refresh_tokens.end())
+    if (refresh == runtime.database.persistent_store.refresh_tokens.end() || is_expired(refresh->expires_at, now))
     {
         return {false, 401U, {}, {}, {}, {}, "refresh token rejected"};
     }
 
     auto const user_id = refresh->user_id;
     auto const device_id = refresh->device_id;
+    // Copied now: storing the new tokens below may reallocate the vector.
+    auto const presented_hash = refresh->token_hash;
+    auto const predecessor_hash = refresh->predecessor_hash;
+
+    // ADR-0074 (Matrix v1.19 CS API, refresh tokens): "The homeserver SHOULD
+    // consider that the session is compromised if an old, invalidated refresh
+    // token is used, and SHOULD revoke the session." A refresh token is
+    // invalidated once the pair minted from it has been used, by logout, or by
+    // a password change, so presenting one ends the device's session.
+    if (refresh->revoked)
+    {
+        std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        for (auto& session : runtime.database.sessions)
+        {
+            if (session.user_id == user_id && session.device_id == device_id)
+            {
+                session.revoked = true;
+            }
+        }
+        append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh.reuse_detected", user_id,
+                           device_id, "retired refresh token presented; session revoked");
+        return {false, 401U, {}, {}, {}, {}, "refresh token rejected"};
+    }
     auto const* refresh_user = find_user(runtime.database, user_id);
     if (refresh_user == nullptr || !auth::device_id_is_valid(device_id))
     {
@@ -1335,10 +1358,21 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
                            device_id, "device no longer exists");
         return {false, 401U, {}, {}, {}, {}, "refresh device rejected"};
     }
-    if (database::revoke_refresh_token(runtime.database.persistent_store, refresh->token_hash) == 0U)
+    // ADR-0074: "The old refresh token remains valid until the new access token
+    // or refresh token is used, at which point the old refresh token is
+    // revoked." So the presented token is not revoked here: the client may not
+    // receive this response and must be able to retry. Instead:
+    //   - using this token completes the rotation that minted it, so its own
+    //     predecessor is revoked now;
+    //   - a pair minted from this same token by an earlier request whose
+    //     response was lost is superseded by the pair minted below.
+    if (!predecessor_hash.empty())
     {
-        return {false, 500U, {}, {}, {}, {}, "refresh token revocation failed"};
+        std::ignore = database::revoke_refresh_token(runtime.database.persistent_store, predecessor_hash);
     }
+    std::ignore = database::revoke_refresh_tokens_with_predecessor(runtime.database.persistent_store, presented_hash);
+    // The device's earlier access tokens may be revoked at once (the spec
+    // leaves this to the server); that includes a lost earlier pair's token.
     std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
     for (auto& session : runtime.database.sessions)
     {
@@ -1362,16 +1396,17 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     }
     auto const new_access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
     auto const new_refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
-    if (!database::store_access_token(runtime.database.persistent_store,
-                                      {user_id, device_id, *access_hash, false, new_access_expires_at}) ||
-        !database::store_refresh_token(runtime.database.persistent_store,
-                                       {user_id, device_id, *new_refresh_hash, false, new_refresh_expires_at}))
+    if (!database::store_access_token(runtime.database.persistent_store, {user_id, device_id, *access_hash, false,
+                                                                          new_access_expires_at, presented_hash}) ||
+        !database::store_refresh_token(runtime.database.persistent_store, {user_id, device_id, *new_refresh_hash, false,
+                                                                           new_refresh_expires_at, presented_hash}))
     {
         return {false, 500U, {}, {}, {}, {}, "refreshed token persistence failed"};
     }
 
     ++runtime.database.next_session_id;
-    runtime.database.sessions.push_back({user_id, device_id, *access_hash, false, new_access_expires_at});
+    runtime.database.sessions.push_back(
+        {user_id, device_id, *access_hash, false, new_access_expires_at, presented_hash});
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh", user_id, device_id,
                        "rotated");
     return {true, 200U, *access_token, *new_refresh_token, user_id, device_id, {}};
@@ -1448,6 +1483,26 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "access_token.rejected", session->user_id, session->user_id, "user not found");
         return std::nullopt;
+    }
+    // ADR-0074: the first use of an access token minted by POST /refresh
+    // completes that rotation, so the refresh token it replaced is revoked
+    // ("The old refresh token remains valid until the new access token or
+    // refresh token is used"). Every authenticated route passes through here.
+    if (!session->predecessor_refresh_hash.empty())
+    {
+        auto const hash = session->access_token_hash;
+        std::ignore =
+            database::revoke_refresh_token(runtime.database.persistent_store, session->predecessor_refresh_hash);
+        // Cleared in place (no reallocation, so `session` stays valid); after a
+        // restart hydration restores the field and the idempotent revocation
+        // runs once more.
+        for (auto& live : runtime.database.sessions)
+        {
+            if (live.access_token_hash == hash)
+            {
+                live.predecessor_refresh_hash.clear();
+            }
+        }
     }
     log_diagnostic("access_token.accepted",
                    {
@@ -1788,19 +1843,37 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
 }
 
 auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token, std::string_view password)
-    -> bool
+    -> PasswordVerificationResult
 {
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return false;
+        return {false, 0U};
     }
     auto const* user = find_user(runtime.database, *user_id);
     if (user == nullptr)
     {
-        return false;
+        return {false, 0U};
     }
-    return auth::password_matches(user->password_hash, password);
+
+    // M-02: re-authentication (UIA) password checks share the /login failed-login
+    // counter. An attacker with a stolen access token but not the password gets
+    // the same guessing budget as a direct /login attacker, not a separate,
+    // unbounded one.
+    if (auto const retry_after_ms = failed_login_lockout_remaining_ms(runtime, *user_id); retry_after_ms > 0U)
+    {
+        return {false, retry_after_ms};
+    }
+
+    auto const valid = auth::password_matches(user->password_hash, password);
+    if (!valid)
+    {
+        record_failed_login(runtime, *user_id);
+        return {false, 0U};
+    }
+
+    clear_failed_logins(runtime, *user_id);
+    return {true, 0U};
 }
 
 auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view user_id)

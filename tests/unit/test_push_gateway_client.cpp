@@ -359,3 +359,56 @@ SCENARIO("PushGatewayClient::notify fails closed when push delivery is disabled 
         }
     }
 }
+
+// SSRF test double: simulates DNS returning a private/loopback address for an
+// attacker-controlled gateway URL. The production client must reject it via
+// CachedServerDiscovery::lookup_addresses_filtered before OutboundClient is
+// asked to connect.
+struct PrivateAddressDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        return {true, {"127.0.0.1"}, {}};
+    }
+};
+
+SCENARIO("PushGatewayClient::notify fails closed on attacker-influenced private gateway destinations",
+         "[push][push-gateway][ssrf]")
+{
+    GIVEN("a client with push enabled and a discovery layer that resolves a private address")
+    {
+        auto outbound = merovingian::http::OutboundClient{};
+        auto network = PrivateAddressDiscoveryNetwork{};
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+        auto config = merovingian::config::PushConfig{};
+        config.enabled = true;
+        auto client = merovingian::push::PushGatewayClient{outbound, discovery, config};
+
+        WHEN("notify is called with a gateway URL pointing at the private address")
+        {
+            auto const notification = merovingian::push::PushGatewayNotification{};
+            auto const result = client.notify("https://push.example.org/_matrix/push/v1/notify", notification);
+
+            THEN("the result fails closed as an unresolved host, with no outbound connection attempted")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.disabled);
+                REQUIRE(result.status == 0U);
+            }
+        }
+    }
+}

@@ -15,13 +15,21 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    allowing it to enter the event graph. Unverified events must be silently dropped (not persisted).
 
 3. **Fetch remote server keys via `remote_key_cache.hpp`** — never trust a key the remote server
-   supplies inline. The key cache fetches from `/_matrix/key/v2/server` and enforces TTL.
+   supplies inline. The key cache fetches from `/_matrix/key/v2/server` and trusts a key for at
+   most 7 days after the fetch (`min(valid_until_ts, fetched_at + 7 days)`). From room v5 an event's
+   signing key must be valid at the event's own `origin_server_ts`, never judged against the
+   current time; v1-v4 ignore `valid_until_ts` (ADR-0075).
 
 4. **Run authorization rules** (`events/authorization.hpp`) before persisting any inbound PDU.
 
-5. **Reject soft-failed events** — do not forward or act on events that fail auth but are kept for
-   state resolution purposes. **Not implemented yet:** there is no soft-fail check (auth against
-   the room's current state) anywhere in `src/`; see `docs/todos/capability-gaps.md`.
+5. **Never relay or act on a rejected or soft-failed event as if it were normal** — a rejected
+   event (fails auth against its own `auth_events` or the state before it) or a soft-failed one
+   (fails auth against current state) is stored and takes part in state resolution, but must never
+   reach a client timeline, become a forward extremity, or drive membership/push side effects.
+   Implemented in `homeserver::ingest_pdu_event` (`src/homeserver/local_http_router.cpp`, ADR-0064
+   phase B2) for the `/send` transaction path, and in the membership acceptor for
+   `send_join`/`send_leave`/`send_knock` (the same auth_events / state-before / current-state
+   checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2".
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For

@@ -49,7 +49,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.12"};
+constexpr auto version = std::string_view{"0.12.13"};
 
 struct BootstrapConfigResult final
 {
@@ -195,11 +195,45 @@ struct BootstrapConfigResult final
 
 [[nodiscard]] auto validate_existing_secret_files(merovingian::config::Config const& config) -> BootstrapConfigResult
 {
+    // The master key is the root secret every derived key (signing-secret box,
+    // access-token HMAC, federation-worker IPC auth) comes from. When the
+    // operator has configured one, it must pass the same owner-only,
+    // non-executable, regular-file, TOCTOU-safe metadata check as every other
+    // secret file.
+    if (!config.security().secrets.master_key_file.empty())
+    {
+        auto master_key_validation = validate_existing_secret_file_metadata(config.security().secrets.master_key_file,
+                                                                            "security.secrets.master_key_file", false);
+        if (!master_key_validation.parsed.findings.empty())
+        {
+            return master_key_validation;
+        }
+    }
+
     auto database_validation =
         validate_existing_secret_file_metadata(config.database().uri_file, "database.uri_file", true);
     if (!database_validation.parsed.findings.empty())
     {
         return database_validation;
+    }
+
+    // ADR-0062 part 2: federation.worker.database_uri_file gets the same
+    // owner-only, TOCTOU-safe metadata check as database.uri_file above,
+    // when it names a file at all. allow_missing mirrors database.uri_file's
+    // own permissiveness here deliberately: the hard, fail-closed
+    // enforcement point for "this file must actually exist and be readable"
+    // is homeserver::WorkerPool::WorkerPool at real startup (it throws,
+    // aborting the server, unless allow_shared_database_credentials=true),
+    // not this --dry-run/--check-config-reachable metadata pass — the same
+    // two-layer split database.uri_file already has.
+    if (!config.federation_worker().database_uri_file.empty())
+    {
+        auto worker_database_validation = validate_existing_secret_file_metadata(
+            config.federation_worker().database_uri_file, "federation.worker.database_uri_file", true);
+        if (!worker_database_validation.parsed.findings.empty())
+        {
+            return worker_database_validation;
+        }
     }
 
     auto client_tls_validation = validate_existing_listener_tls_files(config.listeners().client, "listeners.client");

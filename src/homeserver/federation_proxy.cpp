@@ -95,8 +95,10 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         // reverse-proxy deployment the shipped example config describes, every
         // remote server's direct TCP peer is 127.0.0.1, which would collapse all
         // of them into one bucket and let ten new-peer resolutions a minute
-        // reject every unrelated legitimate peer.
-        signed_request.remote_addr = effective_client_ip(request, runtime_.config.server().trusted_proxies);
+        // reject every unrelated legitimate peer. IPv6 peers are grouped by
+        // prefix (server.http.ipv6_client_prefix_length), as for the
+        // client-server rate limiter.
+        signed_request.remote_addr = rate_limit_client_key(request, runtime_.config.server());
         signed_request_opt = std::move(signed_request);
     }
     if (!signed_request_opt.has_value())

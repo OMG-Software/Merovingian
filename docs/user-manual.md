@@ -371,7 +371,7 @@ change them.
 |---|---|---|
 | `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `example.org`. |
 | `server.public_baseurl` | `https://matrix.example.org` | **Required.** The HTTPS URL clients use. Must be HTTPS. |
-| `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The shipped example sets `127.0.0.1`. |
+| `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The client is the rightmost `X-Forwarded-For` entry that is not itself a trusted proxy (ADR-0073), so a proxy may append to the header or overwrite it; list every proxy hop you control. The shipped example sets `127.0.0.1`. |
 
 #### CORS policy — `server.cors.*`
 
@@ -406,10 +406,19 @@ each parked connection holds one request-pool worker thread, so
 | `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
 | `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to free worker threads sooner. |
 | `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. Raise only alongside a larger request pool. |
+| `server.http.max_connections_per_ip` | `64` | Open connections one client may hold on the client and federation listeners, 1..65535. A further connection is closed at accept time, before a byte is read or a TLS handshake starts. Raise if many users share one NAT address. |
+| `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by for the connection cap and the per-IP rate limiter, 1..128. `128` counts each address separately; a shorter prefix groups a whole allocation. |
 
-The parser rejects idle windows outside 1..300 seconds and caps outside
-1..4096. These keys are read when the listeners start and are **not**
+The parser rejects idle windows outside 1..300 seconds, parked-connection caps
+outside 1..4096, per-IP caps outside 1..65535 and prefix lengths outside
+1..128. These keys are read when the listeners start and are **not**
 hot-reloadable — a change to any `server.http.*` key requires a restart.
+
+**Behind a reverse proxy**, every client arrives from the proxy's address, so
+addresses listed in `server.trusted_proxies` are exempt from the per-IP
+connection cap. Limit connections per client at the proxy (for example nginx
+`limit_conn`); the per-IP rate limiter still applies to the forwarded client
+address.
 
 #### TURN server — `server.turn.*`
 
@@ -635,8 +644,9 @@ secret — `security.secrets.master_key_file`, `database.uri_file`,
 `security.registration.token_file`, and each listener's
 `tls_private_key_file` — must be a regular, non-executable, owner-read-only file
 owned by the service account. `0600` was accepted until 0.12.5 despite
-`docs/hardening.md` documenting owner-read-only; upgrading servers need a
-one-time `chmod 0400` on each, or startup is rejected with
+`docs/hardening.md` documenting owner-read-only; the master key file itself
+was not validated at all until 0.12.13. Upgrading servers need a one-time
+`chmod 0400` on each secret file, or startup is rejected with
 
 ```
 Configuration rejected: <field>: secret file must be a regular owner-only
@@ -823,8 +833,12 @@ in-process fallback — requests return `503` while a crashed worker restarts.
 | `federation.worker.relay_threads` | `32` | Thread pool for endpoints that can block on a synchronous IPC round-trip to main (PDU-bearing `send`, `send_join`/`send_leave`/`send_knock`, `invite`, profile/key queries, `event/{eventId}`) or on outbound HTTP. Deliberately separate and generously sized from `threads`, since sharing one pool would let a burst of slow relay calls starve the fast local endpoints — see [`docs/architecture.md`](architecture.md), "Federation worker relay pool separation". |
 | `federation.worker.shards` | `1` | Number of independent worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints go to shard 0. Must be `>= 1`. The shipped example sets `2`. |
 | `federation.worker.request_timeout_seconds` | `120` | Base per-request IPC timeout in seconds. The actual IPC timeout for inbound federation requests is `max(request_timeout_seconds, security.federation.remote_timeout) + 10 s`, so a worker-side outbound HTTP call can complete before main gives up. A request slower than the effective timeout returns `504` to the remote server. The shipped example sets `30`. |
+| `federation.worker.ipc_max_in_flight_requests` | `256` | Per-channel cap on concurrent IPC requests from each worker process to main. Requests that arrive while the channel is at the cap receive an explicit `main_overloaded` error and the worker answers the remote with a retryable `503 M_UNKNOWN`, so nothing is silently dropped. Larger values increase memory use on main; smaller values raise the chance of transient retries from legitimate traffic. **Requires restart.** |
 | `federation.worker.apply_hardening` | `true` | Apply seccomp/capability sandboxing to workers. Keep `true` in production. |
 | `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path (`$libexecdir/merovingian/merovingian-fed-worker`). |
+| `federation.worker.database_uri_file` | `/etc/merovingian/fed-worker-db-uri` | Secret file holding a PostgreSQL connection URI for a **separate, least-privilege** worker login (ADR-0062 part 2) — see [`docs/database-persistence.md`](database-persistence.md), "Federation worker least-privilege role", and `packaging/postgresql/provision-federation-worker-role.sql`. Required (the file must exist and be readable) when `database.backend=postgresql` and federation is enabled, unless `allow_shared_database_credentials=true`. Ignored for `database.backend=sqlite`. Same secret-file permission rules as `database.uri_file` (owner-only, regular file). |
+| `federation.worker.allow_shared_database_credentials` | `false` | Explicit opt-out: lets the worker connect with main's own database credentials instead of a separate role, when `database_uri_file` is not provisioned. Every startup logs `CRITICAL` while this applies. Ignored for `database.backend=sqlite`. |
+| `federation.worker.allow_without_landlock` | `false` | Explicit opt-out (ADR-0062 part 3): the worker restricts its own filesystem access with Linux Landlock before handling any inbound request. **Requires Linux 5.13+ with Landlock enabled** (`CONFIG_SECURITY_LANDLOCK=y`, and included in the `lsm=` boot parameter if that parameter is set). On a kernel without Landlock the worker refuses to start unless this is `true`, in which case it runs with **no filesystem sandbox** and logs `CRITICAL` on every start — a worker compromised through a memory-safety bug can then open any file this process's Unix permissions allow, including the operator master key and TLS private keys. Any other Landlock failure (not merely "unavailable") is always fatal regardless of this setting. |
 
 The worker communicates with the main process over an `AF_UNIX SOCK_STREAM`
 socket pair inherited at spawn. Every frame is encrypted with an ephemeral

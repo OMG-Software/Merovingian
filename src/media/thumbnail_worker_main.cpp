@@ -7,7 +7,10 @@
 // this short-lived worker, which:
 //   1. clamps its own resources (address space, CPU, file size, descriptors)
 //      and enters the platform sandbox (Linux seccomp-bpf, OpenBSD pledge,
-//      FreeBSD Capsicum) before reading any input,
+//      FreeBSD Capsicum) before reading any input — fail-closed: if any
+//      applicable control cannot be applied, the worker exits before reading
+//      stdin rather than decoding untrusted bytes unconfined (see
+//      media/decoder_hardening.hpp),
 //   2. reads a single framed request from stdin (see media/thumbnailer.hpp),
 //   3. decodes PNG (libpng) or JPEG (libjpeg-turbo) into an RGBA8 buffer,
 //      enforcing a pixel-count bomb guard,
@@ -17,48 +20,23 @@
 // A decoder exploit is therefore contained: the worker holds no secrets, no
 // sockets, and no filesystem access beyond the inherited stdio pipes.
 
+#include "merovingian/media/decoder_hardening.hpp"
 #include "merovingian/media/thumbnailer.hpp"
-#include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include <png.h>
-#include <sys/resource.h>
 #include <turbojpeg.h>
 #include <unistd.h>
 
-#if defined(__linux__)
-#include <sys/prctl.h>
-#endif
-
-#if defined(__FreeBSD__)
-#include <sys/capsicum.h>
-#endif
-
 namespace
 {
-
-// Sanitizer builds (ASan/TSan/MSan) reserve an enormous virtual address space
-// for shadow memory, which a tight RLIMIT_AS would make un-mmap-able — the
-// instrumented worker would die before decoding. Detect such builds so the
-// address-space cap is skipped there (CI only); production builds keep it.
-#if defined(__has_feature)
-#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer)
-constexpr bool sanitizer_build = true;
-#else
-constexpr bool sanitizer_build = false;
-#endif
-#elif defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-constexpr bool sanitizer_build = true;
-#else
-constexpr bool sanitizer_build = false;
-#endif
 
 using merovingian::media::ThumbnailMethod;
 using merovingian::media::ThumbnailSourceFormat;
@@ -67,15 +45,11 @@ using merovingian::media::ThumbnailWorkerResponse;
 using merovingian::media::ThumbnailWorkerStatus;
 
 // Hard ceilings the worker imposes on itself regardless of the request, so a
-// malformed frame or hostile image cannot exhaust the host.
-constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U;      // 64 MiB source
-constexpr std::uint64_t max_address_space = 768U * 1024U * 1024U; // 768 MiB RSS+heap
-#if defined(NDEBUG)
-constexpr std::uint64_t max_cpu_seconds = sanitizer_build ? 120U : 15U;
-#else
-constexpr std::uint64_t max_cpu_seconds = sanitizer_build ? 120U : 60U;
-#endif
-constexpr std::uint64_t max_file_size = 64U * 1024U * 1024U;
+// malformed frame or hostile image cannot exhaust the host. The resource
+// limits applied by hardening (address space, CPU, file size, core dumps,
+// open files) live in media/decoder_hardening.cpp alongside the platform
+// sandbox they precede.
+constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U; // 64 MiB source
 constexpr std::uint32_t absolute_max_dimension = 4096U;
 // Worker-imposed pixel ceiling for BOTH the decoded frame and the resampled
 // output (#449). The per-axis cap alone still admits a 4096x4096 RGBA buffer
@@ -90,73 +64,6 @@ struct Rgba final
     std::uint32_t width{0U};
     std::uint32_t height{0U};
 };
-
-// Applies self-imposed resource limits and the platform sandbox. Best-effort in
-// the same sense as the rest of this file: the rlimits always apply, and a
-// kernel that cannot install the sandbox still runs the worker with them.
-//
-// 0.12.5 audit, finding 9: the sandbox step used to be seccomp-only under
-// `#if defined(__linux__)`, so on FreeBSD, OpenBSD and NetBSD — all documented
-// Tier 1 platforms — this process decoded untrusted PNG and JPEG bytes with
-// nothing but rlimits between an image-decoder bug and the rest of the system.
-// FreeBSD and OpenBSD both have a primitive that fits a process this shape
-// exactly: by the time harden() runs, stdin and stdout are already open and the
-// worker needs nothing else for the rest of its life.
-//
-// NetBSD has no equivalent in-process primitive, so it keeps rlimits alone;
-// that remaining gap is recorded in docs/hardening.md.
-auto harden() -> void
-{
-    auto const apply = [](int resource, std::uint64_t value) {
-        auto limit = rlimit{static_cast<rlim_t>(value), static_cast<rlim_t>(value)};
-        std::ignore = ::setrlimit(resource, &limit);
-    };
-    if (!sanitizer_build)
-    {
-        // Strict resource caps are dropped in sanitizer builds because
-        // ASan/TSan/MSan reserve a large virtual address space and the
-        // instrumented runtime is much slower; the same build is never
-        // used in production.
-        apply(RLIMIT_AS, max_address_space);
-    }
-    apply(RLIMIT_CPU, max_cpu_seconds);
-    apply(RLIMIT_FSIZE, max_file_size);
-    apply(RLIMIT_CORE, 0U);
-    apply(RLIMIT_NOFILE, 16U);
-#if defined(__linux__)
-    std::ignore = ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
-    std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-
-    // The seccomp-bpf allowlist is incompatible with sanitizer runtimes,
-    // which need syscalls (e.g. for shadow memory, error reporting, and
-    // /proc access) that the production worker does not require. Skip it
-    // in sanitizer builds so the worker can run under ASan/UBSan/TSan.
-    //
-    // M-08: this installs the DECODER profile, not the general server filter
-    // and not the federation-worker filter. The server filter permits sockets,
-    // path-based filesystem access and exec; the federation-worker filter drops
-    // only exec and still permits sockets and openat, because that worker does
-    // federation HTTP. Either would leave a libpng/libjpeg-turbo compromise able
-    // to read arbitrary files and connect out, which is exactly what the
-    // pledge("stdio") and cap_enter() branches below prevent on the BSDs. The
-    // decoder profile is the Linux equivalent of those two calls.
-    if (!sanitizer_build)
-    {
-        std::ignore = merovingian::platform::apply_decoder_seccomp_filter();
-    }
-#elif defined(__OpenBSD__)
-    // "stdio" covers read/write on already-open descriptors, memory allocation
-    // and clock reads — everything libpng and libjpeg-turbo need once the
-    // request is being decoded. It grants no filesystem, socket, exec or
-    // process-creation access, so a decoder exploit has nothing to reach for.
-    std::ignore = ::pledge("stdio", nullptr);
-#elif defined(__FreeBSD__)
-    // Capability mode: the process keeps the descriptors it already holds and
-    // loses the global namespaces entirely — no open(2) by path, no socket(2),
-    // no exec. Same shape as the pledge above.
-    std::ignore = ::cap_enter();
-#endif
-}
 
 [[nodiscard]] auto read_all_stdin() -> std::string
 {
@@ -399,7 +306,18 @@ auto write_all_stdout(std::string const& bytes) -> void
 
 auto main() -> int
 {
-    harden();
+    // Fail-closed (audit finding, 0.12.13): every applicable hardening
+    // control must succeed before this process reads a single byte of
+    // attacker-controlled input. A sandbox that fails to install must not
+    // silently leave the decoder running unconfined — see
+    // merovingian::media::apply_decoder_hardening() and
+    // docs/hardening.md, "Thumbnail worker sandbox".
+    auto const hardening = merovingian::media::apply_decoder_hardening();
+    if (!hardening.accepted)
+    {
+        std::cerr << "merovingian-thumbnail-worker: hardening failed: " << hardening.failed_control << '\n';
+        return 1;
+    }
 
     auto const input = read_all_stdin();
     auto const request = merovingian::media::parse_thumbnail_request(input);

@@ -4,13 +4,17 @@
 #include "temp_directory.hpp"
 
 #include <atomic>
+#include <cerrno>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <sodium.h>
+#include <sys/stat.h>
 
 namespace merovingian::tests
 {
@@ -30,6 +34,11 @@ inline auto master_key_file() -> std::string
     auto key = std::vector<unsigned char>(crypto_generichash_KEYBYTES);
     randombytes_buf(key.data(), key.size());
     output.write(reinterpret_cast<char const*>(key.data()), static_cast<std::streamsize>(key.size()));
+    output.close();
+    if (::chmod(path.c_str(), S_IRUSR) != 0)
+    {
+        throw std::runtime_error("failed to chmod master key file to 0400: " + std::string(std::strerror(errno)));
+    }
     return path.string();
 }
 

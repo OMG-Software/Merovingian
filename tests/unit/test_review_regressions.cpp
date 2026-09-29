@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
@@ -1018,7 +1018,13 @@ SCENARIO("Persistent store matches state event JSON with whitespace and upserts 
                 REQUIRE(store.state_transitions.size() == 2U);
                 // The final statement records the second state transition; the
                 // current_state row is updated via the preceding upsert_state.
-                REQUIRE(store.prepared_statements.back().name == "insert_state_transition");
+                // ADR-0064 phase B1: this is now an upsert (ON CONFLICT DO
+                // UPDATE), not a bare insert — state_transitions' primary key
+                // is (room_id, event_type, state_key, event_id), and state
+                // resolution can make an event current again after it was
+                // previously superseded, which a bare INSERT would reject as
+                // a duplicate row on the second occurrence.
+                REQUIRE(store.prepared_statements.back().name == "upsert_state_transition");
             }
         }
     }

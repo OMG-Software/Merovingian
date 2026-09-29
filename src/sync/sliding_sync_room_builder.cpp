@@ -678,6 +678,15 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         {
             continue;
         }
+        // ADR-0064 phase B2: a rejected or soft-failed event is never
+        // relayed to clients (spec "Rejection", "Soft failure"). Room state
+        // (required_state, built separately from current_state) is
+        // untouched — a soft-failed *state* event that resolution later
+        // admits into current state is still delivered there.
+        if (ev.status == "rejected" || ev.status == "soft_failed")
+        {
+            continue;
+        }
         if (!is_initial && ev.stream_ordering <= room_since_event_ordering)
         {
             continue;

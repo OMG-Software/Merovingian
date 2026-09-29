@@ -126,5 +126,36 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn('"[startup][binary]" --success', workflow)
 
 
+    def test_netbsd_jobs_link_the_base_openssl_that_curl_and_libpq_use(self) -> None:
+        # GIVEN the CI and packages workflows and the NetBSD pkgsrc scaffold.
+        packages = (REPO_ROOT / ".github" / "workflows" / "packages.yml").read_text(encoding="utf-8")
+        makefile = (REPO_ROOT / "packaging" / "netbsd" / "Makefile").read_text(encoding="utf-8")
+        workflows = {"ci.yml": CI_WORKFLOW.read_text(encoding="utf-8"), "packages.yml": packages}
+
+        # WHEN the NetBSD package installs are inspected.
+        # THEN none installs pkgsrc's openssl, and each removes it if the image
+        # has it: pkgsrc's curl and postgresql17-client link NetBSD's base
+        # OpenSSL (libssl.so.16), so building against pkgsrc's (libssl.so.3)
+        # loads two OpenSSLs in one process, which werror's --fatal-warnings
+        # link rightly refuses.
+        for name, workflow in workflows.items():
+            installs = [line for line in workflow.splitlines() if "install_packages clang" in line]
+            self.assertTrue(installs, f"{name}: no NetBSD package install found")
+            for line in installs:
+                self.assertNotIn(" openssl ", f" {line.strip()} ", f"{name}: {line.strip()}")
+            self.assertEqual(
+                workflow.count("pkg_delete openssl"),
+                len(installs),
+                f"{name}: every NetBSD job must remove a preinstalled pkgsrc openssl",
+            )
+        # AND the pkgsrc scaffold leaves the OpenSSL choice to buildlink3
+        # rather than forcing the pkgsrc package.
+        self.assertNotIn("DEPENDS+=       openssl", makefile)
+        self.assertIn('.include "../../security/openssl/buildlink3.mk"', makefile)
+        # AND the developer bootstrap does not install it on NetBSD either.
+        setup = (REPO_ROOT / "scripts" / "setup-dev-env.sh").read_text(encoding="utf-8")
+        pkgin_packages = setup.split("        pkgin)")[1].split(";;")[0]
+        self.assertNotIn(" openssl ", pkgin_packages)
+
 if __name__ == "__main__":
     unittest.main()

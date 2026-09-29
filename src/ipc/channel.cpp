@@ -368,6 +368,32 @@ auto IpcChannel::send_notification(std::string_view json_body) -> void
     std::ignore = write_frame(frame);
 }
 
+auto IpcChannel::set_max_in_flight(std::size_t const cap) noexcept -> void
+{
+    max_in_flight_ = cap;
+}
+
+auto IpcChannel::try_acquire_in_flight() noexcept -> bool
+{
+    auto current = in_flight_.load(std::memory_order_relaxed);
+    while (true)
+    {
+        if (max_in_flight_ > 0U && current >= max_in_flight_)
+        {
+            return false;
+        }
+        if (in_flight_.compare_exchange_weak(current, current + 1U, std::memory_order_relaxed))
+        {
+            return true;
+        }
+    }
+}
+
+auto IpcChannel::release_in_flight() noexcept -> void
+{
+    in_flight_.fetch_sub(1U, std::memory_order_relaxed);
+}
+
 auto IpcChannel::reader_loop() -> void
 {
     while (running_.load())

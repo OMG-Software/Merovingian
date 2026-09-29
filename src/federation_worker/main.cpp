@@ -5,6 +5,7 @@
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/federation_worker/args.hpp"
 #include "merovingian/observability/logger.hpp"
+#include "merovingian/platform/landlock_hardening.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "worker_event_loop.hpp"
 
@@ -89,6 +90,30 @@ auto main(int argc, char const* const* argv) -> int
         return 1;
     }
 
+    // Validate that the IPC auth key fd is open. It is consumed later, inside
+    // WorkerEventLoop::run() (federation_worker::read_ipc_auth_key), after the
+    // hardening sequence below is applied.
+    auto const raw_key_fd = *args.ipc_key_fd;
+    if (::fcntl(raw_key_fd, F_GETFD) < 0)
+    {
+        std::cerr << "merovingian-fed-worker: ipc key fd " << raw_key_fd << " is not open: " << ::strerror(errno)
+                  << '\n';
+        return 1;
+    }
+
+    // ADR-0062 part 2: validate the database-URI fd is open, when main
+    // passed one. Absent is a valid, expected outcome (SQLite backend, or
+    // the allow_shared_database_credentials opt-out) -- see
+    // federation_worker::ParsedWorkerArgs::db_uri_fd. Also consumed later,
+    // inside WorkerEventLoop::run() (federation_worker::read_worker_database_uri).
+    auto const raw_db_uri_fd = args.db_uri_fd.has_value() ? *args.db_uri_fd : -1;
+    if (args.db_uri_fd.has_value() && ::fcntl(raw_db_uri_fd, F_GETFD) < 0)
+    {
+        std::cerr << "merovingian-fed-worker: db-uri fd " << raw_db_uri_fd << " is not open: " << ::strerror(errno)
+                  << '\n';
+        return 1;
+    }
+
     auto const contents = read_file(*args.config_path);
     if (!contents.has_value())
     {
@@ -107,7 +132,8 @@ auto main(int argc, char const* const* argv) -> int
     }
 
     LOG_INFO("Federation worker starting: shard=" + std::to_string(args.shard_index) + " config=" + *args.config_path +
-             " ipc_fd=" + std::to_string(raw_fd));
+             " ipc_fd=" + std::to_string(raw_fd) + " ipc_key_fd=" + std::to_string(raw_key_fd) +
+             (args.db_uri_fd.has_value() ? " db_uri_fd=" + std::to_string(raw_db_uri_fd) : ""));
 
 #ifdef __linux__
     // Ask the kernel to terminate this child automatically if the parent thread
@@ -120,17 +146,68 @@ auto main(int argc, char const* const* argv) -> int
 #endif
 
     auto ipc_fd = merovingian::core::FileDescriptor{raw_fd};
+    auto ipc_key_fd = merovingian::core::FileDescriptor{raw_key_fd};
+    // Default-constructed (invalid) when main did not pass --db-uri-fd; see
+    // WorkerEventLoop::run().
+    auto db_uri_fd = args.db_uri_fd.has_value() ? merovingian::core::FileDescriptor{raw_db_uri_fd}
+                                                : merovingian::core::FileDescriptor{};
     auto const threads = parse_result.config.federation_worker().threads;
+
+    // ADR-0062 part 3: restrict the worker's own filesystem access with
+    // Landlock before doing anything else that follows. Applied
+    // unconditionally, independent of federation.worker.apply_hardening
+    // (which gates only the seccomp/capability/core-dump sequence below) —
+    // Landlock is a distinct security boundary from seccomp, and gating it
+    // behind the same flag would let one opt-out silently disable both.
+    // Landlock syscalls are not on the worker seccomp allowlist below, so
+    // this must run first: either apply Landlock before the seccomp filter,
+    // or add landlock_create_ruleset/landlock_add_rule/landlock_restrict_self
+    // to that allowlist permanently. Applying first was chosen so the worker
+    // seccomp allowlist never has to carry three syscalls it needs for one
+    // startup step and never again.
+    {
+        auto const landlock_rules = merovingian::platform::build_worker_landlock_rules(parse_result.config);
+        // Fail closed if any rule would grant access to a configured secret
+        // (e.g. a master key placed beside the SQLite database, whose
+        // directory is granted read-write). Refused even with
+        // allow_without_landlock: this is a secret-placement error.
+        if (auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
+                landlock_rules, merovingian::platform::worker_landlock_secret_paths(parse_result.config));
+            exposure.has_value())
+        {
+            LOG_CRITICAL("Federation worker: Landlock rule for '" + exposure->rule_path +
+                         "' would grant the worker access to the secret '" + exposure->secret_path +
+                         "'; move the secret out of that directory. Refusing to start.");
+            return 1;
+        }
+        auto const landlock = merovingian::platform::apply_worker_landlock(
+            landlock_rules, parse_result.config.federation_worker().allow_without_landlock);
+        if (!landlock.accepted)
+        {
+            LOG_CRITICAL("Federation worker: Landlock filesystem restriction failed: " + landlock.reason);
+            return 1;
+        }
+        if (landlock.critical_warning)
+        {
+            LOG_CRITICAL("Federation worker: " + landlock.reason);
+        }
+        else if (landlock.applied)
+        {
+            LOG_INFO("Federation worker: Landlock filesystem restriction applied (" +
+                     std::to_string(landlock_rules.size()) + " path rules)");
+        }
+    }
 
     // Apply the worker-specific runtime hardening sequence (issue #319): core
     // dump policy, PR_SET_NO_NEW_PRIVS, capability-bounding drop, then the
     // worker seccomp-bpf filter (which denies execve/execveat — the worker never
-    // spawns). Done after config + master-key file are read and the IPC fd is
-    // validated, but before the event loop opens the DB and starts threads. The
-    // worker filter still allows open()/socket()/clone() etc, so startup is not
-    // blocked. Fail-closed: a failed control aborts the worker. The
-    // apply_hardening config flag lets tests run the worker unfiltered while the
-    // allowlist itself is validated in unit tests.
+    // spawns). Done after config is read and both fds are validated as open, but
+    // before the event loop reads the IPC auth key, opens the DB, or starts
+    // threads. The worker filter still allows read()/close()/open()/socket()/
+    // clone() etc, so neither startup nor the key-fd read below is blocked.
+    // Fail-closed: a failed control aborts the worker. The apply_hardening
+    // config flag lets tests run the worker unfiltered while the allowlist
+    // itself is validated in unit tests.
     if (parse_result.config.federation_worker().apply_hardening)
     {
         auto const hardening = merovingian::platform::apply_worker_hardening();
@@ -147,8 +224,8 @@ auto main(int argc, char const* const* argv) -> int
                     "(federation.worker.apply_hardening=false)");
     }
 
-    auto loop = merovingian::federation_worker::WorkerEventLoop{std::move(ipc_fd), parse_result.config, threads,
-                                                                args.shard_index};
+    auto loop = merovingian::federation_worker::WorkerEventLoop{
+        std::move(ipc_fd), std::move(ipc_key_fd), std::move(db_uri_fd), parse_result.config, threads, args.shard_index};
     loop.run();
 
     return 0;

@@ -6,6 +6,7 @@
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,140 @@ enum class PersistentStoreBackend
     postgresql,
     sqlite,
 };
+
+// ADR-0062 part 2 (0.12.13 audit, finding N1): which tables a store open
+// hydrates into memory. `full` is every process except the federation
+// worker. `federation_worker` hydrates ONLY the tables
+// federation_worker_table_allowlist names below — a fail-closed allowlist,
+// not a denylist, so a worker connecting with a least-privilege PostgreSQL
+// role (granted SELECT on exactly those tables) can still start, and a
+// worker connecting with ANY role never holds unlisted material resident
+// regardless of backend. Only open_postgresql_persistent_store honours this
+// today — see docs/database-persistence.md, "Federation worker
+// least-privilege role", for why the SQLite loader was left unchanged.
+enum class TableLoadProfile
+{
+    full,
+    federation_worker,
+};
+
+// The exact, minimal set of tables TableLoadProfile::federation_worker
+// allows a store open to hydrate. This is an ALLOWLIST, not a denylist: a
+// table absent from this array is excluded by default, so a future
+// migration's new table is unreadable by the worker until someone adds it
+// here deliberately (fail closed on the unknown, per the 0.12.13 audit N1
+// part-2 review).
+//
+// Each entry was derived by tracing every FederationRuntimeState callback
+// NOT overridden by WorkerEventLoop::run() (see
+// src/federation_worker/worker_event_loop.cpp and
+// src/federation_worker/AGENTS.md rule 3 for the overridden/relayed set —
+// pdu_sink, membership_acceptor, invite_handler, edu_sink,
+// one_time_keys_claim_provider, user_devices_provider,
+// device_keys_query_provider, profile_query_provider, event_query_provider —
+// whose DEFAULT local implementations are therefore never reached inside the
+// worker process) to the PersistentStore fields it actually reads:
+//
+//   rooms               membership_template_provider (make_join/leave/knock),
+//                       directory_query_provider, space_hierarchy_provider —
+//                       local_http_router.cpp:1278, :1749, space_hierarchy.cpp
+//   membership          directory_query_provider (joined servers for a room
+//                       alias), space_hierarchy.cpp's joined_member_count —
+//                       local_http_router.cpp:1749
+//   current_state       membership_template_provider (auth_events),
+//                       room_version_resolver, room_server_acl_provider,
+//                       space_hierarchy.cpp (join_rule/is_space/space_children)
+//                       — local_http_router.cpp:1335, :1830, :1838
+//   events              membership_template_provider (forward extremities),
+//                       build_backfill_pdus, build_state_response,
+//                       build_state_ids_response,
+//                       build_get_missing_events_response —
+//                       local_http_router.cpp:1354, federation/event_query.cpp
+//   event_edges         reconstruct_event_relations populates
+//                       PersistentEvent::prev_event_ids from this table;
+//                       without it every event's prev_events reads back
+//                       empty for the make_join/backfill/missing_events
+//                       routes above — database/persistent_store.cpp
+//                       reconstruct_event_relations
+//   event_auth          same reconstruct_event_relations dependency, for
+//                       PersistentEvent::auth_event_ids (auth-chain walks in
+//                       build_state_response/build_state_ids_response)
+//   event_signatures    same reconstruct_event_relations dependency, for
+//                       PersistentEvent::signatures
+//   room_aliases        directory_query_provider (find_room_alias) —
+//                       local_http_router.cpp:1736
+//   server_signing_keys remote_key_cache_probe / remote_key_resolver cache
+//                       OTHER servers' keys here (find_cached_remote_key /
+//                       store_server_signing_key) — local_http_router.cpp:
+//                       1857-1871, federation/remote_key_cache.cpp. Column-
+//                       restricted: the worker load path (see
+//                       postgresql_store.cpp load_persistent_rows) never
+//                       selects the secret_key column, and
+//                       provision-federation-worker-role.sql grants SELECT
+//                       on exactly the other four columns — so this entry
+//                       never exposes this server's own signing secret even
+//                       though the table name is shared with it.
+//
+//   state_groups        Phase A (ADR-0064) plumbing: the worker serves
+//                       federation /state and /state_ids locally today from
+//                       current_state/event relations, and a later phase
+//                       moves that to state groups. Readable now so that
+//                       phase does not require a further grant change.
+//   state_group_state   same ADR-0064 phase-A reasoning, for a group's own
+//                       delta/snapshot rows.
+//   event_state_groups  same ADR-0064 phase-A reasoning, for the
+//                       event -> state group mapping.
+//   forward_extremities same ADR-0064 phase-A reasoning: the worker's
+//                       membership_template_provider already reads forward
+//                       extremities via `events` (see above); this table
+//                       becomes the maintained source of truth for that.
+//
+// Every other table PersistentStore can hold — including the operator's own
+// server_signing_keys.secret_key column, users/access_tokens/refresh_tokens/
+// login_tokens/openid_tokens/account_threepids and every other credential or
+// per-user table — is either relayed to main over IPC when the worker
+// genuinely needs it, or never read by the worker at all. See
+// docs/database-persistence.md, "Federation worker least-privilege role",
+// for the full classification of every table migrations/*.sql creates
+// (cross-checked against this array by
+// tests/unit/test_worker_db_uri.cpp).
+inline constexpr std::array<std::string_view, 13> federation_worker_table_allowlist{
+    "rooms",
+    "membership",
+    "current_state",
+    "events",
+    "event_edges",
+    "event_auth",
+    "event_signatures",
+    "room_aliases",
+    "server_signing_keys",
+    "state_groups",
+    "state_group_state",
+    "event_state_groups",
+    "forward_extremities",
+};
+
+// True if `profile` should hydrate `table_name`'s rows into memory.
+// `federation_worker` allows only federation_worker_table_allowlist; a
+// table absent from it is never hydrated by the worker regardless of
+// backend. Pure and header-testable: exercised directly by
+// tests/unit/test_worker_db_uri.cpp without a database connection.
+[[nodiscard]] constexpr auto table_load_profile_includes(std::string_view table_name, TableLoadProfile profile) noexcept
+    -> bool
+{
+    if (profile == TableLoadProfile::full)
+    {
+        return true;
+    }
+    for (auto const& allowed : federation_worker_table_allowlist)
+    {
+        if (allowed == table_name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 struct PersistentUser final
 {
@@ -58,6 +193,10 @@ struct PersistentAccessToken final
     // find_session and the refresh-token lookup so an expired token is rejected
     // even when not revoked, forcing the refresh/re-login flow.
     std::optional<std::chrono::system_clock::time_point> expires_at{};
+    // For an access token minted by POST /refresh: the hash of the refresh
+    // token that was presented. Its first use revokes that refresh token
+    // (ADR-0074). Empty for tokens minted any other way.
+    std::string predecessor_refresh_hash{};
 };
 
 struct PersistentRefreshToken final
@@ -67,6 +206,10 @@ struct PersistentRefreshToken final
     std::string token_hash{};
     bool revoked{false};
     std::optional<std::chrono::system_clock::time_point> expires_at{};
+    // For a refresh token minted by POST /refresh: the hash of the refresh
+    // token it replaces, which stays valid until this pair is first used
+    // (ADR-0074). Empty for tokens minted at login.
+    std::string predecessor_hash{};
 };
 
 // A stored server signing-key row.
@@ -163,6 +306,11 @@ struct PersistentEvent final
     std::vector<std::string> prev_event_ids{};
     std::vector<std::string> auth_event_ids{};
     std::vector<events::EventSignature> signatures{};
+    // ADR-0064 receipt-order status: "accepted" | "soft_failed" | "rejected" |
+    // "outlier". Appended as the last member (default "accepted") so every
+    // pre-existing brace-init call site that does not mention it keeps
+    // compiling. See database::set_event_status/find_event_status.
+    std::string status{"accepted"};
 };
 
 struct PersistentStateEvent final
@@ -268,6 +416,8 @@ struct PersistentLocalMedia final
     std::string digest{};
     bool quarantined{false};
     bool removed{false};
+    // See media::LocalMediaRecord::legacy_endpoint_visible.
+    bool legacy_endpoint_visible{true};
 };
 
 struct PersistentRemoteMedia final
@@ -553,6 +703,50 @@ struct PersistentAppserviceTxnCursor final
     std::uint64_t pending_stream_ordering{0U};
 };
 
+// A state group (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-
+// delta-state-groups.md): the room state after some event, stored either as
+// a full snapshot (`parent_state_group_id == nullopt`, `delta_depth == 0`)
+// or as a delta from `parent_state_group_id` (`delta_depth` = parent's
+// depth + 1, capped at `events::max_state_group_delta_depth`). The group's
+// own rows (the full state for a snapshot, or just the changed entries for a
+// delta) live in `state_group_state`/`PersistentStateGroupStateEntry`, keyed
+// by `state_group_id`. See database::create_or_reuse_state_group and
+// database::read_state_group_full_state.
+struct PersistentStateGroup final
+{
+    std::string state_group_id{};
+    std::string room_id{};
+    std::optional<std::string> parent_state_group_id{};
+    std::uint32_t delta_depth{0U};
+};
+
+// One row of a state group's own state: `state_group_id`'s snapshot or delta
+// contains (event_type, state_key) -> event_id. See PersistentStateGroup.
+struct PersistentStateGroupStateEntry final
+{
+    std::string state_group_id{};
+    std::string event_type{};
+    std::string state_key{};
+    std::string event_id{};
+};
+
+// Maps an event to the state group holding the room's state immediately
+// after it (ADR-0064). One row per event that has a known post-state.
+struct PersistentEventStateGroup final
+{
+    std::string event_id{};
+    std::string state_group_id{};
+};
+
+// A room's current forward extremity (ADR-0064): an accepted, non-soft-
+// failed event with no accepted child yet. See
+// database::update_forward_extremities.
+struct PersistentForwardExtremity final
+{
+    std::string room_id{};
+    std::string event_id{};
+};
+
 struct PersistentStore final
 {
     PersistentStore() = default;
@@ -604,8 +798,13 @@ struct PersistentStore final
         , openid_tokens{other.openid_tokens}
         , login_tokens{other.login_tokens}
         , appservice_txn_cursors{other.appservice_txn_cursors}
+        , state_groups{other.state_groups}
+        , state_group_state{other.state_group_state}
+        , event_state_groups{other.event_state_groups}
+        , forward_extremities{other.forward_extremities}
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
+        , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
     {
@@ -664,8 +863,13 @@ struct PersistentStore final
         openid_tokens = other.openid_tokens;
         login_tokens = other.login_tokens;
         appservice_txn_cursors = other.appservice_txn_cursors;
+        state_groups = other.state_groups;
+        state_group_state = other.state_group_state;
+        event_state_groups = other.event_state_groups;
+        forward_extremities = other.forward_extremities;
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
+        server_signing_keys_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
         return *this;
@@ -731,6 +935,10 @@ struct PersistentStore final
     std::vector<PersistentOpenidToken> openid_tokens{};
     std::vector<PersistentLoginToken> login_tokens{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
+    std::vector<PersistentStateGroup> state_groups{};
+    std::vector<PersistentStateGroupStateEntry> state_group_state{};
+    std::vector<PersistentEventStateGroup> event_state_groups{};
+    std::vector<PersistentForwardExtremity> forward_extremities{};
     std::vector<PreparedStatement> prepared_statements{};
     // Guards prepared_statements, which is appended to by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
@@ -738,6 +946,14 @@ struct PersistentStore final
     // stripe locks because audit-vector access is independent of any room.
     // Wrapped in unique_ptr so PersistentStore remains moveable.
     mutable std::unique_ptr<std::mutex> prepared_statements_mutex{std::make_unique<std::mutex>()};
+    // Guards server_signing_keys. The remote-key resolver stores and reads
+    // keys from federation relay threads and from backfill, both with the
+    // runtime mutex released, so after start-up hydration every access goes
+    // through store_server_signing_key, find_server_signing_key or
+    // snapshot_server_signing_keys, which take this lock. It is never held
+    // across a database write or a network call. Wrapped in unique_ptr so
+    // PersistentStore remains moveable.
+    mutable std::unique_ptr<std::mutex> server_signing_keys_mutex{std::make_unique<std::mutex>()};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
     // the row's stream_id strictly exceeds every previous one and clients
@@ -815,6 +1031,10 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;
 [[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
                                                     std::string_view device_id) -> std::size_t;
+// ADR-0074: revokes the refresh tokens minted from `predecessor_hash` by an
+// earlier POST /refresh whose response the client never received.
+[[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store, std::string_view predecessor_hash)
+    -> std::size_t;
 // M-05: revokes every access and refresh token for `user_id` except those of
 // `keep_device_id`. Used by the password-change logout_devices flow to drop the
 // user's other sessions while keeping the caller's own alive.
@@ -832,6 +1052,10 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>;
+// A copy of every stored signing key, taken under server_signing_keys_mutex.
+// Callers that iterate the keys use this rather than the vector itself.
+[[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store)
+    -> std::vector<PersistentServerSigningKey>;
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool;
 [[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
@@ -882,6 +1106,79 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
                                           std::optional<PersistentStateEvent> state) -> bool;
+
+// ---- ADR-0064 phase A: delta state groups, forward extremities, event status ----
+//
+// Creates a new state group for `room_id` holding `full_state` (the complete
+// room state — every (event_type, state_key) -> event_id pair — after some
+// event), or reuses `parent_state_group_id` unchanged when `full_state` is
+// exactly the parent's own full state (read via
+// read_state_group_full_state). When a new group is needed:
+//   - `parent_state_group_id == nullopt`, or the parent's delta_depth + 1
+//     would exceed events::max_state_group_delta_depth, or `full_state` is
+//     missing a (event_type, state_key) the parent has (deltas never encode
+//     deletions — state resolution never drops a key present in any fork, so
+//     this should not happen, but it is handled safely) -> a full snapshot
+//     is written under `new_state_group_id` (delta_depth = 0).
+//   - Otherwise only the entries of `full_state` that differ from the
+//     parent's are written, under `new_state_group_id`, as a delta
+//     (delta_depth = parent's + 1).
+// Returns the id of the group that now holds `full_state` (the reused
+// parent id, or `new_state_group_id`), or nullopt if the parent id does not
+// resolve to a valid group (missing, cyclic, or over-long chain) or the
+// backend write fails.
+[[nodiscard]] auto create_or_reuse_state_group(PersistentStore& store, std::string_view room_id,
+                                               std::string_view new_state_group_id,
+                                               std::optional<std::string> const& parent_state_group_id,
+                                               std::vector<PersistentStateGroupStateEntry> const& full_state)
+    -> std::optional<std::string>;
+
+// Returns `state_group_id`'s own row (its room, parent, and delta depth —
+// not its resulting state; see read_state_group_full_state for that), or
+// nullopt if no such group exists.
+[[nodiscard]] auto find_state_group(PersistentStore const& store, std::string_view state_group_id)
+    -> std::optional<PersistentStateGroup>;
+
+// Reads `state_group_id`'s full resulting state by walking parent links back
+// to the nearest snapshot and applying every delta on the chain, newest
+// first (a key already supplied by a newer group is never overwritten by an
+// older one). Bounded to events::max_state_group_delta_depth + 1 hops and
+// cycle-detected: a missing group, a cycle, or a chain longer than the bound
+// fails closed, returning nullopt rather than a partial state map.
+[[nodiscard]] auto read_state_group_full_state(PersistentStore const& store, std::string_view state_group_id)
+    -> std::optional<std::vector<PersistentStateGroupStateEntry>>;
+
+// Maps `event_id` to the state group holding the room's state immediately
+// after it. Upserts: replaces any existing mapping for `event_id`.
+[[nodiscard]] auto set_event_state_group(PersistentStore& store, std::string_view event_id,
+                                         std::string_view state_group_id) -> bool;
+// Returns the state group mapped to `event_id`, or nullopt if none is recorded.
+[[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
+    -> std::optional<std::string>;
+
+// Forward-extremity bookkeeping for storing an event (ADR-0064). When
+// `accepted` is true, removes every id in `prev_event_ids` from `room_id`'s
+// extremity set and adds `event_id` to it. When `accepted` is false (the
+// event was soft-failed or rejected), this is a no-op: such events never
+// become extremities and never remove one. Returns false only on a backend
+// write failure.
+[[nodiscard]] auto update_forward_extremities(PersistentStore& store, std::string_view room_id,
+                                              std::string_view event_id, std::vector<std::string> const& prev_event_ids,
+                                              bool accepted) -> bool;
+// Returns `room_id`'s current forward extremity event ids, in no particular order.
+[[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<std::string>;
+
+// Sets the receipt-order status of `event_id` — one of "accepted",
+// "soft_failed", "rejected", "outlier" (see PersistentEvent::status and
+// ADR-0064). Persists the change and mirrors it into the in-memory event
+// row. Returns false for an unrecognised status string, an unknown
+// event_id, or a backend write failure.
+[[nodiscard]] auto set_event_status(PersistentStore& store, std::string_view event_id, std::string_view status) -> bool;
+// Returns event_id's current status, or nullopt if the event is not known
+// to this store.
+[[nodiscard]] auto find_event_status(PersistentStore const& store, std::string_view event_id)
+    -> std::optional<std::string>;
 
 // Rebuilds the in-memory state_transitions index from scratch. Called after
 // SQLite/PostgreSQL hydration and after any direct backfill of the vector.

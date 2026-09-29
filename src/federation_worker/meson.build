@@ -2,6 +2,8 @@ federation_worker_lib = static_library(
   'merovingian-federation-worker',
   sources: files(
     'args.cpp',
+    'db_uri_fd.cpp',
+    'ipc_key_fd.cpp',
     'worker_event_loop.cpp',
   ),
   include_directories: [inc, include_directories('.')],

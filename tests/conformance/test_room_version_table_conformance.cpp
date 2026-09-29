@@ -40,23 +40,38 @@ using merovingian::rooms::StateResolutionAlgorithm;
 // Spec: Matrix v1.19 — Room Versions
 // URL: ../../docs/matrix-v1.19-spec/rooms/index.md
 //
-// The spec defines 12 stable room versions (v1–v12). A server MUST be able to
-// participate in rooms of all stable versions. Returning nullptr from
-// find_room_version_policy for any stable version is a spec violation.
-SCENARIO("All stable room versions v1 through v12 are registered", "[rooms][versions][conformance]")
+// The spec defines 12 stable room versions (v1–v12) and lets a server choose
+// which it supports: the m.room_versions capability lists "The room versions
+// the server supports" (client-server-api.md), and createRoom answers an
+// unsupported one with M_UNSUPPORTED_ROOM_VERSION. This scenario previously
+// claimed a server MUST support every stable version, which the spec does not
+// say. Versions 1 and 2 are not supported (ADR-0076): their event-ID format
+// ($localpart:domain, carried in the event) was never implemented, and their
+// event_id-domain signature rule was never checked.
+SCENARIO("Stable room versions v3 through v12 are registered; v1 and v2 are not supported",
+         "[rooms][versions][conformance][v1_v2_unsupported]")
 {
     GIVEN("the room version registry")
     {
-        THEN("v1 is registered")
+        THEN("v1 is not supported")
         {
-            // Spec MUST: v1 is a stable room version.
-            REQUIRE(merovingian::rooms::find_room_version_policy("1") != nullptr);
+            REQUIRE(merovingian::rooms::find_room_version_policy("1") == nullptr);
+            REQUIRE_FALSE(merovingian::rooms::room_version_is_supported("1"));
         }
 
-        THEN("v2 is registered")
+        THEN("v2 is not supported")
         {
-            // Spec MUST: v2 is a stable room version.
-            REQUIRE(merovingian::rooms::find_room_version_policy("2") != nullptr);
+            REQUIRE(merovingian::rooms::find_room_version_policy("2") == nullptr);
+            REQUIRE_FALSE(merovingian::rooms::room_version_is_supported("2"));
+        }
+
+        THEN("neither is among the known room versions")
+        {
+            for (auto const& policy : merovingian::rooms::known_room_versions())
+            {
+                REQUIRE(policy.id != "1");
+                REQUIRE(policy.id != "2");
+            }
         }
 
         THEN("v3 is registered")
@@ -136,12 +151,12 @@ SCENARIO("All stable room versions v1 through v12 are registered", "[rooms][vers
 //
 // v1–v5 use the original auth rules (room_v1), where the sender domain is NOT
 // required to match the creator's domain. v6 introduced that requirement.
-SCENARIO("Room versions v1–v5 use the original auth rules (no domain check)",
+SCENARIO("Room versions v3–v5 use the original auth rules (no domain check)",
          "[rooms][versions][conformance][auth-rules]")
 {
     GIVEN("the room version registry")
     {
-        for (auto const* v : {"1", "2", "3", "4", "5"})
+        for (auto const* v : {"3", "4", "5"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
             {
@@ -215,28 +230,14 @@ SCENARIO("Room version 12 uses the room_v12 auth rules (distinct from v6+)",
 // Spec: Matrix v1.19 — Room Versions
 // URL: ../../docs/matrix-v1.19-spec/rooms/index.md
 //
-// v1 uses the original (simple) state resolution algorithm.
-// v2 and above use the SDSS (State Resolution v2) algorithm.
+// v2 and above use the SDSS (State Resolution v2) algorithm; v12 uses v2.1.
+// (v1's original algorithm is not implemented: v1 is not supported, ADR-0076.)
 SCENARIO("Room version state resolution algorithm matches the spec table",
          "[rooms][versions][conformance][state-resolution]")
 {
     GIVEN("the room version registry")
     {
-        WHEN("version 1 policy is retrieved")
-        {
-            auto const* policy = merovingian::rooms::find_room_version_policy("1");
-            REQUIRE(policy != nullptr);
-
-            THEN("state resolution algorithm is v1 (simple)")
-            {
-                // Spec MUST: v1 uses the original state resolution algorithm.
-                // Do NOT change to v2 — that would apply SDSS to a room that
-                // spec requires to use the older algorithm.
-                REQUIRE(policy->state_resolution == StateResolutionAlgorithm::v1);
-            }
-        }
-
-        for (auto const* v : {"2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+        for (auto const* v : {"3", "4", "5", "6", "7", "8", "9", "10", "11"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
             {
@@ -250,34 +251,34 @@ SCENARIO("Room version state resolution algorithm matches the spec table",
                 }
             }
         }
+
+        WHEN("version 12 policy is retrieved")
+        {
+            auto const* policy = merovingian::rooms::find_room_version_policy("12");
+            REQUIRE(policy != nullptr);
+
+            THEN("state resolution algorithm is v2.1 (the v12 SDSS modifications)")
+            {
+                // Spec MUST: rooms/v12.md "State resolution" — "largely the same as
+                // the algorithm found in room version 2 with the following
+                // modifications" (empty starting map for iterative auth checks,
+                // conflicted state subgraph, full conflicted set changes).
+                REQUIRE(policy->state_resolution == StateResolutionAlgorithm::v2_1);
+            }
+        }
     }
 }
 
 // Spec: Matrix v1.19 — Room Versions
 // URL: ../../docs/matrix-v1.19-spec/rooms/index.md
 //
-// v1–v2 use the original event format where prev_events and auth_events are
-// [event_id, hashes] tuples. v3 introduced the simplified format where these
-// are bare event ID strings.
+// v3 introduced the simplified event format where prev_events and auth_events
+// are bare event ID strings. (v1–v2's [event_id, hashes] tuple format is not
+// implemented: those versions are not supported, ADR-0076.)
 SCENARIO("Room version event format matches the spec table", "[rooms][versions][conformance][event-format]")
 {
     GIVEN("the room version registry")
     {
-        for (auto const* v : {"1", "2"})
-        {
-            WHEN(std::string{"version "} + v + " policy is retrieved")
-            {
-                auto const* policy = merovingian::rooms::find_room_version_policy(v);
-                REQUIRE(policy != nullptr);
-
-                THEN("event format is room_v1_v2 (prev_events/auth_events are [id, hashes] tuples)")
-                {
-                    // Spec MUST: v1–v2 use the original event format.
-                    REQUIRE(policy->event_format == EventFormat::room_v1_v2);
-                }
-            }
-        }
-
         for (auto const* v : {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
@@ -309,7 +310,7 @@ SCENARIO("Room version redaction rules match the spec table", "[rooms][versions]
         // Spec: v1–v7 use the original redaction rules; join_rules preserves
         // only "join_rule" (no allow field — restricted joins didn't exist yet).
         // URL: ../../docs/matrix-v1.19-spec/rooms/v7.md#redactions
-        for (auto const* v : {"1", "2", "3", "4", "5", "6", "7"})
+        for (auto const* v : {"3", "4", "5", "6", "7"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
             {
@@ -419,10 +420,11 @@ SCENARIO("All registered room versions are marked stable", "[rooms][versions][co
             }
         }
 
-        THEN("the stable set includes exactly all 12 spec-defined versions")
+        THEN("the stable set includes exactly the 10 supported spec-defined versions")
         {
-            // Spec: v1–v12 are the currently stable versions.
-            REQUIRE(versions.size() == 12U);
+            // Spec: v1–v12 are the currently stable versions; this server
+            // supports v3–v12 (ADR-0076).
+            REQUIRE(versions.size() == 10U);
         }
     }
 }

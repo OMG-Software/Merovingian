@@ -2,6 +2,7 @@
 
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -12,31 +13,85 @@
 namespace
 {
 
-[[nodiscard]] auto build_minimal_pdu_json(std::string_view room_id, std::string_view sender,
-                                          std::string_view event_type) -> std::string
+[[nodiscard]] auto build_minimal_pdu_object(std::string_view room_id, std::string_view sender,
+                                            std::string_view event_type) -> merovingian::canonicaljson::Object
 {
     auto object = merovingian::canonicaljson::Object{};
-    object.push_back(merovingian::canonicaljson::make_member(
-        "auth_events", merovingian::canonicaljson::Value{merovingian::canonicaljson::Array{}}));
     object.push_back(merovingian::canonicaljson::make_member(
         "content", merovingian::canonicaljson::Value{merovingian::canonicaljson::Object{}}));
     object.push_back(merovingian::canonicaljson::make_member(
         "depth", merovingian::canonicaljson::Value{static_cast<std::int64_t>(5)}));
     object.push_back(merovingian::canonicaljson::make_member(
         "origin_server_ts", merovingian::canonicaljson::Value{static_cast<std::int64_t>(1000)}));
-    object.push_back(merovingian::canonicaljson::make_member(
-        "prev_events", merovingian::canonicaljson::Value{merovingian::canonicaljson::Array{}}));
     object.push_back(
         merovingian::canonicaljson::make_member("room_id", merovingian::canonicaljson::Value{std::string{room_id}}));
     object.push_back(
         merovingian::canonicaljson::make_member("sender", merovingian::canonicaljson::Value{std::string{sender}}));
     object.push_back(
         merovingian::canonicaljson::make_member("type", merovingian::canonicaljson::Value{std::string{event_type}}));
+    return object;
+}
 
+[[nodiscard]] auto serialize_pdu_object(merovingian::canonicaljson::Object object) -> std::string
+{
     auto const serialized =
         merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{std::move(object)});
     REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
     return serialized.output;
+}
+
+[[nodiscard]] auto build_minimal_pdu_json(std::string_view room_id, std::string_view sender,
+                                          std::string_view event_type) -> std::string
+{
+    auto object = build_minimal_pdu_object(room_id, sender, event_type);
+    object.push_back(merovingian::canonicaljson::make_member(
+        "auth_events", merovingian::canonicaljson::Value{merovingian::canonicaljson::Array{}}));
+    object.push_back(merovingian::canonicaljson::make_member(
+        "prev_events", merovingian::canonicaljson::Value{merovingian::canonicaljson::Array{}}));
+    return serialize_pdu_object(std::move(object));
+}
+
+[[nodiscard]] auto build_minimal_pdu_json_with_events(std::size_t prev_count, std::size_t auth_count) -> std::string
+{
+    auto object = build_minimal_pdu_object("!room:example.org", "@alice:example.org", "m.room.message");
+    auto prev_events = merovingian::canonicaljson::Array{};
+    prev_events.reserve(prev_count);
+    for (std::size_t i = 0; i < prev_count; ++i)
+    {
+        prev_events.push_back(
+            merovingian::canonicaljson::Value{std::string{"$prev"} + std::to_string(i) + std::string{":example.org"}});
+    }
+    auto auth_events = merovingian::canonicaljson::Array{};
+    auth_events.reserve(auth_count);
+    for (std::size_t i = 0; i < auth_count; ++i)
+    {
+        auth_events.push_back(
+            merovingian::canonicaljson::Value{std::string{"$auth"} + std::to_string(i) + std::string{":example.org"}});
+    }
+    object.push_back(merovingian::canonicaljson::make_member(
+        "prev_events", merovingian::canonicaljson::Value{std::move(prev_events)}));
+    object.push_back(merovingian::canonicaljson::make_member(
+        "auth_events", merovingian::canonicaljson::Value{std::move(auth_events)}));
+    return serialize_pdu_object(std::move(object));
+}
+
+[[nodiscard]] auto pad_pdu_to_target_size(std::string pdu_json, std::size_t target_size) -> std::string
+{
+    auto constexpr marker = std::string_view{R"("content":{})"};
+    auto constexpr prefix = std::string_view{R"("content":)"};
+    auto constexpr wrapper_open = std::string_view{R"({"padding":"})"};
+    auto constexpr wrapper_close = std::string_view{"\"}"};
+    // Replacing the marker with prefix + wrapper adds this much overhead beyond
+    // the original marker.
+    auto constexpr overhead = prefix.size() + wrapper_open.size() + wrapper_close.size() - marker.size();
+
+    auto const content_pos = pdu_json.find(marker);
+    REQUIRE(content_pos != std::string::npos);
+
+    auto const padding = target_size + 0U > pdu_json.size() + overhead ? target_size - pdu_json.size() - overhead : 0U;
+    auto const padded_content = std::string{wrapper_open} + std::string(padding, 'x') + std::string{wrapper_close};
+    pdu_json.replace(content_pos, marker.size(), std::string{prefix} + padded_content);
+    return pdu_json;
 }
 
 } // namespace
@@ -233,6 +288,88 @@ SCENARIO("EDU envelope parser rejects unknown types and malformed content", "[fe
             merovingian::federation::parse_inbound_edu_envelope("m.typing", "remote.example.org", "not-json");
 
         THEN("the parser rejects the malformed payload")
+        {
+            REQUIRE_FALSE(envelope.has_value());
+        }
+    }
+}
+
+SCENARIO("Inbound ingestion rejects PDUs that exceed the spec event size limit",
+         "[federation][inbound-ingestion][limits][m03]")
+{
+    GIVEN("a PDU whose raw JSON is exactly the 65536-byte limit")
+    {
+        auto pdu_json =
+            pad_pdu_to_target_size(build_minimal_pdu_json("!room:example.org", "@alice:example.org", "m.room.message"),
+                                   merovingian::events::max_event_size_bytes);
+
+        WHEN("the PDU is parsed")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json);
+
+            THEN("it is accepted")
+            {
+                REQUIRE(envelope.has_value());
+                REQUIRE(pdu_json.size() == merovingian::events::max_event_size_bytes);
+            }
+        }
+    }
+
+    GIVEN("a PDU one byte over the 65536-byte limit")
+    {
+        auto pdu_json =
+            pad_pdu_to_target_size(build_minimal_pdu_json("!room:example.org", "@alice:example.org", "m.room.message"),
+                                   merovingian::events::max_event_size_bytes + 1U);
+
+        WHEN("the PDU is parsed")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json);
+
+            THEN("it is rejected before any hashing or authorisation")
+            {
+                REQUIRE_FALSE(envelope.has_value());
+                REQUIRE(pdu_json.size() == merovingian::events::max_event_size_bytes + 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound ingestion enforces the prev_events and auth_events array limits",
+         "[federation][inbound-ingestion][limits][m03]")
+{
+    WHEN("a PDU has exactly the allowed number of prev_events and auth_events")
+    {
+        auto const pdu_json = build_minimal_pdu_json_with_events(merovingian::events::max_prev_events_per_event,
+                                                                 merovingian::events::max_auth_events_per_event);
+        auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json);
+
+        THEN("it is accepted at the boundary")
+        {
+            REQUIRE(envelope.has_value());
+            REQUIRE(envelope->prev_event_ids.size() == merovingian::events::max_prev_events_per_event);
+            REQUIRE(envelope->auth_event_ids.size() == merovingian::events::max_auth_events_per_event);
+        }
+    }
+
+    WHEN("a PDU has one too many prev_events")
+    {
+        auto const pdu_json = build_minimal_pdu_json_with_events(merovingian::events::max_prev_events_per_event + 1U,
+                                                                 merovingian::events::max_auth_events_per_event);
+        auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json);
+
+        THEN("it is rejected before authorisation")
+        {
+            REQUIRE_FALSE(envelope.has_value());
+        }
+    }
+
+    WHEN("a PDU has one too many auth_events")
+    {
+        auto const pdu_json = build_minimal_pdu_json_with_events(merovingian::events::max_prev_events_per_event,
+                                                                 merovingian::events::max_auth_events_per_event + 1U);
+        auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json);
+
+        THEN("it is rejected before authorisation")
         {
             REQUIRE_FALSE(envelope.has_value());
         }

@@ -23,7 +23,10 @@ Do not hard-code version-specific logic outside this module.
 
 ## Supported room versions
 
-Support for v1–v12 per Matrix spec v1.19. Room v12 adds `via` servers for join routing (MSC4291).
+Support for v3–v12 per Matrix spec v1.19. Room versions 1 and 2 are not supported and are
+absent from the registry, so every lookup refuses them (ADR-0076); do not add them back
+without implementing their event-ID format, event-ID-domain signature and (v1) state
+resolution. Room v12 adds `via` servers for join routing (MSC4291).
 See `docs/matrix-v1.19-spec/rooms/index.md` for the feature matrix.
 
 ## Encryption policy

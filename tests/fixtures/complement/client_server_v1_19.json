@@ -89,11 +89,12 @@
       "expect_keys_present": ["errcode", "error"]
     },
     {
-      "method": "POST",
-      "path": "/_matrix/client/v3/refresh",
-      "body": {"refresh_token": "{{alice_refresh}}"},
-      "expect_status": 401,
-      "expect_keys_present": ["errcode", "error"]
+      "description": "Using the refreshed access token retires the old refresh token (POST /refresh: 'The old refresh token remains valid until the new access token or refresh token is used'); the replay of the retired token is the last step of this fixture, because it revokes the session",
+      "method": "GET",
+      "path": "/_matrix/client/v3/account/whoami",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["user_id"]
     },
     {
       "method": "POST",
@@ -469,7 +470,8 @@
     },
     {
       "method": "GET",
-      "path": "/_matrix/media/v3/download/example.org/{{media_id}}",
+      "path": "/_matrix/client/v1/media/download/example.org/{{media_id}}",
+      "auth_from": "refreshed_token",
       "expect_status": 200
     },
     {
@@ -781,6 +783,22 @@
       "body": {"name": "Renamed Conformance Room"},
       "expect_status": 200,
       "expect_keys_present": ["event_id"]
+    },
+    {
+      "description": "Replaying the retired refresh token is refused",
+      "method": "POST",
+      "path": "/_matrix/client/v3/refresh",
+      "body": {"refresh_token": "{{alice_refresh}}"},
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "description": "...and revokes the session it belonged to (spec SHOULD: 'SHOULD consider that the session is compromised if an old, invalidated refresh token is used, and SHOULD revoke the session')",
+      "method": "GET",
+      "path": "/_matrix/client/v3/account/whoami",
+      "auth_from": "refreshed_token",
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
     }
   ]
 }

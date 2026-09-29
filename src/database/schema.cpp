@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{14U};
+    constexpr auto schema_version = std::uint32_t{17U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -57,6 +57,16 @@ namespace
         std::string_view{"appservice_txn_cursor"},
     };
 
+    // v15 (015_event_graph_state.sql, ADR-0064): three brand-new tables.
+    // `state_groups`/`state_group_edges` are NOT here — they are v1 (core)
+    // tables; v15 only ALTERs two columns onto the pre-existing
+    // `state_groups` shape, exactly like v14 ALTERs `users`.
+    constexpr auto v15_table_names = std::array{
+        std::string_view{"state_group_state"},
+        std::string_view{"event_state_groups"},
+        std::string_view{"forward_extremities"},
+    };
+
     [[nodiscard]] auto table_is_post_v1(std::string_view table_name) noexcept -> bool
     {
         return std::ranges::find(v2_table_names, table_name) != v2_table_names.end() ||
@@ -67,12 +77,14 @@ namespace
                std::ranges::find(v9_table_names, table_name) != v9_table_names.end() ||
                std::ranges::find(v10_table_names, table_name) != v10_table_names.end() ||
                std::ranges::find(v12_table_names, table_name) != v12_table_names.end() ||
-               std::ranges::find(v13_table_names, table_name) != v13_table_names.end();
+               std::ranges::find(v13_table_names, table_name) != v13_table_names.end() ||
+               std::ranges::find(v15_table_names, table_name) != v15_table_names.end();
     }
 
     constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size() + v4_table_names.size() +
                                          v6_table_names.size() + v8_table_names.size() + v9_table_names.size() +
-                                         v10_table_names.size() + v12_table_names.size() + v13_table_names.size();
+                                         v10_table_names.size() + v12_table_names.size() + v13_table_names.size() +
+                                         v15_table_names.size();
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -227,11 +239,22 @@ namespace
         // comment above.
         SchemaTableDefinition{"login_tokens",
                               "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL "
-                              "DEFAULT '0', used TEXT NOT NULL DEFAULT 'false'"                                           },
+                              "DEFAULT '0', used TEXT NOT NULL DEFAULT 'false'"                                                                                         },
         SchemaTableDefinition{"appservice_txn_cursor",
                               "appservice_id TEXT NOT NULL PRIMARY KEY, next_txn_id TEXT NOT NULL DEFAULT '1', "
                               "delivered_stream_ordering TEXT NOT NULL DEFAULT '0', pending_txn_id TEXT NOT NULL "
                               "DEFAULT '0', pending_stream_ordering TEXT NOT NULL DEFAULT '0'"                                                                          },
+        // v15 (ADR-0064): a state group's own delta rows (or, for a snapshot
+        // group, its full state). See database::create_or_reuse_state_group.
+        SchemaTableDefinition{"state_group_state",
+                              "state_group_id TEXT NOT NULL, event_type TEXT NOT NULL, state_key TEXT NOT NULL, "
+                              "event_id TEXT NOT NULL, PRIMARY KEY (state_group_id, event_type, state_key)"                                                             },
+        // v15 (ADR-0064): maps an event to the state group holding the
+        // room's state immediately after it.
+        SchemaTableDefinition{"event_state_groups",      "event_id TEXT PRIMARY KEY, state_group_id TEXT NOT NULL"                                                      },
+        // v15 (ADR-0064): a room's current forward extremities (DAG leaves).
+        SchemaTableDefinition{"forward_extremities",
+                              "room_id TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (room_id, event_id)"                                                          },
     };
 
 } // namespace

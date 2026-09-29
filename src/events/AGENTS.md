@@ -18,15 +18,15 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 
 | Room version | Event ID format |
 |---|---|
-| v1–v2 | `$localpart:server` |
-| v3+ | `$` + unpadded base64url(SHA-256(reference hash of redacted event)) |
+| v1–v2 | `$localpart:server` (not supported, ADR-0076) |
+| v3 | `$` + unpadded standard base64 of the reference hash (`+`, `/`) |
+| v4+ | `$` + unpadded URL-safe base64 of the reference hash (`-`, `_`) |
 
 Always use `event_id.hpp` — never construct an event ID manually.
 
 `event_id.hpp` implements only the reference-hash format (`make_reference_hash_event_id()`,
-`EventIdFormat::reference_hash`). Room versions 1 and 2 are registered in
-`rooms/room_version_policy.cpp`, but their `$localpart:server` format is not implemented and
-`EventFormat::room_v1_v2` is never consumed — see `docs/todos/capability-gaps.md`.
+`EventIdFormat::reference_hash`). Room versions 1 and 2, whose `$localpart:server` format this
+is, are not supported and are absent from `rooms/room_version_policy.cpp` (ADR-0076).
 
 ## Canonical JSON is required for signing and hashing
 
@@ -54,8 +54,23 @@ Authorization must be checked:
 
 ## State resolution
 
-`state_resolution.hpp` implements the v2 algorithm.
-Never inline resolution logic; always delegate to this module.
+`state_resolution.hpp` implements state-res v2 (room versions 2-11) and v2.1
+(room v12, `rooms::StateResolutionAlgorithm::v2_1` — empty starting map for
+the iterative auth checks, plus the conflicted state subgraph). Never inline
+resolution logic; always delegate to this module.
+
+`StateResolutionRequest::event_lookup` lets the resolver fetch events beyond
+the submitted state groups, to walk `auth_events` chains for the auth
+difference (rooms/v10.md — Definitions) and the v12 conflicted state
+subgraph (rooms/v12.md — Definitions). This walk is reachable from untrusted
+federation input, so it is bounded (`events::max_auth_chain_walk_events`) and
+**fails closed**: a missing or unreachable auth-chain event, or exceeding the
+cap, returns an unresolved result rather than resolving on a partial chain.
+The iterative auth checks' own separate fallback (using an event's own
+`auth_events` when the running state lacks a required key, per the spec's
+"Iterative auth checks" definition) uses a soft lookup instead — an
+unreachable ancestor there only fails that one event's own auth check, not
+the whole resolution, matching its behaviour before the fallback existed.
 
 ## Redaction
 

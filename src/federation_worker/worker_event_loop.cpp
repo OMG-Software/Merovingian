@@ -6,12 +6,13 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
-#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation_worker/db_uri_fd.hpp"
+#include "merovingian/federation_worker/ipc_key_fd.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -113,6 +114,8 @@ namespace
         }
         result += R"(],"json":)";
         result += ipc::ipc_json_str(env.json);
+        result += R"(,"origin":)";
+        result += ipc::ipc_json_str(env.origin);
     }
 
     // Serialize an InboundPduEnvelope for the pdu_ingest IPC call to main.
@@ -180,6 +183,18 @@ namespace
         else if (status_str == "rejected_invalid")
         {
             result.status = federation::PduIngestionStatus::rejected_invalid;
+        }
+        else if (status_str == "missing_prev_state")
+        {
+            result.status = federation::PduIngestionStatus::missing_prev_state;
+        }
+        else if (status_str == "soft_failed")
+        {
+            result.status = federation::PduIngestionStatus::soft_failed;
+        }
+        else if (status_str == "main_overloaded")
+        {
+            result.status = federation::PduIngestionStatus::main_overloaded;
         }
         else
         {
@@ -499,9 +514,12 @@ namespace
 
 } // namespace
 
-WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, config::Config config, std::uint32_t threads,
+WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd,
+                                 core::FileDescriptor db_uri_fd, config::Config config, std::uint32_t threads,
                                  std::uint32_t shard_index)
     : ipc_fd_{std::move(ipc_fd)}
+    , ipc_key_fd_{std::move(ipc_key_fd)}
+    , db_uri_fd_{std::move(db_uri_fd)}
     , config_{std::move(config)}
     , threads_{threads}
     , shard_index_{shard_index}
@@ -515,24 +533,52 @@ auto WorkerEventLoop::shard_index() const noexcept -> std::uint32_t
 
 auto WorkerEventLoop::run() -> void
 {
-    // Derive the IPC auth key from the operator master-key file so the worker
-    // can authenticate the crypto_kx handshake. The main process derives the
-    // same key from the same file; the key never crosses the IPC boundary.
-    // The worker seccomp filter (issue #319) is installed in main() before
-    // run(), but it allows open(), so reading the master-key file here works
-    // under the filter. Fail closed if the master key is unavailable.
-    auto const master_material = crypto::load_master_key_material(config_.security().secrets.master_key_file);
-    if (!master_material.has_value())
-    {
-        LOG_CRITICAL("Federation worker: master key file '" + config_.security().secrets.master_key_file +
-                     "' is unavailable; cannot authenticate IPC channel");
-        return;
-    }
-    auto const auth_key = crypto::derive_ipc_auth_key(master_material->bytes());
+    // Read the IPC auth key main already derived from the operator master-key
+    // file and wrote into our inherited key-fd at spawn time (see
+    // homeserver::WorkerSupervisor::spawn_and_connect). This worker never
+    // opens the master key file itself — see ADR-0062, "Federation worker
+    // holds no secret files; secrets arrive over inherited fds" (0.12.13
+    // audit, finding N1). Fail closed if the key is missing, short, long, or
+    // otherwise unusable: an unauthenticated handshake would let any peer
+    // inject AEAD frames.
+    auto const auth_key = federation_worker::read_ipc_auth_key(std::move(ipc_key_fd_));
     if (!auth_key.has_value())
     {
-        LOG_CRITICAL("Federation worker: failed to derive IPC auth key from master key file");
+        LOG_CRITICAL("Federation worker: failed to read a usable IPC auth key from the inherited key-fd");
         return;
+    }
+
+    // Clear the master-key-file path in this worker's own config copy before
+    // starting the runtime, so no later code path — reached today or added in
+    // the future — can open the file this process must never touch. Every
+    // consumer of security.secrets.master_key_file that is actually reachable
+    // from start_runtime() in a worker either is skipped outright (signing
+    // override bypasses key generation/decryption) or degrades safely to "no
+    // master key configured" on an empty path; see docs/threat-model.md,
+    // "Worker trust boundary".
+    federation_worker::clear_master_key_file(config_);
+
+    // ADR-0062 part 2 (finding N1): apply a separate, least-privilege
+    // database connection URI when main delivered one. An invalid db_uri_fd_
+    // is the expected outcome for a SQLite backend or an explicit
+    // federation.worker.allow_shared_database_credentials=true opt-out — in
+    // that case this worker opens the database exactly as main does
+    // (config_'s own uri_file/runtime_role/migration_role, untouched). When
+    // main DID deliver one, the read is fail-closed the same way the auth
+    // key above is: a missing, empty, or oversized URI stops this worker
+    // before it starts a runtime at all, rather than silently falling back
+    // to shared credentials it was never told to use.
+    if (db_uri_fd_.valid())
+    {
+        auto const db_uri = federation_worker::read_worker_database_uri(std::move(db_uri_fd_));
+        if (!db_uri.has_value())
+        {
+            LOG_CRITICAL("Federation worker: failed to read a usable database URI from the inherited db-uri-fd");
+            return;
+        }
+        auto const uri_text =
+            std::string_view{reinterpret_cast<char const*>(db_uri->bytes().data()), db_uri->bytes().size()};
+        federation_worker::apply_worker_database_uri(config_, uri_text);
     }
 
     // Create the IPC channel first; the blocking key exchange completes here
@@ -556,8 +602,19 @@ auto WorkerEventLoop::run() -> void
     // has its own DB connection for remote key resolution and room-version
     // lookups. It does NOT write events — accepted PDUs are sent to main via
     // pdu_ingest IPC and main commits them with the authoritative counter.
-    auto started = homeserver::start_runtime(
-        homeserver::RuntimeStartOptions{.config = config_, .signing_override = &ipc_provider});
+    auto started = homeserver::start_runtime(homeserver::RuntimeStartOptions{
+        .config = config_,
+        .signing_override = &ipc_provider,
+        // Applied unconditionally, independent of which database credential
+        // this worker connects with: the worker never needs
+        // server_signing_keys and the other tables table_load_profile_includes
+        // excludes, whether it holds a separate least-privilege role or (in
+        // the allow_shared_database_credentials opt-out) main's own shared
+        // credentials. See database::table_load_profile_includes and
+        // docs/database-persistence.md, "Federation worker least-privilege
+        // role".
+        .database_load_profile = database::TableLoadProfile::federation_worker,
+    });
     if (!started.started)
     {
         LOG_CRITICAL("Federation worker: failed to start runtime: " + started.reason);

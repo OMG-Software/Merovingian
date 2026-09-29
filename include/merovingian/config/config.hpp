@@ -51,11 +51,21 @@ struct CorsConfig final
 //                             connection occupies a main-pool worker thread,
 //                             so the cap bounds how many workers a client can
 //                             tie up. Range 1..4096; restart required.
+//   max_connections_per_ip  — open connections one client key may hold on
+//                             the client and federation listeners, decided at
+//                             accept time (ADR-0072). Addresses listed in
+//                             server.trusted_proxies are exempt. Range
+//                             1..65535; restart required.
+//   ipv6_client_prefix_length — prefix length IPv6 clients are grouped by for
+//                             per-client limits (the connection cap and the
+//                             rate limiter). Range 1..128; restart required.
 struct HttpTransportConfig final
 {
     bool keep_alive{true};
     std::uint32_t keep_alive_idle_seconds{15U};
     std::uint32_t keep_alive_max_connections{8U};
+    std::uint32_t max_connections_per_ip{64U};
+    std::uint8_t ipv6_client_prefix_length{64U};
 };
 
 struct TurnServerConfig final
@@ -258,6 +268,15 @@ struct DatabaseConfig final
     std::string migration_role{};
     std::string runtime_role{};
     std::string sqlite_path{"/var/lib/merovingian/merovingian.sqlite3"};
+    // Process-local override for the federation worker's own database
+    // connection string (ADR-0062 part 2). Never parsed from a config file
+    // and never logged: `federation_worker::apply_worker_database_uri`
+    // populates this on the worker's own in-memory Config copy, from bytes
+    // main handed it over the inherited kWorkerDbUriFd pipe, immediately
+    // before `bootstrap_local_database` opens the store. When non-empty it
+    // takes priority over `uri_file` for that one open. Main's own Config
+    // (and every other process) always leaves this empty.
+    std::string worker_conninfo_override{};
 };
 
 struct RegistrationSecurityConfig final
@@ -491,6 +510,12 @@ struct FederationWorkerConfig final
     // fnv1a_32(room_id) % shards; non-room endpoints go to shard 0. shards=0
     // is rejected at config validation time.
     std::uint32_t shards{1U};
+    // ADR-0065 (0.12.13 audit, finding H2): per-channel cap on in-flight IPC
+    // requests the main process will accept from one federation worker. A
+    // request over the cap is rejected with an explicit error reply so the
+    // worker answers the remote server with a retryable 5xx. 0 disables the
+    // cap (not recommended). Restart required.
+    std::uint32_t ipc_max_in_flight_requests{256U};
     // Absolute path to the merovingian-fed-worker binary. Empty means use
     // the compile-time libexec default.
     std::string worker_binary{};
@@ -501,6 +526,51 @@ struct FederationWorkerConfig final
     // binary directly set this false to avoid the strict filter while the
     // filter allowlist is validated separately in unit tests.
     bool apply_hardening{true};
+    // ADR-0062 part 2: secret file holding a PostgreSQL connection URI for a
+    // SEPARATE, least-privilege login role for the federation worker,
+    // granted SELECT (never INSERT/UPDATE/DELETE) on exactly
+    // database::federation_worker_table_allowlist's tables — never this
+    // server's own server_signing_keys.secret_key column, nor any table
+    // outside that allowlist (fail closed on a new/unlisted table) — see
+    // docs/database-persistence.md, "Federation worker least-privilege
+    // role". Read and validated by main exactly like database.uri_file,
+    // then handed to each worker over a second inherited pipe fd
+    // (homeserver::kWorkerDbUriFd) — the worker never opens this file
+    // itself. Required when database.backend=postgresql and
+    // security.federation.enabled=true, unless
+    // allow_shared_database_credentials=true. Defaults to a placeholder
+    // path (mirroring database.uri_file's own default) so a bare,
+    // unconfigured install still validates for --dry-run inspection; a real
+    // deployment must provision the file or the worker fails to start (see
+    // homeserver::WorkerPool::WorkerPool). Ignored for
+    // database.backend=sqlite — a single shared file offers no role
+    // boundary to separate.
+    std::string database_uri_file{"/etc/merovingian/fed-worker-db-uri"};
+    // Explicit opt-out: when true and the worker cannot use a separate role
+    // (database_uri_file left empty), the worker shares main's PostgreSQL
+    // login credentials — today's pre-ADR-0062-part-2 behaviour — instead of
+    // failing config validation. Every startup logs CRITICAL while this
+    // applies, so the downgrade cannot go unnoticed. Ignored for
+    // database.backend=sqlite.
+    bool allow_shared_database_credentials{false};
+    // ADR-0062 part 3 (0.12.13 audit, finding N1): on Linux, the worker
+    // restricts its own filesystem access with Landlock
+    // (platform::apply_worker_landlock) before handling any untrusted input,
+    // so that a compromise reached through a memory-safety bug cannot open
+    // the operator master key, TLS private keys, main's database URI file,
+    // or the worker's own database URI file directly off disk. When the
+    // running kernel has no Landlock support (ABI query < 1: kernel older
+    // than 5.13, or Landlock disabled at boot), the worker refuses to start
+    // unless this is set true, in which case it logs CRITICAL on every start
+    // and continues without the filesystem sandbox -- mirroring
+    // apply_hardening's fail-closed contract (ADR-0041). Any Landlock
+    // failure OTHER than "unavailable" (ruleset create/add_rule/
+    // restrict_self erroring on a kernel that does support it) is always
+    // fatal regardless of this flag. Default false so production workers
+    // refuse to run unsandboxed by default. Ignored on non-Linux platforms,
+    // which have no Landlock equivalent and already fail closed via
+    // apply_hardening's own platform gate.
+    bool allow_without_landlock{false};
 };
 
 // Matrix v1.19 Application Service API configuration. `registration_files`
