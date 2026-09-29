@@ -50,7 +50,7 @@ must start with that test.
 | 7 | Cryptography, key management and worker IPC | done: 1 high, 1 medium, 4 low |
 | 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | done: 1 high, 2 medium, 5 low |
 | 9 | Media repository and thumbnailer | done: 5 medium, 3 low |
-| 10 | Database, persistence and migrations | pending |
+| 10 | Database, persistence and migrations | done: 1 high, 3 medium, 6 low |
 | 11 | Configuration, observability, logging and packaging | pending |
 
 ---
@@ -2298,4 +2298,246 @@ independently.
 
 - Not examined: the parent-side handling of a thumbnail worker crash, the `RLIMIT_AS`
   value, and how the JSON serializer handles invalid UTF-8 in `dispatch_err`.
+
+---
+
+## Area 10 — Database, persistence and migrations
+
+**Result:** 10 findings confirmed: 1 high, 3 medium, 6 low. The `type` half of DB-6 was
+refuted.
+
+**How DB-1 was verified:** the verifier checked it against a live PostgreSQL 16.13
+cluster, driving `libpq` with the same `PQexecParams` call shape as the server.
+
+**What holds:**
+- No SQL injection: every runtime value is bound as a parameter, and DDL identifiers
+  come from an allowlist.
+- Prior fixes M-10 (the migration lease and ledger re-check), M-05, 0.12.5 finding 24,
+  and fail-closed handling of a schema newer than the binary.
+- M-08 holds as documented: the values are redacted from logs, but stored in plaintext.
+
+**Only partly fixed:** M-09 was fixed for `media_blobs.bytes` alone (see DB-1 and DB-6).
+
+### DB-1 — On PostgreSQL the server cannot read back its own signing key after a restart
+
+- **Severity:** high (availability of the server identity; the default backend)
+- **Attacker:** none needed
+- **Verdict:** confirmed empirically
+- **Location:**
+  - `src/database/persistent_store.cpp:1042-1055` (write)
+  - `src/database/postgresql_store.cpp:308-318`, `:369-420` (BLOB translated to BYTEA),
+    `:571-586` (read, not decoded)
+  - `src/homeserver/room_service.cpp:302-307`, `:1856-1905`, `:1952-1966`, `:2170-2176`
+- **Rule:**
+  - `docs/database-persistence.md`: binary columns must round-trip byte-exactly.
+  - The earlier report's Resolution section flagged this column as "very likely" broken
+    and needing confirmation against a live PostgreSQL.
+- **Path:**
+  1. The secret (`secretbox:v1:…`) is bound as a text parameter into a `BYTEA` column,
+     where it is stored intact.
+  2. On load, `row[4]` is copied as returned. With the default `bytea_output=hex`, that
+     is `\x736563726574626f78…`.
+  3. Only `media_blobs` is decoded on load.
+  4. `decode_encrypted_secret_from_storage` requires the `secretbox:v1:` prefix, so the
+     value falls to the legacy base64 branch, which yields the wrong size.
+  5. `ensure_runtime_server_signing_key` returns `nullopt`, and the crypto provider holds
+     no keys.
+  6. `/_matrix/key/v2/server` then returns 500 ("server signing key unavailable").
+- **Empirical result:**
+  - The exact upsert returned
+    `\x736563726574626f783a76313a51554a44524556475230684a536b744d` on `SELECT`.
+  - `convert_from(secret_key,'UTF8')` returned the original, so the stored bytes are
+    correct; only the read path is broken.
+- **Impact:** after its first restart, a PostgreSQL deployment cannot sign events or
+  federation requests until the row is repaired by hand. No test round-trips this column
+  through PostgreSQL.
+- **Fix:**
+  - Decode BYTEA on load. Existing rows hold raw ASCII bytes, so this is
+    backward-compatible.
+  - Set `binary=true` on the write path.
+  - Audit every other `BLOB` column for the same asymmetry.
+  - Add a PostgreSQL restart round-trip test.
+- **Test:** GIVEN a PostgreSQL store holding a `secretbox:v1:` signing key WHEN the store
+  is closed and reopened THEN `secret_key` equals the stored string AND
+  `ensure_runtime_server_signing_key` returns the same key.
+
+### DB-2 — On PostgreSQL, the federation worker's room snapshot stops refreshing once a room passes 128 events
+
+- **Severity:** medium (upper end) · **Attacker:** none needed · **Verdict:** adjusted from
+  high (main remains authoritative for writes)
+- **Location:**
+  - `src/database/postgresql_store.cpp:2024-2036`, `:2130-2140`, `:283-289`
+  - `src/database/statement.cpp:121-123`
+  - `src/database/persistent_store.cpp:1230-1238`
+  - `src/federation_worker/worker_event_loop.cpp:906-912`
+- **Spec:** "When a remote server makes a request, it MUST be verified to be allowed by
+  the server ACLs."
+- **Path:**
+  1. `load_room_snapshot_impl` builds `IN ($1..$N)` with one parameter per event, and
+     never chunks it.
+  2. `prepared_statement_is_valid` rejects more than 128 parameters, so `reload_room`
+     fails.
+  3. The worker logs a warning and keeps serving `make_join`, `make_leave`,
+     `make_knock`, `/backfill`, `/state`, `/state_ids`, `/get_missing_events`,
+     `/hierarchy` and directory queries from the snapshot it loaded at startup.
+  4. That snapshot carries stale ACLs, bans and state.
+- **Fix:**
+  - Use `= ANY($1::text[])` or a join, or chunk the list.
+  - When a reload fails, mark the snapshot untrusted and route those reads to main.
+- **Test:** GIVEN a PostgreSQL room with 200 events WHEN an `m.room.server_acl` event is
+  committed and `reload_room` runs on a second handle THEN the reload succeeds AND the
+  denied server is refused.
+
+### DB-3 — The PostgreSQL backend silently runs on an in-memory store when `database.uri_file` is missing or empty
+
+- **Severity:** medium · **Attacker:** operator error, or anyone able to delete the file ·
+  **Verdict:** confirmed
+- **Location:**
+  - `src/main.cpp:214` (`allow_missing=true`)
+  - `src/homeserver/runtime.cpp:112-122`, `:603-608`
+  - `src/database/sqlite_store.cpp:1167-1169`
+- **Detail:**
+  - The server starts as `opened=true`, and every persist call reports success.
+  - All users, tokens, revocations and rooms vanish on the next restart, and a new
+    signing key is generated.
+  - Nothing tells the operator.
+- **Fix:** when `backend=postgresql`, treat an unreadable or empty URI as a fatal startup
+  error. Reserve the memory backend for an explicit, test-only entry point.
+- **Test:** GIVEN `database.backend=postgresql` and a missing `uri_file` WHEN
+  `start_runtime` runs THEN it fails.
+
+### DB-5 — Security-relevant database writes are discarded with `std::ignore`
+
+- **Severity:** medium (needs a database write fault) · **Attacker:** A2 holding a stale
+  credential; users served removed content · **Verdict:** confirmed
+- **Location:**
+  - `src/homeserver/media_service.cpp:975`, `:1120-1123`, `:1146`, `:1168-1172`
+  - `src/homeserver/auth_service.cpp:1298-1299`, `:1371-1376`, `:1629`, `:1773-1774`,
+    `:1830`
+  - `src/database/persistent_store.cpp:832-847`
+- **Rule:** `docs/database-persistence.md:735-741`: "Auth and room mutations fail the
+  request when required persistent writes fail." That is not true for these paths.
+- **Detail:**
+  - Admin quarantine and remove update memory and report success even if the database
+    write fails. After a restart, the content is served again.
+  - Refresh-reuse revocation, logout, device deletion and password-change revocations
+    ignore persistence failures.
+  - `revoke_access_tokens_for_device` returns 0 on failure, which cannot be told apart
+    from "nothing to revoke".
+  - After a restart, the "revoked" tokens are hydrated as live. That matters most on
+    password change, the compromise-recovery action. AUTH-1's correctness notes list
+    one of these call sites.
+- **Fix:** check every result, persist before applying, and return 5xx on failure.
+- **Test:** GIVEN a backend that fails writes WHEN an admin quarantines media or a user
+  changes their password THEN the request fails AND the reopened store matches memory.
+
+### DB-4 — The membership row is written in a separate transaction from the event and current state
+
+- **Severity:** low (needs a crash or write fault in a narrow window) · **Verdict:**
+  confirmed mechanics; adjusted from medium
+- **Location:** `src/homeserver/room_service.cpp:962-980` (and the similar sequences at
+  `:2885-2911`, `:4147-4182`, `:4390-4404`, `:4552-4590`);
+  `src/homeserver/runtime.cpp:507-521`
+- **Detail:**
+  - A ban can commit while the membership row still says `join`.
+  - Hydration rebuilds `room.members` from that row, so the banned user regains read
+    access.
+  - Nothing reconciles the two at startup.
+- **Fix:**
+  - Write the event, state, membership and invite cleanup in one transaction.
+  - Reconcile the membership table from `current_state` at hydration.
+- **Test:** GIVEN a ban event persisted but its membership write failed WHEN the store is
+  reopened THEN the user is not a member.
+
+### DB-6 — PostgreSQL text parameters are cut at the first NUL byte, and `state_key` may contain one
+
+- **Severity:** low (needs state power) · **Attacker:** A2 or A3 with state power ·
+  **Verdict:** adjusted. The `type` half is refuted: `event_type_is_valid` rejects
+  control characters.
+- **Location:** `src/database/postgresql_store.cpp:308-316`; `src/events/event.cpp:214-220`;
+  `src/core/query_params.cpp:85-100`; `migrations/001_initial_schema.sql:31`
+- **Detail:**
+  - libpq text parameters are C strings, so a `state_key` of `"\0x"` reaches the
+    database as `""`.
+  - That collides with the room's real empty-key row: it either fails the event with 500
+    or makes the database diverge from memory.
+  - SQLite binds by length, so the two backends behave differently.
+- **Fix:**
+  - Reject NUL in `state_key` during event validation, and in percent-decoded path
+    values.
+  - Reject NUL in text `BoundValue`s.
+- **Test:** GIVEN a PostgreSQL store WHEN an event arrives with `state_key="\0x"` THEN it
+  is rejected before any write.
+
+### DB-7 — Every persisted write opens a fresh database connection while the global mutex is held
+
+- **Severity:** low (a documented design: ADR-0009 and capability-gaps line 28) ·
+  **Verdict:** adjusted
+- **Location:** `src/database/postgresql_store.cpp:2205-2231`;
+  `src/database/sqlite_store.cpp:1172-1181`
+- **Detail:** this is a throughput limit, and it amplifies the DoS findings in Areas 1
+  and 3.
+- **Fix:** use the already-configured `database.pool_size` for write connections.
+- **Test:** GIVEN 200 concurrent sends WHEN they are persisted THEN the connections opened
+  are at most `pool_size`.
+
+### DB-8 — TLS to PostgreSQL is neither required nor documented
+
+- **Severity:** low · **Verdict:** confirmed
+- **Location:** `src/database/postgresql_store.cpp:1704-1719`;
+  `docs/user-manual.md:1188`
+- **Detail:** libpq defaults to `sslmode=prefer`, which neither verifies the server nor
+  resists downgrade.
+- **Fix:** for non-loopback hosts, require `sslmode=verify-full` or an explicit opt-out,
+  and document it.
+- **Test:** GIVEN a remote host with no `sslmode` WHEN the connection string is validated
+  THEN it is rejected.
+
+### DB-9 — Connection-string redaction leaks passwords that are spaced or quoted
+
+- **Severity:** low · **Attacker:** A6 with log access · **Verdict:** confirmed (the
+  algorithm was ported and tested)
+- **Location:** `src/database/postgresql_store.cpp:196-217`, `:1751-1813`
+- **Detail:**
+  - `password = 'sup er'` is not redacted at all.
+  - `password='sup er'` becomes `password=redacted er'`.
+  - Both forms are legal libpq syntax, and the string is logged on every connection
+    open.
+- **Fix:** never log the connection string; log only the host and database name.
+- **Test:** GIVEN `host=x password='a b'` WHEN it is redacted THEN neither `a` nor `b`
+  appears.
+
+### DB-10 — SQLite is opened without symlink, mode or `secure_delete` protections
+
+- **Severity:** low (packaged `0750` directories mitigate) · **Attacker:** A6 ·
+  **Verdict:** adjusted
+- **Location:** `src/database/sqlite_store.cpp:125-176`
+- **Fix:** open with `SQLITE_OPEN_NOFOLLOW` and file mode 0600, and set
+  `PRAGMA secure_delete=ON` and `trusted_schema=OFF`. See also ISO-6.
+- **Test:** GIVEN a fresh store WHEN it is opened THEN the file mode is 0600 AND a
+  symlinked path is refused.
+
+### Area 10 — hardening and correctness notes
+
+- **Text-ordered stream IDs.** Stream IDs are `TEXT` and loaded with `ORDER BY
+  stream_id` (`sqlite_store.cpp:647-746`). After a restart, to-device messages and
+  account data load with "10" before "9".
+- **Broad role grants.** `packaging/postgresql/provision-roles.sql:92-102` gives the
+  runtime role `UPDATE`/`DELETE` on `audit_log`, `admin_actions` and
+  `schema_migrations`. The login role belongs to both the migration and runtime roles.
+- **No-op pragma.** `PRAGMA foreign_keys=ON` does nothing, because no migration declares
+  a foreign key.
+- **Two migration sources.** Migrations are compiled into `migration.cpp`, while
+  `migrations/*.sql` feed only `--plan`. Nothing checksums one against the other, so
+  they can drift.
+- **Push-rule documentation is wrong.** `docs/todos/capability-gaps.md:76` says push-rule
+  CRUD is implemented. Only `GET` of the default ruleset exists
+  (`client_server.cpp:11400-11440`), and the `push_rules` table is unused.
+
+### Area 10 — coverage gaps
+
+- Not read: `schema.cpp` and `migrations/002`–`017`, except through the compiled
+  catalogue.
+- The key-backup, presence, filter, profile and notification persistence functions were
+  not read.
 
