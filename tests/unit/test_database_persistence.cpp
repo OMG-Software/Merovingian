@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/database/connection.hpp"
 #include "merovingian/database/migration.hpp"
@@ -2430,7 +2431,7 @@ SCENARIO("Server signing keys can be stored and looked up from many threads at o
             auto store_failures = std::vector<std::size_t>(writer_count, 0U);
             auto torn_reads = std::vector<std::size_t>(reader_count, 0U);
             {
-                auto threads = std::vector<std::jthread>{};
+                auto threads = merovingian::tests::JoiningThreads{};
                 for (auto writer = std::size_t{0U}; writer < writer_count; ++writer)
                 {
                     threads.emplace_back([&, writer]() {

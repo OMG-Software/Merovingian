@@ -10,7 +10,9 @@
   (FreeBSD, NetBSD). OpenBSD has no `RLIMIT_AS`, so the thumbnail decoder's
   memory cap is `RLIMIT_DATA` there, which on OpenBSD also bounds anonymous
   `mmap` (`media::decoder_memory_limit_resource()`); skipping the cap would
-  have weakened a fail-closed control. CI test fixes: the
+  have weakened a fail-closed control. Two concurrency tests used
+  `std::jthread`, which the libc++ on FreeBSD and OpenBSD lacks; they now use
+  `tests/support/joining_threads.hpp`. CI test fixes: the
   decoder hardening scenarios assert the sanitizer build's own contract (it
   skips `RLIMIT_AS` and the seccomp filter), and the PostgreSQL role scenarios
   make only the newest migration pending, not a gap.
