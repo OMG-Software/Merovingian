@@ -17,7 +17,12 @@
   OpenSSL (`libssl.so.16`), so the werror link refused two OpenSSLs in one
   process (this also failed on `main`). The NetBSD CI and package jobs, the
   `pkgin` developer setup and the pkgsrc scaffold no longer pull in pkgsrc
-  `openssl`, so the base OpenSSL is the only one. CI test fixes: the
+  `openssl`, so the base OpenSSL is the only one. The test TLS servers leaked
+  every socket they accepted (`TlsConnection` borrows its descriptor; they
+  closed it only on a failed handshake), about one per outbound call, until
+  OpenBSD's low descriptor limit broke later tests; they now own it in a
+  `core::SocketHandle`, as the production server already does, and
+  `[descriptor_leak]` guards it. CI test fixes: the
   decoder hardening scenarios assert the sanitizer build's own contract (it
   skips `RLIMIT_AS` and the seccomp filter), and the PostgreSQL role scenarios
   make only the newest migration pending, not a gap.
