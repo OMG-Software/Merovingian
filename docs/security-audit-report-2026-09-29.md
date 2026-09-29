@@ -43,7 +43,7 @@ must start with that test.
 |---|------|--------|
 | 1 | Authentication, sessions, application-service authentication | done: 2 high, 3 medium, 7 low |
 | 2 | Client-Server authorisation and room access control | done: 4 high, 4 medium, 4 low |
-| 3 | HTTP transport, TLS and request-level DoS | pending |
+| 3 | HTTP transport, TLS and request-level DoS | done: 3 high, 3 medium, 2 low |
 | 4 | Federation inbound (X-Matrix, PDU ingestion, keys, backfill, membership) | pending |
 | 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | pending |
 | 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | pending |
@@ -661,4 +661,249 @@ compared in constant time and revoked one way. The masquerade-token spoofing gua
   and `device_list_delta.cpp`.
 - Not read: the `src/trust_safety/` internals and the `/sync` leave timeline for departed
   users.
+
+---
+
+## Area 3 — HTTP transport, TLS and request-level DoS
+
+**Result:** 8 findings confirmed (3 high, 3 medium, 2 low). None were refuted; one
+additional finding came from the verifier.
+
+**Prior fixes re-checked, all hold:** H-03, M-02, M-03, L-04, L-05 and M-07. Also holding:
+- request-smuggling defences: `Transfer-Encoding` refused, duplicate or mismatched
+  `Content-Length`, obs-fold, LF-only line endings, closing after a parse error;
+- `X-Forwarded-For` handling, walked right to left over trusted proxies;
+- response-header CRLF validation;
+- JSON depth and member caps, duplicate-key refusal and UTF-8 validation.
+
+**Root cause shared by HTTP-1 and HTTP-2:** the main request pool is a hard-coded 8
+threads (`src/main.cpp:742`), and a worker stays tied to its connection through idle,
+partial-read and outbound-wait phases.
+
+### HTTP-1 — One client can hold every worker in the main request pool
+
+- **Severity:** high · **Attacker:** A1 · **Verdict:** confirmed (orchestrator re-checked the
+  pool size, defaults and the parking loop)
+- **Location:**
+  - `src/homeserver/http_server.cpp:594-653` (`wait_for_next_request`), `:1653-1737`
+    (`serve_connection`), `:811-883` (`read_remaining_body`), `:1322-1346`
+  - `include/merovingian/config/config.hpp:64-67`; `src/main.cpp:742`
+- **Rule:** the claims this finding contradicts:
+  - `docs/threat-model.md:1137-1171` says the parking cap stops "a single client [from
+    converting] open sockets into held worker threads beyond the operator's budget", and
+    that "the cap bounds one host's share".
+  - ADR-0072 says the same of the per-IP connection cap.
+- **Path — keep-alive parking (fully protocol-conformant):**
+  1. The default `keep_alive_max_connections` is 8, the same as the pool size.
+     Validation is range-only and does not relate the two.
+  2. A parked connection blocks in `poll()` on its own pool worker.
+  3. A client opens 8 connections and sends one small request on each every ~14 s
+     (the idle window is 15 s). Each worker serves the request and parks again.
+  4. All 8 workers stay occupied indefinitely. New connections wait in the FIFO queue,
+     which has no timeout. The cost is about 0.6 requests per second and nothing that
+     looks like slowloris.
+- **Path — slow body:**
+  1. The body deadline is `30 s + Content-Length/16 KiB`, with only a 5 s gap check
+     between bytes.
+  2. For the two media upload routes, the transport cap rises to `max_upload_size`
+     (50 MiB) before authentication.
+  3. One byte every 4.9 s therefore holds a worker for about 3230 s. Other POSTs hold
+     one for about 94 s.
+- **Path — idle connect and handshake:** an idle connect holds a worker for 5 s, a
+  dribbled request head for 30 s, and a dribbled TLS ClientHello for 15 s. The TLS
+  handshake runs on the worker (`http_server.cpp:2014`).
+- **Impact:** 8 sockets from one address stall every client and inbound federation
+  request on every listener. The per-IP cap (64) is eight times the pool.
+- **Fix:**
+  - Stop tying a worker to idle or partial-read phases: park and read request heads on a
+    poll/epoll reactor, and dispatch only complete request heads.
+  - Enforce a real minimum body rate.
+  - Authenticate and rate-limit from the request head before reading any large body.
+  - Cap requests and lifetime per connection.
+  - Cap worker-holding connections per client well below the pool size, and make the
+    pool size configurable.
+  - Correct the threat-model text and record the design as an ADR.
+- **Test:** GIVEN a pool of N workers WHEN one client holds N keep-alive connections,
+  sending one request every idle−1 s, or trickles N request bodies THEN a request from a
+  different client completes within 1 s.
+
+### HTTP-2 — Unauthenticated directory endpoints pin workers on blocking outbound federation calls
+
+- **Severity:** high · **Attacker:** A1 · **Verdict:** confirmed
+- **Location:**
+  - `src/homeserver/client_server.cpp:8892-9036`: `GET` and `POST
+    /publicRooms?server=`, and `GET /directory/room/{alias}` for a remote alias
+  - `src/homeserver/room_service.cpp:1656-1769`
+  - `src/homeserver/worker_pool.cpp:1387-1418`
+  - `include/merovingian/config/config.hpp:353`
+- **Path:**
+  1. These routes are served before the authentication gate.
+  2. `perform_sync_outbound_call` runs server discovery, then a federation request,
+     synchronously on the request thread. `remote_timeout` defaults to 60 s, and the
+     federation-worker round trip waits up to `total_timeout + 10` s.
+  3. `RuntimeLockRelease` frees the runtime mutex, not the thread.
+  4. No concurrency cap applies to this path.
+  5. The generic rate tier allows 90 requests/min, and the alias route escapes it
+     entirely through HTTP-3.
+- **Spec:** unauthenticated access to these endpoints is permitted, so this is a design
+  flaw, not a conformance defect.
+- **Impact:** a server under the attacker's control that never answers pins all 8
+  workers at about 8 requests per minute. It also makes this server send signed
+  requests on the attacker's schedule.
+- **Fix:**
+  - Run proxy calls on a bounded, separate pool (or asynchronously), with a global and a
+    per-client in-flight cap well below the pool size.
+  - Use a short deadline and answer 429 or 502 when saturated.
+  - Consider an operator switch, or requiring authentication, for remote proxying.
+- **Test:** GIVEN a peer that never answers WHEN 20 unauthenticated
+  `publicRooms?server=` requests arrive THEN `/versions` still answers promptly AND the
+  requests over the cap get 429.
+
+### HTTP-5 — SIGPIPE is not ignored in the server, so a TLS client that resets its connection can kill the process
+
+- **Severity:** high (medium where systemd's default `IgnoreSIGPIPE=yes` applies) ·
+  **Attacker:** A1 · **Verdict:** confirmed by code reading, not reproduced
+- **Location:**
+  - `src/main.cpp`: no SIGPIPE handling.
+  - `src/homeserver/tls.cpp:165-166`, `:290`: `SSL_set_fd` gives OpenSSL's socket BIO,
+    which uses `write()` without `MSG_NOSIGNAL`.
+  - `src/homeserver/http_server.cpp:1171-1176`, `:1276-1287`: an error response is
+    written after a failed read.
+  - `src/media/thumbnailer.cpp:470`: the only `SIG_IGN`, reached lazily on the first
+    thumbnail.
+- **Rule:** `docs/hardening.md:174-178` says "`SIGPIPE` is ignored so a worker that dies
+  mid-request cannot terminate the parent". The server does not do this at startup.
+- **Path:**
+  1. The client completes a TLS handshake and sends a partial request head, then resets
+     the connection.
+  2. The read fails, and the server writes a 408 through `SSL_write_ex`.
+  3. That `write()` returns `EPIPE` and raises SIGPIPE. The default disposition
+     terminates the process.
+  4. The plain-HTTP and IPC paths use `MSG_NOSIGNAL` and are not affected.
+  5. `tests/integration/test_main.cpp:15` ignores SIGPIPE for the whole test binary,
+     which hides the defect.
+- **Exposure:** exposed under OpenRC, BSD `rc.d`, containers and manual runs. The shipped
+  systemd unit relies on the systemd default; it sets nothing itself.
+- **Impact:** one unauthenticated TLS connection terminates the homeserver.
+- **Fix:** set `sigaction(SIGPIPE, SIG_IGN)` in each executable's `main()` (server,
+  federation worker, thumbnail worker, `db-migrate`) before any thread starts.
+- **Test:** GIVEN the server started with the default SIGPIPE disposition and a TLS
+  listener WHEN a client sends a partial request head and resets THEN the process
+  survives and serves the next request. The test must not inherit the harness's
+  `SIG_IGN`.
+
+### HTTP-3 — Rate-limit buckets are keyed on the raw path, so varying a path segment bypasses them
+
+- **Severity:** medium · **Attacker:** A1 and A2 · **Verdict:** adjusted; the auditor
+  understated the scope
+- **Location:** `src/homeserver/client_server.cpp:2651-2742` (`normalized_target`),
+  `:2779-2811`; `include/merovingian/http/rate_limit.hpp:338-376`
+- **Rule:** `docs/http-transport.md:490-492`, `:546` says path parameters such as media
+  IDs are coalesced.
+- **What is coalesced:** only the room ID (not the suffix after it), the device ID, the
+  user ID in `/user/{userId}/…`, profile, join, knock, v1 relations and
+  `/_matrix/client/v1/media/*`.
+- **What is not coalesced:**
+  - `/_matrix/media/v3/download|thumbnail/{server}/{id}`
+  - `/directory/room/{alias}`
+  - `sendToDevice/{type}/{txnId}`
+  - the `send/{type}/{txnId}`, `state/…` and `redact/…` suffixes
+  - unknown paths
+- **Detail:**
+  - The per-user key embeds the same normalised path. Varying `txnId` therefore gives a
+    fresh per-IP and per-user bucket for every message send, so message sending is
+    effectively not rate-limited.
+  - At 100 000 keys, every new key runs two linear passes in `evict_to_make_room` while
+    the global runtime mutex is held.
+  - The auditor's "`thirdparty` exempt before auth" claim is narrower than stated:
+    unauthenticated callers still get 401. Authenticated users can drive unlimited
+    appservice lookups, which is by design and low.
+- **Fix:**
+  - Key buckets on a matched route template; send unmatched paths to one shared bucket.
+  - Make eviction O(1) (LRU or CLOCK), and move `allow()` ahead of the global mutex.
+  - Correct `docs/http-transport.md`.
+- **Test:**
+  - GIVEN a media tier of 20/min WHEN one IP fetches 100 distinct
+    `/_matrix/media/v3/download/x/<id>` THEN the requests over 20 get 429.
+  - GIVEN a message tier WHEN one user sends 200 messages with distinct `txnId` THEN the
+    tier cap applies.
+
+### HTTP-4 — `/sync` `timeout` has no upper bound and there is no per-user cap on long polls
+
+- **Severity:** medium · **Attacker:** A2 · **Verdict:** confirmed
+- **Location:**
+  - `src/homeserver/client_server.cpp:3763-3773`, `:4568`
+  - `src/sync/sliding_sync_parser.cpp:521-538` (digit accumulation without an overflow
+    check)
+  - `src/homeserver/http_server.cpp:1450-1644`
+- **Detail:**
+  - One account opens 32 long polls with enormous `timeout` values and fills the 32-thread
+    sync pool.
+  - A queue-full submit falls back to blocking a main-pool worker for the requested
+    time.
+  - `std::chrono::milliseconds{uint64}` above 2^63 wraps negative. `now() + ms` above
+    about 9.2e12 ms overflows signed nanoseconds, which is undefined behaviour.
+  - A clamp alone is not enough: 64 thirty-second polls a minute still fit the rate tier.
+- **Fix:**
+  - Clamp `timeout` to a server maximum using saturating arithmetic, and do the same in
+    the sliding-sync parser.
+  - Cap concurrent long polls per user and device, replacing an older poll from the same
+    device.
+- **Test:** GIVEN a 32-thread sync pool WHEN one user issues 40 `/sync` requests with huge
+  `timeout` values THEN each returns by the server maximum AND another user's `/sync` is
+  served.
+
+### HTTP-8 — Keep-alive connections have no request-count or lifetime limit
+
+- **Severity:** medium (it is what makes HTTP-1's parking variant indefinite) ·
+  **Attacker:** A1 · **Verdict:** found by the verifier
+- **Location:** `src/homeserver/http_server.cpp:1653-1710`
+- **Fix:** close a connection after N requests or T seconds. This fix belongs with HTTP-1.
+- **Test:** GIVEN a keep-alive connection WHEN it sends more requests than the
+  per-connection cap THEN the server closes it after the cap.
+
+### HTTP-6 — Unauthenticated media bodies up to 50 MiB are buffered and copied before authentication
+
+- **Severity:** low · **Attacker:** A1 · **Verdict:** adjusted from medium
+- **Location:** `src/homeserver/http_server.cpp:1322-1346`;
+  `src/homeserver/client_server.cpp:8702`
+- **Detail:**
+  - The transport reads the whole body.
+  - The dispatcher copies it (`auto req = raw_req`) before the 401 is returned.
+  - Peak memory is about 800 MiB across 8 workers. It is only allocated as bytes arrive,
+    so it costs the attacker the bandwidth.
+- **Fix:** raise the transport body cap only after the request head has authenticated.
+- **Test:** GIVEN no token WHEN a client declares a 50 MiB `Content-Length` to the upload
+  route THEN it gets 401 after reading at most a bounded prefix.
+
+### HTTP-7 — `parse_json` wraps integers above `INT64_MAX` to negative values
+
+- **Severity:** low (a data-fidelity quirk, not a memory-safety issue) ·
+  **Verdict:** adjusted
+- **Location:** `src/canonicaljson/yyjson_adapter.c:168-176`;
+  `src/canonicaljson/parser.cpp:184-190`
+- **Detail:**
+  - Client bodies and signed paths use `parse_lossless`, which range-checks integers.
+  - The permissive `parse_json` parses room-tag bodies, stored account data, and some
+    remote and appservice responses.
+- **Fix:** reject unsigned values above the canonical range in the adapter.
+- **Test:** GIVEN `18446744073709551615` WHEN `parse_json` parses it THEN the result is
+  `integer_out_of_range`.
+
+### Area 3 — hardening notes (not verified)
+
+- `%00` decodes to a NUL byte in path and query values (`src/core/query_params.cpp:56-99`).
+- Transport error bodies are plain text but are labelled `application/json`.
+- The 1 MiB transport cap is below the largest legal federation `/send` (50 PDUs of
+  64 KiB each).
+- `TlsConnection::pump` grants a fresh 15 s per read.
+- TLS 1.2 session-ticket keys are never rotated.
+- `OutboundClient` relies on callers to keep CR/LF out of header values.
+- `accept4` returning `EMFILE` only sleeps; there is no reserve descriptor.
+- The main pool and the sync pool sizes are not configurable.
+
+### Area 3 — coverage gaps
+
+- Not read: `src/net/listener.cpp`, the canonical JSON serializer,
+  `federation_proxy.cpp`, and the service launchers under `packaging/`.
 
