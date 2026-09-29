@@ -66,6 +66,22 @@ Implemented now:
   and the new direction) and 9.6/9.7 (the same two-sided bound per entry of
   `events` and `notifications`). The gap allowed a moderator to set
   `users_default` above their own level and take the room.
+- **rule 8 (v3-v5, v12) / rule 7 (v6-v11) covers `m.room.power_levels`.** "If
+  the event type's *required power level* is greater than the `sender`'s power
+  level, reject" runs for power_levels events before the rule-9 bounds, with the
+  `events["m.room.power_levels"]` entry as the required level and `state_default`
+  as the fallback. Before this fix the power_levels branch compared only against
+  `state_default`, so a level-50 moderator could rewrite a room whose
+  `events["m.room.power_levels"]` was 100 (the createRoom default), and
+  conformant peers rejected the event. The `events` value is read with the room
+  version's rules (string-encoded before v10).
+- **A negative `users` entry is the user's level.** The `users` lookup returns
+  `std::optional<int64_t>` and `users_default` applies only when the user is
+  absent from `users`. Before this fix a `-1` sentinel meant "absent", so a user
+  explicitly muted at a negative level was given `users_default` and could send
+  and kick again. Every consumer (send, kick, ban, invite, redaction targets,
+  power-level target rules 9.8/9.9, the state-resolution power ordering and the
+  push sender level) goes through this lookup.
 - **one deliberate deviation, stricter than the spec.** Rule 9.4 says a
   `m.room.power_levels` event is allowed outright when the room has no previous
   one. This server instead still requires the default `state_default` (50) in

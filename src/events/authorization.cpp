@@ -145,12 +145,18 @@ namespace
         return power_level_value(object_member(object, key), allow_string_values);
     }
 
+    // A user's explicit entry in content.users, or nullopt when the user is not
+    // listed. Absence must stay distinguishable from every integer: levels range
+    // over [-(2**53)+1, (2**53)-1], so a negative level is a real, explicit value
+    // (the usual client "mute" is -1) and must not fall back to users_default.
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md — m.room.power_levels,
+    // "If a user_id is in the users list, then that user_id has the associated
+    // power level".
     [[nodiscard]] auto extract_user_level_from_users(canonicaljson::Object const& users_object,
-                                                     std::string_view user_id, bool allow_string_values) noexcept
-        -> std::int64_t
+                                                     std::string_view user_id,
+                                                     bool allow_string_values) noexcept -> std::optional<std::int64_t>
     {
-        auto const level = power_level_member(users_object, user_id, allow_string_values);
-        return level.has_value() ? *level : -1;
+        return power_level_member(users_object, user_id, allow_string_values);
     }
 
     [[nodiscard]] auto membership_at_least_one_of(MembershipState current,
@@ -828,7 +834,7 @@ auto extract_user_power_level(canonicaljson::Value const& power_levels_event, st
         return default_level;
     }
     auto const user_level = extract_user_level_from_users(*users, user_id, allow_string_values);
-    return user_level >= 0 ? user_level : default_level;
+    return user_level.has_value() ? *user_level : default_level;
 }
 
 auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,
@@ -1345,6 +1351,45 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         auto const pl_sender_power =
             effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
 
+        // Spec rule 8 (v3-v5, v12) / rule 7 (v6-v11): "If the event type's required
+        // power level is greater than the sender's power level, reject." The
+        // required level is the events["m.room.power_levels"] entry when listed,
+        // else state_default. It runs before the power_levels-specific rule 9, which
+        // only adds bounds on top of it: without it a moderator at state_default
+        // could rewrite a room whose events entry reserves the event for admins.
+        //
+        // Deliberately stricter than spec rule 9.4, which allows any event when the
+        // room has no previous m.room.power_levels. Our AuthEventMap is built from
+        // this server's own resolved state rather than from the event's declared
+        // auth_events, so "no previous power_levels" can also mean "we have not
+        // got that state yet" — under which a blanket allow would be a fail-open.
+        // Requiring the default state_default (50) instead keeps the room-creation
+        // bootstrap working (the creator resolves to 100, or infinite under v12)
+        // while denying an ordinary joined member. This is pre-existing behaviour,
+        // retained knowingly; it can only reject where the spec would allow, never
+        // the reverse. See docs/event-engine.md.
+        auto const required_power_level = [&]() -> std::int64_t {
+            if (!value_has_content(auth_events.power_levels))
+            {
+                return 50;
+            }
+            auto const allow_strings = !policy.power_levels_require_integers;
+            auto const state_default =
+                extract_power_level_key(auth_events.power_levels, "state_default", 50, allow_strings);
+            auto const* pl_obj = value_is_object(auth_events.power_levels);
+            auto const* pl_content = pl_obj == nullptr ? nullptr : object_member_as_object(*pl_obj, "content");
+            auto const* events = pl_content == nullptr ? nullptr : object_member_as_object(*pl_content, "events");
+            if (events == nullptr)
+            {
+                return state_default;
+            }
+            return power_level_member(*events, "m.room.power_levels", allow_strings).value_or(state_default);
+        }();
+        if (pl_sender_power < required_power_level)
+        {
+            return make_denied("11", "insufficient power to send power_levels event");
+        }
+
         auto const* content_obj = object_member_as_object(*obj, "content");
         if (content_obj == nullptr)
         {
@@ -1440,10 +1485,10 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                         continue;
                     }
                     auto const old_level = old_users == nullptr
-                                               ? -1
+                                               ? std::optional<std::int64_t>{}
                                                : extract_user_level_from_users(*old_users, user_entry.key,
                                                                                !policy.power_levels_require_integers);
-                    auto const added_or_changed = (old_level < 0) || (*new_level != old_level);
+                    auto const added_or_changed = !old_level.has_value() || (*new_level != *old_level);
                     // Rule 9.9 — applies to the sender's own entry too (no self-exemption).
                     if (added_or_changed && *new_level > pl_sender_power)
                     {
@@ -1459,12 +1504,13 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     {
                         continue; // Rule 9.8 exempts the sender's own entry.
                     }
-                    auto const old_level =
+                    auto const old_level_entry =
                         extract_user_level_from_users(*old_users, old_entry.key, !policy.power_levels_require_integers);
-                    if (old_level < 0)
+                    if (!old_level_entry.has_value())
                     {
                         continue;
                     }
+                    auto const old_level = *old_level_entry;
                     auto const new_level =
                         new_users == nullptr
                             ? std::optional<std::int64_t>{}
@@ -1478,25 +1524,6 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     }
                 }
             }
-        }
-
-        // Deliberately stricter than spec rule 9.4, which allows any event when the
-        // room has no previous m.room.power_levels. Our AuthEventMap is built from
-        // this server's own resolved state rather than from the event's declared
-        // auth_events, so "no previous power_levels" can also mean "we have not
-        // got that state yet" — under which a blanket allow would be a fail-open.
-        // Requiring the default state_default (50) instead keeps the room-creation
-        // bootstrap working (the creator resolves to 100, or infinite under v12)
-        // while denying an ordinary joined member. This is pre-existing behaviour,
-        // retained knowingly; it can only reject where the spec would allow, never
-        // the reverse. See docs/event-engine.md.
-        auto const state_default = value_has_content(auth_events.power_levels)
-                                       ? extract_power_level_key(auth_events.power_levels, "state_default", 50,
-                                                                 !policy.power_levels_require_integers)
-                                       : 50;
-        if (pl_sender_power < state_default)
-        {
-            return make_denied("11", "insufficient power to send power_levels event");
         }
 
         return make_allowed("11");
