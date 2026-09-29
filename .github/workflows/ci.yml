@@ -618,7 +618,13 @@ jobs:
               done
               return 1
             }
-            install_packages clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts
+            install_packages clang meson ninja-build pkgconf git bison flex gmake libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts
+            # pkgsrc's curl and postgresql17-client link NetBSD's base OpenSSL
+            # (libssl.so.16); building against pkgsrc's openssl (libssl.so.3)
+            # would load two OpenSSLs in one process, which the werror link
+            # refuses. Remove it if the image already has it, so base headers,
+            # libraries and pkg-config files are the only OpenSSL in sight.
+            if /usr/sbin/pkg_info -e openssl >/dev/null 2>&1; then /usr/sbin/pkg_delete openssl; fi
             # NetBSD base ships no CA trust store; populate /etc/openssl/certs so
             # the system-CA-trust detection test (and real TLS) has a store. The
             # helper reports an existing store as an error, despite being safe.
@@ -629,20 +635,6 @@ jobs:
             # cores as <name>.core in the cwd by default; allow them and keep gdb.
             ulimit -c unlimited || true
             sysctl -w kern.defcorename=%n.core >/dev/null 2>&1 || true
-            # TEMPORARY diagnostic: which OpenSSL each binary package links
-            # (the link fails on "libssl.so.16, needed by libpq.so, may conflict
-            # with libssl.so.3" under werror). Remove once the linkage is fixed.
-            echo "::group::NetBSD OpenSSL linkage (diagnostic)"
-            for lib in /usr/pkg/lib/libcurl.so /usr/pkg/lib/libpq.so; do
-              echo "== $lib"
-              ldd "$lib" 2>&1 | grep -E 'ssl|crypto' || echo "   (no libssl/libcrypto)"
-            done
-            echo "== base OpenSSL libraries"; ls -l /usr/lib/libssl.so* /usr/lib/libcrypto.so* 2>&1
-            echo "== pkgsrc OpenSSL libraries"; ls -l /usr/pkg/lib/libssl.so* /usr/pkg/lib/libcrypto.so* 2>&1
-            echo "== base pkg-config files"; ls /usr/lib/pkgconfig 2>&1 | grep -E 'ssl|crypto' || echo "   (none)"
-            echo "== pkgconf search path"; pkg-config --variable pc_path pkg-config 2>&1
-            echo "== packages depending on openssl"; pkg_info -R openssl 2>&1 | tail -n 20
-            echo "::endgroup::"
             # gdb for core backtraces (best-effort). The run step is a separate
             # shell from prepare, so select an official mirror again.
             package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"

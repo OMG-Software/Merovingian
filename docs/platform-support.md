@@ -74,7 +74,7 @@ only direct dependencies built from vendored subprojects when absent.
 | Library | Debian/Ubuntu (`apt`) | Fedora/RHEL (`dnf`) | OpenSUSE (`zypper`) | FreeBSD (`pkg`) | OpenBSD (`pkg_add`) | NetBSD (`pkgin`) |
 |---|---|---|---|---|---|---|
 | libsodium | `libsodium-dev` | `libsodium-devel` | `libsodium-devel` | `libsodium` | `libsodium` | `libsodium` |
-| OpenSSL | `libssl-dev` | `openssl-devel` | `libopenssl-devel` | `openssl` | `openssl` (LibreSSL base) | `openssl` |
+| OpenSSL | `libssl-dev` | `openssl-devel` | `libopenssl-devel` | `openssl` | `openssl` (LibreSSL base) | base system (not pkgsrc `openssl`: pkgsrc's `curl` and `postgresql17-client` link the base OpenSSL, and a second one breaks the link) |
 | PostgreSQL libpq | `libpq-dev` | `libpq-devel` | `postgresql-devel` | `postgresql17-client` | `postgresql-client` | `postgresql17-client` |
 | libcurl | `libcurl4-openssl-dev` | `libcurl-devel` | `libcurl-devel` | `curl` | `curl` | `curl` |
 | libpng | `libpng-dev` | `libpng-devel` | `libpng16-devel` | `png` | `png` | `png` |

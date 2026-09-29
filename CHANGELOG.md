@@ -12,7 +12,12 @@
   `mmap` (`media::decoder_memory_limit_resource()`); skipping the cap would
   have weakened a fail-closed control. Two concurrency tests used
   `std::jthread`, which the libc++ on FreeBSD and OpenBSD lacks; they now use
-  `tests/support/joining_threads.hpp`. CI test fixes: the
+  `tests/support/joining_threads.hpp`. NetBSD linked pkgsrc's OpenSSL
+  (`libssl.so.3`) while pkgsrc's `curl` and `postgresql17-client` link the base
+  OpenSSL (`libssl.so.16`), so the werror link refused two OpenSSLs in one
+  process (this also failed on `main`). The NetBSD CI and package jobs, the
+  `pkgin` developer setup and the pkgsrc scaffold no longer pull in pkgsrc
+  `openssl`, so the base OpenSSL is the only one. CI test fixes: the
   decoder hardening scenarios assert the sanitizer build's own contract (it
   skips `RLIMIT_AS` and the seccomp filter), and the PostgreSQL role scenarios
   make only the newest migration pending, not a gap.

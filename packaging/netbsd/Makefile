@@ -11,7 +11,6 @@ LICENSE=        gnu-gpl-v3
 USE_LANGUAGES=  c c++
 USE_TOOLS+=     pkg-config perl bison flex gmake
 
-DEPENDS+=       openssl>=1.1.1:../../security/openssl
 DEPENDS+=       libsodium>=1.0.18:../../security/libsodium
 DEPENDS+=       postgresql17-client>=17:../../databases/postgresql17-client
 DEPENDS+=       curl>=8:../../www/curl
@@ -34,5 +33,9 @@ PKG_USERS_VARS=     merovingian:PKG_USERS
 RCD_SCRIPTS=        merovingian
 
 .include "../../devel/meson/build.mk"
+# OpenSSL comes through buildlink3, which picks NetBSD's base OpenSSL or the
+# pkgsrc package the same way curl and postgresql17-client were built, and adds
+# the dependency itself. An explicit DEPENDS on pkgsrc openssl would link a
+# second OpenSSL alongside the one those libraries load.
 .include "../../security/openssl/buildlink3.mk"
 .include "../../mk/bsd.pkg.mk"
