@@ -2181,9 +2181,9 @@ namespace
 
         runtime.federation.backfill_provider =
             [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
-            auto const& store = rt->database.persistent_store;
-            auto pdus = federation::build_backfill_pdus(store, req.room_id, req.event_ids, req.limit);
-            return {true, 200U, {}, std::move(pdus)};
+            // FED-2: refuses (403) a server with no joined user in the room unless
+            // the room is world readable.
+            return federation::build_backfill_response(rt->database.persistent_store, req);
         };
 
         runtime.federation.profile_query_provider = [rt](std::string_view user_id) -> federation::FederationProfile {
@@ -2211,24 +2211,30 @@ namespace
             return federation::build_user_devices_response(rt->database.persistent_store, user_id);
         };
 
-        runtime.federation.event_query_provider = [rt](std::string_view event_id) -> std::string {
+        // FED-2: every room-scoped read below takes the X-Matrix-authenticated
+        // origin and answers 403 unless that server has a joined user in the room
+        // (or the room is world readable). They run against whichever process's
+        // store serves the request: the federation worker's room snapshot for
+        // state/state_ids/backfill/get_missing_events, main's for /event.
+        runtime.federation.event_query_provider = [rt](std::string_view event_id,
+                                                       std::string_view origin) -> federation::RoomReadResult {
             return federation::build_event_response(rt->database.persistent_store, event_id,
-                                                    rt->config.server().server_name);
+                                                    rt->config.server().server_name, origin);
         };
 
-        runtime.federation.state_query_provider = [rt](std::string_view room_id,
-                                                       std::string_view event_id) -> std::string {
-            return federation::build_state_response(rt->database.persistent_store, room_id, event_id);
+        runtime.federation.state_query_provider = [rt](std::string_view room_id, std::string_view event_id,
+                                                       std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_state_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
-        runtime.federation.state_ids_query_provider = [rt](std::string_view room_id,
-                                                           std::string_view event_id) -> std::string {
-            return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id);
+        runtime.federation.state_ids_query_provider = [rt](std::string_view room_id, std::string_view event_id,
+                                                           std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
-        runtime.federation.missing_events_query_provider = [rt](std::string_view room_id,
-                                                                std::string_view body) -> std::string {
-            return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
+        runtime.federation.missing_events_query_provider = [rt](std::string_view room_id, std::string_view body,
+                                                                std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin);
         };
 
         runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id,

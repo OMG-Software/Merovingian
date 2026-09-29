@@ -583,10 +583,12 @@ namespace
         return body;
     }
 
-    auto serialize_event_query_ingest_result(std::string_view response_body) -> std::string
+    auto serialize_event_query_ingest_result(federation::RoomReadResult const& result) -> std::string
     {
-        auto body = std::string{R"({"type":"event_query_ingest_result","response_body":)"};
-        body += json_str(response_body);
+        auto body = std::string{R"({"type":"event_query_ingest_result","status":)"};
+        body += json_str(federation::room_read_status_name(result.status));
+        body += R"(,"response_body":)";
+        body += json_str(result.body);
         body += '}';
         return body;
     }
@@ -962,16 +964,22 @@ auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_v
     // shard selection for an ID space with no room ID to key off. See
     // docs/architecture.md, "Federation worker user/device/profile/event query
     // relay".
+    //
+    // FED-2: the worker forwards the X-Matrix-verified origin with the event ID,
+    // and the provider (run here against main's own store) resolves the event's
+    // room and answers forbidden unless that origin may read it. A frame with no
+    // origin therefore reads as forbidden, never as an unrestricted read.
     auto const event_id = json_get_str(request_json, "event_id");
-    auto response_body = std::string{};
+    auto const origin = json_get_str(request_json, "origin");
+    auto result = federation::RoomReadResult{};
     {
         auto guard = std::unique_lock{runtime.mutex};
         if (runtime.federation.event_query_provider)
         {
-            response_body = runtime.federation.event_query_provider(event_id);
+            result = runtime.federation.event_query_provider(event_id, origin);
         }
     }
-    return serialize_event_query_ingest_result(response_body);
+    return serialize_event_query_ingest_result(result);
 }
 
 namespace

@@ -15,6 +15,7 @@
 ## High-risk surfaces
 
 - Federation transaction parsing
+- Federation room-scoped reads (`state`, `state_ids`, `event`, `backfill`, `get_missing_events`)
 - Per-room server ACL enforcement (`m.room.server_acl`)
 - Canonical JSON
 - Event authorization
@@ -1561,6 +1562,37 @@ threats they represent, and the mitigations now in place:
   backfill `limit`; Ed25519 secret material reaching libsodium unvalidated;
   guessable shared UIAA session ids; device IDs containing the key-ID separator;
   and transport-layer errors reaching browsers as opaque CORS failures.
+
+### Federation reads not limited to servers in the room (v0.12.15, audit FED-2)
+
+Threat: any federating server that knew a room ID could call `GET /state/{roomId}`,
+`/state_ids`, `/event/{eventId}`, `/backfill` or `POST /get_missing_events` and receive the
+room's state, member list and history, including private and encrypted rooms (ciphertext
+and metadata). The providers took no origin and the server ACL was the only gate.
+`/state` and `/state_ids` also fell back to the current state for an unknown `event_id`, and
+`get_missing_events` ignored `earliest_events` and `latest_events` and returned every event
+of the room above `min_depth`, scanned in full under the runtime lock.
+
+Mitigation:
+- Every room-scoped read now takes the X-Matrix-authenticated origin and answers
+  `403 M_FORBIDDEN` with no room data unless the origin has a joined user in the room's
+  current state or the room's current `m.room.history_visibility` is `world_readable`
+  (`federation::origin_may_read_room`, `src/federation/event_query.cpp`). The gate runs
+  where the data is served: the worker room snapshot for `state`, `state_ids`, `backfill`
+  and `get_missing_events`, and main for `/event` (the worker relays the origin over IPC
+  and main resolves the event's own room). An unknown room answers 403 so its existence is
+  not disclosed; an unknown event answers 404, a known event in a room the origin cannot
+  read answers 403. `/event` additionally applies the room's server ACL.
+- `/state` and `/state_ids` answer 404 for an `event_id` that is unknown or not in the room.
+- `get_missing_events` is the spec's breadth-first walk of `prev_events` from
+  `latest_events`, skipping `earliest_events`, `min_depth` and other rooms, capped at 20
+  events (default 10), at most 100 `latest_events` and 512 lookups.
+
+Residual: the event store has no index, so each lookup is linear in the events held by the
+process; the gate and the walk are bounded in the number of lookups but not O(1) each. The
+worker's snapshot is refreshed per room by `room_sync`, so a membership change is seen with
+that delay (a newly joined server may get 403 briefly; a server that just left may read
+until the refresh).
 
 ### PDU ingestion resolved state diverging by delivery order (v0.12.13, ADR-0064 phase B1)
 

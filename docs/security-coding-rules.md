@@ -431,6 +431,24 @@ quickly finding everything a given `AGENTS.md` file contributed.
   sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Every room-scoped federation read checks that the authenticated origin is in the room.**
+  `GET /state`, `/state_ids`, `/event`, `/backfill` and `POST /get_missing_events` take the
+  X-Matrix-verified `origin` (never a value from the request) and answer `403 M_FORBIDDEN`
+  with no room data unless `federation::origin_may_read_room` holds: the room's CURRENT
+  state has a `join` member on that server, or its current `m.room.history_visibility` is
+  `world_readable`. The check is in the provider (`src/federation/event_query.cpp`), so it
+  runs in whichever process serves the endpoint (the federation worker from its room
+  snapshot, main for `/event`). It runs before the event or the request body is looked at,
+  and an unknown room answers 403 rather than 404 so room existence is not disclosed. A new
+  room-scoped read endpoint must take the origin and call this gate. `/state` and
+  `/state_ids` answer 404 for an `event_id` that is unknown or in another room (no fallback
+  to current state); `get_missing_events` walks back from `latest_events`, caps `limit` at
+  20, caps `latest_events` at 100 and bounds its lookups.
+  Why: until 0.12.15 the only gate was the server ACL, so any federating server that knew a
+  room ID could dump the state, member list and full history of a private room
+  (`docs/threat-model.md`, "Federation reads not limited to servers in the room").
+  Source: `src/federation/AGENTS.md`.
+
 - **Never relay a remote server's answer about users to a client unfiltered. Keep only
   the users you asked that server about, and only records that describe the user they are
   filed under.** For E2EE keys, go through `federation::accept_remote_key_query_response()`.

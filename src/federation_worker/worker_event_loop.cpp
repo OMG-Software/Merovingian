@@ -495,20 +495,31 @@ namespace
         return result;
     }
 
-    // Serialize an event_id for the event_query_ingest IPC call to main.
-    auto serialize_event_query_ingest(std::string_view event_id) -> std::string
+    // Serialize an event_id and the X-Matrix-verified origin of the requesting
+    // server for the event_query_ingest IPC call to main. Main, not the worker,
+    // resolves the event's room and decides whether that origin may read it
+    // (FED-2).
+    auto serialize_event_query_ingest(std::string_view event_id, std::string_view origin) -> std::string
     {
         auto result = std::string{R"({"type":"event_query_ingest","event_id":)"};
-        result.reserve(64U + event_id.size());
+        result.reserve(96U + event_id.size() + origin.size());
         result += ipc::ipc_json_str(event_id);
+        result += R"(,"origin":)";
+        result += ipc::ipc_json_str(origin);
         result += '}';
         return result;
     }
 
     // Deserialize an `event_query_ingest_result` JSON frame from main.
-    auto deserialize_event_query_ingest_result(std::string_view json) -> std::string
+    auto deserialize_event_query_ingest_result(std::string_view json) -> federation::RoomReadResult
     {
-        return ipc::ipc_json_get_str(json, "response_body");
+        auto result = federation::RoomReadResult{};
+        result.status = federation::room_read_status_from_name(ipc::ipc_json_get_str(json, "status"));
+        if (result.status == federation::RoomReadStatus::ok)
+        {
+            result.body = ipc::ipc_json_get_str(json, "response_body");
+        }
+        return result;
     }
 
 } // namespace
@@ -794,8 +805,9 @@ auto WorkerEventLoop::run() -> void
     // to land on, rather than trying to fix shard selection for an ID space
     // with no room ID to key off. See docs/architecture.md, "Federation
     // worker user/device/profile/event query relay".
-    runtime.federation.event_query_provider = [channel_ptr](std::string_view event_id) -> std::string {
-        auto const json_body = serialize_event_query_ingest(event_id);
+    runtime.federation.event_query_provider = [channel_ptr](std::string_view event_id,
+                                                            std::string_view origin) -> federation::RoomReadResult {
+        auto const json_body = serialize_event_query_ingest(event_id, origin);
         auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
         if (!reply.has_value())
         {

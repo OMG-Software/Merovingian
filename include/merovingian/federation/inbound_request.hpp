@@ -5,6 +5,7 @@
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/room_read_result.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
@@ -197,13 +198,22 @@ using OneTimeKeysClaimProvider = std::function<std::string(std::string_view requ
 using UserDevicesProvider = std::function<std::string(std::string_view user_id)>;
 
 // Inbound event-graph query hooks. Each takes the parsed path component (and
-// for `get_missing_events`, the request body) and returns the canonical-JSON
-// response body, or an empty string on failure. Optional: an unset hook makes
-// the corresponding route respond 501 Not Implemented.
-using EventQueryProvider = std::function<std::string(std::string_view event_id)>;
-using StateQueryProvider = std::function<std::string(std::string_view room_id, std::string_view event_id)>;
-using StateIdsQueryProvider = std::function<std::string(std::string_view room_id, std::string_view event_id)>;
-using MissingEventsQueryProvider = std::function<std::string(std::string_view room_id, std::string_view request_body)>;
+// for `get_missing_events`, the request body) plus the X-Matrix-authenticated
+// `origin` of the requesting server, and returns a `RoomReadResult`: the
+// canonical-JSON response body on `ok`, `forbidden` when the origin has no
+// joined user in the room and the room is not world readable (403
+// M_FORBIDDEN, FED-2), `not_found` for an unknown room or event (404
+// M_NOT_FOUND) and `malformed` for an unusable request body (400). The provider
+// is where the origin-in-room check lives, so every process that serves the
+// endpoint (main and the federation worker) enforces it. Optional: an unset
+// hook makes the corresponding route respond 501 Not Implemented.
+using EventQueryProvider = std::function<RoomReadResult(std::string_view event_id, std::string_view origin)>;
+using StateQueryProvider =
+    std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
+using StateIdsQueryProvider =
+    std::function<RoomReadResult(std::string_view room_id, std::string_view event_id, std::string_view origin)>;
+using MissingEventsQueryProvider =
+    std::function<RoomReadResult(std::string_view room_id, std::string_view request_body, std::string_view origin)>;
 
 // Returns the canonical-JSON body for an inbound `GET /_matrix/federation/v1/hierarchy/{roomId}`
 // request. The `room_id` path component is already percent-decoded; `suggested_only` reflects the

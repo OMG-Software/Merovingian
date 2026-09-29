@@ -52,6 +52,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <sodium.h>
 #include <sys/socket.h>
@@ -1981,23 +1982,178 @@ SCENARIO("handle_event_query_ingest_request reads an event from main's own store
 
         auto const event_id = std::string{"$eventquerytest:"} + config.server().server_name;
         auto const room_id = std::string{"!room:"} + config.server().server_name;
+        auto const member_id = std::string{"@member:member.example.org"};
         REQUIRE(merovingian::database::store_event(
             runtime.database.persistent_store,
             {event_id, room_id, std::string{"@sender:"} + config.server().server_name,
              R"({"type":"m.room.message","content":{"body":"event-query-relay-marker"}})"}));
+        // FED-2: a server may read an event only when it has a joined user in
+        // the event's room, so give the room one on member.example.org.
+        REQUIRE(merovingian::database::store_event(
+            runtime.database.persistent_store,
+            {"$member_join", room_id, member_id,
+             R"({"type":"m.room.member","state_key":"@member:member.example.org","content":{"membership":"join"}})"}));
+        REQUIRE(merovingian::database::store_state(runtime.database.persistent_store,
+                                                   {room_id, "m.room.member", member_id, "$member_join"}));
 
-        WHEN("an event_query_ingest request shaped like a real worker's is handled")
+        auto const relay = [&](std::string const& origin) {
+            auto const request_json = std::string{R"({"type":"event_query_ingest","event_id":)"} +
+                                      ipc_escape_json_string(event_id) + R"(,"origin":)" +
+                                      ipc_escape_json_string(origin) + "}";
+            return merovingian::homeserver::handle_event_query_ingest_request(runtime, request_json);
+        };
+
+        WHEN("an event_query_ingest request shaped like a real worker's is handled for a server in the room")
         {
-            auto const request_json =
-                std::string{R"({"type":"event_query_ingest","event_id":)"} + ipc_escape_json_string(event_id) + "}";
-
-            auto const response_json =
-                merovingian::homeserver::handle_event_query_ingest_request(runtime, request_json);
+            auto const response_json = relay("member.example.org");
 
             THEN("the response reflects main's own store rather than an empty worker-local snapshot")
             {
                 INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"ok")") != std::string::npos);
                 REQUIRE(response_json.find("event-query-relay-marker") != std::string::npos);
+            }
+        }
+
+        WHEN("the same request is made on behalf of a server with no user in the room")
+        {
+            auto const response_json = relay("stranger.example.net");
+
+            THEN("main answers forbidden and the frame carries no event body")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"forbidden")") != std::string::npos);
+                REQUIRE(response_json.find("event-query-relay-marker") == std::string::npos);
+            }
+        }
+
+        WHEN("the request frame carries no origin at all")
+        {
+            auto const request_json =
+                std::string{R"({"type":"event_query_ingest","event_id":)"} + ipc_escape_json_string(event_id) + "}";
+            auto const response_json =
+                merovingian::homeserver::handle_event_query_ingest_request(runtime, request_json);
+
+            THEN("it fails closed rather than reading unrestricted")
+            {
+                REQUIRE(response_json.find("event-query-relay-marker") == std::string::npos);
+                REQUIRE(response_json.find(R"("status":"forbidden")") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("The wired federation providers refuse a server outside the room and serve one inside it",
+         "[integration][federation-worker][query-relay][fed2][security]")
+{
+    // The providers wire_federation_callbacks installs are the ones both main and
+    // the federation worker (from its room snapshot) run, so this drives the
+    // production lambdas end to end for all five room-scoped reads.
+    GIVEN("a wired runtime holding a room with one joined user on member.example.org")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-fed2");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "fed2-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto& store = runtime.database.persistent_store;
+        auto const room_id = std::string{"!private:"} + config.server().server_name;
+        auto const member_id = std::string{"@member:member.example.org"};
+        REQUIRE(merovingian::database::store_event(
+            store, {"$create", room_id, member_id, R"({"type":"m.room.create","state_key":"","content":{}})", 1U, 1U}));
+        REQUIRE(merovingian::database::store_event(
+            store,
+            {"$join", room_id, member_id,
+             R"({"type":"m.room.member","state_key":"@member:member.example.org","content":{"membership":"join"}})", 2U,
+             2U, std::vector<std::string>{"$create"}}));
+        REQUIRE(merovingian::database::store_event(
+            store, {"$msg", room_id, member_id, R"({"type":"m.room.message","content":{"body":"secret-body"}})", 3U, 3U,
+                    std::vector<std::string>{"$join"}}));
+        REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.create", "", "$create"}));
+        REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", member_id, "$join"}));
+
+        auto const stranger = std::string{"stranger.example.net"};
+        auto const member = std::string{"member.example.org"};
+        auto& fed = runtime.federation;
+        REQUIRE(fed.event_query_provider);
+        REQUIRE(fed.state_query_provider);
+        REQUIRE(fed.state_ids_query_provider);
+        REQUIRE(fed.missing_events_query_provider);
+        REQUIRE(fed.backfill_provider);
+        auto const missing_body = std::string{R"({"latest_events":["$msg"],"earliest_events":[],"limit":10})"};
+        auto const backfill = [&](std::string const& origin) {
+            auto request = merovingian::federation::BackfillRequest{};
+            request.room_id = room_id;
+            request.event_ids = {"$msg"};
+            request.limit = 10U;
+            request.origin = origin;
+            return fed.backfill_provider(request);
+        };
+        using merovingian::federation::RoomReadStatus;
+
+        WHEN("a server with no user in the room calls each of the five reads")
+        {
+            auto const event = fed.event_query_provider("$msg", stranger);
+            auto const state = fed.state_query_provider(room_id, "$msg", stranger);
+            auto const state_ids = fed.state_ids_query_provider(room_id, "$msg", stranger);
+            auto const missing = fed.missing_events_query_provider(room_id, missing_body, stranger);
+            auto const backfilled = backfill(stranger);
+
+            THEN("each is refused and none returns room data")
+            {
+                REQUIRE(event.status == RoomReadStatus::forbidden);
+                REQUIRE(state.status == RoomReadStatus::forbidden);
+                REQUIRE(state_ids.status == RoomReadStatus::forbidden);
+                REQUIRE(missing.status == RoomReadStatus::forbidden);
+                REQUIRE_FALSE(backfilled.accepted);
+                REQUIRE(backfilled.status == 403U);
+                REQUIRE(event.body.empty());
+                REQUIRE(state.body.empty());
+                REQUIRE(state_ids.body.empty());
+                REQUIRE(missing.body.empty());
+                REQUIRE(backfilled.pdus_json.empty());
+            }
+        }
+
+        WHEN("the server with a joined user calls each of the five reads")
+        {
+            auto const event = fed.event_query_provider("$msg", member);
+            auto const state = fed.state_query_provider(room_id, "$msg", member);
+            auto const state_ids = fed.state_ids_query_provider(room_id, "$msg", member);
+            auto const missing = fed.missing_events_query_provider(room_id, missing_body, member);
+            auto const backfilled = backfill(member);
+
+            THEN("each succeeds")
+            {
+                REQUIRE(event.status == RoomReadStatus::ok);
+                REQUIRE(event.body.find("secret-body") != std::string::npos);
+                REQUIRE(state.status == RoomReadStatus::ok);
+                REQUIRE(state_ids.status == RoomReadStatus::ok);
+                REQUIRE(missing.status == RoomReadStatus::ok);
+                REQUIRE(backfilled.accepted);
+                REQUIRE_FALSE(backfilled.pdus_json.empty());
+            }
+        }
+
+        WHEN("the room is then made world readable")
+        {
+            REQUIRE(merovingian::database::store_event(
+                store,
+                {"$hv", room_id, member_id,
+                 R"({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"world_readable"}})",
+                 4U, 4U, std::vector<std::string>{"$msg"}}));
+            REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.history_visibility", "", "$hv"}));
+
+            THEN("a server with no user in the room can read it")
+            {
+                REQUIRE(fed.event_query_provider("$msg", stranger).status == RoomReadStatus::ok);
+                REQUIRE(fed.state_ids_query_provider(room_id, "$msg", stranger).status == RoomReadStatus::ok);
             }
         }
     }

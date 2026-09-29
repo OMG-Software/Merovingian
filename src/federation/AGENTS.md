@@ -49,6 +49,17 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    signatures only through `key_signatures.hpp`, passing `std::nullopt` as the viewer for
    anything sent to another server (ADR-0060).
 
+7. **Every room-scoped federation read checks the origin is in the room.** `/state`,
+   `/state_ids`, `/event`, `/backfill` and `/get_missing_events` pass the X-Matrix-authenticated
+   origin to their provider, which answers 403 `M_FORBIDDEN` unless
+   `federation::origin_may_read_room()` holds (a joined user on that server in the room's
+   current state, or `world_readable` history visibility). Never take the origin from the
+   query string or body. The gate lives in `event_query.cpp`, not the handler, so it holds on
+   both the worker-snapshot path and the main-relay path (`/event`, which resolves the event's
+   own room). `/state` and `/state_ids` return 404 for an unknown `event_id` — never fall
+   back to current state — and `get_missing_events` is a bounded walk (limit at most 20), not
+   a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
+
 ## Key files
 
 | File | Responsibility |
@@ -65,7 +76,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
 | `dispatch_worker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
-| `event_query.cpp` | Serves `GET /_matrix/federation/v1/event/{eventId}` |
+| `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, and owns the origin-in-room gate (`origin_may_read_room`) |
 | `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
 | `cached_server_discovery.cpp` | TTL-bounded in-memory cache in front of server discovery |
 | `runtime_federation.cpp` | Federation route registration and per-origin request caps |

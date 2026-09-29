@@ -1328,6 +1328,9 @@ namespace
         {
             return {400U, "backfill query is malformed"};
         }
+        // FED-2: the provider decides whether this server may read the room, from
+        // the authenticated origin and never from anything in the request.
+        parsed->origin = request.origin;
         auto const result = runtime.backfill_provider(*parsed);
         if (!result.accepted)
         {
@@ -1518,6 +1521,30 @@ namespace
         return core::percent_decode(path.substr(prefix.size()));
     }
 
+    // Maps a room-scoped read provider's outcome to the HTTP response. `forbidden`
+    // is FED-2: the origin has no joined user in the room and the room is not
+    // world readable; it carries no room data.
+    [[nodiscard]] auto room_read_response(RoomReadResult result, std::string_view not_found_message,
+                                          std::string_view malformed_message) -> FederationResponse
+    {
+        switch (result.status)
+        {
+        case RoomReadStatus::ok:
+            if (!result.body.empty())
+            {
+                return {200U, std::move(result.body)};
+            }
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", std::string{not_found_message})};
+        case RoomReadStatus::forbidden:
+            return {403U, homeserver::matrix_error("M_FORBIDDEN", "The requesting server is not in the room")};
+        case RoomReadStatus::malformed:
+            return {400U, homeserver::matrix_error("M_BAD_JSON", std::string{malformed_message})};
+        case RoomReadStatus::not_found:
+            break;
+        }
+        return {404U, homeserver::matrix_error("M_NOT_FOUND", std::string{not_found_message})};
+    }
+
     [[nodiscard]] auto handle_query_event(FederationRuntimeState& runtime, SignedFederationRequest const& request)
         -> FederationResponse
     {
@@ -1530,12 +1557,8 @@ namespace
         {
             return {400U, "event path is malformed"};
         }
-        auto body = runtime.event_query_provider(event_id);
-        if (body.empty())
-        {
-            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Event not found")};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.event_query_provider(event_id, request.origin), "Event not found",
+                                  "event request is malformed");
     }
 
     [[nodiscard]] auto handle_query_state(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -1557,12 +1580,8 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
         }
-        auto body = runtime.state_query_provider(room_id, event_id);
-        if (body.empty())
-        {
-            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.state_query_provider(room_id, event_id, request.origin),
+                                  "Room state not found", "state request is malformed");
     }
 
     [[nodiscard]] auto handle_query_state_ids(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -1584,12 +1603,8 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
         }
-        auto body = runtime.state_ids_query_provider(room_id, event_id);
-        if (body.empty())
-        {
-            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.state_ids_query_provider(room_id, event_id, request.origin),
+                                  "Room state not found", "state_ids request is malformed");
     }
 
     [[nodiscard]] auto handle_get_missing_events(FederationRuntimeState& runtime,
@@ -1604,12 +1619,8 @@ namespace
         {
             return {400U, "get_missing_events path is malformed"};
         }
-        auto body = runtime.missing_events_query_provider(room_id, request.body);
-        if (body.empty())
-        {
-            return {400U, "get_missing_events body is malformed"};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.missing_events_query_provider(room_id, request.body, request.origin),
+                                  "Room not found", "get_missing_events body is malformed");
     }
 
     [[nodiscard]] auto handle_space_hierarchy(FederationRuntimeState& runtime, SignedFederationRequest const& request)

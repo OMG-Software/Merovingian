@@ -717,7 +717,14 @@ ancestor with the greatest `(depth, event_id)` wins. This is the deterministic
 linearisation that v2 state resolution produces for a conflict-free DAG, so
 superseded historical state values are recovered without a stored state group.
 When `event_id` is absent the handler rejects the request with
-`400 M_MISSING_PARAM`; an unknown `event_id` falls back to the current state.
+`400 M_MISSING_PARAM`; an `event_id` that is unknown, or that belongs to another
+room, answers `404 M_NOT_FOUND` (there is no fallback to the current state, 0.12.15).
+Both endpoints, like `/event`, `/backfill` and `/get_missing_events`, answer
+`403 M_FORBIDDEN` to a server with no joined user in the room unless the room is
+`world_readable` (`federation::origin_may_read_room`). `/get_missing_events` walks
+`prev_events` breadth-first from `latest_events`, never returning or crossing
+`earliest_events` or the latest events themselves, skipping events below `min_depth`,
+and returns at most 20 events (default 10), oldest first.
 
 The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint reuses this
 same backward DAG walk (`federation::resolve_state_event_ids_at()`, 0.11.11)
