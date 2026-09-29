@@ -42,7 +42,7 @@ must start with that test.
 | # | Area | Status |
 |---|------|--------|
 | 1 | Authentication, sessions, application-service authentication | done: 2 high, 3 medium, 7 low |
-| 2 | Client-Server authorisation and room access control | pending |
+| 2 | Client-Server authorisation and room access control | done: 4 high, 4 medium, 4 low |
 | 3 | HTTP transport, TLS and request-level DoS | pending |
 | 4 | Federation inbound (X-Matrix, PDU ingestion, keys, backfill, membership) | pending |
 | 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | pending |
@@ -334,4 +334,331 @@ compared in constant time and revoked one way. The masquerade-token spoofing gua
   `src/identity/`, token hydration at startup, and `masquerade_token.cpp` delimiter
   handling.
 - `src/auth/key_api.cpp` and the E2EE key handlers are left to Area 2.
+
+---
+
+## Area 2 — Client-Server authorisation and room access control
+
+**Result:** 12 findings confirmed: 4 high, 4 medium, 4 low. One sub-claim was refuted
+(see the end of this area). The earlier report had no findings in this area.
+
+**What holds:**
+- Admin gates.
+- Per-user resources:
+  - filters, account data, tags, pushers and key backup;
+  - OpenID tokens;
+  - `PUT` typing and presence for the caller only;
+  - `/keys/upload` user and device binding;
+  - cross-signing uploads behind UIA.
+- Rejected and soft-failed events are withheld (ADR-0064 B2) on `/messages`, `/context`,
+  `/event`, `/sync`, search and sliding sync.
+
+### CSAZ-1 — Sliding sync serves any room to any user who names it
+
+- **Severity:** high
+- **Attacker:** A2. Most realistically a former, kicked or banned member who still knows
+  the room ID.
+- **Verdict:** confirmed; re-checked by the orchestrator.
+- **Location:**
+  - `src/homeserver/client_server.cpp:4598-4605` (subscription IDs added to the
+    response set)
+  - `src/sync/sliding_sync_parser.cpp:277-281`, `:467-480`
+  - `src/sync/sliding_sync_room_builder.cpp:600-805`
+  - `src/sync/sliding_sync_extensions.cpp:213-290`
+- **Spec:** "In all cases except `world_readable`, a user needs to join a room to view
+  events in that room."
+- **Path:**
+  1. `POST /_matrix/client/v4/sync` carries
+     `{"room_subscriptions":{"!victim:srv":{"required_state":[["*","*"]],"timeline_limit":1000}}}`.
+     There is no feature flag.
+  2. Every subscription key is appended to `response_room_ids` without a membership
+     check.
+  3. `build_room_response` returns the name, heroes, member counts, all state that
+     matches the wildcard, and up to `timeline_limit` events (the limit is unclamped).
+  4. The `receipts` and `typing` extensions return whatever rooms the client names in
+     `extensions.*.rooms`. That includes other users' `m.read.private` receipts (see
+     CSAZ-4).
+  5. The list path is limited to joined rooms (`sliding_sync_room_list.cpp:447-459`), so
+     the missing check here is an omission, not a design choice.
+- **Impact:**
+  - The room ID is the only secret. Rooms on room versions below 12 get sequential IDs
+    (`!room<N>:server`, `room_service.cpp:2547-2548`).
+  - Each subscription scans `store.events` in full, so a single request is also a CPU
+    amplifier.
+- **Existing test:** `tests/integration/test_sliding_sync_flow.cpp:1745-1800` subscribes
+  an invited, not-joined user and receives the room. It asserts ignore-list behaviour,
+  not refusal.
+- **Fix:**
+  - Drop subscription and extension rooms the user has not joined; invitees get
+    stripped state only.
+  - Clamp `timeline_limit`, the number of subscriptions and the number of
+    `required_state` entries.
+- **Test:** GIVEN alice in a private room and mallory in no room WHEN mallory subscribes
+  to that room with `required_state [["*","*"]]` and names it in the receipts and typing
+  extensions THEN the response has no entry for it AND both extensions are empty.
+
+### CSAZ-2 — `initialSync` and `/members` admit any membership row, including after leave or ban
+
+- **Severity:** high
+- **Attacker:** A2 — a knocker, invitee, or banned or departed user.
+- **Verdict:** adjusted; the `/state/{type}/{key}` sub-claim was refuted. Re-checked by the
+  orchestrator.
+- **Location:**
+  - `src/homeserver/client_server.cpp:12938-12963` (initialSync gate)
+  - `:7428-7514` (initialSync response)
+  - `:12691-12769` (`/members`)
+- **Spec:**
+  - "After a user has left a room, they may see any events which they were allowed to see
+    before they left the room, but no events received after they left."
+  - `/members` 200: "If you have left the room then this will be the members of the room
+    when you left."
+- **Path:**
+  1. The initialSync gate is `is_or_was_member = membership.has_value()`, so invite,
+     knock, ban and leave rows all pass.
+  2. `room_initial_sync_json` then returns the latest 100 events and the full current
+     state, with no leave cut-off.
+  3. `/members` accepts any row, always returns the current roster (ban reasons
+     included), and ignores `at`.
+  4. On a room with a `knock` join rule, anyone can create such a row by knocking.
+- **Impact:**
+  - Banned and departed users keep reading new messages, state and the roster
+    indefinitely.
+  - Knockers read rooms they have not been admitted to.
+- **Fix:**
+  - Add one `may_read_room(user, room, at)` predicate: joined users see the current
+    state; users who left after joining see state as of their leave event; invite, knock
+    and never-joined leave see stripped state only.
+  - Apply it to initialSync, `/members`, `/state` and `/state/{type}/{key}`.
+  - Honour `at` on `/members`.
+- **Test:**
+  - GIVEN a knock room with history WHEN mallory knocks and calls initialSync and
+    `/members` THEN both return 403.
+  - GIVEN bob was banned WHEN a new message is sent and bob calls initialSync THEN the
+    new message is absent.
+
+### CSAZ-3 — `m.room.history_visibility` is not enforced on any client read path
+
+- **Severity:** high · **Attacker:** A2 · **Verdict:** confirmed (orchestrator grep: the
+  setting is read only for `/publicRooms`, the initialSync peek and the space hierarchy)
+- **Location:**
+  - `src/homeserver/client_server.cpp:6514-6616` (`/messages`), `:6676-6796` (`/context`),
+    `:12326-12360` (`/event`), `:3798-3903` (`/sync` timeline), `:7171+` (search)
+  - `src/homeserver/room_service.cpp:6414-6612` (`/relations`, `/threads`)
+  - `src/sync/sliding_sync_room_builder.cpp:674-721`
+- **Spec:** "The rules governing whether a user is allowed to see an event depend on the
+  state of the room *at that event*." The spec then gives five allow and deny rules for
+  `world_readable`, `join`, `shared`, `invited`, and otherwise.
+- **Impact:**
+  - In a room set to `joined` or `invited`, a newcomer reads the entire prior history.
+    The owner's privacy setting has no effect.
+  - The default (`shared`) is unaffected.
+  - No document lists this as a gap, and no test asserts enforcement.
+- **Fix:**
+  - Add a per-request `event_visible_to(user, event)` that implements the five rules
+    against the state at each event, using the existing state groups.
+  - Apply it on every read path, including the state returned by `/context` and the
+    `/sync` join snapshot.
+- **Test:** GIVEN a room with visibility `joined`, message M1, then bob joins WHEN bob
+  calls `/messages`, `/context` on M1, `/event` on M1, `/search`, `/relations`, `/sync` and
+  sliding sync THEN M1 is absent or refused. WHEN the visibility is `shared` THEN M1 is
+  present.
+
+### CSAZ-4 — `m.read.private` and `m.fully_read` receipts are sent to every room member
+
+- **Severity:** high (spec MUST) · **Attacker:** A2 · **Verdict:** confirmed; re-checked by
+  the orchestrator
+- **Location:** `src/homeserver/client_server.cpp:3473-3517`, `:13210-13369`;
+  `src/sync/sliding_sync_extensions.cpp:225-290`
+- **Spec:**
+  - "Servers MUST NOT send the `m.read.private` receipt to any other user than the one
+    which originally sent it."
+  - "`m.fully_read` does not appear under `m.receipt`".
+- **Path:** the `/sync` and sliding-sync receipt builders index every stored receipt of
+  the room by type and user. They filter only on the stream position and the ignore
+  list.
+- **Existing test:** `tests/conformance/test_client_server_conformance.cpp:10164-10225`
+  has a comment claiming "not visible to other members" but tests only the owner's
+  notification count.
+- **Fix:**
+  - One shared helper: send `m.read` to other users, `m.read.private` to its owner only,
+    and never `m.fully_read` in `m.receipt`.
+  - Deliver `m.fully_read` to its owner as room account data.
+- **Test:** GIVEN alice and bob in a room WHEN alice sends an `m.read.private` receipt
+  THEN bob's `/sync` and sliding sync contain no alice receipt, while alice's own
+  `/sync` does.
+
+### CSAZ-5 — `/publicRooms` ignores directory visibility
+
+- **Severity:** medium · **Attacker:** A1 · **Verdict:** adjusted from high
+- **Location:**
+  - `src/homeserver/client_server.cpp:3081-3160`, `:10277-10304`, `:11793-11805`
+  - `include/merovingian/homeserver/runtime.hpp:126`
+- **Spec:**
+  - "`private`: The room will be hidden from the published room directory."
+  - "a visibility setting of `public` should not be confused with a `public` join
+    rule".
+- **Detail:**
+  - The listing selects rooms by `join_rule == public`, and `directory_public` is never
+    consulted.
+  - `createRoom`'s `visibility` only picks the preset.
+  - The flag is in memory only and is lost on restart.
+  - `POST /publicRooms` is also routed before authentication, although the spec says it
+    "Requires authentication: Yes". Unauthenticated `GET` already returns the same data,
+    so this is a deviation only.
+- **Impact:** rooms the owner chose to keep out of the directory are listed with name,
+  topic, alias and member count. The auditor rated this high; it is medium because it
+  exposes metadata only, and these rooms are already joinable by anyone who knows the ID.
+- **Fix:**
+  - Persist a directory flag, set it from `createRoom` `visibility`, and list only
+    flagged rooms. This needs a numbered migration, which `migrations/AGENTS.md`
+    requires to be approved first.
+  - Require authentication on `POST`.
+- **Test:** GIVEN a `public_chat` room created with the default visibility WHEN
+  `GET /publicRooms` is called THEN the room is absent AND an unauthenticated `POST`
+  returns 401.
+
+### CSAZ-7 — Invite and knock "stripped state" is the whole current state, as full events
+
+- **Severity:** medium · **Attacker:** A2 · **Verdict:** confirmed
+- **Location:** `src/homeserver/client_server.cpp:1073-1095`, `:4016-4026`;
+  `src/homeserver/room_service.cpp:846-867`
+- **Spec:** "Stripped state events can only have the `sender`, `type`, `state_key` and
+  `content` properties present."
+- **Impact:** a knocker receives every member event, the power levels, the ACLs and more,
+  each with event IDs, hashes and signatures.
+- **Fix:** build the stripped set: create, name, avatar, topic, join rules, canonical
+  alias, encryption, and the user's own member event, each reduced to the four permitted
+  keys.
+- **Test:** GIVEN a knock room with 3 members WHEN mallory knocks and syncs THEN
+  `knock_state` has no foreign `m.room.member` and no `m.room.power_levels`, and no event
+  carries `event_id` or `hashes`.
+
+### CSAZ-8 — `/sync` sends every known user's presence to every user
+
+- **Severity:** medium · **Attacker:** A2 · **Verdict:** confirmed
+- **Location:** `src/homeserver/client_server.cpp:3599-3640`, `:13548-13588`
+- **Spec:** "Presence information is published to all users who share a room with the
+  target user."
+- **Detail:**
+  - Only the caller's own presence is excluded; there is no shared-room filter.
+  - `PUT` presence accepts any `presence` string and a `status_msg` of any length up to
+    the body cap.
+- **Fix:**
+  - Send presence only for users who share a joined room with the viewer.
+  - Validate `presence` against `online`, `unavailable` and `offline`.
+  - Cap `status_msg`.
+- **Test:** GIVEN alice and bob with no common room WHEN alice sets a status message THEN
+  bob's `/sync` has no presence from alice; AND `presence:"x"` returns 400.
+
+### CSAZ-10 — To-device messages to non-existent recipients are queued forever
+
+- **Severity:** medium · **Attacker:** A2 · **Verdict:** confirmed for to-device; the other
+  sub-claims are only partly verified
+- **Location:** `src/homeserver/client_server.cpp:5972-6083`;
+  `src/database/persistent_store.cpp:2853-2934`; `src/federation/key_signatures.cpp:90-135`
+- **Detail:**
+  - No check that the target user or device exists.
+  - The drain deletes only rows that a real device has acknowledged, so rows for
+    wildcard targets or non-existent devices are never removed.
+  - One-time keys and key-signature uploads have no per-user cap, and each
+    `/keys/query` scans every signature upload under the global lock.
+- **Fix:**
+  - Reject or drop messages for unknown local users and devices.
+  - Cap the per-recipient queue and add a TTL.
+  - Cap one-time keys, signatures and filters per user.
+  - Index signatures by target.
+- **Test:** GIVEN a user WHEN they send 10 000 to-device messages to a non-existent device
+  THEN the store stays bounded.
+
+### CSAZ-6 — Membership changes sent through `PUT /state/m.room.member` skip the membership projection
+
+- **Severity:** low · **Attacker:** A2 (the effect is a failed moderator action) ·
+  **Verdict:** adjusted from medium
+- **Location:** `src/homeserver/client_server.cpp:12246-12280`;
+  `src/homeserver/room_service.cpp:6041-6207`
+- **Detail:**
+  - A ban or kick sent through the state API changes room state.
+  - It does not update `memberships` or `LocalRoom.members`, so the banned user keeps
+    read access through every gate keyed on those.
+  - Federated membership events are projected correctly.
+- **Fix:** project membership at one choke point for every accepted `m.room.member`
+  event, and make read gates consult resolved state.
+- **Test:** GIVEN bob joined WHEN a moderator bans him through
+  `PUT /state/m.room.member/@bob` THEN bob's next `/messages` returns 403.
+
+### CSAZ-9 — Locally created events are not checked against the spec size limits
+
+- **Severity:** low · **Attacker:** A2 · **Verdict:** adjusted from medium
+- **Location:** `src/homeserver/room_service.cpp:1303-1518`;
+  `include/merovingian/events/limits.hpp:96`, `:105`
+- **Spec:** "The complete event MUST NOT be larger than 65536 bytes"; `type` and
+  `state_key` "MUST NOT exceed 255 bytes".
+- **Detail:** only inbound federation enforces the limits. A body near the 64 KiB cap,
+  or a long `type` or `state_key` in the URL, produces a PDU that other servers reject.
+- **Fix:** enforce the limits on the composed, signed event in `compose_signed_event`
+  and return `M_TOO_LARGE`.
+- **Test:** GIVEN a member WHEN the composed event is 65 537 bytes, or its `state_key`
+  is 256 bytes THEN 400 `M_TOO_LARGE` and nothing is stored.
+
+### CSAZ-11 — Redactions are accepted and relayed but never applied
+
+- **Severity:** low · **Attacker:** A2 or A3 · **Verdict:** adjusted
+- **Location:** `src/events/authorization.cpp:1505-1511`;
+  `docs/todos/capability-gaps.md:95`
+- **Spec:** `rooms/v12.md` "Handling redactions"; client-server "Redactions": "This
+  stripped down event is thereafter returned anytime a client or remote server requests
+  it."
+- **Detail:**
+  - `PUT /redact` is documented as not started.
+  - What is not documented is that `m.room.redaction` events arriving through `/send` or
+    federation are relayed without a validity check and never applied, so the original
+    content is still served.
+- **Fix:** apply valid redactions (the `redacted_because` field), relay only valid ones,
+  and correct the capability-gaps row.
+- **Test:** GIVEN alice's message M WHEN alice redacts it THEN `/event` on M returns the
+  redacted form.
+
+### CSAZ-12 — Missing membership or power checks on `/report`, `/upgrade`, directory visibility and aliases
+
+- **Severity:** low · **Attacker:** A2 · **Verdict:** confirmed
+- **Location:** `src/homeserver/client_server.cpp:8269-8286`, `:13383-13456`,
+  `:10277-10304`, `:10225-10273`
+- **Detail:**
+  - (a) `/report` has no membership or existence check. Spec: "The caller must be joined
+    to the room to report it." Each report is also an unbounded audit append.
+  - (b) `/upgrade` checks only that the caller is joined, and discards the tombstone
+    result, so a PL-0 member gets 200 and a new room that names the old one as its
+    predecessor.
+  - (c) Any joined member can change the directory visibility.
+  - (d) Alias `PUT` does not validate the alias grammar or domain, and has no power
+    check, so any user can take `#admin:<server>`.
+- **Fix:**
+  - Require membership for `/report`.
+  - Make `/upgrade` fail with 403 unless the tombstone succeeds.
+  - Gate directory changes on power level.
+  - Validate the alias grammar and require the local domain.
+- **Test:** GIVEN a PL-0 member WHEN they call `/upgrade` THEN 403 and no new room exists.
+
+### Area 2 — refuted
+
+- **CSAZ-2, `/state/{type}/{key}` sub-claim.** The gate admits `join` and `leave` only,
+  and returns state as of the leave point, as the spec requires ("If the user has left
+  the room then the state is taken from the state of the room when they left").
+
+### Area 2 — hardening notes (not verified)
+
+- The sequential room-ID counter is the size of a vector that `rooms.erase` can shrink,
+  so a later `createRoom` can collide (`room_service.cpp:2547`, `:3816`).
+- `/relations`, `/threads` and the initialSync chunk do not skip rejected or soft-failed
+  events (ADR-0064 B2).
+- `/user_directory/search` returns every local profile. The spec permits this, but it is
+  an enumeration surface.
+- Cross-signing uploads do not check the embedded `user_id` or `usage`.
+
+### Area 2 — coverage gaps
+
+- Read by grep only: `src/sync/sync_filter.cpp`, `stream_token.cpp`, `sync_notifier.cpp`
+  and `device_list_delta.cpp`.
+- Not read: the `src/trust_safety/` internals and the `/sync` leave timeline for departed
+  users.
 
