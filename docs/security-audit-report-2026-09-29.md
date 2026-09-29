@@ -51,7 +51,7 @@ must start with that test.
 | 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | done: 1 high, 2 medium, 5 low |
 | 9 | Media repository and thumbnailer | done: 5 medium, 3 low |
 | 10 | Database, persistence and migrations | done: 1 high, 3 medium, 6 low |
-| 11 | Configuration, observability, logging and packaging | pending |
+| 11 | Configuration, observability, logging and packaging | done: 5 low |
 
 ---
 
@@ -2540,4 +2540,270 @@ cluster, driving `libpq` with the same `PQexecParams` call shape as the server.
   catalogue.
 - The key-backup, presence, filter, profile and notification persistence functions were
   not read.
+
+---
+
+## Area 11 — Configuration, observability, admin and metrics endpoints, packaging
+
+**Result:** 5 findings confirmed, all low. Two claims were refuted: `access_token` query
+parameters reaching the audit log, and remote response bodies reflected into client
+errors.
+
+The auditor also proposed OPS-1, an unauthenticated audit flood. That is AUTH-1's
+mechanism, so it is recorded as an addendum to AUTH-1 below instead of a separate finding.
+
+**What holds:**
+- The config parser and validator refuse unknown keys, duplicate keys, out-of-range
+  values and insecure combinations.
+- Admin routes require `require_admin` and are served on the client listener only.
+- Metrics use static labels only, so there is no cardinality explosion.
+- No exception text, SQL or file path reaches clients.
+- The shipped example config keeps registration off and enforces TLS or reverse-proxy
+  declarations.
+- Every wrap is a `[wrap-file]` fetched over HTTPS with a `source_hash`, and
+  `verify-wrap-pins.sh` enforces this.
+- Prior fixes H-05, M-11, L-05, M-01, L-13, and 0.12.5 findings 22 and 23, all hold.
+
+### AUTH-1 addendum — The audit log is also loaded whole at startup and concatenated whole by the admin endpoint
+
+- **Location:**
+  - `src/database/postgresql_store.cpp:1076-1089` and `src/database/sqlite_store.cpp:631-634`:
+    `SELECT … FROM audit_log ORDER BY …` with no `LIMIT`, into `store.audit_log`.
+  - `src/homeserver/runtime.cpp:950-981`: `GET /_merovingian/admin/audit` builds a single
+    string from every row while the runtime mutex is held.
+  - `src/homeserver/client_server.cpp:8765`, `:8797`, `:8826-8827`: the 503, 413 and 429
+    paths each write a further audit row carrying the raw target, which can be up to
+    8 KiB.
+- **Effect:** AUTH-1's flood becomes a startup-time memory and latency problem that
+  survives restarts.
+- **Fix, in addition to AUTH-1's:**
+  - Add retention and a `LIMIT` to the load.
+  - Page the admin endpoint.
+  - Stop mirroring the whole table in memory.
+
+### OPS-2 — Raw request targets, query strings included, are stored in `audit_log.target`
+
+- **Severity:** low (medium where a reverse proxy runs without `trusted_proxies`, so all
+  clients share one bucket) · **Attacker:** A1 · **Verdict:** adjusted from medium
+- **Location:** `src/homeserver/client_server.cpp:2831`, `:8765`, `:8797`, `:8826-8827`;
+  `src/homeserver/local_services.cpp:106-123`
+- **Spec:** the registration-token validity endpoint takes the secret as a query
+  parameter ("`token` | string | **Required:** The token to check validity of").
+- **Detail:**
+  - When such a request is rate-limited, or answered 413 or 503, the audit row, and the
+    debug-level `audit.append` log line, store `?token=<registration token>` in
+    plaintext.
+  - That defeats the Argon2id hashing of the token file.
+  - The diagnostic fields on the same lines already use `sanitized_http_target`.
+  - `docs/threat-model.md` (~663) lists the token-in-logs leak as fixed, which is true of
+    logs only.
+- **Fix:** sanitise and truncate `target` inside `append_local_audit` or
+  `make_audit_event`, so every caller is covered.
+- **Test:** GIVEN a rate-limited caller WHEN it sends
+  `GET …/registration_token/validity?token=SECRET` THEN no audit row or log line contains
+  `SECRET`.
+
+### OPS-3 — Malformed media quota values silently mean "unlimited"
+
+- **Severity:** low (needs an operator typo) · **Verdict:** adjusted from medium
+- **Location:** `src/config/config.cpp:1083-1088` (only `max_upload_size` is validated);
+  `src/media/runtime_media.cpp:35-46`; `src/config/AGENTS.md:29`
+- **Detail:**
+  - `security.media.max_total_size=10G` fails `parse_size_limit` and becomes 0, which
+    means no limit, with no warning.
+  - `src/config/AGENTS.md` documents suffixes (`100M`, `1G`) that the parser rejects.
+- **Fix:**
+  - Validate non-empty values in `validate()`.
+  - Correct the AGENTS.md text.
+  - Log the effective quotas at startup.
+- **Test:** GIVEN `security.media.max_size_per_user=1G` WHEN the config is validated THEN
+  it is rejected.
+
+### OPS-4 — Token lifetimes accept negative or huge values
+
+- **Severity:** low · **Verdict:** confirmed
+- **Location:** `src/config/config_parser.cpp:627-640`, `:1123`;
+  `src/homeserver/auth_service.cpp:460-467`; `src/homeserver/client_server.cpp:9728`,
+  `:9768`
+- **Detail:**
+  - A negative value silently disables expiry, although only `0` is documented to do
+    that.
+  - Values above about 9.2e12 ms overflow when converted to nanoseconds.
+  - `expires_in_ms` is advertised as 0 or negative for tokens that never expire.
+- **Fix:**
+  - Reject negative values and values above a sane bound.
+  - Omit `expires_in_ms` when there is no expiry.
+- **Test:** GIVEN `access_token_lifetime_ms=-1` WHEN the config is validated THEN a
+  finding is returned.
+
+### OPS-5 — The Docker image and the deb and BSD packages build at `-O0`, and so fail the startup hardening gate
+
+- **Severity:** low (fails closed; documented as scaffolding) · **Verdict:** adjusted
+- **Location:**
+  - `meson.build:7-11`, `:108-113`
+  - `Dockerfile:21-34`
+  - `scripts/build-deb.sh:14-23`, `build-freebsd-pkg.sh:14-21`, `build-netbsd-pkg.sh:28`,
+    `build-openbsd-pkg.sh:18`
+  - `src/platform/hardening_self_check.cpp:42-43`, `:184-190`, `:222-223`
+- **Detail:**
+  - With no `buildtype`, Meson builds `debug`, so `_FORTIFY_SOURCE` is never defined and
+    `main.cpp:950-955` refuses to start.
+  - The Dockerfile also lacks `libpq-dev` and `libpq5`, copies neither worker binary, and
+    pins its base image by tag rather than digest.
+- **Fix:**
+  - Pass `--buildtype=release` in every packaging path, or set it in `default_options`.
+  - Ship the worker binaries and runtime libraries.
+  - Pin the base image by digest.
+  - Add a CI step that runs the packaged binary's startup gate.
+- **Test:** GIVEN the deb or Docker build WHEN the binary starts THEN every hardening
+  check reports `enabled`.
+
+### OPS-6 — The bootstrap admin password file skips the secret-file checks
+
+- **Severity:** low · **Attacker:** A6 · **Verdict:** confirmed
+- **Location:** `src/main.cpp:495-505`, `:858-870`; `docs/user-manual.md:261-268`,
+  `:1234`
+- **Detail:**
+  - The file is read with `ifstream` (following symlinks) into a plain `std::string`.
+    There is no owner, mode or symlink check.
+  - The manual's example writes the password to `/tmp/admin-pw`, a path another local
+    user can pre-create.
+  - The manual says the server exits after bootstrap; the code continues to open its
+    listeners.
+- **Fix:**
+  - Apply `is_secure_secret_file`, read into `SecretBuffer`, and wipe it afterwards.
+  - Change the manual example to a 0700 directory.
+  - Make the code and the manual agree on whether the server exits.
+- **Test:** GIVEN a 0644 or symlinked password file WHEN the server starts with
+  `--bootstrap-admin-password-file` THEN startup is refused.
+
+### Area 11 — hardening notes
+
+- **Hot reload is not wired.** No SIGHUP handler exists and `apply_reload` has no
+  production caller. `src/config/AGENTS.md` and `logger.hpp:236-243` still describe hot
+  reload.
+- **Reload diffing is incomplete.** If reload is ever wired, `build_reload_plan` does not
+  compare about 20 keys, including `database.*`, `reverse_proxy.*`,
+  `security.media.max_*`, `server.oidc.*` and `server.sso.*`.
+- **Loose integer parsing.** `std::stoul` on several `server.http.*`, timeout and CORS
+  keys accepts trailing junk and a leading `-`.
+- **`server.trusted_proxies` is not validated.** Malformed entries silently never match,
+  which puts every client into one rate-limit bucket.
+- **The log file is truncated on open**, so a restart erases the previous run's log.
+- **`/_matrix/federation/v1/version` discloses the exact version.**
+- **meson.build sets no minimum version for system libsodium, OpenSSL, libpq or
+  libcurl.**
+
+---
+
+## Overall summary
+
+**101 verified findings:** 1 critical, 23 high, 31 medium and 46 low.
+
+| Area | Critical | High | Medium | Low |
+|------|---------:|-----:|-------:|----:|
+| 1 Authentication and sessions | 0 | 2 | 3 | 7 |
+| 2 Client-Server authorisation | 0 | 4 | 4 | 4 |
+| 3 HTTP transport and DoS | 0 | 3 | 3 | 2 |
+| 4 Federation inbound | 1 | 5 | 3 | 3 |
+| 5 Event engine | 0 | 5 | 4 | 3 |
+| 6 Outbound and SSRF | 0 | 1 | 3 | 4 |
+| 7 Cryptography and IPC | 0 | 1 | 1 | 4 |
+| 8 Isolation and hardening | 0 | 1 | 2 | 5 |
+| 9 Media | 0 | 0 | 5 | 3 |
+| 10 Database | 0 | 1 | 3 | 6 |
+| 11 Config, observability, packaging | 0 | 0 | 0 | 5 |
+| **Total** | **1** | **23** | **31** | **46** |
+
+### Recommended fix order
+
+The order puts the effort where the risk is.
+
+1. **Room takeover and room confidentiality.**
+   - FED-1: `send_join` state not bound to the room.
+   - FED-2: federation reads with no in-room check.
+   - CSAZ-1: sliding sync with no membership check.
+   - CSAZ-2 and CSAZ-3: read gates and history visibility.
+   - CSAZ-4: private read receipts.
+
+   Any local user, or any federating server, can take over or read rooms.
+
+2. **Spec divergence in the event engine.**
+   - EVT-1 to EVT-4 and EVT-6: restricted-join signature, the power-levels required
+     level, partitioning, the topological sort, and negative power levels.
+   - FED-5 and FED-6: invites overwriting bans, and knocks recorded as joins.
+
+   These let a remote server get events accepted that conformant servers reject.
+
+3. **Sandbox boundary.**
+   - CRY-1: the signing oracle.
+   - ISO-1: pre-hardening threads.
+   - ISO-2: signal and rlimit syscalls.
+   - CRY-2: the IPC queue.
+
+   A compromised federation worker currently escapes its sandbox and signs as the server.
+
+4. **Cheap unauthenticated denial of service.**
+   - HTTP-1, HTTP-2 and HTTP-8: worker-pool starvation.
+   - HTTP-5: SIGPIPE.
+   - AUTH-1 and AUTH-11: unbounded audit rows and retained statements.
+   - AUTH-4: Argon2 under the global lock.
+   - FED-4: forged-signature lockout.
+   - FED-7: EDU fan-out.
+   - OUT-7: the unenforced remote-fetch opt-in.
+
+5. **Durability and correctness of security state.**
+   - DB-1: the PostgreSQL signing key.
+   - DB-2: stale worker snapshots.
+   - DB-3: silent in-memory fallback.
+   - DB-5: ignored write failures.
+   - MED-1: the legacy media freeze.
+   - MED-2 and MED-3: quarantine and removal.
+
+6. **Everything else**, in the order listed within each area.
+
+### Documentation found to be wrong about the code
+
+These statements should be corrected with the fixes, per `docs/AGENTS.md`.
+
+- **`docs/threat-model.md`:**
+  - `:496-521`, bad-faith resident server (FED-1).
+  - `:372-379`, forgery prevented by the worker split (CRY-1).
+  - `:1137-1171`, parking and per-IP caps (HTTP-1).
+  - `:429-436`, SQLite "readable" (ISO-4).
+  - `:723` and `:786`, `deny_ip_ranges` (OUT-8).
+  - `:469`, worker restart back-off (ISO-3).
+  - ~`:663`, registration token redaction (OPS-2).
+- **ADRs:**
+  - ADR-0015 (CRY-1).
+  - ADR-0065 (CRY-2).
+  - ADR-0068 and `docs/media-repository.md:135` (MED-1).
+  - ADR-0072 (HTTP-1).
+- **Other docs:**
+  - `docs/hardening.md:174-178`, SIGPIPE (HTTP-5).
+  - `docs/auth-identity.md:509-541`, lockout (AUTH-2).
+  - `docs/http-transport.md:490-492` and `:546`, path coalescing (HTTP-3).
+  - `docs/database-persistence.md:735-741`, failed writes fail the request (DB-5).
+  - `docs/crypto-boundary.md:218-220` (CRY-6).
+  - `docs/todos/capability-gaps.md:76`, push-rule CRUD (Area 10 notes).
+  - `docs/todos/capability-gaps.md:95`, redactions (CSAZ-11).
+- **AGENTS.md files and code comments:**
+  - `src/config/AGENTS.md`, size suffixes and hot reload (OPS-3; Area 11 notes).
+  - `src/appservice/registration.cpp:544-546`, sender "created at startup" (AUTH-3).
+
+### Limits of this audit
+
+- **Static review, apart from targeted experiments.** Nothing was built and no test suite
+  was run. The verifiers ran scratch experiments for OUT-1 (libcurl and glibc), ISO-1
+  (per-thread seccomp) and DB-1, DB-6 and DB-9 (PostgreSQL 16.13 and libpq). Every other
+  finding rests on reading the code and the spec.
+- **Coverage gaps** are listed at the end of each area. The largest are:
+  - the appservice YAML loader and outbound client;
+  - `src/identity/`;
+  - the IPC frame serialisers;
+  - TLS private-key handling;
+  - BSD pledge and Capsicum behaviour;
+  - the persistence functions for key backup, presence, filters and notifications.
+- **Severities are relative to the attacker models above.** Findings rated for A5 assume
+  code execution in a worker has already been gained.
 

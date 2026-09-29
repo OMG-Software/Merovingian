@@ -2,9 +2,29 @@
 
 - **DOCS: second full security audit (September 2026).**
   `docs/security-audit-report-2026-09-29.md` records a sequential,
-  area-by-area audit of every high-risk surface against the Matrix v1.19
-  spec, with each finding independently verified. It
-  records findings only; no production code changed.
+  area-by-area audit of eleven high-risk surfaces against the Matrix v1.19
+  spec. Each area had a specialist auditor and an independent adversarial
+  verifier, and every high or critical finding was re-checked in code.
+  - **Totals:** 101 verified findings: 1 critical, 23 high, 31 medium,
+    46 low.
+  - **Most serious:**
+    - Any local user can take over a room: `send_join` response state is
+      not bound to the room being joined, and events claiming our own
+      domain are accepted without a signature check (FED-1).
+    - Federation read endpoints and sliding sync perform no membership or
+      history-visibility checks (FED-2, CSAZ-1, CSAZ-3).
+    - Several auth-rule and state-resolution divergences from the spec
+      (EVT-1 to EVT-6).
+    - A compromised federation worker can have the main process sign
+      arbitrary bytes, and its logger threads escape seccomp and Landlock
+      (CRY-1, ISO-1).
+    - The 8-thread request pool can be starved by one client (HTTP-1).
+    - On PostgreSQL the signing key cannot be read back after a restart;
+      confirmed against a live PostgreSQL 16 (DB-1).
+  - **Recommended fix order and doc corrections:** the report gives the
+    order to fix in and lists the documentation statements the code
+    contradicts.
+  - **No production code was changed.**
 
 ## 0.12.13
 
