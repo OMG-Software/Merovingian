@@ -150,6 +150,47 @@ SCENARIO("Landlock unavailable and no opt-out refuses to start", "[platform][wor
     }
 }
 
+#ifndef __linux__
+// Off Linux there is no Landlock at all: the worker is refused unless the
+// operator opted out, and even an ops table that claims a capable kernel is
+// never consulted (it is a Linux-only control; see docs/hardening.md).
+SCENARIO("Off Linux the worker has no Landlock and never consults the ops", "[platform][worker_landlock]")
+{
+    GIVEN("ops that would report a capable kernel and succeed at every step")
+    {
+        auto recording = RecordingOps{};
+        auto const ops = recording.build();
+
+        WHEN("the worker applies its ruleset without the opt-out")
+        {
+            auto const result = merovingian::platform::apply_worker_landlock({}, /*allow_without_landlock=*/false, ops);
+
+            THEN("it is refused, and no ruleset was attempted")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE_FALSE(result.applied);
+                REQUIRE(recording.handled_access_fs_requested == 0U);
+                REQUIRE(recording.privilege_calls.empty());
+            }
+        }
+
+        WHEN("the worker applies its ruleset with the opt-out")
+        {
+            auto const result = merovingian::platform::apply_worker_landlock({}, /*allow_without_landlock=*/true, ops);
+
+            THEN("it proceeds unsandboxed with a critical warning, and no ruleset was attempted")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE_FALSE(result.applied);
+                REQUIRE(result.critical_warning);
+                REQUIRE(recording.handled_access_fs_requested == 0U);
+                REQUIRE(recording.privilege_calls.empty());
+            }
+        }
+    }
+}
+#endif // !__linux__
+
 SCENARIO("Landlock unavailable with the opt-out accepts but warns critically", "[platform][worker_landlock]")
 {
     GIVEN("Landlock reports unavailable and allow_without_landlock is true")
@@ -171,6 +212,10 @@ SCENARIO("Landlock unavailable with the opt-out accepts but warns critically", "
     }
 }
 
+// The scenarios below script a Linux kernel's answers through the injected
+// ops. Off Linux there is no Landlock and apply_worker_landlock never consults
+// the ops, so they are Linux-only; the off-Linux contract has its own scenario.
+#ifdef __linux__
 SCENARIO("A Landlock ruleset-create failure is fatal even with the opt-out", "[platform][worker_landlock]")
 {
     GIVEN("Landlock reports available but landlock_create_ruleset() fails")
@@ -344,6 +389,8 @@ SCENARIO("A successful Landlock ruleset contains exactly the expected rules, nev
         }
     }
 }
+
+#endif // __linux__
 
 SCENARIO("A PostgreSQL-backed worker requests no database directory rule", "[platform][worker_landlock]")
 {
@@ -607,9 +654,9 @@ SCENARIO("A real Landlock ruleset denies access outside its allowlist and permit
                     // failure: treating every refusal as "unavailable" is what
                     // let the missing no_new_privs step pass as a skip.
                     auto const abi = merovingian::platform::LandlockHardeningOps{}.query_abi_version();
-                    auto const msg = abi < 1 ? std::string{"SKIP:"} + result.reason
-                                             : std::string{"FAIL:refused on a Landlock-capable kernel: "} +
-                                                   result.reason;
+                    auto const msg = abi < 1
+                                         ? std::string{"SKIP:"} + result.reason
+                                         : std::string{"FAIL:refused on a Landlock-capable kernel: "} + result.reason;
                     std::ignore = ::write(pipe_fds[1], msg.data(), msg.size());
                     ::close(pipe_fds[1]);
                     ::_exit(0);
@@ -759,6 +806,7 @@ SCENARIO("A Landlock rule for a regular file is accepted by the running kernel",
 }
 #endif // __linux__
 
+#ifdef __linux__
 // Regression (0.12.13 integration failure): landlock_restrict_self() returns
 // EPERM unless the caller has no_new_privs set or CAP_SYS_ADMIN. The worker
 // applied Landlock before its seccomp step set PR_SET_NO_NEW_PRIVS, so an
@@ -807,6 +855,8 @@ SCENARIO("A failure to set no_new_privs is fatal even with the Landlock opt-out"
         }
     }
 }
+
+#endif // __linux__
 
 // ============================================================================
 // Secret-exposure guard: no Landlock rule may cover a configured secret.
@@ -903,9 +953,9 @@ SCENARIO("Rule coverage is decided by path component, not string prefix", "[plat
         {
             THEN("a sibling directory sharing a name prefix is not covered")
             {
-                REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(
-                                  rules, {"/etc/merovingian/master-key"})
-                                  .has_value());
+                REQUIRE_FALSE(
+                    merovingian::platform::find_landlock_rule_covering_secret(rules, {"/etc/merovingian/master-key"})
+                        .has_value());
             }
             AND_THEN("the directory itself and anything beneath it are covered")
             {
