@@ -5,6 +5,7 @@ platform_sources = files(
   'landlock_hardening.cpp',
   'runtime_hardening.cpp',
   'seccomp_hardening.cpp',
+  'signal_hardening.cpp',
 )
 
 platform_lib = static_library(

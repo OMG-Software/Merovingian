@@ -24,6 +24,7 @@
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
+#include "merovingian/platform/signal_hardening.hpp"
 
 #include <cerrno>
 #include <cstdint>
@@ -828,6 +829,15 @@ struct ListenerBinding final
     }
 #endif
 
+    // ADR-0082: the logger has started no thread so far (it writes synchronously
+    // until told otherwise). Start its writers only now that the seccomp filter
+    // and runtime controls are in place. If a writer cannot be created the
+    // logger simply stays synchronous, which is safe.
+    if (!merovingian::observability::SingleLog::instance().start_writers())
+    {
+        LOG_WARNING("Log writer threads could not be started; logging stays synchronous");
+    }
+
     // Fail fast on explicitly disabled hardening controls (e.g. running as root)
     // before binding listeners. Controls that are still `unknown` because they
     // are applied later in the startup sequence are tolerated here; the final
@@ -969,6 +979,15 @@ struct ListenerBinding final
 
 auto main(int argc, char const* const* argv) -> int
 {
+    // HTTP-5: SIGPIPE must be ignored before any thread exists. OpenSSL's socket
+    // BIO writes without MSG_NOSIGNAL, so with the default disposition one TLS
+    // client that resets its connection kills the server. Fail closed.
+    if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)
+    {
+        std::cerr << "merovingian-server: " << sigpipe.reason << '\n';
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+    }
+
     if (is_help_request(argc, argv))
     {
         print_help();

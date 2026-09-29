@@ -718,6 +718,27 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/platform/AGENTS.md`,
   [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
 
+- **No thread may exist before a process's Landlock ruleset and seccomp filter are installed;
+  every seccomp filter is installed with `SECCOMP_FILTER_FLAG_TSYNC`.** The logger starts no
+  thread until `SingleLog::start_writers()` is called (it writes synchronously until then),
+  and an executable that hardens itself calls that only after hardening. `TSYNC` failure is
+  fatal; never fall back to a per-thread install. The hardening self-check reads
+  `/proc/self/task/<tid>/status` for every task, not `/proc/self/status`.
+  Why: seccomp and Landlock attach to the calling thread only. Landlock has no thread-sync
+  flag on older kernels, so ordering is the only thing that confines a thread against it.
+  The logger's constructor once started two threads before the federation worker was
+  sandboxed, and a compromised worker thread could aim a signal handler at one of them and
+  run unconfined with `execve`, `open` and `connect` available.
+  Source: `src/platform/AGENTS.md`, `src/observability/AGENTS.md`,
+  [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md).
+
+- **Every executable's `main()` calls `platform::ignore_sigpipe()` first, before any thread
+  starts, and exits non-zero if it fails.**
+  Why: OpenSSL's socket BIO writes with plain `write()` and no `MSG_NOSIGNAL`. With the
+  default SIGPIPE disposition, one TLS client that completes the handshake and resets the
+  connection kills the whole server on the error response it writes back.
+  Source: `src/platform/AGENTS.md`.
+
 ## Sync
 
 - **Use `stream_token.hpp` — never parse or construct sync tokens manually.**

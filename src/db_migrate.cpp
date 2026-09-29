@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/bootstrap/exit_code.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration_files.hpp"
+#include "merovingian/platform/signal_hardening.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -56,6 +58,13 @@ auto print_help() -> void
 
 auto main(int argc, char const* const* argv) -> int
 {
+    // HTTP-5: every executable ignores SIGPIPE before doing anything else.
+    if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)
+    {
+        std::cerr << "merovingian-db-migrate: " << sigpipe.reason << '\n';
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+    }
+
     if (argc == 2 && (std::string_view{argv[1]} == "--help" || std::string_view{argv[1]} == "--version"))
     {
         print_help();

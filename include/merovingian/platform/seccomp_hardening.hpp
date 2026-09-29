@@ -2,20 +2,51 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 namespace merovingian::platform
 {
 
 struct SeccompProbeResult final
 {
-    bool probed{false};         // true when /proc/self/status was read successfully
-    bool seccomp_active{false}; // true when Seccomp: 2 (SECCOMP_MODE_FILTER)
+    bool probed{false};               // true when at least one task's status was read successfully
+    bool seccomp_active{false};       // true when EVERY task reports Seccomp: 2 and NoNewPrivs: 1
+    std::size_t tasks_checked{0U};    // tasks whose status was read
+    std::size_t unconfined_tasks{0U}; // tasks that were not confined, or whose status was unreadable
 };
+
+// What one /proc/<pid>/task/<tid>/status says about a single task's seccomp
+// confinement. Seccomp filters and no_new_privs are per-task attributes, so a
+// process is only confined when every task is.
+struct TaskConfinement final
+{
+    bool parsed{false};   // both fields were present and numeric
+    int seccomp_mode{-1}; // 0 disabled, 1 strict, 2 filter
+    int no_new_privs{-1}; // 0 or 1
+
+    // Fail-closed: a task that could not be fully parsed is never confined.
+    [[nodiscard]] constexpr auto confined() const noexcept -> bool
+    {
+        return parsed && seccomp_mode == 2 && no_new_privs == 1;
+    }
+};
+
+// Parses the "Seccomp:" and "NoNewPrivs:" lines of a /proc status file. Pure
+// text handling, available on every platform so it can be tested anywhere.
+[[nodiscard]] auto parse_task_confinement(std::string_view status_text) noexcept -> TaskConfinement;
 
 // Applies a seccomp-bpf syscall allowlist to the calling process via
 // prctl(PR_SET_NO_NEW_PRIVS) + seccomp(SECCOMP_SET_MODE_FILTER).
+//
+// EVERY filter installer in this header (main, worker and decoder profiles, and
+// their *_with_default variants) passes SECCOMP_FILTER_FLAG_TSYNC, so a thread
+// that already exists is confined by the same call (ISO-1, ADR-0082). A TSYNC
+// failure is a failure of the installer; there is no per-thread fallback. TSYNC
+// is defence in depth: callers must still start no thread before hardening,
+// because Landlock has no equivalent.
 // Must be called before listeners bind and before run_startup_hardening_self_check().
 // The default action is SECCOMP_RET_KILL_PROCESS: any syscall not in the allowlist
 // kills the calling process immediately (fail-closed).
@@ -62,9 +93,13 @@ struct SeccompProbeResult final
 // decoder code must use apply_decoder_seccomp_filter().
 [[nodiscard]] auto apply_decoder_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool;
 
-// Reads /proc/self/status to detect whether a seccomp-bpf filter is active.
-// Returns probed=true and seccomp_active=true when "Seccomp: 2" is found
-// (SECCOMP_MODE_FILTER). On non-Linux, returns probed=false.
+// Reads /proc/self/task/<tid>/status for EVERY task in the process and reports
+// whether all of them have a seccomp-bpf filter ("Seccomp: 2") and
+// no_new_privs ("NoNewPrivs: 1"). /proc/self/status describes only the
+// thread-group leader, so it cannot see an unconfined sibling thread (ISO-1).
+// A task that exits while the directory is being walked is ignored; any other
+// unreadable or unparsable task counts as unconfined. Returns probed=false on
+// non-Linux, or when no task could be read.
 [[nodiscard]] auto probe_seccomp_status() -> SeccompProbeResult;
 
 #ifdef __linux__

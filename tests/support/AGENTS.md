@@ -9,6 +9,7 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `joining_threads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
 | `json_test_support.hpp` | JSON assertion helpers: `require_json_key()`, `parse_or_fail()` |
 | `master_key.hpp` | Deterministic Ed25519 key pair for signing in tests; do not use in production |
+| `process_tasks.hpp` | `count_process_tasks()`: number of threads in this process from `/proc/self/task`; used by the no-thread-before-hardening scenarios (ISO-1) |
 | `registration_token.hpp` | Generates registration tokens for test users without going through the full UIAA flow |
 | `temp_directory.hpp` | Fallback-aware temporary-directory helper for test scratch files |
 | `tls_mock_server.hpp` | Self-signed certificate generation plus one-shot and path-dispatching local TLS servers, for tests that need a real HTTPS peer (e.g. a mock identity server) |

@@ -7,7 +7,25 @@ Structured logging and audit trail for the server.
 | File | Responsibility |
 |---|---|
 | `observability.cpp` | Audit event types and category enum, admin route matching (`admin_routes`/`match_admin_route`), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`) |
-| `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file |
+| `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
+
+## Writer threads (ADR-0082)
+
+`SingleLog` starts **no thread** in its constructor. Until `start_writers()` is called every
+line is written synchronously on the calling thread (stdout under a mutex, and the log file
+when one is open), so a message logged early is never lost and cannot deadlock. After
+`start_writers()` lines go through the bounded queues and the two writer threads, as before.
+
+- A process that hardens itself (`merovingian-fed-worker`, `merovingian-server`) calls
+  `SingleLog::instance().start_writers()` only **after** Landlock, seccomp and the runtime
+  controls are applied. A thread that exists earlier escapes the Landlock ruleset (see
+  `src/platform/AGENTS.md`, rule 6).
+- A process that never calls it (`--check-config`, `--dry-run`, `merovingian-db-migrate`, unit
+  tests) still logs correctly, with no logger threads.
+- `start_writers()` returns `false` and leaves the logger synchronous if a thread cannot be
+  created; callers log a warning and carry on.
+- Do not move the `start_writers()` call earlier, and do not start a thread from anywhere in the
+  logger's constructor or in a `static` initialiser.
 
 ## Log level policy
 

@@ -85,6 +85,14 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 
 ## Hardening
 
+`main()` starts with `platform::ignore_sigpipe()` (HTTP-5; exits 1 on failure). No thread may exist
+before the two calls below (ISO-1, [ADR-0082](../../docs/adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)):
+the logger writes synchronously until `main.cpp` calls `SingleLog::instance().start_writers()`, which it
+does only after both, so the logger's writer threads inherit the Landlock ruleset and the seccomp filter.
+The worker filter is installed with `SECCOMP_FILTER_FLAG_TSYNC` as a second line of defence, but
+Landlock has no thread-sync flag, so the ordering is what matters. Do not start a thread, or call
+anything that does, above the hardening calls in `main.cpp`.
+
 Before the event loop opens the database or starts threads, `main.cpp` first calls
 `platform::apply_worker_landlock()` (ADR-0062 part 3; see Rules item 3 above), then
 `platform::apply_worker_hardening()` (gated by `federation.worker.apply_hardening`, default
@@ -102,6 +110,10 @@ the seccomp profile denies the `ptrace` it needs.
   `apply_worker_database_uri`, `database::table_load_profile_includes`, and the generalized worker secret pipe
   (tag `[worker_db_uri]`)
 - `tests/unit/test_worker_event_loop.cpp` — `WorkerEventLoop` construction and `run()` lifecycle
+- `tests/unit/test_worker_hardening_threads.cpp` — forked real-kernel proof (tag `[worker_hardening]`) that a
+  thread created before hardening is confined by TSYNC and that a logger that logged before hardening has
+  created no thread, so its later writers inherit Landlock and seccomp; SKIPs with a message on kernels
+  without seccomp or Landlock
 - `tests/unit/test_worker_landlock.cpp` — `apply_worker_landlock` fail-closed paths with injected
   `LandlockHardeningOps`, `build_worker_landlock_rules` allowlist content, ABI rights downgrade,
   config parsing/reload classification, and a forked real-kernel enforcement scenario (tag

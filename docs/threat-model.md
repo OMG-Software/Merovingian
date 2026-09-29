@@ -457,6 +457,23 @@ threat it closes; the controls above are the standing defences these reinforce.
   part 3, for the allowlist derivation and the `strace` evidence it is based
   on.
 
+- **Worker sandbox did not cover threads that existed before it was applied (ISO-1,
+  security-audit-report-2026-09-29.md, closed):** seccomp and Landlock attach to the calling
+  thread only, and the logger's two writer threads were started by the worker's first log
+  line, before either was installed. A compromised worker thread could aim a signal handler
+  at one of them (`rt_sigaction` and `tgkill` are allowed) and run with the main process's
+  filter (`execve`, `open`, `connect` allowed) and no Landlock ruleset, reading the master
+  key or the database credentials. The logger now starts no thread until after hardening,
+  every seccomp filter is installed with `SECCOMP_FILTER_FLAG_TSYNC`, and the self-check
+  reads every task's status instead of only the thread-group leader. See
+  [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md).
+  Residual: a thread that exists before hardening is confined by seccomp (TSYNC) but not by
+  Landlock, which has no thread-sync flag on older kernels; the ordering rule is what
+  prevents it.
+- **SIGPIPE terminated the server (HTTP-5, closed):** OpenSSL's socket BIO writes without
+  `MSG_NOSIGNAL`, so a TLS client that reset its connection after the handshake killed the
+  process on the 408 write. Every executable now ignores SIGPIPE first thing in `main()`.
+
 - **Single worker as a chokepoint (v0.10.3, mitigated in v0.10.4):**
   Phase 1 used one federation worker for every room. A CPU-heavy room could
   still delay federation traffic for all other rooms because that single process

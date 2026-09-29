@@ -7,6 +7,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
+#include "merovingian/platform/signal_hardening.hpp"
 #include "worker_event_loop.hpp"
 
 #include <cerrno>
@@ -75,6 +76,14 @@ auto read_file(std::string_view path) -> std::optional<std::string>
 
 auto main(int argc, char const* const* argv) -> int
 {
+    // HTTP-5: ignore SIGPIPE before any thread exists and before seccomp is
+    // installed. Fail closed.
+    if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)
+    {
+        std::cerr << "merovingian-fed-worker: " << sigpipe.reason << '\n';
+        return 1;
+    }
+
     auto const args = merovingian::federation_worker::parse_worker_args(argc, argv);
     if (args.error.has_value())
     {
@@ -222,6 +231,15 @@ auto main(int argc, char const* const* argv) -> int
     {
         LOG_WARNING("Federation worker: runtime hardening disabled by config "
                     "(federation.worker.apply_hardening=false)");
+    }
+
+    // ISO-1 / ADR-0082: no thread may exist before Landlock and the seccomp
+    // filter above. The logger has written synchronously until now; start its
+    // writer threads only here, so they inherit both restrictions. If they
+    // cannot be started the logger stays synchronous, which is safe.
+    if (!merovingian::observability::SingleLog::instance().start_writers())
+    {
+        LOG_WARNING("Federation worker: log writer threads could not be started; logging stays synchronous");
     }
 
     auto loop = merovingian::federation_worker::WorkerEventLoop{

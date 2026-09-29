@@ -22,6 +22,7 @@
 
 #include "merovingian/media/decoder_hardening.hpp"
 #include "merovingian/media/thumbnailer.hpp"
+#include "merovingian/platform/signal_hardening.hpp"
 
 #include <algorithm>
 #include <array>
@@ -306,6 +307,15 @@ auto write_all_stdout(std::string const& bytes) -> void
 
 auto main() -> int
 {
+    // HTTP-5: a parent that closes its end of the pipe must produce an EPIPE
+    // from write_all_stdout(), not a SIGPIPE. Done before hardening, which
+    // installs the seccomp filter, and before any input is read. Fail closed.
+    if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)
+    {
+        std::cerr << "merovingian-thumbnail-worker: " << sigpipe.reason << '\n';
+        return 1;
+    }
+
     // Fail-closed (audit finding, 0.12.13): every applicable hardening
     // control must succeed before this process reads a single byte of
     // attacker-controlled input. A sandbox that fails to install must not
