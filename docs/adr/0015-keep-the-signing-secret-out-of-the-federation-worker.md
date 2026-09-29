@@ -1,6 +1,6 @@
 # Keep the signing secret out of the federation worker
 
-* Status: accepted
+* Status: superseded by [ADR-0078](0078-the-federation-worker-never-signs.md) — Superseded by ADR-0078 for the signing-oracle part (the `sign_request` frame is gone); the signing secret still never enters the worker
 * Date: 2026-09-06
 
 ## Context and Problem Statement

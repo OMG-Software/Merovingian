@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
+#include "merovingian/crypto/refusing_ed25519_provider.hpp"
 #include "merovingian/crypto/runtime_ed25519_provider.hpp"
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/database/postgresql_store.hpp"
@@ -260,9 +261,9 @@ namespace
 // use by rotate_server_signing_key.
 auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 {
-    // The federation worker signs over IPC and holds no signing secret of its own.
-    // Rebuilding from local secrets there would swap the IPC provider for an empty
-    // one and silently disable every outbound signature.
+    // The federation worker never signs (ADR-0078) and holds no signing secret of its
+    // own. Rebuilding from local secrets there would swap the refusing provider for
+    // one built from whatever secrets the snapshot happens to contain.
     if (runtime.crypto_provider_overridden)
     {
         return;
@@ -723,16 +724,17 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
                    observability::LogEventSeverity::info);
 
     // Wire the signing provider. The main process loads the persisted signing secret;
-    // the federation worker receives an IPC-backed override so the secret never enters
-    // the child process. The provider must be ready before publish_server_signing_keys
-    // or any federation handler runs.
-    if (opts.signing_override != nullptr)
+    // the federation worker never signs (ADR-0078), so it gets a provider that refuses
+    // every request and no secret ever enters the child process. The provider must be
+    // ready before publish_server_signing_keys or any federation handler runs.
+    if (opts.signing_disabled)
     {
-        runtime.crypto_provider = opts.signing_override;
+        runtime.crypto_provider_owned = std::make_unique<crypto::RefusingEd25519Provider>();
+        runtime.crypto_provider = runtime.crypto_provider_owned.get();
         runtime.crypto_provider_overridden = true;
-        log_diagnostic("start.crypto_provider_override",
+        log_diagnostic("start.crypto_provider_refusing",
                        {
-                           {"reason", "IPC-backed signing provider", false}
+                           {"reason", "signing disabled in this process", false}
         },
                        observability::LogEventSeverity::info);
     }
@@ -880,8 +882,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // very first request, even if make_join or another outbound operation arrives
     // concurrently on a different connection and holds the runtime mutex.
     // The federation worker does not serve /_matrix/key/v2/server and has no local
-    // signing secret, so skip the pre-warm when running with an external provider.
-    if (opts.signing_override == nullptr)
+    // signing secret, so skip the pre-warm when signing is disabled.
+    if (!opts.signing_disabled)
     {
         auto const key_warm = publish_server_signing_keys(runtime);
         if (!key_warm.ok)

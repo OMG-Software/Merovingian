@@ -72,7 +72,7 @@ flowchart TB
 | Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers, bounded keep-alive idle parking (per-connection idle window + process-wide parked-connection cap) |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation; public listeners require TLS and cannot declare a local reverse proxy, while loopback cleartext requires an explicit `reverse_proxy=true` declaration |
-| Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
+| Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317), and the worker holds no signing capability at all — no `sign_request` frame, a refusing provider (ADR-0078); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
 | DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction; at-rest encryption for the server signing secret when a master key is configured; Argon2id hashing for registration tokens |
 | Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
 | Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
@@ -343,14 +343,14 @@ threat it closes; the controls above are the standing defences these reinforce.
   exclusively in the main process so stream-ordering integrity is preserved.
   **Residual worker-trust model after #318/#319/#323:** the worker is trusted to
   act on the verified identity main forwards (it cannot forge peer credentials,
-  and the signing secret never enters the worker per #317), but the outbound
+  and the worker holds no signing capability at all, per #317 and ADR-0078), but the outbound
   `Authorization` header the worker places on its own outbound HTTP requests is
   still pre-signed in main and carried across IPC — it is our own request-bound
   X-Matrix signature (bound to the method/url/body/destination of the exact
   request), not a reusable peer credential, so it carries no harvest/replay value.
-  Relocating outbound signing into the worker via `IpcEd25519Provider` so the
-  signed value never crosses IPC is deferred (requires a `build_outbound_request`
-  provider-abstraction refactor) for minimal additional security value.
+  Relocating outbound signing into the worker is deliberately not done: the
+  worker never signs (ADR-0078), so the pre-signed value crossing IPC is the
+  design, not a gap to close by giving the worker a signing provider.
 
   **Main re-verifies the signature of every PDU a worker relays (#450,
   resolved in 0.12.13, ADR-0071).** Until 0.12.13 main trusted the worker's
@@ -369,14 +369,28 @@ threat it closes; the controls above are the standing defences these reinforce.
   transport `origin` is still the worker's claim; it only chooses where main
   backfills from, and everything fetched there is verified again.
 
-- **Signing secret in federation worker address space (v0.10.2):**
-  in Phase 1 the worker loaded the server signing secret from the database, so a
-  compromised worker could forge federation signatures. Phase 2 removes the
-  secret from the worker entirely: the worker delegates signing to the main
-  process over the existing encrypted IPC channel via `sign_request` /
-  `sign_response` frames, and `IpcEd25519Provider::verify` is unsupported in
-  the worker. The private key exists only in the main process's locked
-  `SecretBuffer`; worker compromise now leaks no long-lived signing material.
+- **Signing capability in the federation worker (v0.10.2, corrected
+  by the security audit 2026-09-29 finding CRY-1 fix, ADR-0078):** in Phase 1
+  the worker loaded the server signing secret from the database, so a
+  compromised worker could forge federation signatures. Phase 2 (v0.10.2)
+  removed the secret from the worker but replaced it with a `sign_request` /
+  `sign_response` IPC pair that main answered by signing arbitrary bytes with
+  any held key, under the global runtime lock. That did **not** prevent
+  forgery: a compromised worker could still mint valid signatures as this
+  server (PDUs from any local user, X-Matrix requests, key-server responses),
+  deliver them to any peer over its own outbound network access, and hold
+  main's lock while doing so. The earlier text presented the split as the fix;
+  it fixed key exfiltration only. Since that fix the worker has no signing
+  capability at all: the `sign_request` frame, `IpcEd25519Provider` and
+  `RuntimeStartOptions::signing_override` are removed, the worker's runtime
+  installs `crypto::RefusingEd25519Provider` (every sign and verify request
+  fails closed), and main answers any `sign_request` frame with an error and no
+  signature without taking `runtime.mutex` (logged, channel kept, see ADR-0078).
+  The worker had no production need for a signature: outbound X-Matrix
+  requests and invites are signed in main, and `/_matrix/key/v2/server` is
+  served by main. Residual: the worker can still relay our own already-signed
+  outbound requests that main hands it (see above), and a compromised worker
+  can still send `sign_request` frames, which are refused inline and logged.
 
 - **Operator master key reachable from the federation worker (0.12.13 audit,
   finding N1; part 1 of 3, this entry updated as later parts land):** the
@@ -391,8 +405,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   actually reaches the client-server or `GET /_matrix/key/v2/server` handlers
   that use them today (`FederationProxy::handle` always serves
   `/_matrix/key/v2/server` and `/_matrix/federation/v1/openid/userinfo` on
-  main, and the worker always installs a non-null `signing_override`, so
-  `ensure_runtime_server_signing_key` is never called there) — the exposure
+  main, and the worker starts with signing disabled, so
+  `ensure_runtime_server_signing_key` is not called during its start-up) — the exposure
   was the *ability* to derive these keys from a file the worker had open, not
   a reachable code path that used it. Part 1 (this entry) removes the file
   access at the code level: `homeserver::WorkerSupervisor::spawn_and_connect`

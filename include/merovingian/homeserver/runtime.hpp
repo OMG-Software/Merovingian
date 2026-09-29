@@ -323,18 +323,17 @@ struct HomeserverRuntime final
     // variable so it destructs after runtime's blocking dtor has drained
     // every orphaned future.
     std::vector<std::string>* test_room_changed_log{nullptr};
-    // Owned implementation of the runtime signing provider. Null when an
-    // external provider (e.g. IpcEd25519Provider in the federation worker)
-    // is supplied via RuntimeStartOptions::signing_override.
+    // Owned implementation of the runtime signing provider: the production
+    // multi-key provider in main, or the refusing provider in the federation
+    // worker (RuntimeStartOptions::signing_disabled, ADR-0078).
     std::unique_ptr<crypto::Ed25519Provider> crypto_provider_owned{};
-    // Active Ed25519 provider used for server signing. Points to
-    // crypto_provider_owned for the main process and to the override in
-    // worker contexts. Check for nullptr before signing.
+    // Active Ed25519 provider used for server signing. Points at
+    // crypto_provider_owned. Check for nullptr before signing.
     crypto::Ed25519Provider* crypto_provider{nullptr};
-    // True when crypto_provider points at an external override supplied through
-    // RuntimeStartOptions::signing_override. The signing secret is not present in
-    // this process, so reset_runtime_crypto_provider must leave the override
-    // alone instead of replacing it with a provider built from local secrets.
+    // True when this process never signs (RuntimeStartOptions::signing_disabled,
+    // the federation worker). The signing secret is not present in this
+    // process, so reset_runtime_crypto_provider must leave the refusing
+    // provider alone instead of replacing it with one built from local secrets.
     bool crypto_provider_overridden{false};
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
@@ -427,10 +426,11 @@ struct RuntimeStartOptions final
 {
     config::Config config{};
     database::SchemaState existing_state{};
-    // Non-owning pointer to an Ed25519Provider to use instead of loading the
-    // server signing secret into this runtime. Used by the federation worker
-    // to delegate signing to the main process over IPC.
-    crypto::Ed25519Provider* signing_override{nullptr};
+    // True for the federation worker (ADR-0078): the runtime loads no server
+    // signing secret, mints no key, publishes no key document, and installs a
+    // crypto::RefusingEd25519Provider that fails every sign and verify request.
+    // The worker never signs and never asks main to sign for it.
+    bool signing_disabled{false};
     // ADR-0062 part 2: which tables to hydrate from the store. The federation
     // worker sets this to TableLoadProfile::federation_worker before calling
     // start_runtime so it never pulls server_signing_keys and the other

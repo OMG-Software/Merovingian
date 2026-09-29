@@ -103,6 +103,11 @@ anything is persisted (ADR-0071). Do it before taking `runtime.mutex`: resolving
 a key may go to the network. A new relay that carries a PDU follows the same
 pattern.
 
+Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refused
+inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take
+`runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
+type. Do not add a worker-to-main frame that signs caller-supplied bytes.
+
 ## Body size limits
 
 - **Default cap**: `rt.limits.max_body_bytes` (64 KiB) — applied at the top of the dispatch function

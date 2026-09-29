@@ -271,32 +271,55 @@ SCENARIO("Loaded signing secrets are keyed by their real key ids", "[homeserver]
     }
 }
 
-// Merovingian invariant (federation worker isolation):
-// The out-of-process federation worker signs through an IPC-backed provider so the
-// signing secret never enters the child process. Rebuilding the runtime provider from
-// local secrets there would silently replace that override with an empty provider.
-SCENARIO("Rebuilding the signing provider is a no-op while an external override is active",
-         "[homeserver][signing][security][federation]")
+// Merovingian invariant (federation worker isolation, ADR-0078):
+// The out-of-process federation worker never signs. A runtime started with
+// signing_disabled installs a provider that refuses every request, loads no
+// signing secret and mints no key, and rebuilding the provider from local
+// secrets must not replace it with a signing one.
+SCENARIO("A runtime started with signing disabled refuses to sign and keeps refusing after a provider rebuild",
+         "[homeserver][signing][security][federation][worker_signing_refused]")
 {
-    GIVEN("a runtime started with an external signing provider override")
+    GIVEN("a runtime started with signing disabled, as the federation worker starts")
     {
-        auto override_provider = merovingian::crypto::RuntimeMultiKeyEd25519Provider{{}};
         auto opts = merovingian::homeserver::RuntimeStartOptions{};
         opts.config = signing_lifecycle_config();
-        opts.signing_override = &override_provider;
+        opts.signing_disabled = true;
         auto started = merovingian::homeserver::start_runtime(opts);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        REQUIRE(runtime.crypto_provider == &override_provider);
+        REQUIRE(runtime.crypto_provider != nullptr);
+        auto* const original_provider = runtime.crypto_provider;
+
+        WHEN("the runtime provider is asked to sign with any key id")
+        {
+            auto const result = runtime.crypto_provider->sign(
+                merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:any"}, R"({"content":{"body":"forged"}})");
+
+            THEN("no signature is produced")
+            {
+                REQUIRE(result.signature.bytes.empty());
+                REQUIRE_FALSE(result.error.empty());
+            }
+        }
 
         WHEN("the runtime signing provider is rebuilt")
         {
             merovingian::homeserver::reset_runtime_crypto_provider(runtime);
 
-            THEN("the override is still the active provider")
+            THEN("the refusing provider is still the active provider and still refuses")
             {
-                REQUIRE(runtime.crypto_provider == &override_provider);
+                REQUIRE(runtime.crypto_provider == original_provider);
+                auto const result = runtime.crypto_provider->sign(
+                    merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:any"}, "payload");
+                REQUIRE(result.signature.bytes.empty());
+                REQUIRE_FALSE(result.error.empty());
             }
+        }
+
+        THEN("no server signing secret was loaded or minted into this process")
+        {
+            REQUIRE(runtime.database.signing_secret_key.bytes().empty());
+            REQUIRE(runtime.database.signing_secret_keys.empty());
         }
     }
 }

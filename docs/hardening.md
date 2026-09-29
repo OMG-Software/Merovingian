@@ -361,10 +361,10 @@ separate process on the same host:
   (`origin`/`key_id`/`sig_verified`); the raw peer `access_token` and
   `Authorization`/`X-Matrix` headers are stripped from the `fed_request` frame and
   never cross IPC, so a compromised worker cannot harvest or replay peer
-  homeserver credentials. The Ed25519 signing key is never forwarded either —
-  the worker delegates signing to the main process over the same channel via
-  `IpcEd25519Provider`, so the private key never enters the worker address space
-  (#317). (The outbound `Authorization` header that does cross IPC is our own
+  homeserver credentials. The Ed25519 signing key is never forwarded either, and
+  the worker cannot ask main to sign: there is no `sign_request` frame and the
+  worker's provider refuses every request (#317, ADR-0078), so a compromised
+  worker has neither the key nor a signing oracle. (The outbound `Authorization` header that does cross IPC is our own
   request-bound X-Matrix signature, not a reusable peer credential.)
 * **No filesystem socket path**: the transport is an `AF_UNIX` socket pair
   with no pathname in the filesystem namespace, so there is no socket file

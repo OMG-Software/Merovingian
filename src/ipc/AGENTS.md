@@ -10,7 +10,6 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
 |---|---|
 | `channel.cpp` | `IpcChannel`: handshake, AEAD framing, reader and dispatch threads, `send_request` / `send_response` / `send_notification` |
 | `federation_ipc_frames.cpp` | JSON (de)serialisation of `fed_request` / `fed_response`, `outbound_http_request` / `outbound_http_response`, `room_sync` frame bodies |
-| `ipc_ed25519_provider.cpp` | `IpcEd25519Provider`: the worker-side `Ed25519Provider` that signs by asking main over the channel |
 
 ## Security model — non-negotiable
 
@@ -20,10 +19,15 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
    the master key is rejected, fail-closed.
 2. **No libsodium in this module.** The AEAD stream cipher is a `crypto::IpcStreamCipher`
    implemented in `src/crypto/`; `scripts/reject-unsafe.sh` rejects direct libsodium use here.
-3. **The signing secret and client credentials never cross the channel.**
-   `IpcEd25519Provider::verify()` calls `std::terminate()` — verification only happens in main.
-   Callers must never put an access token, `Authorization` / `X-Matrix` header, or the Ed25519
-   secret key into a frame body (`docs/hardening.md`).
+3. **The signing secret and client credentials never cross the channel, and there is no signing
+   frame.** The worker never signs and never asks main to sign for it (ADR-0078, superseding the
+   signing-oracle part of ADR-0015): the `sign_request` frame and its worker-side provider are gone,
+   main answers a `sign_request` from a worker with an error and no signature
+   (`homeserver::refuse_forbidden_worker_request`, no runtime lock), and the worker's provider is
+   `crypto::RefusingEd25519Provider`. Never add a generic "sign these bytes" frame; if a worker ever
+   needs a signature, add a narrowly typed request where main builds the payload itself. Callers must
+   never put an access token, `Authorization` / `X-Matrix` header, or the Ed25519 secret key into a
+   frame body (`docs/hardening.md`).
 4. **Oversize frames fail the send and are logged, never silently dropped.** `max_frame_bytes`
    (`kIpcMaxFrameBytes`, 24 MiB) is derived identically on both ends from
    `security.federation.join_response_max_size`; both processes parse the same `--config` rather

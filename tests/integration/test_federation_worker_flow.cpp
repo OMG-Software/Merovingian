@@ -5,7 +5,7 @@
 // |                                                                         |
 // |  These tests spawn the real merovingian-fed-worker binary over an       |
 // |  encrypted AF_UNIX socketpair and exercise room-based sharding, the     |
-// |  sign-back channel, and in-process fallback when the worker is down.    |
+// |  no-signing refusal, and in-process fallback when the worker is down.    |
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"
@@ -33,6 +33,7 @@
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -45,6 +46,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <span>
 #include <string>
@@ -1244,6 +1246,100 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
             }
         }
 
+        channels.server->stop();
+        channels.client->stop();
+    }
+}
+
+SCENARIO("Main refuses a sign_request frame from a worker without signing and without taking the runtime lock",
+         "[integration][federation-worker][ipc][security][worker_signing_refused]")
+{
+    // Security audit 2026-09-29, CRY-1 (ADR-0078). The federation worker is the
+    // process most exposed to hostile input and has no production need for a
+    // signature, so main no longer answers sign_request: a compromised worker
+    // must not be able to mint signatures as this server, and must not be able
+    // to park main's global runtime lock behind a signing call either.
+    GIVEN("a main runtime that holds a real signing key and a real IpcChannel pair standing in for the worker link")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-sign-refused");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "sign-refused-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // Precondition that gives the test its teeth: main really could sign.
+        REQUIRE(runtime.crypto_provider != nullptr);
+
+        auto channels = make_ipc_test_channel_pair();
+        // Mirrors WorkerPool's per-shard request handler, which consults
+        // refuse_forbidden_worker_request before any other frame type.
+        channels.server->set_request_handler([srv = channels.server.get()](std::uint64_t id, std::string json) {
+            auto const type = merovingian::ipc::ipc_json_get_str(json, "type");
+            if (!merovingian::homeserver::refuse_forbidden_worker_request(*srv, id, type))
+            {
+                srv->send_response(id, R"({"type":"unexpected_frame_handled"})");
+            }
+        });
+        channels.server->start();
+        channels.client->start();
+
+        // Hold main's global runtime lock on this thread for the whole WHEN
+        // block. The IPC dispatch thread is a different thread, so a handler
+        // that tried to take the lock would block until the request timeout and
+        // the reply below would never arrive. That makes "the lock is not
+        // taken" observable without any sleep-based synchronisation.
+        auto runtime_guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.mutex};
+
+        WHEN("the worker sends a sign_request for the active key carrying a serialised PDU")
+        {
+            auto const pdu =
+                std::string{R"({"type":"m.room.message","sender":"@victim:example.org","room_id":"!r:example.org",)"
+                            R"("content":{"body":"forged"},"origin_server_ts":1})"};
+            auto const request = std::string{R"({"type":"sign_request","key_id":"ed25519:any","canonical_json":)"} +
+                                 ipc_escape_json_string(pdu) + "}";
+            auto const reply = channels.client->send_request(request, std::chrono::seconds{10});
+
+            THEN("main answers with an error frame and no signature, while the runtime lock was held elsewhere")
+            {
+                REQUIRE(reply.has_value());
+                INFO("reply: " << *reply);
+                REQUIRE(merovingian::ipc::ipc_json_get_str(*reply, "type") == "error");
+                REQUIRE(merovingian::ipc::ipc_json_get_str(*reply, "reason").empty() == false);
+                REQUIRE(reply->find("\"signature\"") == std::string::npos);
+                REQUIRE(reply->find("sign_response") == std::string::npos);
+            }
+        }
+
+        WHEN("the worker sends a sign_request carrying arbitrary non-JSON bytes")
+        {
+            auto const request = std::string{
+                R"({"type":"sign_request","key_id":"ed25519:auto","canonical_json":"\u0000\u0001 not json"})"};
+            auto const reply = channels.client->send_request(request, std::chrono::seconds{10});
+
+            THEN("main still answers with an error frame and no signature")
+            {
+                REQUIRE(reply.has_value());
+                INFO("reply: " << *reply);
+                REQUIRE(merovingian::ipc::ipc_json_get_str(*reply, "type") == "error");
+                REQUIRE(reply->find("\"signature\"") == std::string::npos);
+            }
+        }
+
+        WHEN("the worker sends a frame type main does accept from workers")
+        {
+            auto const type = std::string{"edu_ingest"};
+            auto const refused = merovingian::homeserver::refuse_forbidden_worker_request(*channels.server, 1U, type);
+
+            THEN("the refusal helper leaves it alone so the normal handler can serve it")
+            {
+                REQUIRE_FALSE(refused);
+            }
+        }
+
+        runtime_guard.unlock();
         channels.server->stop();
         channels.client->stop();
     }

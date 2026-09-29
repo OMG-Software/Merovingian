@@ -721,8 +721,8 @@ namespace
                                          std::string_view room_version) -> std::optional<std::string>
     {
         // Use the active key record without loading the signing secret. In the main
-        // process the secret is held by runtime.crypto_provider; in the federation
-        // worker it is held by the main process and reached via IPC.
+        // process the secret is held by runtime.crypto_provider. The federation worker
+        // never signs (ADR-0078): its invite_handler relays to main, which signs.
         auto key = find_active_server_signing_key(runtime);
         if (!key.has_value() || runtime.crypto_provider == nullptr)
         {

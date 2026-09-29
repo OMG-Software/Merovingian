@@ -7,7 +7,7 @@ this module is only what runs *inside* the worker once it has been exec'd.
 
 The worker isolates untrusted inbound federation traffic from the client-server thread pool and,
 because it is the process most exposed to hostile input, holds as little trust as possible
-(ADR-0015; `docs/architecture.md`, "Federation worker consistency model").
+(ADR-0015, ADR-0078; `docs/architecture.md`, "Federation worker consistency model").
 
 ## Key files
 
@@ -25,8 +25,13 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
 
 ## Rules — non-negotiable
 
-1. **The worker never holds the Matrix signing secret.** All Ed25519 signing is delegated to
-   main through `ipc::IpcEd25519Provider` (ADR-0015). The worker reads `--config`, but as of
+1. **The worker never holds the Matrix signing secret and never signs.** It starts its runtime with
+   `RuntimeStartOptions::signing_disabled`, which installs `crypto::RefusingEd25519Provider` (every
+   sign and verify request fails closed), and it does not ask main to sign: there is no
+   `sign_request` frame ([ADR-0078](../../docs/adr/0078-the-federation-worker-never-signs.md),
+   superseding the signing-oracle part of ADR-0015). Outbound requests are signed in main and reach the
+   worker already signed; invites relay to main. Never reinstate a generic signing frame or a
+   provider that forwards to main. The worker reads `--config`, but as of
    0.12.13 (finding N1, [ADR-0062](../../docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md))
    it never opens the operator master-key file either: main derives the IPC channel's auth key
    once and hands the worker only those 32 bytes over a second inherited pipe fd (`--ipc-key-fd`,
@@ -129,6 +134,7 @@ the seccomp profile denies the `ptrace` it needs.
 - `docs/hardening.md` — "Out-of-process federation worker IPC security"
 - `docs/threat-model.md` — "Operator master key reachable from the federation worker"
 - [ADR-0015](../../docs/adr/0015-keep-the-signing-secret-out-of-the-federation-worker.md) ·
+  [ADR-0078](../../docs/adr/0078-the-federation-worker-never-signs.md) ·
   [ADR-0041](../../docs/adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md) ·
   [ADR-0042](../../docs/adr/0042-spawn-the-federation-worker-with-a-minimal-environment.md) ·
   [ADR-0062](../../docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)

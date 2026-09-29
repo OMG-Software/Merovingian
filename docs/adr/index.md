@@ -18,7 +18,6 @@
 * [0012 - Format floats with a portable round-trip search](0012-format-floats-with-a-portable-round-trip-search.md)
 * [0013 - Require a power level default when local state is absent](0013-require-a-power-level-default-when-local-state-is-absent.md)
 * [0014 - Confine cryptographic primitives behind providers](0014-confine-cryptographic-primitives-behind-providers.md)
-* [0015 - Keep the signing secret out of the federation worker](0015-keep-the-signing-secret-out-of-the-federation-worker.md)
 * [0016 - Require a master key rather than storing secrets in plaintext](0016-require-a-master-key-rather-than-storing-secrets-in-plaintext.md)
 * [0017 - Never regenerate a signing key silently](0017-never-regenerate-a-signing-key-silently.md)
 * [0018 - Warn rather than abort when memory locking fails](0018-warn-rather-than-abort-when-memory-locking-fails.md)
@@ -79,6 +78,7 @@
 * [0074 - Refresh tokens retire on first use of their successor](0074-refresh-tokens-retire-on-first-use-of-their-successor.md)
 * [0075 - Event signing-key validity is judged at the event's origin_server_ts](0075-event-signing-key-validity-is-judged-at-origin-server-ts.md)
 * [0076 - Room versions 1 and 2 are not supported](0076-room-versions-1-and-2-are-not-supported.md)
+* [0078 - The federation worker never signs](0078-the-federation-worker-never-signs.md)
 * [0082 - No thread may start before process hardening; seccomp filters are installed with TSYNC](0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)
 
 ## Rejected Records
@@ -96,3 +96,4 @@
 ## Records with non-standard statuses
 
 * None
+* [0015 - Keep the signing secret out of the federation worker](0015-keep-the-signing-secret-out-of-the-federation-worker.md) — Superseded by ADR-0078 for the signing-oracle part (the `sign_request` frame); the signing secret still never enters the worker

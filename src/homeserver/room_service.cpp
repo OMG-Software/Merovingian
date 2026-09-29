@@ -1808,7 +1808,7 @@ constexpr auto key_server_cache_refresh_interval_ms = std::uint64_t{60U * 60U * 
 // and only happens when the key it was built from is no longer the preferred one.
 auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_view key_id) -> void
 {
-    // The federation worker signs over IPC and holds no local secrets to rebuild from.
+    // The federation worker never signs (ADR-0078) and holds no local secrets to rebuild from.
     if (runtime.crypto_provider_overridden)
     {
         return;
@@ -2189,8 +2189,8 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
 
     // Select the usable non-legacy key with the greatest valid_until_ts, mirroring
     // the choice made by ensure_runtime_server_signing_key but without touching the
-    // encrypted secret. This lets federation handlers that delegate signing to an
-    // external provider obtain the key_id and public_key they need.
+    // encrypted secret, so callers that sign through runtime.crypto_provider can obtain
+    // the key_id and public_key they need without loading the secret themselves.
     auto it = all_keys.end();
     for (auto candidate = all_keys.begin(); candidate != all_keys.end(); ++candidate)
     {
