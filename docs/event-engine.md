@@ -423,6 +423,44 @@ stating explicitly, because all three were defects (the first two until
   power-levels ancestor (it never computes a power *level* at all, only a
   mainline *position*), never a shared map.
 
+Two further defects in this area (security audit 2026-09-29, EVT-3 and EVT-4)
+were fixed after 0.12.14:
+
+- **The unconflicted/conflicted partition is decided per key from a complete
+  tally.** Spec (rooms/v10.md — Definitions): a key is in the unconflicted
+  state map only if it is "present in every Si with the same value V";
+  otherwise all its values are conflicted. `partition_conflicted_state`
+  previously decided incrementally while walking the groups, so with three or
+  more groups (`A, B, A`, `A, B, B`, `A, B, C`) a later group could re-admit a
+  key an earlier group had already moved to the conflicted side. The key then
+  sat in both maps, and Algorithm step 5 ("replace any event with the event
+  with the same key from the unconflicted state map") overwrote the resolved
+  value with whichever group came last — resolution depended on `prev_events`
+  order and a ban in one fork could be dropped. The function now tallies, per
+  key, the number of groups holding it and the set of distinct event ids; a key
+  is unconflicted only when every group holds it with exactly one event id.
+  Step 5 itself was correct and is unchanged; v2.1 (room v12) uses the same
+  partition and the same step 5 (only the iterative auth checks' starting map
+  differs).
+- **The reverse topological power ordering is Kahn's algorithm, not a plain
+  sort.** Spec: "the lexicographically smallest topological ordering based on
+  the DAG formed by auth events ... ordered from earliest event to latest ...
+  found by sorting the events using Kahn's algorithm ... at each step
+  selecting, among all the candidate vertices, the smallest vertex". A
+  power-descending `stable_sort` ignored `auth_events` edges between candidates,
+  so an admin's ban that cites a moderator's kick (the kick is the target's
+  membership, hence an auth event of the ban) was applied first and the kick
+  then overwrote it. `reverse_topological_power_sort` now builds the
+  `auth_events` DAG restricted to the set being ordered (edge from an auth event
+  to each event that cites it), and repeatedly emits the smallest ready event
+  (sender power descending, `origin_server_ts` ascending, event id ascending).
+  The comparison is a strict total order over unique event ids, so the result
+  does not depend on input order. A cycle in the auth graph, or a duplicate
+  event id in the input, returns `nullopt` (fail closed) instead of looping or
+  dropping events. `mainline_order` is a plain sort on (mainline position,
+  `origin_server_ts`, event id) by the spec's definition, and the iterative auth
+  checks apply their input in the order given, so neither shared the defect.
+
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
 

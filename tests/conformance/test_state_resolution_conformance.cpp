@@ -30,7 +30,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -1563,6 +1565,463 @@ SCENARIO("Room v12: state resolution derives the create event from room_id, not 
                 // to authorise anything that cannot be fetched must not let
                 // resolution proceed on a partial view of the room.
                 REQUIRE_FALSE(result.resolved);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.19 — Room v2 state resolution, Definitions ("Unconflicted
+// state map and conflicted state set") and Algorithm step 5.
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// "If a given key K is present in every Si with the same value V in each
+// state map, then the pair (K, V) belongs to the unconflicted state map.
+// Otherwise, V belongs to the conflicted state set."
+//
+// With three or more state groups a key that disagrees anywhere is conflicted
+// everywhere: it must never re-enter the unconflicted map because a later
+// group happens to repeat an earlier value, and the outcome must not depend
+// on the order the groups are listed in.
+// ---------------------------------------------------------------------------
+namespace
+{
+
+// Every ordering of `count` indices, so a test can present the same state
+// groups in each possible order.
+[[nodiscard]] auto all_permutations(std::size_t count) -> std::vector<std::vector<std::size_t>>
+{
+    auto order = std::vector<std::size_t>(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        order[i] = i;
+    }
+    auto result = std::vector<std::vector<std::size_t>>{};
+    do
+    {
+        result.push_back(order);
+    } while (std::next_permutation(order.begin(), order.end()));
+    return result;
+}
+
+// Canonical, order-independent rendering of a resolution result.
+[[nodiscard]] auto resolved_fingerprint(merovingian::events::StateResolutionResult const& result)
+    -> std::vector<std::string>
+{
+    auto lines = std::vector<std::string>{};
+    for (auto const& event : result.resolved_state)
+    {
+        lines.push_back(event.key.event_type + "|" + event.key.state_key + "|" + event.event_id);
+    }
+    std::sort(lines.begin(), lines.end());
+    return lines;
+}
+
+struct SharedRoomState final
+{
+    StateEventReference create;
+    StateEventReference power_levels;
+    StateEventReference join_rules;
+    StateEventReference alice_join;
+    StateEventReference mod_join;
+};
+
+// A room with @alice (100, creator) and @mod (50) joined and a public join
+// rule. Every event cites only ancestors that are themselves in the state.
+[[nodiscard]] auto make_shared_room_state() -> SharedRoomState
+{
+    auto shared = SharedRoomState{};
+    shared.create = make_create_event("@alice:example.org", "$create", 100);
+    shared.power_levels =
+        make_event_with_auth("m.room.power_levels", "", "$pl", "@alice:example.org", 200, {"$create"},
+                             R"({"ban":50,"events_default":0,"invite":0,"kick":50,"redact":50,"state_default":50,)"
+                             R"("users":{"@alice:example.org":100,"@mod:example.org":50},"users_default":0})");
+    shared.join_rules = make_event_with_auth("m.room.join_rules", "", "$jr", "@alice:example.org", 300,
+                                             {"$create", "$pl"}, R"({"join_rule":"public"})");
+    shared.alice_join = make_event_with_auth("m.room.member", "@alice:example.org", "$alice_join", "@alice:example.org",
+                                             400, {"$create"}, R"({"membership":"join"})");
+    shared.mod_join = make_event_with_auth("m.room.member", "@mod:example.org", "$mod_join", "@mod:example.org", 500,
+                                           {"$create", "$jr", "$pl"}, R"({"membership":"join"})");
+    return shared;
+}
+
+[[nodiscard]] auto make_group_with(SharedRoomState const& shared, std::string group_id,
+                                   StateEventReference const& bob_event) -> StateGroup
+{
+    auto group = StateGroup{};
+    group.group_id = std::move(group_id);
+    group.state = {shared.create,     shared.power_levels, shared.join_rules,
+                   shared.alice_join, shared.mod_join,     bob_event};
+    return group;
+}
+
+} // namespace
+
+SCENARIO("Partitioning three or more state groups: a key that disagrees anywhere is only ever conflicted",
+         "[conformance][state-resolution][v2][partition][state_res_v2]")
+{
+    GIVEN("three state groups that hold join, ban, join for the same member key")
+    {
+        auto const member_key = StateKey{"m.room.member", "@u:example.org"};
+        auto const create_key = StateKey{"m.room.create", ""};
+        auto const create = make_state_event("m.room.create", "", "$create", "@u:example.org", 1, 0);
+        auto const join = make_state_event("m.room.member", "@u:example.org", "$join", "@u:example.org", 2, 1);
+        auto const ban = make_state_event("m.room.member", "@u:example.org", "$ban", "@admin:example.org", 3, 2);
+        auto const leave = make_state_event("m.room.member", "@u:example.org", "$leave", "@admin:example.org", 4, 2);
+
+        auto const make_groups = [&](std::vector<StateEventReference> const& values) {
+            auto groups = std::vector<StateGroup>{};
+            for (std::size_t i = 0; i < values.size(); ++i)
+            {
+                groups.push_back(StateGroup{
+                    "group-" + std::to_string(i), {create, values[i]}
+                });
+            }
+            return groups;
+        };
+
+        WHEN("the groups are partitioned in every possible order (A, B, A)")
+        {
+            auto const values = std::vector<StateEventReference>{join, ban, join};
+            for (auto const& order : all_permutations(values.size()))
+            {
+                auto const groups = make_groups({values[order[0]], values[order[1]], values[order[2]]});
+                auto const [unconflicted, conflicted] = merovingian::events::partition_conflicted_state(groups);
+
+                // Spec MUST: the key differs between groups, so it is in the
+                // conflicted set and never in the unconflicted state map.
+                // Do NOT weaken - a later group repeating an earlier value
+                // must not resurrect the key as unconflicted.
+                REQUIRE(conflicted.contains(member_key));
+                REQUIRE_FALSE(unconflicted.contains(member_key));
+                REQUIRE(unconflicted.contains(create_key));
+                REQUIRE_FALSE(conflicted.contains(create_key));
+            }
+        }
+
+        WHEN("the groups are partitioned in every possible order (A, B, C)")
+        {
+            auto const values = std::vector<StateEventReference>{join, ban, leave};
+            for (auto const& order : all_permutations(values.size()))
+            {
+                auto const groups = make_groups({values[order[0]], values[order[1]], values[order[2]]});
+                auto const [unconflicted, conflicted] = merovingian::events::partition_conflicted_state(groups);
+
+                REQUIRE(conflicted.contains(member_key));
+                REQUIRE_FALSE(unconflicted.contains(member_key));
+            }
+        }
+
+        WHEN("the groups are partitioned in every possible order (A, B, B)")
+        {
+            auto const values = std::vector<StateEventReference>{join, ban, ban};
+            for (auto const& order : all_permutations(values.size()))
+            {
+                auto const groups = make_groups({values[order[0]], values[order[1]], values[order[2]]});
+                auto const [unconflicted, conflicted] = merovingian::events::partition_conflicted_state(groups);
+
+                REQUIRE(conflicted.contains(member_key));
+                REQUIRE_FALSE(unconflicted.contains(member_key));
+            }
+        }
+
+        WHEN("all three groups agree on the value")
+        {
+            auto const groups = make_groups({join, join, join});
+            auto const [unconflicted, conflicted] = merovingian::events::partition_conflicted_state(groups);
+
+            THEN("the key is unconflicted and not conflicted")
+            {
+                REQUIRE(unconflicted.contains(member_key));
+                REQUIRE(unconflicted.at(member_key).event_id == "$join");
+                REQUIRE_FALSE(conflicted.contains(member_key));
+            }
+        }
+
+        WHEN("one of the three groups does not mention the key at all")
+        {
+            auto groups = make_groups({join, join, join});
+            groups[2].state.pop_back();
+            auto const [unconflicted, conflicted] = merovingian::events::partition_conflicted_state(groups);
+
+            THEN("the key is not present in every group, so it is conflicted")
+            {
+                // Spec: unconflicted only if "present in every Si".
+                REQUIRE(conflicted.contains(member_key));
+                REQUIRE_FALSE(unconflicted.contains(member_key));
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution v2 over three state groups does not depend on the order of the groups",
+         "[conformance][state-resolution][v2][partition][state_res_v2]")
+{
+    GIVEN("three forks in which @admin bans @bob in one and @bob's join stands in the others")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const shared = make_shared_room_state();
+        auto const bob_join = make_event_with_auth("m.room.member", "@bob:example.org", "$bob_join", "@bob:example.org",
+                                                   600, {"$create", "$jr", "$pl"}, R"({"membership":"join"})");
+        auto const ban = make_event_with_auth("m.room.member", "@bob:example.org", "$ban", "@alice:example.org", 700,
+                                              {"$create", "$pl", "$alice_join"}, R"({"membership":"ban"})");
+        auto const kick = make_event_with_auth("m.room.member", "@bob:example.org", "$kick", "@alice:example.org", 800,
+                                               {"$create", "$pl", "$alice_join"}, R"({"membership":"leave"})");
+
+        WHEN("the groups are resolved as join, ban, join in every order")
+        {
+            auto const values = std::vector<StateEventReference>{bob_join, ban, bob_join};
+            auto fingerprints = std::vector<std::vector<std::string>>{};
+            for (auto const& order : all_permutations(values.size()))
+            {
+                auto request = StateResolutionRequest{};
+                request.room_version = "10";
+                for (std::size_t i = 0; i < order.size(); ++i)
+                {
+                    request.state_groups.push_back(
+                        make_group_with(shared, "group-" + std::to_string(i), values[order[i]]));
+                }
+                auto const result = merovingian::events::resolve_state_v2(request, *policy);
+                REQUIRE(result.resolved);
+                fingerprints.push_back(resolved_fingerprint(result));
+
+                // Spec MUST: the ban is the only power event in dispute and
+                // is authorised, so a banned user's join cannot replace it.
+                auto const* member = result_event_for(result, "m.room.member", "@bob:example.org");
+                REQUIRE(member != nullptr);
+                REQUIRE(member->event_id == "$ban");
+            }
+
+            THEN("every ordering produced the identical resolved state")
+            {
+                for (auto const& fingerprint : fingerprints)
+                {
+                    REQUIRE(fingerprint == fingerprints.front());
+                }
+            }
+        }
+
+        WHEN("the groups are resolved as join, ban, kick in every order")
+        {
+            auto const values = std::vector<StateEventReference>{bob_join, ban, kick};
+            auto fingerprints = std::vector<std::vector<std::string>>{};
+            for (auto const& order : all_permutations(values.size()))
+            {
+                auto request = StateResolutionRequest{};
+                request.room_version = "10";
+                for (std::size_t i = 0; i < order.size(); ++i)
+                {
+                    request.state_groups.push_back(
+                        make_group_with(shared, "group-" + std::to_string(i), values[order[i]]));
+                }
+                auto const result = merovingian::events::resolve_state_v2(request, *policy);
+                REQUIRE(result.resolved);
+                fingerprints.push_back(resolved_fingerprint(result));
+            }
+
+            THEN("every ordering produced the identical resolved state")
+            {
+                for (auto const& fingerprint : fingerprints)
+                {
+                    REQUIRE(fingerprint == fingerprints.front());
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.19 — Room v2 state resolution, Definitions ("Reverse
+// topological power ordering").
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// "the lexicographically smallest topological ordering based on the DAG
+// formed by auth events ... ordered from earliest event to latest ... found
+// by sorting the events using Kahn's algorithm for topological sorting, and
+// at each step selecting, among all the candidate vertices, the smallest
+// vertex using the above comparison relation."
+//
+// An event may only appear after every event it cites in `auth_events` (that
+// is also in the set), whatever its sender's power level; among the events
+// that are ready, the comparison relation (sender power descending,
+// origin_server_ts ascending, event_id ascending) picks the next one.
+// ---------------------------------------------------------------------------
+namespace
+{
+
+[[nodiscard]] auto sorted_ids(std::optional<std::vector<StateEventReference>> const& sorted) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    if (sorted.has_value())
+    {
+        for (auto const& event : *sorted)
+        {
+            ids.push_back(event.event_id);
+        }
+    }
+    return ids;
+}
+
+} // namespace
+
+SCENARIO("Reverse topological power ordering puts an auth event before the event that cites it",
+         "[conformance][state-resolution][v2][sort][state_res_v2]")
+{
+    GIVEN("a higher-power event that cites a lower-power event in its auth_events, plus an unrelated mid-power event")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const shared = make_shared_room_state();
+        // @alice has power 100, @mod 50, everyone else 0 (see shared.power_levels).
+        auto const low = make_event_with_auth("m.room.member", "@bob:example.org", "$low", "@carol:example.org", 100,
+                                              {"$pl"}, R"({"membership":"leave"})");
+        auto const high = make_event_with_auth("m.room.member", "@bob:example.org", "$high", "@alice:example.org", 200,
+                                               {"$pl", "$low"}, R"({"membership":"ban"})");
+        auto const mid = make_event_with_auth("m.room.member", "@dave:example.org", "$mid", "@mod:example.org", 300,
+                                              {"$pl"}, R"({"membership":"leave"})");
+
+        // Index every event so the auth_events edges (and the power_levels
+        // event each sender power is read from) can be found.
+        auto const all_groups = std::vector<StateGroup>{
+            StateGroup{"all", {shared.power_levels, low, high, mid}}
+        };
+        auto const all_index = merovingian::events::build_event_json_index(all_groups);
+
+        WHEN("the events are ordered, whatever order they are presented in")
+        {
+            auto const inputs = std::vector<StateEventReference>{high, low, mid};
+            auto results = std::vector<std::vector<std::string>>{};
+            for (auto const& order : all_permutations(inputs.size()))
+            {
+                auto const conflicted =
+                    std::vector<StateEventReference>{inputs[order[0]], inputs[order[1]], inputs[order[2]]};
+                results.push_back(sorted_ids(merovingian::events::reverse_topological_power_sort(
+                    conflicted, all_index, merovingian::events::EventLookupFn{}, *policy)));
+            }
+
+            THEN("the cited event precedes the citing event and the choice among ready events follows the relation")
+            {
+                // Ready first: {$low (power 0), $mid (power 50)} -> $mid is
+                // smaller (greater power). Then $low. Only then is $high
+                // (power 100) ready. A plain sort would give $high first.
+                auto const expected = std::vector<std::string>{"$mid", "$low", "$high"};
+                for (auto const& result : results)
+                {
+                    REQUIRE(result == expected);
+                }
+            }
+        }
+
+        WHEN("only the citing event's ancestor is outside the set being ordered")
+        {
+            auto const conflicted = std::vector<StateEventReference>{high, mid};
+            auto const sorted = merovingian::events::reverse_topological_power_sort(
+                conflicted, all_index, merovingian::events::EventLookupFn{}, *policy);
+
+            THEN("events cited but not in the set impose no ordering constraint")
+            {
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted_ids(sorted) == std::vector<std::string>{"$high", "$mid"});
+            }
+        }
+    }
+}
+
+SCENARIO("Reverse topological power ordering fails closed on a cyclic auth DAG",
+         "[conformance][state-resolution][v2][sort][security][state_res_v2]")
+{
+    GIVEN("two events that cite each other in auth_events")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const shared = make_shared_room_state();
+        auto const first = make_event_with_auth("m.room.member", "@bob:example.org", "$first", "@alice:example.org",
+                                                100, {"$pl", "$second"}, R"({"membership":"ban"})");
+        auto const second = make_event_with_auth("m.room.member", "@bob:example.org", "$second", "@alice:example.org",
+                                                 200, {"$pl", "$first"}, R"({"membership":"leave"})");
+        auto const groups = std::vector<StateGroup>{
+            StateGroup{"all", {shared.power_levels, first, second}}
+        };
+        auto const index = merovingian::events::build_event_json_index(groups);
+
+        WHEN("they are ordered")
+        {
+            auto const sorted = merovingian::events::reverse_topological_power_sort(
+                {first, second}, index, merovingian::events::EventLookupFn{}, *policy);
+
+            THEN("ordering is refused rather than looping or dropping events")
+            {
+                REQUIRE_FALSE(sorted.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution v2: an admin's ban that cites a moderator's kick survives the conflict",
+         "[conformance][state-resolution][v2][sort][state_res_v2]")
+{
+    GIVEN("one fork where @mod kicked @bob and another where @alice (admin) banned @bob after that kick")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const shared = make_shared_room_state();
+        auto const bob_join = make_event_with_auth("m.room.member", "@bob:example.org", "$bob_join", "@bob:example.org",
+                                                   600, {"$create", "$jr", "$pl"}, R"({"membership":"join"})");
+        // The kick is @bob's membership at the time the ban is sent, so the
+        // ban cites it in auth_events (the target's membership is an auth
+        // event of the ban).
+        auto const kick =
+            make_event_with_auth("m.room.member", "@bob:example.org", "$kick", "@mod:example.org", 700,
+                                 {"$create", "$pl", "$mod_join", "$bob_join"}, R"({"membership":"leave"})");
+        auto const ban = make_event_with_auth("m.room.member", "@bob:example.org", "$ban", "@alice:example.org", 800,
+                                              {"$create", "$pl", "$alice_join", "$kick"}, R"({"membership":"ban"})");
+
+        WHEN("the two forks are resolved, in either order")
+        {
+            auto fingerprints = std::vector<std::vector<std::string>>{};
+            auto winners = std::vector<std::string>{};
+            auto const forks = std::vector<StateEventReference>{ban, kick};
+            for (auto const& order : all_permutations(forks.size()))
+            {
+                auto request = StateResolutionRequest{};
+                request.room_version = "10";
+                request.state_groups = {make_group_with(shared, "group-0", forks[order[0]]),
+                                        make_group_with(shared, "group-1", forks[order[1]])};
+                request.event_lookup = [&bob_join](std::string_view event_id) -> std::optional<StateEventReference> {
+                    if (event_id == "$bob_join")
+                    {
+                        return bob_join;
+                    }
+                    return std::nullopt;
+                };
+                auto const result = merovingian::events::resolve_state_v2(request, *policy);
+                REQUIRE(result.resolved);
+                fingerprints.push_back(resolved_fingerprint(result));
+                auto const* member = result_event_for(result, "m.room.member", "@bob:example.org");
+                REQUIRE(member != nullptr);
+                winners.push_back(member->event_id);
+            }
+
+            THEN("the ban wins because it is ordered after the kick it cites")
+            {
+                // Spec MUST: the auth event ($kick) precedes the event citing
+                // it ($ban) in the reverse topological power ordering, so the
+                // admin's later ban is applied last. Do NOT weaken - a plain
+                // power-descending sort applies the ban first and lets the
+                // moderator's kick overwrite it.
+                for (auto const& winner : winners)
+                {
+                    REQUIRE(winner == "$ban");
+                }
+                for (auto const& fingerprint : fingerprints)
+                {
+                    REQUIRE(fingerprint == fingerprints.front());
+                }
             }
         }
     }
