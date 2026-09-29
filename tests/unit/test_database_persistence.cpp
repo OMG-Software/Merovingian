@@ -3161,7 +3161,7 @@ SCENARIO("store_media_blob marks the raw bytes parameter binary for the PostgreS
     }
 }
 
-SCENARIO("PostgreSQL bytea hex encoding round-trips arbitrary bytes including embedded NULs",
+SCENARIO("PostgreSQL bytea hex output decodes to arbitrary bytes including embedded NULs",
          "[database][persistence][postgresql][binary]")
 {
     GIVEN("a payload covering every byte value, including embedded NULs and high bytes")
@@ -3172,62 +3172,70 @@ SCENARIO("PostgreSQL bytea hex encoding round-trips arbitrary bytes including em
             payload.push_back(static_cast<char>(value));
         }
 
-        WHEN("the payload is hex-encoded the way execute_prepared_statement encodes a binary parameter")
-        {
-            auto const encoded = merovingian::database::encode_postgresql_bytea_hex(payload);
-
-            THEN("the encoding is PostgreSQL's \\x-prefixed bytea text literal with no embedded NUL")
+        // PostgreSQL's `bytea_output = hex` text form: `\x` then lowercase hex pairs.
+        auto const hex_of = [](std::string const& bytes) {
+            static constexpr auto digits = std::string_view{"0123456789abcdef"};
+            auto text = std::string{"\\x"};
+            for (auto const character : bytes)
             {
-                REQUIRE(encoded.starts_with("\\x"));
-                REQUIRE(encoded.size() == 2U + (payload.size() * 2U));
-                REQUIRE(encoded.find('\0') == std::string::npos);
+                auto const byte = static_cast<unsigned char>(character);
+                text.push_back(digits[byte >> 4U]);
+                text.push_back(digits[byte & 0x0FU]);
             }
+            return text;
+        };
 
-            AND_WHEN("the encoded text is decoded the way the media_blobs read path decodes a bytea column")
+        WHEN("the server's hex text for the payload is decoded the way every bytea result column is decoded")
+        {
+            auto const decoded = merovingian::database::decode_postgresql_bytea_hex(hex_of(payload));
+
+            THEN("every byte round-trips exactly, including the NUL and the high bytes")
             {
-                auto const decoded = merovingian::database::decode_postgresql_bytea_hex(encoded);
-
-                THEN("every byte round-trips exactly, including the NUL and the high bytes")
-                {
-                    REQUIRE(decoded.size() == payload.size());
-                    REQUIRE(decoded == payload);
-                }
+                REQUIRE(decoded.has_value());
+                REQUIRE(decoded->size() == payload.size());
+                REQUIRE(*decoded == payload);
             }
         }
 
-        WHEN("an empty payload is encoded and decoded")
+        WHEN("upper-case hex digits are decoded")
         {
-            auto const encoded = merovingian::database::encode_postgresql_bytea_hex("");
-            auto const decoded = merovingian::database::decode_postgresql_bytea_hex(encoded);
+            auto const decoded = merovingian::database::decode_postgresql_bytea_hex("\\xDEADbeef");
 
-            THEN("it round-trips to an empty string, matching PostgreSQL's own empty-bytea encoding")
+            THEN("they decode to the same bytes as lower-case digits")
             {
-                REQUIRE(encoded == "\\x");
-                REQUIRE(decoded.empty());
+                REQUIRE(decoded.has_value());
+                REQUIRE(*decoded == std::string{"\xDE\xAD\xBE\xEF"});
+            }
+        }
+
+        WHEN("an empty bytea value is decoded")
+        {
+            auto const decoded = merovingian::database::decode_postgresql_bytea_hex("\\x");
+
+            THEN("it decodes to an empty string, which is distinct from a decode failure")
+            {
+                REQUIRE(decoded.has_value());
+                REQUIRE(decoded->empty());
             }
         }
 
         WHEN("decode is given text that is not the \\x bytea prefix, or has a malformed/odd-length hex tail")
         {
             auto const no_prefix = merovingian::database::decode_postgresql_bytea_hex("not-bytea");
+            auto const escape_format = merovingian::database::decode_postgresql_bytea_hex("abc\\000def");
             auto const odd_length = merovingian::database::decode_postgresql_bytea_hex("\\x0");
             auto const bad_digit = merovingian::database::decode_postgresql_bytea_hex("\\xzz");
 
-            THEN("it fails closed with an empty result instead of guessing at a different encoding")
+            THEN("it fails closed with no value instead of guessing at a different encoding or returning empty bytes")
             {
-                REQUIRE(no_prefix.empty());
-                REQUIRE(odd_length.empty());
-                REQUIRE(bad_digit.empty());
+                REQUIRE_FALSE(no_prefix.has_value());
+                REQUIRE_FALSE(escape_format.has_value());
+                REQUIRE_FALSE(odd_length.has_value());
+                REQUIRE_FALSE(bad_digit.has_value());
             }
         }
     }
 }
-
-// --- 0.12.5 security audit, finding 24 ---------------------------------------
-//
-// A malformed expires_at parsed as nullopt, which every caller reads as "never
-// expires", so a corrupt or attacker-modified row turned a token that should
-// have expired into a permanent credential.
 
 SCENARIO("A session row with a malformed expiry is treated as expired, not as never expiring",
          "[database][persistent_store][security]")

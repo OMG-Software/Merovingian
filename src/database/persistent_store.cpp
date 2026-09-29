@@ -1051,8 +1051,15 @@ namespace
                        "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4, $5) ON CONFLICT (server_name, key_id) "
                        "DO UPDATE SET public_key = $3, valid_until_ts = $4, "
                        "secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END",
-                       {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
-                        public_value(std::to_string(key.valid_until_ts)), sensitive_value(key.secret_key)})))
+                       {
+                           public_value(key.server_name),
+                           public_value(key.key_id),
+                           public_value(key.public_key),
+                           public_value(std::to_string(key.valid_until_ts)),
+                           // `secret_key` is a BLOB column: bind it as binary so it is
+                           // byte-exact on PostgreSQL (still sensitive: never traced).
+                           {key.secret_key, true, true}
+    })))
     {
         return false;
     }
@@ -2694,13 +2701,9 @@ namespace
                                  {blob.hash_algorithm, false},
                                  {blob.digest, false},
                                  {std::to_string(blob.size_bytes), false},
-                                 // M-09: raw binary payload — mark it `binary`
-                                 // so the PostgreSQL backend hex-encodes it
-                                 // instead of sending it as a null-terminated
-                                 // C string, which would truncate at any
-                                 // embedded NUL byte. `sensitive` stays true
-                                 // so the content itself never reaches a
-                                 // query trace or log either.
+                                 // Raw binary payload (BLOB column): marked `binary` so
+                                 // PostgreSQL binds it byte-exactly, and `sensitive` so
+                                 // the content never reaches a query trace or log.
                                  {blob.bytes, true, true},
                                  {std::to_string(blob.ref_count), false}
     })))

@@ -600,6 +600,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   that a migration would have applied consistently everywhere.
   Source: `src/database/AGENTS.md`.
 
+- **Every write to a `BLOB` column sets `BoundValue::binary`; reads decode every `bytea`
+  result column generically.**
+  Why: on PostgreSQL a text-bound binary value truncates at a NUL or is rejected as
+  non-UTF-8, and an undecoded `bytea` read returns its hex text. Either breaks
+  `server_signing_keys.secret_key`, after which the server cannot load its own signing
+  key (0.12.14 audit, DB-1).
+  Source: `src/database/AGENTS.md`.
+
 - **Higher-level modules receive a `PersistentStore&` and must not downcast to a
   backend-specific type.**
   Why: downcasting to a specific backend (SQLite vs. PostgreSQL) breaks the abstraction that

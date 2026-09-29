@@ -1511,7 +1511,15 @@ threats they represent, and the mitigations now in place:
   inside each SQLite step — see ADR-0059.
 - **Binary media could be silently corrupted on PostgreSQL.** Parameters were
   sent as null-terminated C strings, truncating at an embedded NUL. Mitigation:
-  binary parameters are hex-encoded into the `bytea` literal and decoded on read.
+  binary parameters are bound in libpq's binary format, and every `bytea`
+  result column is decoded on read.
+- **A PostgreSQL server could not read back its own signing key after a
+  restart (0.12.14 audit, DB-1).** Only `media_blobs.bytes` was decoded on
+  read, so `server_signing_keys.secret_key` came back as `bytea` hex text, the
+  key failed to load, and the server could not sign anything until the row was
+  repaired by hand. Mitigation: the decode is generic over every `bytea` result
+  column (`PQftype`), and a value that cannot be decoded fails the query rather
+  than reading as an empty secret.
 - Smaller closures: an exported federation verifier that honoured a caller-set
   "already verified" bool; a v1 invite defaulting to room version 12 for
   signature and hash; a well-known discovery overload that resolved every host

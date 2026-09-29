@@ -22,6 +22,10 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    parameters. SQL injection is a critical vulnerability — `statement.hpp` enforces this.
 2. **Never log raw query parameters** that may contain tokens, passwords, or PII.
 3. **Schema changes go in `migrations/`**, not in ad-hoc `ALTER TABLE` calls in code.
+4. **Every write to a `BLOB` column sets `BoundValue::binary`.** PostgreSQL then binds the
+   bytes in libpq's binary format; any other way truncates at a NUL or rejects non-UTF-8.
+   Reads need nothing per column: `load_result_rows` decodes every `bytea` result column
+   (`PQftype`). The columns are `media_blobs.bytes` and `server_signing_keys.secret_key`.
 
 ## Backend selection
 

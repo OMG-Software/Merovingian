@@ -748,14 +748,28 @@ The boundary provides these guarantees:
   one-way transition, enforced by the store's API surface rather than by
   caller discipline (see `revoke_tokens_for_user_except_device` above and
   [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md)).
-- Binary payloads round-trip byte-exactly on both backends. `BoundValue` carries
-  a `binary` flag; SQLite already bound every parameter by explicit length, but
-  PostgreSQL sends parameters to `PQexecParams` as null-terminated C strings, so
-  a raw payload truncated at its first embedded NUL. A `binary` parameter is now
-  hex-encoded into PostgreSQL's own `\x` bytea literal on the way in — plain
-  ASCII, never containing a NUL — and decoded on the way out. `media_blobs.bytes`
-  is the column that needs it today; any future `BLOB`/`BYTEA` column carrying
-  non-text bytes must set the flag on both the write and the read path.
+- Binary (`BLOB`) columns round-trip byte-exactly on both backends. The columns
+  are `media_blobs.bytes` and `server_signing_keys.secret_key` — every `BLOB`
+  in `migrations/*.sql` and `schema.cpp`; a new one must follow this
+  mechanism. `BoundValue` carries a `binary` flag, and a write must set it for
+  every `BLOB` parameter. SQLite binds every parameter by explicit length and
+  reads columns by `sqlite3_column_bytes`, so it ignores the flag and is
+  unchanged. On PostgreSQL, `execute_prepared_statement` binds a `binary`
+  parameter in libpq's binary wire format (`paramFormats` = 1, explicit
+  `paramLengths`, declared type `bytea`), so arbitrary bytes — NULs, invalid
+  UTF-8, backslashes — arrive exactly and nothing is escaped or truncated.
+  The read side is one generic rule rather than a per-table special case:
+  `load_result_rows` asks libpq for each result column's type (`PQftype`) and
+  decodes every `bytea` column from PostgreSQL's `\x` hex text form back to raw
+  bytes, so any query that selects a `BLOB` column gets bytes, not hex. Each
+  connection pins `SET bytea_output = 'hex'` at open so a role or database
+  default of `escape` cannot change that form; a `bytea` value that is not
+  valid hex fails the query rather than returning empty or garbled bytes,
+  because an empty `secret_key` reads as "no signing key" and would make the
+  server mint a new identity. Until DB-1 was fixed only `media_blobs.bytes` was
+  decoded, so the signing secret came back as its own hex text after a restart
+  and the server could not load its signing key (0.12.14 audit). Existing
+  rows hold the raw bytes intact, so no data migration was needed.
 - Identity-server unbind credentials (`account_threepids.client_secret` and
   `.sid`) are bound as sensitive values, so they never reach a query trace or
   diagnostic log. They remain plaintext at rest; that is the documented residual
