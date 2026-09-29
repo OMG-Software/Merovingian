@@ -44,7 +44,7 @@ must start with that test.
 | 1 | Authentication, sessions, application-service authentication | done: 2 high, 3 medium, 7 low |
 | 2 | Client-Server authorisation and room access control | done: 4 high, 4 medium, 4 low |
 | 3 | HTTP transport, TLS and request-level DoS | done: 3 high, 3 medium, 2 low |
-| 4 | Federation inbound (X-Matrix, PDU ingestion, keys, backfill, membership) | pending |
+| 4 | Federation inbound (X-Matrix, PDU ingestion, keys, backfill, membership) | done: 1 critical, 5 high, 3 medium, 3 low |
 | 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | pending |
 | 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | pending |
 | 7 | Cryptography, key management and worker IPC | pending |
@@ -906,4 +906,316 @@ partial-read and outbound-wait phases.
 
 - Not read: `src/net/listener.cpp`, the canonical JSON serializer,
   `federation_proxy.cpp`, and the service launchers under `packaging/`.
+
+---
+
+## Area 4 — Federation inbound
+
+**Result:** 12 findings confirmed: 1 critical, 5 high, 3 medium, 3 low. The spec citation
+for FED-2 was corrected. One sub-claim of FED-6 was refuted.
+
+**Prior fixes that hold:**
+- H-04, M-04 and M-05.
+- Signature and hash checks on `send_*` and invite (#461, #462).
+- L-06 for `/backfill`.
+- ADR-0071: main re-verifies PDUs, invites and memberships that the worker relays.
+  EDU frames are not covered (FED-12).
+
+### FED-1 — `send_join` response events are not bound to the room being joined, and events from our own domain skip signature checks
+
+- **Severity:** critical
+- **Attacker:** A2 (any local user) working with A3 (a server they control)
+- **Verdict:** confirmed; the orchestrator re-checked both halves in code
+- **Location:**
+  - `src/homeserver/room_service.cpp:3138-3315` (`filter_verified_send_join_events`;
+    own-domain shortcut at `:3244-3248`)
+  - `:3016-3136` (`ingest_send_join_state`; room ID taken from each event at `:3078-3097`)
+  - `:3944-4055` (auth-chain loop), `:4253-4255` (background path)
+  - `src/database/persistent_store.cpp:1772-1899` (`prepare/apply_store_event_with_state`)
+- **Spec:** "Checks performed on receipt of a PDU … 2. Passes signature checks, otherwise
+  it is dropped." Project rule: `src/federation/AGENTS.md` rules 2 and 4.
+- **Path:**
+  1. A local user calls `POST /join/!x:evil.example?server_name=evil.example`. The
+     `via` and `server_name` values supplied by the client are accepted as join
+     candidates (`room_service.cpp:2973`).
+  2. evil.example's `send_join` response includes, in `state` or `auth_chain`, an
+     `m.room.power_levels` event whose `room_id` is L, a room hosted here that the user
+     is in. The event gives the user power level 100 and names a sender on our domain.
+  3. `filter_verified_send_join_events` accepts it without any signature check, because
+     the sender's domain is ours. The unit test at
+     `tests/unit/test_federation_invite_join.cpp:1979-2012` pins that behaviour.
+     Events signed by evil.example for its own users with `room_id = L` also pass.
+  4. `ingest_send_join_state` stores each event under that event's own `room_id`.
+     Nothing compares it with the room being joined. `state_matches_event` compares the
+     event only with itself, and no auth rules run.
+  5. `prepare_store_event_with_state` issues `UPDATE current_state` whatever the event's
+     status, so a stored "outlier" still replaces L's current state.
+  6. `compose_signed_event` builds and authorises every subsequent local event in L from
+     `store.state` (`room_service.cpp:1026`, `:1223-1258`, `:1497-1500`). The forged
+     power levels are now the rules for the room.
+- **Impact:**
+  - Any local user can make themselves admin of any local room.
+  - Any local user can forge membership for other users, including the victims of
+    bans, via the background path.
+  - The forged state persists until a later inbound federation event triggers
+    `recompute_current_state` for L.
+  - Local events sent in that window name forged auth events, so remote servers reject
+    them and the room diverges.
+- **Documentation:** `docs/threat-model.md:496-521` says a bad-faith resident server
+  "degrades the joining server's view of the room rather than being able to inject
+  forged state". That is not true.
+- **Fix:**
+  - Drop every `state` and `auth_chain` entry whose `room_id` (or, for v12
+    `m.room.create`, whose derived room ID) is not the room being joined.
+  - Never accept an own-domain event without a signature check. A resident server has
+    no reason to send us events we authored that we do not already hold.
+  - Ingest the join snapshot without writing `current_state` for any other room.
+  - Correct the threat model.
+- **Test:** GIVEN local room L with power levels P, and a mock resident server whose
+  `send_join` `state` holds (a) an unsigned `m.room.power_levels` for L with an
+  own-domain sender and (b) one signed by the mock server WHEN a local user joins
+  `!x:mock` through it THEN L's current state and memberships are unchanged AND neither
+  event is stored.
+
+### FED-2 — Federation read endpoints do not check that the requesting server is in the room
+
+- **Severity:** high · **Attacker:** A3 · **Verdict:** confirmed; spec citation corrected
+- **Location:**
+  - `src/federation/inbound_request.cpp:1250-1280`, `:1452-1544`, `:2329-2386`
+  - `src/homeserver/local_http_router.cpp:2182-2232`
+  - `src/federation/event_query.cpp:248-256`, `:297-558`
+- **Spec:**
+  - `GET /state_ids` lists "403 | The requesting host is not in the room, or is excluded
+    from the room via `m.room.server_acl`."
+  - `/state`, `/event`, `/backfill` and `/get_missing_events` have no 403 row. A
+    membership rule for those is therefore a security requirement, not a spec MUST.
+    The ACL MUST is implemented, except on `/event`, which is not in the spec's ACL list.
+- **Path:**
+  1. The room-scoped providers take no origin. The only gate is the server ACL.
+  2. `/state` and `/state_ids` fall back to the current state for an unknown `event_id`.
+  3. `/get_missing_events` ignores `earliest_events` and `latest_events` and has no cap
+     on `limit`. It returns every event in the room at or above `min_depth`, which is the
+     full history in one request, scanned O(N) under the runtime lock.
+  4. `/event/{id}` returns any stored event.
+- **Impact:** any federating server that knows a room ID can dump the state, the member
+  list and the entire history of any room hosted here, including private rooms.
+  Encrypted rooms leak metadata and ciphertext.
+- **Fix:**
+  - Pass the authenticated origin to every provider. Require the origin to have a
+    joined member, or history visibility that permits it, and answer 403
+    `M_FORBIDDEN` otherwise.
+  - Resolve `/event` through the event's room.
+  - Implement `/get_missing_events` as a walk from `latest_events`, with a capped
+    `limit`.
+  - Return 404 for an unknown `event_id` instead of falling back.
+- **Test:** GIVEN a room with only local members WHEN another server calls `/state`,
+  `/state_ids`, `/event`, `/backfill` and `/get_missing_events` for it THEN each returns
+  403 and no room data.
+
+### FED-3 — The sender of an `m.direct_to_device` EDU is not bound to the sending server
+
+- **Severity:** high · **Attacker:** A3 · **Verdict:** confirmed
+- **Location:** `src/homeserver/local_http_router.cpp:1053-1107`;
+  `src/federation/inbound_ingestion.cpp:290-293`
+- **Detail:**
+  - The EDU's `sender` is stored as given. Typing, receipt and device-list EDUs do check
+    the sender with `user_belongs_to_origin`; this one does not.
+  - Targets are not checked to be local users.
+  - `message_id` is never read. The spec says it is "used for idempotence".
+- **Impact:**
+  - Any peer can deliver to-device messages (verification requests, key requests) that
+    appear to come from any user on any server.
+  - Invented targets grow the queue without bound (compare CSAZ-10).
+- **Fix:**
+  - Require `server_name(sender) == origin`.
+  - Deliver only to local users.
+  - Deduplicate on `(origin, message_id)`.
+  - Cap fan-out per EDU.
+- **Test:** GIVEN origin B WHEN it sends a to-device EDU with `sender=@x:A` to a local
+  user THEN nothing is queued AND a replayed `message_id` from a valid sender is
+  delivered once.
+
+### FED-4 — Forged X-Matrix requests lock a real peer out of federation until restart
+
+- **Severity:** high · **Attacker:** A1 (no credential needed) · **Verdict:** confirmed
+- **Location:** `src/federation/inbound_request.cpp:2263-2324`, `:2519`, `:2624`, `:2978`;
+  `src/federation/security.cpp:313-320`
+- **Path:**
+  1. The attacker sends a request naming `origin=peer.example` with a real key ID and a
+     garbage signature.
+  2. `check_inbound_request_signature` increments the claimed origin's
+     `consecutive_failures`.
+  3. After three such requests, `remote_trust_policy` answers 429 for that origin. It
+     does so before the signature check, so it applies to every genuine request too.
+  4. The counter is reset only after an accepted request, which can no longer happen,
+     and nothing decays it.
+  5. The unit test at `tests/unit/test_federation_inbound_request.cpp:743-771` asserts
+     the lockout without modelling a third party.
+- **Impact:** three unauthenticated packets cut federation with any peer. This is a side
+  effect of the earlier H-04 fix.
+- **Fix:**
+  - Never charge a failed signature to the claimed origin's trust record; count it
+    against the source address or the key-resolution budget instead.
+  - Decay origin-level backoff over time.
+- **Test:** GIVEN a known peer P WHEN 10 bad-signature requests naming P arrive from
+  another address THEN a correctly signed request from P is accepted.
+
+### FED-5 — An inbound `/invite` for a room hosted here overwrites a ban with a forged invite
+
+- **Severity:** high · **Attacker:** A3 (with a banned local accomplice) · **Verdict:**
+  confirmed; the URL event-ID sub-claim is mitigated by the worker relay
+- **Location:** `src/homeserver/local_http_router.cpp:681-703`, `:2049-2154`
+- **Path:**
+  1. `invite_handler` checks the event shape, that the target is local and that the
+     sender is on the origin. It runs no room auth rules.
+  2. It rewrites the target's membership row from `ban` to `invite`, and stores the
+     forged event as the target's current `m.room.member` state.
+  3. The banned user then joins. Local composition authorises against `store.state`,
+     sees `invite`, and allows the join even in an invite-only room.
+- **Impact:** any remote server can undo a ban for a local user in a room hosted here.
+- **Fix:**
+  - When the room is known locally, run the room's auth rules on the invite and refuse
+    it on failure; never overwrite a ban.
+  - Keep remote invite events out of `current_state`.
+  - Bind the URL event ID to the computed ID on the direct path too.
+- **Test:** GIVEN local user U banned in local room L WHEN a remote server sends a
+  validly signed invite for U into L THEN U stays `ban`, L's state is unchanged, and the
+  response is 403.
+
+### FED-7 — Device-list and signing-key EDUs write one row per local user, with no deduplication, under the global lock
+
+- **Severity:** high (DoS) · **Attacker:** A3 · **Verdict:** confirmed
+- **Location:**
+  - `src/homeserver/local_http_router.cpp:1473-1507`
+  - `src/database/persistent_store.cpp:2945-2968`
+  - `src/homeserver/worker_pool.cpp:829-840`
+- **Detail:**
+  - Each EDU records a change for every local user, not only those who share a room with
+    the subject.
+  - Rows are neither deduplicated nor pruned.
+  - Each insert is synchronous and runs under the runtime mutex.
+  - At the default 1200 EDUs per minute per origin, that is 1200 × (local users) rows a
+    minute.
+- **Fix:**
+  - Notify only users who share a room with the subject, and deduplicate on
+    (observer, subject).
+  - Prune old rows.
+  - Weight the rate limit by fan-out.
+  - Do not hold the runtime mutex across per-user writes.
+- **Test:** GIVEN N local users WHEN 100 identical device-list EDUs arrive for a remote
+  user who shares no room THEN no rows are written.
+
+### FED-6 — `send_join`, `send_leave` and `send_knock` skip the spec's event validation, and the membership recorded comes from the endpoint
+
+- **Severity:** medium · **Attacker:** A3 · **Verdict:** adjusted
+- **Refuted part:** "no auth check". `membership_acceptor` authorises the event before
+  writing it (`local_http_router.cpp:1771-1857`, `:1866-1924`).
+- **Location:** `src/federation/inbound_request.cpp:948-1097`;
+  `src/homeserver/local_http_router.cpp:705-716`, `:1513-1627`
+- **Spec:** "The receiving server MUST apply certain validation before accepting the
+  event". The listed conditions include: the event type is not `m.room.member`, the
+  content `membership` does not match the endpoint, the event sender is not a user ID on
+  the origin server, and the `state_key` is not equal to the `sender`. For `make_*`,
+  `userId` "MUST be a user ID on the origin server".
+- **Path:**
+  1. In a room with a knock join rule, a remote user signs a `membership: knock` event
+     and PUTs it to `send_join`.
+  2. The event passes auth as a knock.
+  3. `membership_for_endpoint` records `join`, and the user is added to
+     `LocalRoom.members`. That list drives which servers receive fan-out, so the
+     knocker's server now gets every PDU and EDU for the room.
+- **Fix:**
+  - Enforce the listed validations.
+  - Derive the membership from the event content and reject a mismatch with the
+    endpoint.
+  - Apply the origin check on `make_*`.
+- **Test:** GIVEN a knock room WHEN a knock event is PUT to `send_join` THEN 400
+  `M_INVALID_PARAM`, with no membership row and no fan-out destination.
+
+### FED-8 — Receipt EDUs bypass the server ACL
+
+- **Severity:** medium (spec MUST) · **Attacker:** A3 · **Verdict:** confirmed
+- **Location:** `src/federation/inbound_request.cpp:2388-2420`, `:2933-2952`;
+  `src/homeserver/local_http_router.cpp:1033-1039`, `:1288-1381`
+- **Spec:** "For receipts (`m.receipt`), all receipts for a particular room ID MUST be
+  ignored if the sending server is denied access to the room identified by that ID."
+- **Detail:**
+  - `room_id_from_edu_content` looks for a top-level `room_id` member, but receipt
+    content is keyed by room ID, so the ACL check never fires.
+  - The receipt sink accepts any room with any local membership row, and does not
+    require the receipt's user to be joined.
+- **Fix:**
+  - Apply the ACL to each room key in the receipt content.
+  - Require the receipt's user to be joined.
+- **Test:** GIVEN a room whose ACL denies evil.example WHEN evil.example sends a receipt
+  for that room THEN nothing is stored.
+
+### FED-11 — PDUs for rooms with no local membership are stored without bound
+
+- **Severity:** medium (low-medium) · **Attacker:** A3 · **Verdict:** adjusted
+- **Location:** `src/homeserver/local_http_router.cpp:3564-3849`
+- **Detail:**
+  - No "room known here" gate exists. Such PDUs are stored as rejected, and they are
+    never pruned.
+  - The spoofing risk is limited: create-event auth ties the room ID's domain to the
+    sender for versions up to 11, and v12 room IDs are hashes.
+- **Fix:** drop PDUs for rooms with no local membership or invite unless they answer an
+  outstanding backfill.
+- **Test:** GIVEN no local member of `!x:evil` WHEN 50 PDUs for it arrive THEN none are
+  stored.
+
+### FED-9 — A transaction whose first PDU has no `room_id` is processed in the main process, outside the worker sandbox
+
+- **Severity:** low (defence in depth) · **Attacker:** A3 · **Verdict:** adjusted from
+  medium
+- **Location:** `src/homeserver/federation_request_routing.cpp:105-133`, `:179-187`;
+  `src/homeserver/federation_proxy.cpp:142-150`
+- **Fix:** bypass the worker only when `pdus` is present and empty.
+- **Test:** GIVEN a `/send` whose first PDU lacks `room_id`, followed by real PDUs WHEN it
+  arrives THEN it is routed to the worker.
+
+### FED-10 — Resolving sender keys for relayed PDUs bypasses the key-resolution admission budget
+
+- **Severity:** low · **Attacker:** A3 (authenticated) · **Verdict:** adjusted
+- **Location:** `src/federation/inbound_request.cpp:2660-2726`;
+  `src/federation/remote_key_cache.cpp:457-529`
+- **Detail:** each transaction can trigger up to 50 discovery and key fetches to domains
+  of the attacker's choosing, with no negative cache.
+- **Fix:** route this through the same admission budget and failure cache as the
+  unknown-remote path.
+- **Test:** GIVEN 50 unresolvable sender domains in one transaction WHEN it is processed
+  THEN outbound fetches stay within the budget.
+
+### FED-12 — The main process trusts the `origin` of EDU frames relayed by the worker
+
+- **Severity:** low (A5 hardening) · **Verdict:** found by the verifier
+- **Location:** `src/homeserver/worker_pool.cpp:811-842`
+- **Detail:** ADR-0071 re-verification covers PDUs and memberships, not EDUs. A
+  compromised worker can forge typing, receipt, device-list and to-device EDUs from any
+  origin.
+- **Fix:** bind the envelope origin to the origin main verified for the in-flight
+  request.
+- **Test:** GIVEN a worker relaying an EDU frame whose `origin` differs from the verified
+  request origin WHEN main handles it THEN the EDU is rejected.
+
+### Area 4 — hardening notes
+
+- `old_verify_keys` are ignored, so events signed with a rotated-out key cannot be
+  verified. This affects availability only.
+- Remote key IDs are not required to start with `ed25519:`.
+- Sender-domain parsing exists in three differing implementations (`inbound_request.cpp`,
+  `worker_pool.cpp:639`, `local_http_router.cpp:2836`). Consolidate them to avoid
+  differential parsing.
+- `server_name_is_valid` requires a `.`, and the X-Matrix scheme comparison is
+  case-sensitive.
+- The `send_join` response never adds `join_authorised_via_users_server` for restricted
+  rooms (already a recorded capability gap).
+- `event_auth` is unimplemented.
+
+### Area 4 — coverage gaps
+
+- Read only in part: `outbound_membership.cpp`, `outbound_transaction.cpp`,
+  `dispatch_worker.cpp`, the worker event loop beyond provider wiring, and media
+  federation download.
+- Unrouted, not audited: `/publicRooms`, `/timestamp_to_event` and `/openid/userinfo`.
 
