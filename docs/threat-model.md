@@ -540,12 +540,46 @@ threat it closes; the controls above are the standing defences these reinforce.
   concurrency, `security.federation.join_state_key_parallelism`, default
   `100`), and each event's signature is verified against its resolved key
   before being handed to `ingest_send_join_state` / the auth_chain persistence
-  loop. Events whose sender is our own server are trusted without a resolver
-  round trip (self-signed). Fail-closed: an event whose key cannot be
-  resolved or whose signature does not verify is silently dropped, not
-  persisted, and does not fail the join — a resident server acting in bad
-  faith degrades the joining server's view of the room rather than being able
-  to inject forged state.
+  loop. Fail-closed: an event whose key cannot be resolved or whose signature
+  does not verify is silently dropped, not persisted, and does not fail the
+  join. As first shipped, this fix left two holes, closed in FED-1 below.
+
+- **`send_join` response events were not bound to the joined room, and
+  own-domain events skipped the signature check (FED-1, security audit
+  2026-09-29, critical):** the 0.10.11 fix above kept every event whose sender
+  was on our own server without any signature check, and nothing compared an
+  event's `room_id` with the room being joined. `ingest_send_join_state`
+  stored each event under its own `room_id` and wrote it to that room's
+  `current_state`, and the auth-chain loop did the same for auth-chain events.
+  A local user who controlled a remote server could join a room there and have
+  its `send_join` response carry an unsigned `m.room.power_levels` for any
+  room hosted here, naming a local sender — and become that room's admin, or
+  forge memberships through the background member fill. Fixed (ADR-0083):
+  `filter_send_join_events_for_room` drops every `state` and `auth_chain`
+  entry that does not belong to the joined room before any key resolution, on
+  both the synchronous and the background path (for v12, the `m.room.create`
+  event belongs only when its derived room ID is the joined room), and
+  `ingest_send_join_state` repeats the check at the writer. Own-domain events
+  are verified against this server's own signing keys — the current key and
+  every retired key it still holds, never fetched over the network — and are
+  dropped when the key ID is not one we hold or the signature fails. Those
+  key rows cannot be replaced from outside: the remote-key resolver never
+  fetches or caches keys for our own server name (a relayed PDU can name our
+  domain as its sender), and `store_server_signing_key` refuses a secretless
+  write that would change the public key of a secret-holding row.
+  Auth-chain events are stored as outliers with no `current_state` row, and
+  the start-up `repair_missing_state_entries` pass only promotes `accepted`
+  events, so an outlier cannot become current state after a restart either.
+
+  What this guarantees, and what it does not: a `send_join` response can only
+  write the state of the room being joined, and only with events whose
+  signatures verify. It does not make the resident server honest about that
+  room. The `state` array is not run through the authorisation rules, so a
+  resident server can still hand us a self-consistent but false view of its
+  own room — for example, omit a ban or supply an earlier, validly signed
+  power-levels event as current. Such a view is confined to the joined room;
+  events that reach us later go through normal PDU ingestion, which
+  authorises them and resolves state against it as usual.
 
 - **Fast join / partial-state trade-off (v0.10.11):** verifying a large room's
   full `state` array before returning `join_room`'s response means the client

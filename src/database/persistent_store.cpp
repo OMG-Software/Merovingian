@@ -1045,6 +1045,33 @@ namespace
     {
         return false;
     }
+    // FED-1 (ADR-0083): a row that holds a secret is a key this server
+    // generated, and its public key is what our own signatures are verified
+    // against. A write without a secret (a key fetched over federation, or a
+    // retirement) may change its validity but never its public key. Checked
+    // here, before the upsert, so neither the database row nor the in-memory
+    // mirror is touched; done in C++ so it does not depend on how the backend
+    // stores secret_key.
+    if (key.secret_key.empty())
+    {
+        auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+        auto const existing =
+            std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
+                return row.server_name == key.server_name && row.key_id == key.key_id;
+            });
+        if (existing != store.server_signing_keys.end() && !existing->secret_key.empty() &&
+            existing->public_key != key.public_key)
+        {
+            log_diagnostic("server_signing_key.rejected",
+                           {
+                               {"server_name", key.server_name,                                         false},
+                               {"key_id",      key.key_id,                                              false},
+                               {"reason",      "secretless write would replace a generated public key", false}
+            },
+                           observability::LogEventSeverity::warning);
+            return false;
+        }
+    }
     if (!record_and_persist(
             store, record_statement(
                        "upsert_server_signing_key",
@@ -3749,6 +3776,16 @@ auto repair_missing_state_entries(PersistentStore& store) -> std::size_t
 
     for (auto const& event : store.events)
     {
+        // FED-1 (ADR-0083): only an accepted event can be current state. An
+        // outlier (a send_join auth-chain event, a backfilled event) or a
+        // rejected or soft-failed event is stored without a state row on
+        // purpose; this repair must not promote it on the next restart. The
+        // legacy rows this repair exists for predate the status column and
+        // read back as its default, "accepted".
+        if (event.status != "accepted")
+        {
+            continue;
+        }
         auto const json_state_key = top_level_json_string_field(event.json, "state_key");
         if (!json_state_key.has_value())
         {

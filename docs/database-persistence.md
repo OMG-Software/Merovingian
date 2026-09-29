@@ -569,7 +569,11 @@ remaining work before PostgreSQL-backed production operation.
     chained off that snapshot (`homeserver::record_event_state_with_parent`,
     `record_event_state` generalised to an explicit parent group), and
     makes it the room's sole forward extremity — so the first inbound PDU
-    after a join no longer hits `missing_prev_state`.
+    after a join no longer hits `missing_prev_state`. Since FED-1
+    (ADR-0083) only entries whose room is the joined room are stored, and
+    `auth_chain` events are stored as outliers with no `current_state` row;
+    `repair_missing_state_entries` (start-up) likewise only promotes
+    `accepted` events, never an outlier or a rejected one.
   - A source-tree guard test (`tests/unit/test_store_event_choke_point.cpp`)
     fails the build if `database::store_event_with_state(` appears anywhere
     in `src/` outside a reviewed, counted allowlist.

@@ -20,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -2335,8 +2336,13 @@ SCENARIO("Server signing key secret survives a database restart", "[database][pe
     }
 }
 
+// FED-1 follow-up (ADR-0083): this server verifies its own-domain events
+// against the rows it generated — the ones holding a secret. A write without
+// a secret (a key fetched over federation, or a retirement) must never change
+// the public key of such a row, or a key fetched for our own server name
+// could replace the key our own signatures are checked against.
 SCENARIO("store_server_signing_key preserves an existing secret when upserted with an empty secret",
-         "[database][persistence][signing-key]")
+         "[database][persistence][signing-key][security][fed1]")
 {
     GIVEN("an in-memory store with a signing key that has a stored secret")
     {
@@ -2356,14 +2362,84 @@ SCENARIO("store_server_signing_key preserves an existing secret when upserted wi
                 store, {"example.org", "ed25519:auto", "pub-v2", 32503680000000ULL, {}});
             auto const found = merovingian::database::find_server_signing_key(store, "example.org", "ed25519:auto");
 
-            THEN("the public key is updated and the existing base64 secret is preserved")
+            THEN("the write is refused: the public key and the secret are both unchanged")
+            {
+                REQUIRE_FALSE(ok);
+                REQUIRE(found.has_value());
+                REQUIRE(found->public_key == "pub-v1");
+                REQUIRE(found->secret_key == original_secret);
+                REQUIRE(found->valid_until_ts == 32503680000000ULL);
+            }
+        }
+
+        WHEN("the same key is retired: upserted with the same public key, no secret and a new valid_until_ts")
+        {
+            auto const ok = merovingian::database::store_server_signing_key(
+                store, {"example.org", "ed25519:auto", "pub-v1", 1000ULL, {}});
+            auto const found = merovingian::database::find_server_signing_key(store, "example.org", "ed25519:auto");
+
+            THEN("the new validity is stored and the secret is preserved")
             {
                 REQUIRE(ok);
                 REQUIRE(found.has_value());
-                REQUIRE(found->public_key == "pub-v2");
+                REQUIRE(found->public_key == "pub-v1");
+                REQUIRE(found->valid_until_ts == 1000ULL);
                 REQUIRE(found->secret_key == original_secret);
             }
         }
+
+        WHEN("a key for another server is stored with no secret, then refreshed with a new public key")
+        {
+            auto const first = merovingian::database::store_server_signing_key(
+                store, {"remote.example.org", "ed25519:auto", "remote-v1", 32503680000000ULL, {}});
+            auto const second = merovingian::database::store_server_signing_key(
+                store, {"remote.example.org", "ed25519:auto", "remote-v2", 32503680000000ULL, {}});
+            auto const found =
+                merovingian::database::find_server_signing_key(store, "remote.example.org", "ed25519:auto");
+
+            THEN("remote keys, which hold no secret, still store and refresh normally")
+            {
+                REQUIRE(first);
+                REQUIRE(second);
+                REQUIRE(found.has_value());
+                REQUIRE(found->public_key == "remote-v2");
+                REQUIRE(found->secret_key.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("store_server_signing_key never persists a secretless public-key change over a secret-holding row",
+         "[database][persistence][signing-key][security][fed1]")
+{
+    GIVEN("a SQLite store with this server's own signing key, secret included")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto constexpr stored_secret = std::string_view{"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"};
+        REQUIRE(merovingian::database::store_server_signing_key(
+            opened.store, {"example.org", "ed25519:own", "own-public", 32503680000000ULL, std::string{stored_secret}}));
+
+        WHEN("a secretless write tries to replace its public key and the database is reopened")
+        {
+            std::ignore = merovingian::database::store_server_signing_key(
+                opened.store, {"example.org", "ed25519:own", "attacker-public", 32503680000000ULL, {}});
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto const found =
+                merovingian::database::find_server_signing_key(reopened.store, "example.org", "ed25519:own");
+
+            THEN("the persisted row still holds the original public key and secret")
+            {
+                REQUIRE(found.has_value());
+                REQUIRE(found->public_key == "own-public");
+                REQUIRE(found->secret_key == stored_secret);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
     }
 }
 
@@ -2754,6 +2830,53 @@ SCENARIO("repair_missing_state_entries creates state entries for events with sta
                 {
                     REQUIRE(repaired_again == 0U);
                 }
+            }
+        }
+    }
+}
+
+// FED-1 (security audit 2026-09-29): an event stored purely as an outlier —
+// an auth-chain entry from a send_join response, a backfilled event — or one
+// that was rejected is kept without a current_state row on purpose. The
+// start-up repair exists for events that older code stored as accepted state
+// without a state row; it must not turn an outlier or a rejected event into
+// the room's current state on the next restart.
+SCENARIO("repair_missing_state_entries never promotes an outlier or rejected event to current state",
+         "[database][persistent_store][repair][security][fed1]")
+{
+    GIVEN("a store holding an outlier power_levels event and a rejected member event, neither with a state row")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.open = true;
+        store.backend = merovingian::database::PersistentStoreBackend::memory;
+
+        auto const room_id = std::string{"!outlier_repair:example.org"};
+        store.events.push_back({.event_id = "$outlier_pl:example.org",
+                                .room_id = room_id,
+                                .sender_user_id = "@mallory:example.org",
+                                .json = R"({"type":"m.room.power_levels","state_key":"","content":{}})",
+                                .depth = 1U,
+                                .stream_ordering = 1U,
+                                .status = "outlier"});
+        store.events.push_back(
+            {.event_id = "$rejected_member:example.org",
+             .room_id = room_id,
+             .sender_user_id = "@mallory:example.org",
+             .json = R"({"type":"m.room.member","state_key":"@mallory:example.org","content":{"membership":"join"}})",
+             .depth = 2U,
+             .stream_ordering = 2U,
+             .status = "rejected"});
+
+        WHEN("repair_missing_state_entries is called")
+        {
+            auto const repaired = merovingian::database::repair_missing_state_entries(store);
+
+            THEN("no state row is created for either event")
+            {
+                REQUIRE(repaired == 0U);
+                REQUIRE_FALSE(std::ranges::any_of(store.state, [&](auto const& s) {
+                    return s.room_id == room_id;
+                }));
             }
         }
     }

@@ -391,6 +391,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   inject events attributed to a user or server it doesn't control — this was a real, fixed
   vulnerability (`authorize_federation_pdu` originally skipped verification for relayed
   PDUs; see `docs/threat-model.md`, entries C1 and #270).
+  There is no exception for an event whose sender is on our own server: verify it against
+  this server's own signing keys (current and retired, never fetched over the network) and
+  drop it if the key is not one we hold. Events in a `send_join` response must also belong
+  to the room being joined; drop any other entry before verifying or storing it.
+  Why: the `send_join` path once kept own-domain events unchecked and stored each event
+  under its own `room_id`, so a local user's remote server could rewrite the power levels
+  of any local room (FED-1, ADR-0083).
   Source: `src/federation/AGENTS.md`.
 
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote

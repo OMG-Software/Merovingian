@@ -25,6 +25,7 @@
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
@@ -3001,6 +3002,72 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
     return candidates;
 }
 
+namespace
+{
+
+    // FED-1 (ADR-0083): the room a send_join `state` or `auth_chain` entry
+    // belongs to, or "" when it has none we can accept. Under a room version
+    // whose m.room.create event defines the room ID (v12, rooms/v12.md), the
+    // create event has no room_id — "The room ID is the event ID of the event
+    // with sigil ! instead of $" — and one that carries a room_id is rejected
+    // by auth rule 1.2, so it belongs to no room here.
+    [[nodiscard]] auto send_join_event_room_id(canonicaljson::Value const& entry,
+                                               rooms::RoomVersionPolicy const& policy) -> std::string
+    {
+        auto const* entry_obj = std::get_if<canonicaljson::Object>(&entry.storage());
+        if (entry_obj == nullptr)
+        {
+            return {};
+        }
+        auto const* type_field = json_string_member(*entry_obj, "type");
+        if (policy.create_event_is_room_id && type_field != nullptr && *type_field == "m.room.create")
+        {
+            if (json_object_member(*entry_obj, "room_id") != nullptr)
+            {
+                return {};
+            }
+            auto const create_id = events::make_reference_hash_event_id(entry, policy);
+            if (!create_id.error.empty() || create_id.event_id.size() < 2U)
+            {
+                return {};
+            }
+            return "!" + create_id.event_id.substr(1U);
+        }
+        auto const* room_field = json_string_member(*entry_obj, "room_id");
+        return room_field != nullptr ? *room_field : std::string{};
+    }
+
+} // namespace
+
+[[nodiscard]] auto filter_send_join_events_for_room(canonicaljson::Array const& events, std::string_view room_id,
+                                                    rooms::RoomVersionPolicy const& policy) -> canonicaljson::Array
+{
+    auto kept = canonicaljson::Array{};
+    if (room_id.empty())
+    {
+        return kept;
+    }
+    kept.reserve(events.size());
+    for (auto const& entry : events)
+    {
+        if (send_join_event_room_id(entry, policy) == room_id)
+        {
+            kept.push_back(entry);
+        }
+    }
+    if (kept.size() != events.size())
+    {
+        log_diagnostic("room.join.state_event_rejected",
+                       {
+                           {"room_id", std::string{room_id},                             false},
+                           {"dropped", std::to_string(events.size() - kept.size()),      false},
+                           {"reason",  "event does not belong to the room being joined", false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    return kept;
+}
+
 // Persists the `state` array from a send_join response. Each event is stored to
 // the persistent event graph. Events that carry a "state_key" field in their raw
 // JSON (even when that value is "") are also written to the state table. That is
@@ -3013,13 +3080,21 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
 // that state events with empty state_key (m.room.encryption, m.room.create, etc.)
 // are correctly persisted. Do NOT change the state-key check without updating the
 // corresponding test in tests/unit/test_federation_invite_join.cpp.
-[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
+[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, std::string_view room_id,
+                                          canonicaljson::Array const& state_arr,
                                           rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult
 {
     auto result = SendJoinStateIngestResult{};
     auto& joined_members = result.joined_members;
     for (auto const& state_entry : state_arr)
     {
+        // FED-1 (ADR-0083): an entry for any other room is never stored and
+        // never written to current_state. join_room filters the arrays before
+        // verification too; this is the check at the writer.
+        if (room_id.empty() || send_join_event_room_id(state_entry, policy) != room_id)
+        {
+            continue;
+        }
         auto const serialized = canonicaljson::serialize_canonical(state_entry);
         if (serialized.error == canonicaljson::CanonicalJsonError::none)
         {
@@ -3071,21 +3146,12 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
                 // defaults to "" both for state events with state_key="" AND for
                 // non-state events (where the field is absent), so .empty() cannot
                 // distinguish the two. Check the raw JSON field instead.
-                // v12 (MSC4291): m.room.create carries no room_id field — the room ID
-                // IS the create event's reference hash. Derive it from event_id so the
-                // PersistentStateEvent is stored with the correct room_id and can be
-                // found later by build_pdu_auth_event_map.
-                auto const effective_room_id = [&]() -> std::string {
-                    if (!parsed.event.room_id.empty())
-                    {
-                        return parsed.event.room_id;
-                    }
-                    if (policy.create_event_is_room_id && !event_id.empty())
-                    {
-                        return "!" + event_id.substr(1);
-                    }
-                    return {};
-                }();
+                // The entry belongs to `room_id` (checked above). For a v12
+                // m.room.create, which carries no room_id field, that is the room
+                // ID derived from its reference hash, so the PersistentStateEvent
+                // is stored with the correct room_id and can be found later by
+                // build_pdu_auth_event_map.
+                auto const effective_room_id = std::string{room_id};
                 auto state = std::optional<database::PersistentStateEvent>{};
                 if (entry_obj != nullptr)
                 {
@@ -3223,10 +3289,20 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             }
         }
     }
-    // Verify each event's signature against its resolved sender-domain key,
-    // dropping events that fail. Fail-closed (src/federation/AGENTS.md rule 2):
-    // an event whose sender-domain key was not resolved, or whose signature
-    // does not verify, is silently dropped — never persisted.
+    // FED-1 (ADR-0083): an event naming our own domain is verified like any
+    // other, against this server's OWN signing keys — never fetched over the
+    // network. federation::find_own_server_signing_key reads only the rows
+    // for our server name that hold a secret (the keys we generated: the
+    // current one and every retired one); a row without a secret is a copy
+    // fetched from somewhere and is not trusted as ours. It takes the store's
+    // signing-key lock, so this is safe with runtime.mutex released.
+    auto const own_signing_key = [&](std::string_view key_id) -> std::optional<federation::FederationKeyRecord> {
+        return federation::find_own_server_signing_key(runtime.database.persistent_store, our_server, key_id);
+    };
+    // Verify each event's signature against its sender-domain key, dropping
+    // events that fail. Fail-closed (src/federation/AGENTS.md rule 2): an event
+    // whose sender-domain key was not found, or whose signature does not
+    // verify, is silently dropped — never persisted.
     auto verified = canonicaljson::Array{};
     verified.reserve(events.size());
     for (auto const& entry : events)
@@ -3239,12 +3315,6 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         auto const dom = sender_domain_from_user_id(parsed.event.sender);
         if (dom.empty())
         {
-            continue;
-        }
-        if (dom == our_server)
-        {
-            // Self-signed: we hold this key already, no resolver round trip needed.
-            verified.push_back(entry);
             continue;
         }
         auto key_id = std::string{};
@@ -3266,15 +3336,23 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                            observability::LogEventSeverity::warning);
             continue;
         }
-        auto const map_it = sender_key_map.find(std::pair<std::string, std::string>{std::string{dom}, key_id});
-        auto const& resolved_key =
-            map_it != sender_key_map.end() ? map_it->second : std::optional<federation::FederationKeyRecord>{};
+        auto const resolved_key = [&]() -> std::optional<federation::FederationKeyRecord> {
+            if (dom == our_server)
+            {
+                return own_signing_key(key_id);
+            }
+            auto const map_it = sender_key_map.find(std::pair<std::string, std::string>{std::string{dom}, key_id});
+            return map_it != sender_key_map.end() ? map_it->second : std::nullopt;
+        }();
         if (!resolved_key.has_value())
         {
             log_diagnostic("room.join.state_event_rejected",
                            {
-                               {"sender_domain", std::string{dom},                        false},
-                               {"reason",        "sender domain signing key unavailable", false}
+                               {"sender_domain", std::string{dom},                           false},
+                               {"reason",
+                                dom == our_server ? "signing key is not one this server holds"
+                                                  : "sender domain signing key unavailable",
+                                false                                                             }
             },
                            observability::LogEventSeverity::warning);
             continue;
@@ -3720,8 +3798,15 @@ namespace
         auto const* state_arr = state_arr_member != send_obj->end()
                                     ? std::get_if<canonicaljson::Array>(&state_arr_member->value->storage())
                                     : nullptr;
+        // FED-1 (ADR-0083): only the joined room's events go any further — an
+        // entry naming any other room is dropped before key resolution, on
+        // both the critical and the background (partial-state) path. The
+        // response's own `event` field is never read: the join event we store
+        // is the one signed above from the validated make_join template.
         auto state_split =
-            state_arr != nullptr ? split_send_join_state_events(*state_arr, user_id) : SendJoinStateSplit{};
+            state_arr != nullptr
+                ? split_send_join_state_events(filter_send_join_events_for_room(*state_arr, room_id, *policy), user_id)
+                : SendJoinStateSplit{};
         auto& critical_state = state_split.critical;
         auto& background_state = state_split.background;
         auto const background_member_count = background_state.size();
@@ -3737,9 +3822,11 @@ namespace
         auto const* auth_arr = auth_arr_member != send_obj->end()
                                    ? std::get_if<canonicaljson::Array>(&auth_arr_member->value->storage())
                                    : nullptr;
-        auto verified_auth_chain = auth_arr != nullptr
-                                       ? filter_verified_send_join_events(runtime, *auth_arr, *policy, our_server)
-                                       : canonicaljson::Array{};
+        auto verified_auth_chain =
+            auth_arr != nullptr
+                ? filter_verified_send_join_events(
+                      runtime, filter_send_join_events_for_room(*auth_arr, room_id, *policy), *policy, our_server)
+                : canonicaljson::Array{};
 
         auto outcome = FederatedJoinOutcome{};
         outcome.policy = *policy;
@@ -3933,7 +4020,7 @@ namespace
         // (m.room.encryption, m.room.create, m.room.power_levels, etc.) by
         // checking the raw JSON for the presence of the "state_key" field
         // rather than its emptiness.
-        auto send_join_state = ingest_send_join_state(runtime, verified_critical_state, policy);
+        auto send_join_state = ingest_send_join_state(runtime, room_id, verified_critical_state, policy);
         for (auto const& m : send_join_state.joined_members)
         {
             append_unique_member(joined_members, m);
@@ -3943,6 +4030,10 @@ namespace
         // released.
         for (auto const& auth_entry : verified_auth_chain)
         {
+            if (send_join_event_room_id(auth_entry, policy) != room_id)
+            {
+                continue; // FED-1: already filtered; kept at the writer as well
+            }
             auto const serialized = canonicaljson::serialize_canonical(auth_entry);
             if (serialized.error == canonicaljson::CanonicalJsonError::none)
             {
@@ -3989,32 +4080,9 @@ namespace
                         }
                     }
                     auto const stream_ordering = allocate_stream_ordering(runtime.database);
-                    // Detect state events by JSON field presence, not .empty(): the
-                    // state_key field exists even when "" (e.g. m.room.create).
-                    // v12 (MSC4291): m.room.create has no room_id field; derive it.
-                    auto const auth_effective_room_id = [&]() -> std::string {
-                        if (!parsed.event.room_id.empty())
-                        {
-                            return parsed.event.room_id;
-                        }
-                        if (policy.create_event_is_room_id && !event_id.empty())
-                        {
-                            return "!" + event_id.substr(1);
-                        }
-                        return {};
-                    }();
-                    auto state = std::optional<database::PersistentStateEvent>{};
-                    if (entry_obj != nullptr)
-                    {
-                        if (auto const* raw_sk = json_string_member(*entry_obj, "state_key"); raw_sk != nullptr)
-                        {
-                            state = database::PersistentStateEvent{auth_effective_room_id, parsed.event.event_type,
-                                                                   *raw_sk, event_id};
-                        }
-                    }
                     auto pe = database::PersistentEvent{};
                     pe.event_id = event_id;
-                    pe.room_id = auth_effective_room_id;
+                    pe.room_id = std::string{room_id};
                     pe.sender_user_id = parsed.event.sender;
                     pe.json = serialized.output;
                     pe.depth = depth;
@@ -4030,9 +4098,15 @@ namespace
                     // (the auth chain can include state later superseded,
                     // unlike the state array, which is the room's state as
                     // of just before the join).
+                    //
+                    // FED-1 (ADR-0083): and so they are never applied as
+                    // current state either — no current_state row, even for
+                    // a state event (the same rule ADR-0070 applies to other
+                    // auth-only outliers). The room's current state comes
+                    // from the `state` snapshot above.
                     pe.status = "outlier";
-                    std::ignore =
-                        database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state);
+                    std::ignore = database::store_event_with_state(runtime.database.persistent_store, std::move(pe),
+                                                                   std::nullopt);
                 }
             }
         }
@@ -4252,7 +4326,7 @@ namespace
                     auto const verified =
                         filter_verified_send_join_events(runtime, background_state_bg, policy_bg, our_server_bg);
                     auto bg_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-                    auto const newly_joined = ingest_send_join_state(runtime, verified, policy_bg);
+                    auto const newly_joined = ingest_send_join_state(runtime, room_id_bg, verified, policy_bg);
                     auto stored = std::size_t{0U};
                     auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
                         return r.room_id == room_id_bg;

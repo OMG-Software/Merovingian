@@ -13,6 +13,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 2. **Verify every inbound PDU's signature** against the sending server's published key before
    allowing it to enter the event graph. Unverified events must be silently dropped (not persisted).
+   There is no exception for an event whose sender is on our own server: verify it against this
+   server's own signing keys (current and retired, never fetched over the network), and drop it if
+   the key is not one we hold. Events in a `send_join` response must also belong to the room being
+   joined; drop any other entry before verifying or storing it (ADR-0083).
 
    A failed signature is NEVER charged to the claimed origin's `RemoteTrustState`: the origin
    is unauthenticated until the signature verifies, so doing so lets any sender lock a real

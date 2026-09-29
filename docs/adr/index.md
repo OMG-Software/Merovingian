@@ -81,6 +81,7 @@
 * [0078 - The federation worker never signs](0078-the-federation-worker-never-signs.md)
 * [0081 - Failed inbound signatures are never charged to the claimed origin](0081-failed-inbound-signatures-are-never-charged-to-the-claimed-origin.md)
 * [0082 - No thread may start before process hardening; seccomp filters are installed with TSYNC](0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)
+* [0083 - send_join responses are bound to the joined room; own-domain events are always signature-checked](0083-send-join-responses-are-bound-to-the-joined-room.md)
 
 ## Rejected Records
 

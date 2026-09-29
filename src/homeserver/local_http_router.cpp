@@ -2287,12 +2287,14 @@ namespace
             if (cached != nullptr)
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
-                    runtime.database.persistent_store, *outbound, *cached, timeout, key_clock);
+                    runtime.database.persistent_store, *outbound, *cached, timeout, key_clock,
+                    runtime.config.server().server_name);
             }
             else
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
-                    runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock);
+                    runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock,
+                    runtime.config.server().server_name);
             }
             auto key = ensure_runtime_server_signing_key(runtime);
             auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;

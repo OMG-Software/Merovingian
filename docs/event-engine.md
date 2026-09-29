@@ -507,6 +507,16 @@ now calls) and to federated-join state seeding
 (`homeserver::record_event_state_with_parent`) — see that doc section for
 the full list of call sites.
 
+Federated-join seeding only ever takes events for the room being joined
+(FED-1, ADR-0083): `filter_send_join_events_for_room` drops every `state`
+and `auth_chain` entry of the `send_join` response whose `room_id` — for a
+v12 `m.room.create`, whose derived room ID — is not the joined room, before
+signature checks, and `ingest_send_join_state` repeats the check before it
+writes. Every remaining event passes a signature check, including one whose
+sender is on our own server (verified against this server's own current and
+retired keys). Auth-chain events are stored as outliers with no
+`current_state` row.
+
 ### Phase B2: the receipt-order auth checks themselves (ADR-0064)
 
 Phase B1 made the state model correct; `ingest_pdu_event` still authorised
