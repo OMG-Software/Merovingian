@@ -21,8 +21,8 @@ namespace
     // Emit one change per added, removed, or altered entry of a string-keyed
     // map-valued config block (client_rate_limits.per_*, log_modules.*).
     template <typename MapType>
-    auto diff_keyed_map(ReloadPlan& plan, std::string const& prefix, MapType const& current, MapType const& next)
-        -> void
+    auto diff_keyed_map(ReloadPlan& plan, std::string const& prefix, MapType const& current,
+                        MapType const& next) -> void
     {
         for (auto const& [key, value] : current)
         {

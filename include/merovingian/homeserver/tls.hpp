@@ -36,8 +36,8 @@ private:
     ssl_ctx_st* m_context;
 
     friend struct TlsServerContextResult;
-    friend auto make_tls_server_context(std::string const& certificate_file, std::string const& private_key_file)
-        -> TlsServerContextResult;
+    friend auto make_tls_server_context(std::string const& certificate_file,
+                                        std::string const& private_key_file) -> TlsServerContextResult;
 };
 
 struct TlsServerContextResult final
@@ -75,8 +75,8 @@ private:
     // Shared retry loop behind read() and write(). `reading` selects SSL_read_ex
     // or SSL_write_ex; both need identical WANT_READ/WANT_WRITE handling against
     // a deadline, and duplicating it invites the two paths to drift.
-    [[nodiscard]] auto pump(bool reading, void* buffer, std::size_t length, std::size_t& transferred) noexcept
-        -> std::ptrdiff_t;
+    [[nodiscard]] auto pump(bool reading, void* buffer, std::size_t length,
+                            std::size_t& transferred) noexcept -> std::ptrdiff_t;
 
     ssl_st* m_connection;
     int m_fd;
@@ -89,8 +89,8 @@ private:
     int m_io_timeout_ms;
 
     friend struct TlsConnectionResult;
-    friend auto accept_tls_connection(TlsServerContext& context, int client_fd, int timeout_milliseconds)
-        -> TlsConnectionResult;
+    friend auto accept_tls_connection(TlsServerContext& context, int client_fd,
+                                      int timeout_milliseconds) -> TlsConnectionResult;
 };
 
 struct TlsConnectionResult final
@@ -101,10 +101,10 @@ struct TlsConnectionResult final
     [[nodiscard]] auto ok() const noexcept -> bool;
 };
 
-[[nodiscard]] auto make_tls_server_context(std::string const& certificate_file, std::string const& private_key_file)
-    -> TlsServerContextResult;
+[[nodiscard]] auto make_tls_server_context(std::string const& certificate_file,
+                                           std::string const& private_key_file) -> TlsServerContextResult;
 
-[[nodiscard]] auto accept_tls_connection(TlsServerContext& context, int client_fd, int timeout_milliseconds)
-    -> TlsConnectionResult;
+[[nodiscard]] auto accept_tls_connection(TlsServerContext& context, int client_fd,
+                                         int timeout_milliseconds) -> TlsConnectionResult;
 
 } // namespace merovingian::homeserver

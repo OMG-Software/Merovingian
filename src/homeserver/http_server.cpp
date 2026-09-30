@@ -499,8 +499,8 @@ namespace
     // client_address_key and refused once that key holds
     // server.http.max_connections_per_ip connections. The same key (and the
     // same exemption) is the connection's per-client worker share (ADR-0077).
-    [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime, std::string const& peer_addr)
-        -> ConnectionAdmission
+    [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime,
+                                        std::string const& peer_addr) -> ConnectionAdmission
     {
         auto const& server = runtime.homeserver.config.server();
         if (std::ranges::find(server.trusted_proxies, peer_addr) != server.trusted_proxies.end())
@@ -664,8 +664,8 @@ namespace
     // returned without touching the socket. The slowloris clocks restart per
     // call, i.e. per request — a keep-alive connection parked between
     // requests is not charged for its idle time.
-    [[nodiscard]] auto read_request_head(ConnectionStream& stream, std::string buffered, std::size_t cap)
-        -> std::pair<std::string, std::size_t>
+    [[nodiscard]] auto read_request_head(ConnectionStream& stream, std::string buffered,
+                                         std::size_t cap) -> std::pair<std::string, std::size_t>
     {
         auto buffer = std::move(buffered);
         // Pipelined head already fully buffered: no recv needed. This check
@@ -997,8 +997,8 @@ namespace
         return std::string{authorization.substr(prefix.size())};
     }
 
-    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body, std::string_view peer_addr)
-        -> LocalHttpRequest
+    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body,
+                                           std::string_view peer_addr) -> LocalHttpRequest
     {
         auto request = LocalHttpRequest{};
         request.method = head.method;
@@ -1856,8 +1856,8 @@ auto HttpConnectionDispatcher::impl() noexcept -> Impl&
     return *m_impl;
 }
 
-auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
-    -> LocalHttpResponse
+auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                 HttpDispatchMode mode) -> LocalHttpResponse
 {
     // This public API preserves its original blocking behaviour for backward
     // compatibility (tests, one-off callers). The server's hot path uses
@@ -1922,8 +1922,8 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool, std::string_view peer_addr)
-    -> bool
+                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
+                               std::string_view peer_addr) -> bool
 {
     // Direct callers (tests, one-off embeds) keep the historical one-request-
     // per-call contract: with no dispatcher there is nowhere to park the

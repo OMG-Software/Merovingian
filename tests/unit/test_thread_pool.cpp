@@ -253,9 +253,12 @@ SCENARIO("ThreadPool refuses work once the queue reaches its configured depth", 
 
         WHEN("more work is submitted than the queue can hold")
         {
-            auto const first = pool.submit([] {});
-            auto const second = pool.submit([] {});
-            auto const beyond_cap = pool.submit([] {});
+            auto const first = pool.submit([] {
+            });
+            auto const second = pool.submit([] {
+            });
+            auto const beyond_cap = pool.submit([] {
+            });
 
             THEN("submissions up to the cap are accepted and the one beyond it is refused")
             {
@@ -328,7 +331,8 @@ SCENARIO("A ThreadPool with no configured depth stays unbounded", "[net][thread_
             auto all_accepted = true;
             for (auto i = 0U; i < 64U; ++i)
             {
-                all_accepted = pool.submit([] {}) && all_accepted;
+                all_accepted = pool.submit([] {
+                }) && all_accepted;
             }
 
             THEN("every submission is accepted, preserving the existing IPC-pool behaviour")

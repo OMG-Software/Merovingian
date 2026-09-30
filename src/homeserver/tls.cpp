@@ -213,8 +213,8 @@ auto TlsConnectionResult::ok() const noexcept -> bool
     return connection.has_value();
 }
 
-auto make_tls_server_context(std::string const& certificate_file, std::string const& private_key_file)
-    -> TlsServerContextResult
+auto make_tls_server_context(std::string const& certificate_file,
+                             std::string const& private_key_file) -> TlsServerContextResult
 {
     if (OPENSSL_init_ssl(0U, nullptr) != 1)
     {

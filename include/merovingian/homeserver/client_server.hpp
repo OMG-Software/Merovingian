@@ -170,10 +170,10 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
 // Sync surface mutators. Each enqueues the row through the persistent
 // store and bumps the SyncNotifier so a parked /sync request can wake.
 // Returns true on success, false if the store rejected the row.
-[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message)
-    -> bool;
-[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
-    -> bool;
+[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime,
+                                          database::PersistentToDeviceMessage message) -> bool;
+[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime,
+                                             database::PersistentDeviceListChange change) -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
 
@@ -191,11 +191,11 @@ struct ClientServerStartOptions final
     bool debug_startup_enabled{false};
 };
 
-[[nodiscard]] auto start_client_server(config::Config const& config, ClientServerStartOptions options = {})
-    -> ClientServerStartResult;
+[[nodiscard]] auto start_client_server(config::Config const& config,
+                                       ClientServerStartOptions options = {}) -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
-[[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message, std::uint32_t retry_after_ms)
-    -> std::string;
+[[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message,
+                                std::uint32_t retry_after_ms) -> std::string;
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                 bool can_wait = true) -> DispatchResult;
@@ -209,13 +209,13 @@ struct ClientServerStartOptions final
 // itself would answer. Takes the runtime lock; call it holding nothing.
 [[nodiscard]] auto media_upload_authentication_refusal(ClientServerRuntime& runtime, LocalHttpRequest const& head)
     -> std::optional<LocalHttpResponse>;
-[[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime, std::string_view raw_request)
-    -> LocalHttpResponse;
+[[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime,
+                                                     std::string_view raw_request) -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;
-[[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
-    -> std::size_t;
-[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
-    -> std::size_t;
+[[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime,
+                                     std::string_view user_id) noexcept -> std::size_t;
+[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime,
+                                        std::string_view user_id) noexcept -> std::size_t;
 [[nodiscard]] auto run_client_server_flow(config::Config const& config) -> OperationResult;
 
 } // namespace merovingian::homeserver

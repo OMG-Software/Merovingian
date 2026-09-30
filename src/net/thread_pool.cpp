@@ -120,9 +120,10 @@ auto ThreadPool::submit(std::function<void()> work) -> bool
         // rather than letting the queue grow until the process is OOM-killed.
         if (max_queue_depth_ != 0U && queue_.size() >= max_queue_depth_)
         {
-            log_diagnostic("submit.dropped", {
-                                                 {"reason", "queue_full",                        false},
-                                                 {"depth",  std::to_string(max_queue_depth_), false}
+            log_diagnostic("submit.dropped",
+                           {
+                               {"reason", "queue_full",                     false},
+                               {"depth",  std::to_string(max_queue_depth_), false}
             });
             return false;
         }

@@ -73,11 +73,12 @@
 * [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md) — amended by ADR-0070
 * [0070 - Events verified only against their auth_events carry no state](0070-event-auth-outliers-carry-no-state.md)
 * [0071 - Main re-verifies PDUs relayed by the federation worker](0071-main-re-verifies-pdus-relayed-by-the-federation-worker.md)
-* [0072 - Per-IP connection cap at accept time](0072-per-ip-connection-cap-at-accept-time.md)
+* [0072 - Per-IP connection cap at accept time](0072-per-ip-connection-cap-at-accept-time.md) — amended by ADR-0077 for the worker-share bound
 * [0073 - The client address is the rightmost untrusted X-Forwarded-For entry](0073-client-address-is-the-rightmost-untrusted-x-forwarded-for-entry.md)
 * [0074 - Refresh tokens retire on first use of their successor](0074-refresh-tokens-retire-on-first-use-of-their-successor.md)
 * [0075 - Event signing-key validity is judged at the event's origin_server_ts](0075-event-signing-key-validity-is-judged-at-origin-server-ts.md)
 * [0076 - Room versions 1 and 2 are not supported](0076-room-versions-1-and-2-are-not-supported.md)
+* [0077 - No worker waits on a quiet connection: a dispatcher thread holds idle connections, with a per-client worker share](0077-no-worker-waits-on-a-quiet-connection.md)
 * [0078 - The federation worker never signs](0078-the-federation-worker-never-signs.md)
 * [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md)
 * [0080 - Rate-cap audit rows for unauthenticated rejections](0080-rate-cap-audit-rows-for-unauthenticated-rejections.md)

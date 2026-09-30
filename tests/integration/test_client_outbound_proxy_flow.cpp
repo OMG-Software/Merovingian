@@ -160,14 +160,16 @@ private:
 
 [[nodiscard]] auto proxy_test_config(bool remote_fetch_enabled) -> merovingian::config::Config
 {
+    auto server = merovingian::config::ServerConfig{};
+    server.http.request_threads = 8U;
+
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     security.media.remote_fetch_enabled = remote_fetch_enabled;
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server), merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        security,          merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
