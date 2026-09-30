@@ -2076,6 +2076,15 @@ admin endpoint:
 curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 ```
 
+The endpoint lists the most recent 1 024 audit rows the running process holds; its
+first line ends in `evicted=<n>` once older rows have left that window, and the
+`audit_log` table keeps every row. Rejections that any unauthenticated client can
+trigger (`access_token.rejected`, `rate_limit.exceeded`, `request.rejected`) are
+written at most 10 times per kind per 60 seconds; the first row after a busier
+window carries `suppressed=<n>` in its reason. `actor`, `target` and `reason` are
+recorded as at most 255 bytes. See [`docs/observability-audit.md`](observability-audit.md),
+"Audit volume bounds".
+
 ### Admin API
 
 All `/_merovingian/admin/*` routes require a normal client access token

@@ -72,6 +72,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -8247,15 +8248,20 @@ namespace
         return err(404U, "M_UNRECOGNIZED", "route not found");
     }
 
+    // Most audit rows the admin safety-report listing returns (newest kept).
+    constexpr auto max_safety_report_rows = std::size_t{1000U};
+
     [[nodiscard]] auto safety_reports_json(ClientServerRuntime const& rt) -> std::string
     {
         auto reports = canonicaljson::Array{};
-        for (auto const& event : rt.homeserver.database.persistent_store.audit_log)
+        // Read the audit_log table, not the in-memory window, so a report is not
+        // lost when later audit rows push it out of the window (AUTH-1). The query
+        // returns the newest `max_safety_report_rows` rows newest first; list them
+        // oldest first, as this endpoint always has.
+        auto const events = database::load_audit_events_by_type_prefix(rt.homeserver.database.persistent_store,
+                                                                       "trust_safety.", max_safety_report_rows);
+        for (auto const& event : std::views::reverse(events))
         {
-            if (!starts_with(event.event_type, "trust_safety."))
-            {
-                continue;
-            }
             reports.push_back(json_obj({
                 json_member("event_type", json_str(event.event_type)),
                 json_member("actor", json_str(event.actor)),
@@ -8754,6 +8760,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     });
     if (!rt.homeserver.started)
     {
+        // The audit append mutates the shared audit windows and the audit rate gate,
+        // and this path runs before the request lock is taken (AUTH-1).
+        auto const audit_lock = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
         log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
                              {
                                  {"method", req.method,                                       false},
@@ -8784,6 +8793,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }();
     if (req.body.size() > body_limit)
     {
+        // Same as the 503 path above: the audit append needs the request lock (AUTH-1).
+        auto const audit_lock = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
         log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
                              {
                                  {"method",      req.method,                                       false},

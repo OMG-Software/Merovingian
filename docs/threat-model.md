@@ -1237,6 +1237,31 @@ threat it closes; the controls above are the standing defences these reinforce.
   distinct hosts can still share out the global budget — the cap bounds one
   host's share, not a distributed flood.
 
+- **Unauthenticated audit flood (2026-09-29 audit AUTH-1, ADR-0080).** A request
+  with an unknown bearer token, one the rate limiter refused, or one refused
+  before routing each wrote a durable `audit_log` row (one synchronous commit on
+  SQLite) under the runtime mutex and grew two uncapped in-memory containers, so
+  a client with no credential chose the server's write rate and memory growth.
+  Mitigation: `access_token.rejected`, `rate_limit.exceeded` and
+  `request.rejected` pass through `observability::AuditRateGate` — at most 10
+  durable rows per kind per 60 seconds, further events counted and reported as
+  `suppressed=<n>` on the kind's next row; `LocalDatabase::audit_events` and
+  `PersistentStore::audit_log` keep only the newest 1 024 rows; actor, target and
+  reason are cut to 255 bytes on a UTF-8 boundary with invalid bytes and control
+  characters replaced. **Residual:** `login.rejected` is not gated (it is
+  throttled per IP at the auth tier), so many source addresses can still write
+  one row per attempt; and the `audit_log` table itself has no retention, so a
+  distributed flood of ungated kinds still grows it. Rejected requests beyond a
+  window's allowance keep their diagnostic log line but no audit row.
+
+- **Committed statements and their parameters retained in memory (2026-09-29
+  audit AUTH-11).** `commit_persistent_transaction` appended every committed
+  `PreparedStatement`, bound parameters included, to a vector nothing trimmed, so
+  password hashes and token hashes stayed resident for the life of the process
+  and memory grew with every write. Mitigation: the store keeps no committed
+  statement unless a test calls `enable_statement_capture`, which is bounded
+  (`max_statement_capture_capacity`) and drops the oldest first.
+
 - **Outbound Application Service API transaction delivery is deliberately
   NOT SSRF-filtered the way federation/push/identity outbound calls are
   (v0.12.1, routed).** `appservice::AppserviceClient` (`src/appservice/

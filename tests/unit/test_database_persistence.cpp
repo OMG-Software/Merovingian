@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <latch>
@@ -209,6 +210,8 @@ SCENARIO("Persistent store upserts sync filters and returns them by user and fil
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("alice stores a sync filter and then replaces it with updated JSON")
         {
@@ -237,10 +240,10 @@ SCENARIO("Persistent store upserts sync filters and returns them by user and fil
                 REQUIRE(stored->filter_id == "filter-1");
                 REQUIRE(stored->json == R"({"room":{"timeline":{"limit":20}}})");
                 REQUIRE_FALSE(missing.has_value());
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements.back().name == "upsert_filter");
-                REQUIRE(store.prepared_statements.back().parameters.size() == 3U);
-                REQUIRE(store.prepared_statements.back().parameters[2].sensitive);
+                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements.back().name == "upsert_filter");
+                REQUIRE(store.captured_statements.back().parameters.size() == 3U);
+                REQUIRE(store.captured_statements.back().parameters[2].sensitive);
             }
         }
 
@@ -258,7 +261,7 @@ SCENARIO("Persistent store upserts sync filters and returns them by user and fil
                 REQUIRE_FALSE(empty_filter_id);
                 REQUIRE_FALSE(empty_json);
                 REQUIRE(store.filters.empty());
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
     }
@@ -270,6 +273,8 @@ SCENARIO("Persistent store profiles upsert and apply targeted displayname and av
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("alice stores a profile and later updates each field through the targeted helpers")
         {
@@ -287,10 +292,10 @@ SCENARIO("Persistent store profiles upsert and apply targeted displayname and av
                 REQUIRE(stored.has_value());
                 REQUIRE(stored->displayname == "Alice Admin");
                 REQUIRE(stored->avatar_url == "mxc://example.org/alice-avatar-2");
-                REQUIRE(store.prepared_statements.size() == 3U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_profile");
-                REQUIRE(store.prepared_statements[1].name == "update_profile_displayname");
-                REQUIRE(store.prepared_statements[2].name == "update_profile_avatar_url");
+                REQUIRE(store.captured_statements.size() == 3U);
+                REQUIRE(store.captured_statements[0].name == "upsert_profile");
+                REQUIRE(store.captured_statements[1].name == "update_profile_displayname");
+                REQUIRE(store.captured_statements[2].name == "update_profile_avatar_url");
             }
         }
 
@@ -338,6 +343,8 @@ SCENARIO("Persistent store upserts, finds, and deletes durable 3PID bindings", "
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("alice binds an email 3PID and the same binding is upserted with updated fields")
         {
@@ -359,9 +366,9 @@ SCENARIO("Persistent store upserts, finds, and deletes durable 3PID bindings", "
                 REQUIRE(stored->id_server == std::optional<std::string>{"is.example.org"});
                 REQUIRE(stored->validated_at_ms == 3000U);
                 REQUIRE(stored->bound);
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_account_threepid");
-                REQUIRE(store.prepared_statements[1].name == "upsert_account_threepid");
+                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements[0].name == "upsert_account_threepid");
+                REQUIRE(store.captured_statements[1].name == "upsert_account_threepid");
             }
         }
 
@@ -391,7 +398,7 @@ SCENARIO("Persistent store upserts, finds, and deletes durable 3PID bindings", "
                 REQUIRE(bob.has_value());
                 REQUIRE(store.account_threepids.size() == 1U);
                 REQUIRE(store.account_threepids.front().user_id == "@bob:example.org");
-                REQUIRE(store.prepared_statements.back().name == "delete_account_threepid");
+                REQUIRE(store.captured_statements.back().name == "delete_account_threepid");
             }
         }
 
@@ -426,8 +433,8 @@ SCENARIO("Persistent store upserts, finds, and deletes durable 3PID bindings", "
             THEN("client_secret and sid are bound as sensitive values so they never reach query traces or logs "
                  "(M-08)")
             {
-                REQUIRE(store.prepared_statements.size() == 1U);
-                auto const& parameters = store.prepared_statements.back().parameters;
+                REQUIRE(store.captured_statements.size() == 1U);
+                auto const& parameters = store.captured_statements.back().parameters;
                 // upsert_account_threepid binds (user_id, medium, address, country,
                 // id_server, added_at_ms, validated_at_ms, bound, client_secret, sid);
                 // client_secret is index 8, sid is index 9.
@@ -448,6 +455,8 @@ SCENARIO("Persistent client transaction records keep the first response and scop
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("alice stores the same room send transaction twice with different event ids")
         {
@@ -469,8 +478,8 @@ SCENARIO("Persistent client transaction records keep the first response and scop
                 REQUIRE(store.client_txn_ids.size() == 1U);
                 REQUIRE(replay.has_value());
                 REQUIRE(*replay == "$event-first");
-                REQUIRE(store.prepared_statements.size() == 1U);
-                REQUIRE(store.prepared_statements.front().name == "insert_client_txn_id");
+                REQUIRE(store.captured_statements.size() == 1U);
+                REQUIRE(store.captured_statements.front().name == "insert_client_txn_id");
             }
         }
 
@@ -513,7 +522,7 @@ SCENARIO("Persistent client transaction records keep the first response and scop
                 REQUIRE_FALSE(missing_type);
                 REQUIRE_FALSE(missing_txn);
                 REQUIRE(store.client_txn_ids.empty());
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
     }
@@ -525,6 +534,8 @@ SCENARIO("Device-list change records validate inputs and advance the sync stream
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("valid changed and left notifications are recorded")
         {
@@ -547,11 +558,11 @@ SCENARIO("Device-list change records validate inputs and advance the sync stream
                 // Each device-list change allocates a sync-stream id, so the
                 // prepared statements include one watermark upsert per change
                 // plus the actual insert_device_list_change statements.
-                REQUIRE(store.prepared_statements.size() == 4U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[1].name == "insert_device_list_change");
-                REQUIRE(store.prepared_statements[2].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[3].name == "insert_device_list_change");
+                REQUIRE(store.captured_statements.size() == 4U);
+                REQUIRE(store.captured_statements[0].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[1].name == "insert_device_list_change");
+                REQUIRE(store.captured_statements[2].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[3].name == "insert_device_list_change");
             }
         }
 
@@ -571,7 +582,7 @@ SCENARIO("Device-list change records validate inputs and advance the sync stream
                 REQUIRE_FALSE(bad_type);
                 REQUIRE(store.device_list_changes.empty());
                 REQUIRE(store.next_sync_stream_id == 0U);
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
     }
@@ -583,6 +594,8 @@ SCENARIO("Presence snapshots upsert per user and keep only the latest stream-sha
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("alice first appears online and later updates to unavailable")
         {
@@ -604,11 +617,11 @@ SCENARIO("Presence snapshots upsert per user and keep only the latest stream-sha
                 // Each presence update allocates a sync-stream id, so the
                 // prepared statements include one watermark upsert per update
                 // plus the actual upsert_presence statements.
-                REQUIRE(store.prepared_statements.size() == 4U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[1].name == "upsert_presence");
-                REQUIRE(store.prepared_statements[2].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[3].name == "upsert_presence");
+                REQUIRE(store.captured_statements.size() == 4U);
+                REQUIRE(store.captured_statements[0].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[1].name == "upsert_presence");
+                REQUIRE(store.captured_statements[2].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[3].name == "upsert_presence");
             }
         }
 
@@ -624,7 +637,7 @@ SCENARIO("Presence snapshots upsert per user and keep only the latest stream-sha
                 REQUIRE_FALSE(missing_presence);
                 REQUIRE(store.presence_states.empty());
                 REQUIRE(store.next_sync_stream_id == 0U);
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
     }
@@ -635,6 +648,8 @@ SCENARIO("Room aliases require an existing room and reject duplicate mappings", 
     GIVEN("an in-memory persistent store with one known room")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
         REQUIRE(merovingian::database::store_room(store, {"!room:example.org", "@alice:example.org"}));
 
         WHEN("a fresh alias is stored for the existing room")
@@ -648,7 +663,7 @@ SCENARIO("Room aliases require an existing room and reject duplicate mappings", 
                 REQUIRE(stored.has_value());
                 REQUIRE(stored->room_alias == "#lobby:example.org");
                 REQUIRE(stored->room_id == "!room:example.org");
-                REQUIRE(store.prepared_statements.back().name == "insert_room_alias");
+                REQUIRE(store.captured_statements.back().name == "insert_room_alias");
             }
         }
 
@@ -681,6 +696,8 @@ SCENARIO("Account data upserts global and room-scoped rows while advancing the s
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("alice stores and then replaces both global and room account-data rows")
         {
@@ -719,19 +736,19 @@ SCENARIO("Account data upserts global and room-scoped rows while advancing the s
                 // Every account-data write now allocates a persisted sync-stream
                 // id, so each store call produces a watermark upsert followed by
                 // the account-data upsert.
-                REQUIRE(store.prepared_statements.size() == 8U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[1].name == "upsert_account_data");
-                REQUIRE(store.prepared_statements[2].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[3].name == "upsert_room_account_data");
-                REQUIRE(store.prepared_statements[4].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[5].name == "upsert_account_data");
-                REQUIRE(store.prepared_statements[6].name == "upsert_sync_stream_watermark");
-                REQUIRE(store.prepared_statements[7].name == "upsert_room_account_data");
-                REQUIRE(store.prepared_statements[1].parameters.size() == 4U);
-                REQUIRE(store.prepared_statements[1].parameters[2].sensitive);
-                REQUIRE(store.prepared_statements[3].parameters.size() == 5U);
-                REQUIRE(store.prepared_statements[3].parameters[4].sensitive);
+                REQUIRE(store.captured_statements.size() == 8U);
+                REQUIRE(store.captured_statements[0].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[1].name == "upsert_account_data");
+                REQUIRE(store.captured_statements[2].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[3].name == "upsert_room_account_data");
+                REQUIRE(store.captured_statements[4].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[5].name == "upsert_account_data");
+                REQUIRE(store.captured_statements[6].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.captured_statements[7].name == "upsert_room_account_data");
+                REQUIRE(store.captured_statements[1].parameters.size() == 4U);
+                REQUIRE(store.captured_statements[1].parameters[2].sensitive);
+                REQUIRE(store.captured_statements[3].parameters.size() == 5U);
+                REQUIRE(store.captured_statements[3].parameters[4].sensitive);
             }
         }
 
@@ -748,7 +765,7 @@ SCENARIO("Account data upserts global and room-scoped rows while advancing the s
                 REQUIRE_FALSE(missing_event_type);
                 REQUIRE(store.account_data.empty());
                 REQUIRE(store.next_sync_stream_id == 0U);
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
     }
@@ -760,6 +777,8 @@ SCENARIO("Media persistence helpers validate inputs, reject duplicates, and appl
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("a local media row is stored, moderated, and the same remote media id appears on two servers")
         {
@@ -781,11 +800,11 @@ SCENARIO("Media persistence helpers validate inputs, reject duplicates, and appl
                 REQUIRE(store.remote_media[0].server_name == "remote-a.example.org");
                 REQUIRE(store.remote_media[1].server_name == "remote-b.example.org");
                 REQUIRE(store.remote_media[1].quarantined);
-                REQUIRE(store.prepared_statements.size() == 4U);
-                REQUIRE(store.prepared_statements[0].name == "insert_media");
-                REQUIRE(store.prepared_statements[1].name == "update_media_state");
-                REQUIRE(store.prepared_statements[2].name == "insert_remote_media");
-                REQUIRE(store.prepared_statements[3].name == "insert_remote_media");
+                REQUIRE(store.captured_statements.size() == 4U);
+                REQUIRE(store.captured_statements[0].name == "insert_media");
+                REQUIRE(store.captured_statements[1].name == "update_media_state");
+                REQUIRE(store.captured_statements[2].name == "insert_remote_media");
+                REQUIRE(store.captured_statements[3].name == "insert_remote_media");
             }
         }
 
@@ -816,7 +835,7 @@ SCENARIO("Media persistence helpers validate inputs, reject duplicates, and appl
                 REQUIRE_FALSE(duplicate_remote);
                 REQUIRE(store.local_media.size() == 1U);
                 REQUIRE(store.remote_media.size() == 1U);
-                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.captured_statements.size() == 2U);
             }
         }
     }
@@ -828,6 +847,8 @@ SCENARIO("Policy rules upsert by rule id and direct deletion rejects missing ide
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("a rule is replaced and then deleted by its stable rule id")
         {
@@ -840,10 +861,10 @@ SCENARIO("Policy rules upsert by rule id and direct deletion rejects missing ide
             THEN("upsert keeps one durable row and deletion removes it cleanly")
             {
                 REQUIRE(store.policy_rules.empty());
-                REQUIRE(store.prepared_statements.size() == 3U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_policy_rule");
-                REQUIRE(store.prepared_statements[1].name == "upsert_policy_rule");
-                REQUIRE(store.prepared_statements[2].name == "delete_policy_rule");
+                REQUIRE(store.captured_statements.size() == 3U);
+                REQUIRE(store.captured_statements[0].name == "upsert_policy_rule");
+                REQUIRE(store.captured_statements[1].name == "upsert_policy_rule");
+                REQUIRE(store.captured_statements[2].name == "delete_policy_rule");
             }
         }
 
@@ -857,7 +878,7 @@ SCENARIO("Policy rules upsert by rule id and direct deletion rejects missing ide
                 REQUIRE_FALSE(missing);
                 REQUIRE_FALSE(empty);
                 REQUIRE(store.policy_rules.empty());
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
     }
@@ -1300,6 +1321,8 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("users devices tokens rooms events state audit and admin actions are stored")
         {
@@ -1376,6 +1399,8 @@ SCENARIO("Persistent store transactions commit all rows or no rows", "[database]
         auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         auto const statements = std::vector<merovingian::database::PreparedStatement>{
             {"insert_room",
@@ -1396,7 +1421,7 @@ SCENARIO("Persistent store transactions commit all rows or no rows", "[database]
                 // `restore_sync_stream_id()` may have persisted the sync-stream watermark
                 // on startup; any such housekeeping statement is unrelated to this transaction.
                 auto const transaction_statements = std::ranges::count_if(
-                    store.prepared_statements, [](merovingian::database::PreparedStatement const& statement) {
+                    store.captured_statements, [](merovingian::database::PreparedStatement const& statement) {
                         return statement.name != "upsert_sync_stream_watermark";
                     });
                 REQUIRE(transaction_statements == 0U);
@@ -1416,6 +1441,8 @@ SCENARIO("Persistent store offers atomic helpers for multi-row runtime mutations
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("a room membership and a state event are stored through transaction helpers")
         {
@@ -1440,7 +1467,7 @@ SCENARIO("Persistent store offers atomic helpers for multi-row runtime mutations
                 REQUIRE(store.state_transitions.size() == 1U);
                 // Storing a state event now records both the current_state row
                 // and the state_transitions replacement row.
-                REQUIRE(store.prepared_statements.size() == 5U);
+                REQUIRE(store.captured_statements.size() == 5U);
             }
         }
     }
@@ -1453,6 +1480,8 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
         REQUIRE(merovingian::database::store_room(store, {"!room-dag:example.org", "@alice:example.org"}));
 
         WHEN("a runtime signing key and a signed state-linked event are stored")
@@ -1503,7 +1532,7 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
                 REQUIRE(store.event_edges.front().prev_event_id == "$state:example.org");
                 REQUIRE(store.event_auth.front().auth_event_id == "$state:example.org");
                 REQUIRE(store.event_signatures.front().server_name == "example.org");
-                REQUIRE(store.prepared_statements.back().name == "insert_event_signature");
+                REQUIRE(store.captured_statements.back().name == "insert_event_signature");
             }
         }
     }
@@ -1614,6 +1643,8 @@ SCENARIO("Persistent store records durable server-blind E2EE key state", "[datab
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("device, one-time, fallback, cross-signing, signature, and backup keys are stored")
         {
@@ -1700,6 +1731,8 @@ SCENARIO("Key backup session helpers upsert one row per tuple and support scoped
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("the same backup session tuple is stored twice with updated JSON")
         {
@@ -1712,11 +1745,11 @@ SCENARIO("Key backup session helpers upsert one row per tuple and support scoped
             {
                 REQUIRE(store.key_backup_sessions.size() == 1U);
                 REQUIRE(store.key_backup_sessions.front().json == R"({"session_data":{"v":2}})");
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_key_backup_session");
-                REQUIRE(store.prepared_statements[1].name == "upsert_key_backup_session");
-                REQUIRE(store.prepared_statements[0].parameters[4].sensitive);
-                REQUIRE(store.prepared_statements[1].parameters[4].sensitive);
+                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements[0].name == "upsert_key_backup_session");
+                REQUIRE(store.captured_statements[1].name == "upsert_key_backup_session");
+                REQUIRE(store.captured_statements[0].parameters[4].sensitive);
+                REQUIRE(store.captured_statements[1].parameters[4].sensitive);
             }
         }
 
@@ -1742,10 +1775,10 @@ SCENARIO("Key backup session helpers upsert one row per tuple and support scoped
                 REQUIRE(store.key_backup_sessions.size() == 1U);
                 REQUIRE(store.key_backup_sessions.front().user_id == "@bob:example.org");
                 REQUIRE(store.key_backup_sessions.front().session_id == "SESSION9");
-                REQUIRE(store.prepared_statements.size() == 7U);
-                REQUIRE(store.prepared_statements[4].name == "delete_key_backup_session");
-                REQUIRE(store.prepared_statements[5].name == "delete_key_backup_room_sessions");
-                REQUIRE(store.prepared_statements[6].name == "delete_all_key_backup_sessions");
+                REQUIRE(store.captured_statements.size() == 7U);
+                REQUIRE(store.captured_statements[4].name == "delete_key_backup_session");
+                REQUIRE(store.captured_statements[5].name == "delete_key_backup_room_sessions");
+                REQUIRE(store.captured_statements[6].name == "delete_all_key_backup_sessions");
             }
         }
 
@@ -1784,7 +1817,7 @@ SCENARIO("Key backup session helpers upsert one row per tuple and support scoped
                 REQUIRE_FALSE(missing_room);
                 REQUIRE_FALSE(missing_session);
                 REQUIRE(store.key_backup_sessions.empty());
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
     }
@@ -2263,6 +2296,8 @@ SCENARIO("Persistent store includes event depth in event statements", "[database
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
         REQUIRE(merovingian::database::store_room(store, {"!room-depth:example.org", "@alice:example.org"}));
 
         WHEN("events with explicit depth are stored")
@@ -2293,7 +2328,7 @@ SCENARIO("Persistent store includes event depth in event statements", "[database
                 REQUIRE(store.events.size() == 2U);
                 REQUIRE(store.events.front().depth == 1U);
                 REQUIRE(store.events.back().depth == 5U);
-                REQUIRE(store.prepared_statements.back().sql.find("$5") != std::string::npos);
+                REQUIRE(store.captured_statements.back().sql.find("$5") != std::string::npos);
             }
         }
     }
@@ -3258,6 +3293,8 @@ SCENARIO("store_media_blob marks the raw bytes parameter binary for the PostgreS
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("a media blob is stored")
         {
@@ -3267,8 +3304,8 @@ SCENARIO("store_media_blob marks the raw bytes parameter binary for the PostgreS
 
             THEN("the bytes parameter is marked binary (and stays sensitive) while every text column is not (M-09)")
             {
-                REQUIRE(store.prepared_statements.size() == 1U);
-                auto const& parameters = store.prepared_statements.back().parameters;
+                REQUIRE(store.captured_statements.size() == 1U);
+                auto const& parameters = store.captured_statements.back().parameters;
                 // INSERT INTO media_blobs VALUES (storage_id, hash_algorithm,
                 // digest, size_bytes, bytes, ref_count) — bytes is index 4.
                 REQUIRE(parameters.size() == 6U);
@@ -3479,6 +3516,245 @@ SCENARIO("A persistent signing-key row erases its secret rather than leaving it 
             {
                 REQUIRE(empty.secret_key.empty());
                 REQUIRE(empty.valid_until_ts == 0U);
+            }
+        }
+    }
+}
+
+// AUTH-11 (security-audit-report-2026-09-29.md): the store used to append every
+// committed PreparedStatement, bound parameters included, to a vector that
+// nothing trimmed. Password hashes and token hashes stayed resident for the life
+// of the process. Committed statements are now retained only through an explicit,
+// bounded, opt-in capture hook that is disabled by default.
+SCENARIO("A store with no capture hook retains no committed statements",
+         "[database][persistence][statement-capture][security][auth-11]")
+{
+    GIVEN("a persistent store whose statement capture was never enabled")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("ten thousand transactions commit, some carrying sensitive parameters")
+        {
+            auto all_committed = true;
+            for (auto i = 0; i < 10000; ++i)
+            {
+                auto const statement = merovingian::database::PreparedStatement{
+                    "update_user_password",
+                    "UPDATE users SET password_hash = $2 WHERE user_id = $1",
+                    {{"@alice:example.org", false}, {"password-hash:v1:" + std::to_string(i), true}}
+                };
+                all_committed =
+                    merovingian::database::commit_persistent_transaction(store, {statement}) && all_committed;
+            }
+
+            THEN("every commit succeeded and the retained statement count is zero")
+            {
+                REQUIRE(all_committed);
+                REQUIRE(store.captured_statements.empty());
+                REQUIRE(store.captured_statements.size() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("A store with capture enabled retains at most the configured number of recent statements",
+         "[database][persistence][statement-capture][security][auth-11]")
+{
+    GIVEN("a persistent store with statement capture enabled at capacity 16")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        merovingian::database::enable_statement_capture(store, 16U);
+
+        WHEN("ten thousand transactions commit")
+        {
+            for (auto i = 0; i < 10000; ++i)
+            {
+                auto const statement = merovingian::database::PreparedStatement{
+                    "update_user_password",
+                    "UPDATE users SET password_hash = $2 WHERE user_id = $1",
+                    {{"@alice:example.org", false}, {"password-hash:v1:" + std::to_string(i), true}}
+                };
+                REQUIRE(merovingian::database::commit_persistent_transaction(store, {statement}));
+            }
+
+            THEN("only the sixteen most recent statements are held, and sensitive values are still redacted")
+            {
+                REQUIRE(store.captured_statements.size() == 16U);
+                REQUIRE(store.captured_statements.back().parameters[1].value == "password-hash:v1:9999");
+                REQUIRE(store.captured_statements.front().parameters[1].value == "password-hash:v1:9984");
+                REQUIRE(merovingian::database::sensitive_values_are_redacted(store));
+            }
+        }
+
+        WHEN("a transaction carries a token-shaped parameter that was not marked sensitive")
+        {
+            auto const leaky = merovingian::database::PreparedStatement{
+                "insert_access_token", "INSERT INTO access_tokens VALUES ($1)", {{"token-hash:v4:abc", false}}};
+            REQUIRE(merovingian::database::commit_persistent_transaction(store, {leaky}));
+
+            THEN("the redaction check reports the leak")
+            {
+                REQUIRE_FALSE(merovingian::database::sensitive_values_are_redacted(store));
+            }
+        }
+    }
+}
+
+SCENARIO("The statement capture hook is bounded and fails closed when disabled",
+         "[database][persistence][statement-capture][security][auth-11]")
+{
+    GIVEN("a persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("capture is requested with an absurd capacity")
+        {
+            merovingian::database::enable_statement_capture(store, std::size_t{1U} << 40U);
+
+            THEN("the capacity is clamped to the documented maximum")
+            {
+                REQUIRE(store.statement_capture_capacity == merovingian::database::max_statement_capture_capacity);
+            }
+        }
+
+        WHEN("capture is enabled, statements are committed, and capture is then disabled")
+        {
+            merovingian::database::enable_statement_capture(store, 8U);
+            auto const statement = merovingian::database::PreparedStatement{
+                "update_user_password",
+                "UPDATE users SET password_hash = $2 WHERE user_id = $1",
+                {{"@alice:example.org", false}, {"password-hash:v1:1", true}}
+            };
+            REQUIRE(merovingian::database::commit_persistent_transaction(store, {statement}));
+            REQUIRE(store.captured_statements.size() == 1U);
+            merovingian::database::enable_statement_capture(store, 0U);
+
+            THEN("the buffer is dropped and later commits are not retained")
+            {
+                REQUIRE(store.captured_statements.empty());
+                REQUIRE(merovingian::database::commit_persistent_transaction(store, {statement}));
+                REQUIRE(store.captured_statements.empty());
+            }
+        }
+
+        WHEN("the redaction check runs on a store whose capture is disabled")
+        {
+            THEN("it refuses to certify a buffer it never had, rather than passing vacuously")
+            {
+                REQUIRE_FALSE(merovingian::database::sensitive_values_are_redacted(store));
+            }
+        }
+
+        WHEN("a store with capture enabled is copied")
+        {
+            merovingian::database::enable_statement_capture(store, 8U);
+            auto const statement = merovingian::database::PreparedStatement{
+                "update_user_password",
+                "UPDATE users SET password_hash = $2 WHERE user_id = $1",
+                {{"@alice:example.org", false}, {"password-hash:v1:1", true}}
+            };
+            REQUIRE(merovingian::database::commit_persistent_transaction(store, {statement}));
+            auto const copy = merovingian::database::PersistentStore{store};
+
+            THEN("the copy keeps the same bounded capture configuration")
+            {
+                REQUIRE(copy.statement_capture_capacity == 8U);
+                REQUIRE(copy.captured_statements.size() == 1U);
+            }
+        }
+    }
+}
+
+// AUTH-1 follow-up: the in-memory audit window is a bounded view, so code that
+// must not lose old rows (the admin safety-report listing) reads the table.
+SCENARIO("Audit rows outlive the in-memory window and are queryable by event-type prefix",
+         "[database][persistence][sqlite][audit][auth-1]")
+{
+    GIVEN("a SQLite store holding earlier reports and then more rows than the window keeps")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        for (auto i = 0; i < 3; ++i)
+        {
+            REQUIRE(merovingian::database::append_audit_event(store, {"policy", "trust_safety.room.accept_report",
+                                                                      "@reporter:example.org", "$e" + std::to_string(i),
+                                                                      "spam"}));
+        }
+        REQUIRE(merovingian::database::append_audit_event(store, {"policy", "trust_safetyX.room", "a", "decoy", "r"}));
+        REQUIRE(merovingian::database::append_audit_event(store, {"policy", "TRUST_SAFETY.room", "a", "decoy", "r"}));
+        auto const flood = merovingian::database::max_in_memory_audit_events + 76U;
+        for (auto i = std::size_t{0U}; i < flood; ++i)
+        {
+            REQUIRE(merovingian::database::append_audit_event(
+                store, {"auth", "login.rejected", "<unknown>", std::to_string(i), "flood"}));
+        }
+
+        WHEN("the rows are queried by event-type prefix")
+        {
+            auto const found = merovingian::database::load_audit_events_by_type_prefix(store, "trust_safety.", 1000U);
+            auto const limited = merovingian::database::load_audit_events_by_type_prefix(store, "trust_safety.", 2U);
+            auto const wildcard = merovingian::database::load_audit_events_by_type_prefix(store, "%", 1000U);
+            auto const none = merovingian::database::load_audit_events_by_type_prefix(store, "trust_safety.", 0U);
+
+            THEN("every earlier report is found newest first, and the prefix is matched literally and exactly")
+            {
+                REQUIRE(store.audit_log.size() == merovingian::database::max_in_memory_audit_events);
+                REQUIRE(std::ranges::none_of(store.audit_log, [](auto const& event) {
+                    return event.event_type.starts_with("trust_safety.");
+                }));
+                REQUIRE(found.size() == 3U);
+                REQUIRE(found.front().target == "$e2");
+                REQUIRE(found.back().target == "$e0");
+                REQUIRE(limited.size() == 2U);
+                REQUIRE(limited.front().target == "$e2");
+                REQUIRE(wildcard.empty());
+                REQUIRE(none.empty());
+            }
+        }
+
+        WHEN("the store is reopened")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("the hydrated window is the newest rows in insertion order")
+            {
+                auto const& log = reopened.store.audit_log;
+                REQUIRE(log.size() == merovingian::database::max_in_memory_audit_events);
+                REQUIRE(log.front().target == "76");
+                REQUIRE(log.back().target == std::to_string(flood - 1U));
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("Without a database backend the prefix query falls back to the in-memory window, newest first",
+         "[database][persistence][audit][auth-1]")
+{
+    GIVEN("an in-memory store holding interleaved report and other rows")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::append_audit_event(store, {"policy", "trust_safety.a", "x", "1", "r"}));
+        REQUIRE(merovingian::database::append_audit_event(store, {"auth", "auth.login", "x", "2", "r"}));
+        REQUIRE(merovingian::database::append_audit_event(store, {"policy", "trust_safety.b", "x", "3", "r"}));
+
+        WHEN("the store is queried by prefix")
+        {
+            auto const found = merovingian::database::load_audit_events_by_type_prefix(store, "trust_safety.", 1000U);
+            auto const limited = merovingian::database::load_audit_events_by_type_prefix(store, "trust_safety.", 1U);
+
+            THEN("matching rows come back newest first and the limit is honoured")
+            {
+                REQUIRE(found.size() == 2U);
+                REQUIRE(found.front().target == "3");
+                REQUIRE(found.back().target == "1");
+                REQUIRE(limited.size() == 1U);
+                REQUIRE(limited.front().target == "3");
             }
         }
     }

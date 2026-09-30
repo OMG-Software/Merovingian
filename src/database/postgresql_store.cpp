@@ -15,6 +15,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1101,18 +1102,24 @@ namespace
 
         if (table_load_profile_includes("audit_log", profile))
         {
+            // audit_log has no ordering column (migration 001); ctid, the physical
+            // position in an append-only table, stands in for insertion order. Fetch
+            // only the newest window, then replay it oldest-first so the in-memory
+            // window matches SQLite's: the newest rows, in insertion order.
             auto audit_log = query_rows(connection, "postgresql_load_audit_log",
                                         "SELECT category, event_type, actor, target, reason FROM audit_log ORDER "
-                                        "BY event_type, actor");
+                                        "BY ctid DESC LIMIT " +
+                                            std::to_string(max_in_memory_audit_events));
             if (!audit_log.ok)
             {
                 return false;
             }
-            for (auto const& row : audit_log.rows)
+            for (auto const& row : std::views::reverse(audit_log.rows))
             {
                 if (row.size() >= 5U)
                 {
-                    store.audit_log.push_back({row[0], row[1], row[2], row[3], row[4]});
+                    // AUTH-1: hydrate only the bounded in-memory window; the table stays complete.
+                    remember_audit_event(store, {row[0], row[1], row[2], row[3], row[4]});
                 }
             }
         }
@@ -2280,6 +2287,49 @@ namespace detail
             return std::nullopt;
         }
         return load_room_snapshot_impl(opened.connection, room_id);
+    }
+
+    auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                           std::string_view prefix,
+                                           std::size_t limit) -> std::optional<std::vector<PersistentAuditEvent>>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // The prefix is a bound parameter compared with left(), not LIKE, so `%` and
+        // `_` stay literal. audit_log has no ordering column (migration 001), so
+        // ctid, the physical position, stands in for insertion order: the table is
+        // append-only (no UPDATE or DELETE), so new rows land after old ones.
+        // `limit` is a size_t the caller has already clamped.
+        auto result = opened.connection.execute(
+            {"postgresql_query_audit_log_by_prefix",
+             "SELECT category, event_type, actor, target, reason FROM audit_log "
+             "WHERE left(event_type, char_length($1::text)) = $1::text ORDER BY ctid DESC LIMIT " +
+                 std::to_string(limit),
+             {{std::string{prefix}, false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto rows = std::vector<PersistentAuditEvent>{};
+        for (auto const& row : result.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                rows.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+        return rows;
     }
 
 } // namespace detail

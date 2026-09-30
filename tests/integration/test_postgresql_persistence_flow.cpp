@@ -1366,3 +1366,82 @@ SCENARIO("PostgreSQL migrations execute as the migration role, never as the logi
         }
     }
 }
+
+// AUTH-1 follow-up: the in-memory audit window is a bounded view, so code that
+// must not lose old rows (the admin safety-report listing) reads the table.
+SCENARIO("PostgreSQL audit rows outlive the in-memory window and hydrate newest-last",
+         "[database][postgresql][integration][audit][auth-1]")
+{
+    GIVEN("a live PostgreSQL store holding earlier reports and then more rows than the window keeps")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        // Event types are unique to this run so rows from other scenarios and
+        // earlier runs in the shared database cannot be mistaken for ours.
+        auto const suffix = unique_test_suffix();
+        auto const report_prefix = "trust_safety_audit_" + suffix + ".";
+        auto const flood_type = "flood_" + suffix;
+        for (auto i = 0; i < 3; ++i)
+        {
+            REQUIRE(merovingian::database::append_audit_event(store, {"policy", report_prefix + "accept_report",
+                                                                      "@reporter:example.org", "$e" + std::to_string(i),
+                                                                      "spam"}));
+        }
+        auto const flood = merovingian::database::max_in_memory_audit_events + 76U;
+        for (auto i = std::size_t{0U}; i < flood; ++i)
+        {
+            REQUIRE(merovingian::database::append_audit_event(
+                store, {"auth", flood_type, "<unknown>", std::to_string(i), "flood"}));
+        }
+
+        WHEN("the rows are queried by event-type prefix")
+        {
+            auto const found = merovingian::database::load_audit_events_by_type_prefix(store, report_prefix, 1000U);
+            auto const limited = merovingian::database::load_audit_events_by_type_prefix(store, report_prefix, 2U);
+            auto const wildcard = merovingian::database::load_audit_events_by_type_prefix(store, "%", 1000U);
+
+            THEN("every earlier report is found, newest first, although the window no longer holds them")
+            {
+                REQUIRE(store.audit_log.size() == merovingian::database::max_in_memory_audit_events);
+                REQUIRE(std::ranges::none_of(store.audit_log, [&report_prefix](auto const& event) {
+                    return event.event_type.starts_with(report_prefix);
+                }));
+                REQUIRE(found.size() == 3U);
+                REQUIRE(found.front().target == "$e2");
+                REQUIRE(found.back().target == "$e0");
+                REQUIRE(limited.size() == 2U);
+                REQUIRE(limited.front().target == "$e2");
+                // The prefix is data, not a LIKE pattern.
+                REQUIRE(wildcard.empty());
+            }
+        }
+
+        WHEN("the store is reopened")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the hydrated window is the newest rows in insertion order")
+            {
+                auto const& log = reopened.store.audit_log;
+                REQUIRE(log.size() == merovingian::database::max_in_memory_audit_events);
+                REQUIRE(log.front().event_type == flood_type);
+                REQUIRE(log.front().target == "76");
+                REQUIRE(log.back().target == std::to_string(flood - 1U));
+                for (auto i = std::size_t{1U}; i < log.size(); ++i)
+                {
+                    REQUIRE(std::stoul(log[i].target) == std::stoul(log[i - 1U].target) + 1U);
+                }
+            }
+        }
+    }
+}

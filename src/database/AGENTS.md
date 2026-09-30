@@ -26,6 +26,14 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    bytes in libpq's binary format; any other way truncates at a NUL or rejects non-UTF-8.
    Reads need nothing per column: `load_result_rows` decodes every `bytea` result column
    (`PQftype`). The columns are `media_blobs.bytes` and `server_signing_keys.secret_key`.
+5. **Never retain committed statements in production.** `PersistentStore::captured_statements`
+   is empty and disabled unless a test calls `enable_statement_capture`; it is bounded and drops
+   the oldest entry first. A committed statement's bound parameters include password and token
+   hashes, so keeping them would leave those hashes in process memory for its whole life.
+6. **In-memory mirrors of append-only tables are bounded windows.** `PersistentStore::audit_log`
+   holds the newest `max_in_memory_audit_events` rows; append through `append_audit_event` and
+   hydrate through `remember_audit_event`, never `push_back`. `append_audit_event` bounds
+   `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`bounded_utf8`).
 
 ## Backend selection
 

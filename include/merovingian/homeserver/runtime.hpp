@@ -16,6 +16,7 @@
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/net/listener.hpp"
+#include "merovingian/observability/audit_rate_gate.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
@@ -28,6 +29,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <future>
 #include <map>
@@ -137,7 +139,13 @@ struct LocalDatabase final
     std::vector<LocalUser> users{};
     std::vector<LocalSession> sessions{};
     std::vector<LocalRoom> rooms{};
-    std::vector<observability::AuditLogEvent> audit_events{};
+    // Bounded window over the most recent `database::max_in_memory_audit_events`
+    // audit events (AUTH-1); the oldest is dropped first. The durable copy of
+    // every event is the audit_log table, reachable through `persistent_store`.
+    std::deque<observability::AuditLogEvent> audit_events{};
+    // Rate-caps the audit events an unauthenticated client can trigger on every
+    // request (AUTH-1, ADR-0080). Guarded by the runtime mutex like the audit rows.
+    observability::AuditRateGate audit_rate_gate{};
     database::PersistentStore persistent_store{};
     core::SecretBuffer signing_secret_key{};
     // All currently-active server signing secrets loaded into the runtime, keyed

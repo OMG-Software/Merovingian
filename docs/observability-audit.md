@@ -152,6 +152,10 @@ event families" below for the rest of what `append_local_audit` records.
 | Registration policy denied | `auth` | `policy` | `registration_policy.denied` |
 | Federation ACL rejected | `federation` | `policy` | `federation.acl_rejected` |
 
+`rate_limit.exceeded`, `access_token.rejected` and `request.rejected` are
+rate-capped per kind (10 durable rows per 60 seconds, the rest counted): see
+"Audit volume bounds" below.
+
 ### Other durably persisted event families
 
 Everything above goes through `log_diagnostic_audit`, which only routes
@@ -226,6 +230,59 @@ A malformed `category=` value returns 400 with a clear
 `unknown audit category: <name>` error rather than silently dropping
 the request. Unknown `event_type=` values are treated as a no-match
 filter; the response is empty (still 200).
+
+## Audit volume bounds (AUTH-1, ADR-0080)
+
+Three audit events are triggered by requests from clients that have proved
+nothing: `access_token.rejected` (unknown, invalid or expired bearer token),
+`rate_limit.exceeded` and `request.rejected` (413, 429 and 503 outcomes decided
+before routing). They must not give such a client control over durable writes
+or memory, so the audit-append layer bounds the volume.
+
+- **Rate-capped rejection rows.** `append_local_audit` passes these three kinds
+  through `observability::AuditRateGate`. At most **10 durable rows per event kind
+  per 60-second window** are written; further events in the window are only
+  counted. The first row written for that kind after the window carries
+  ` suppressed=<n>` appended to its `reason` (for example
+  `session not found suppressed=4990`), so an investigator sees that events were
+  dropped and how many. The count is reported once, and only when the kind occurs
+  again; it is not persisted separately. Every other audit event (successful and
+  failed logins, admin actions, room and media moderation, authenticated security
+  events) is written on every occurrence and is never gated. The diagnostic log
+  line the call site emits is unchanged, so a suppressed event still leaves one
+  log line and no audit work.
+- **Bounded in-memory windows.** `LocalDatabase::audit_events` and
+  `PersistentStore::audit_log` hold the most recent `max_in_memory_audit_events`
+  (1 024) rows and drop the oldest first. The `audit_log` table holds every row.
+  `PersistentStore::audit_log_evicted` counts rows that have left the window, and
+  `audit_events_appended_total` reports `size + evicted` so it stays monotonic.
+  Startup hydration keeps the newest rows in insertion order on both backends:
+  SQLite streams `ORDER BY rowid` through the window; PostgreSQL fetches the newest
+  `max_in_memory_audit_events` rows (`ORDER BY ctid DESC LIMIT`) and replays them
+  oldest first. `audit_log` has no ordering column (migration 001), so on PostgreSQL
+  the physical position `ctid` stands in for insertion order; that holds because the
+  table is append-only.
+- **`GET /_merovingian/admin/audit` shows the window.** It lists the retained
+  rows, and its first line reads `audit events=<retained>` plus
+  ` evicted=<n>` once older rows have left the window. Query the `audit_log`
+  table for older history.
+- **The safety-report listing does not use the window.**
+  `/_matrix/client/v3/admin/safety/reports` calls
+  `database::load_audit_events_by_type_prefix(store, "trust_safety.", 1000)`, which
+  reads the `audit_log` table (SQLite or PostgreSQL) newest first with the prefix as
+  a bound parameter compared literally (no LIKE), and lists the newest 1 000 rows
+  oldest first. A store with no database backend, or a failed read (logged as
+  `audit.query_failed`), answers from the window instead. Unauthenticated traffic
+  that fills the window therefore cannot hide an earlier abuse report.
+- **Bounded field length.** `actor`, `target` and `reason` are cut to
+  `database::max_audit_field_bytes` (255) bytes at `database::append_audit_event`
+  and `append_local_audit`, on a UTF-8 character boundary (`database::bounded_utf8`).
+  Invalid UTF-8 bytes and ASCII control characters (including NUL and newline) are
+  replaced by U+FFFD, so a value can neither split a multi-byte character, forge a
+  log line, nor put a NUL in a text column. Diagnostic field values passed to
+  `log_diagnostic_audit` are cut to the same length before they are logged.
+  A login `user` or `device_id` of up to the 64 KiB body cap is therefore recorded
+  as at most 255 bytes; login semantics are unchanged.
 
 ## Security posture
 

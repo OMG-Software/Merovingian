@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -547,8 +548,21 @@ namespace
         return false;
     }
     {
-        auto const lk = std::lock_guard{*store.prepared_statements_mutex};
-        store.prepared_statements.insert(store.prepared_statements.end(), statements.begin(), statements.end());
+        // AUTH-11: retain nothing unless a test opted in, and never more than the
+        // configured capacity. Password hashes and token hashes must not outlive
+        // the commit in process memory.
+        auto const lk = std::lock_guard{*store.statement_capture_mutex};
+        if (store.statement_capture_capacity != 0U)
+        {
+            for (auto const& statement : statements)
+            {
+                store.captured_statements.push_back(statement);
+                while (store.captured_statements.size() > store.statement_capture_capacity)
+                {
+                    store.captured_statements.pop_front();
+                }
+            }
+        }
     }
     return true;
 }
@@ -2751,6 +2765,13 @@ namespace
 
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool
 {
+    // AUTH-1: actor, target and reason can carry client-supplied text. Bound them
+    // here, at the lowest audit-append layer, so no caller can store more than
+    // `max_audit_field_bytes` of it or leave it as malformed UTF-8. Idempotent,
+    // so a caller that already bounded its values is unaffected.
+    event.actor = bounded_utf8(event.actor, max_audit_field_bytes);
+    event.target = bounded_utf8(event.target, max_audit_field_bytes);
+    event.reason = bounded_utf8(event.reason, max_audit_field_bytes);
     if (!record_and_persist(store, record_statement("append_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
                                                     {
                                                         {event.category,   false},
@@ -2762,8 +2783,50 @@ namespace
     {
         return false;
     }
-    store.audit_log.push_back(std::move(event));
+    remember_audit_event(store, std::move(event));
     return true;
+}
+
+auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) -> void
+{
+    store.audit_log.push_back(std::move(event));
+    while (store.audit_log.size() > max_in_memory_audit_events)
+    {
+        store.audit_log.pop_front();
+        ++store.audit_log_evicted;
+    }
+}
+
+[[nodiscard]] auto load_audit_events_by_type_prefix(PersistentStore const& store, std::string_view prefix,
+                                                    std::size_t limit) -> std::vector<PersistentAuditEvent>
+{
+    limit = std::min(limit, max_audit_query_rows);
+    if (limit == 0U)
+    {
+        return {};
+    }
+    if (store.backend != PersistentStoreBackend::memory)
+    {
+        if (auto rows = detail::load_audit_events_from_backend(store, prefix, limit); rows.has_value())
+        {
+            return std::move(*rows);
+        }
+        log_diagnostic("audit.query_failed",
+                       {
+                           {"prefix", std::string{prefix}, false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    // No database backend (or it could not be read): answer from the window.
+    auto rows = std::vector<PersistentAuditEvent>{};
+    for (auto event = store.audit_log.rbegin(); event != store.audit_log.rend() && rows.size() < limit; ++event)
+    {
+        if (event->event_type.starts_with(prefix))
+        {
+            rows.push_back(*event);
+        }
+    }
+    return rows;
 }
 
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool
@@ -3731,10 +3794,24 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void
+{
+    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    store.statement_capture_capacity = std::min(capacity, max_statement_capture_capacity);
+    while (store.captured_statements.size() > store.statement_capture_capacity)
+    {
+        store.captured_statements.pop_front();
+    }
+}
+
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
 {
-    auto const lk = std::lock_guard{*store.prepared_statements_mutex};
-    for (auto const& statement : store.prepared_statements)
+    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    if (store.statement_capture_capacity == 0U)
+    {
+        return false;
+    }
+    for (auto const& statement : store.captured_statements)
     {
         for (auto const& value : statement.parameters)
         {

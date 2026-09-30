@@ -82,7 +82,8 @@ namespace
                         "Number of persisted rooms currently known to the runtime."),
             make_metric("events_total", static_cast<std::int64_t>(store.events.size()),
                         observability::MetricType::gauge, "Number of persisted events currently known to the runtime."),
-            make_metric("audit_events_appended_total", static_cast<std::int64_t>(store.audit_log.size()),
+            make_metric("audit_events_appended_total",
+                        static_cast<std::int64_t>(store.audit_log.size() + store.audit_log_evicted),
                         observability::MetricType::counter,
                         "Total number of durable audit events appended since the current store was created."),
             make_metric("admin_actions_total", static_cast<std::int64_t>(store.admin_actions.size()),
@@ -954,10 +955,17 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
 {
     // Filter the audit log by the optional `category` and `event_type`
     // parameters. The result line is prefixed with the count of *all*
-    // audit rows so the operator can see how many rows the filter
+    // retained audit rows so the operator can see how many rows the filter
     // excluded; the per-entry lines only include the matching rows.
+    // AUTH-1: the retained rows are the most recent `max_in_memory_audit_events`.
+    // `evicted=<n>` appears once older rows have left that window; they remain in
+    // the audit_log table.
     auto const& log = runtime.database.persistent_store.audit_log;
     auto summary = std::string{"audit events="} + std::to_string(log.size());
+    if (runtime.database.persistent_store.audit_log_evicted != 0U)
+    {
+        summary += " evicted=" + std::to_string(runtime.database.persistent_store.audit_log_evicted);
+    }
     if (category.has_value())
     {
         summary += " filter_category=" + std::string{observability::audit_category_name(*category)};

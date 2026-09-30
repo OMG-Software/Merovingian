@@ -67,6 +67,15 @@ durability distinction:
   or a purpose-built one-way summary such as `auth::redacted_token_for_log` (`src/auth/token.cpp`),
   which buckets token length into coarse size classes instead of disclosing length or bytes.
 - Log the `user_id` and `device_id` (not the token) for authenticated request traces.
+- **An audit event that an unauthenticated client can trigger on every request must not write one
+  durable row per request.** `access_token.rejected`, `rate_limit.exceeded` and `request.rejected`
+  pass through `AuditRateGate` (10 rows per kind per 60 s, the rest counted and reported as
+  `suppressed=<n>` on the next row). A new per-request rejection audit event of that kind must be
+  added to `audit_event_is_rate_capped` (ADR-0080). Never gate authenticated or administrative
+  events.
+- Client-supplied text in an audit `actor`, `target` or `reason` is cut to 255 bytes and
+  sanitised (`database::bounded_utf8`) by `append_local_audit` / `append_audit_event`; do not
+  write around those two functions.
 - Every new log call added to security-sensitive paths must be reviewed in `docs/observability-audit.md`.
 
 ## Key doc

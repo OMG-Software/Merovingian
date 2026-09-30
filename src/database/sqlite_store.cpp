@@ -628,10 +628,12 @@ namespace
                                                            column_text(row, 2), parse_u64(column_text(row, 3)),
                                                            text_is_true(column_text(row, 4))});
                          }) &&
-               load_rows(connection, "SELECT category, event_type, actor, target, reason FROM audit_log",
+               // AUTH-1: stream rows in insertion order into the bounded in-memory
+               // window, so hydrating a long-lived audit_log keeps only the newest rows.
+               load_rows(connection, "SELECT category, event_type, actor, target, reason FROM audit_log ORDER BY rowid",
                          [&store](sqlite3_stmt& row) {
-                             store.audit_log.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                        column_text(row, 3), column_text(row, 4)});
+                             remember_audit_event(store, {column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                          column_text(row, 3), column_text(row, 4)});
                          }) &&
                load_rows(connection, "SELECT admin_user_id, action, target FROM admin_actions",
                          [&store](sqlite3_stmt& row) {
@@ -1209,6 +1211,54 @@ namespace detail
             return std::nullopt;
         }
         return load_room_snapshot_impl(**connection, room_id);
+    }
+
+    auto load_audit_events_from_sqlite(std::string const& path, std::string_view prefix,
+                                       std::size_t limit) -> std::optional<std::vector<PersistentAuditEvent>>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        // The prefix is bound, never interpolated, and compared with substr() rather
+        // than LIKE so `%` and `_` stay literal and the match is case-sensitive.
+        // `limit` is a size_t the caller has already clamped, so writing its digits
+        // into the statement text carries no attacker-controlled content.
+        auto rows = std::vector<PersistentAuditEvent>{};
+        auto const ok =
+            load_rows_bound(**connection,
+                            "SELECT category, event_type, actor, target, reason FROM audit_log "
+                            "WHERE substr(event_type, 1, length(?1)) = ?1 ORDER BY rowid DESC LIMIT " +
+                                std::to_string(limit),
+                            {std::string{prefix}}, [&rows](sqlite3_stmt& row) {
+                                rows.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                column_text(row, 3), column_text(row, 4)});
+                            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return rows;
+    }
+
+    auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix,
+                                        std::size_t limit) -> std::optional<std::vector<PersistentAuditEvent>>
+    {
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return load_audit_events_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role, prefix,
+                                                     limit);
+        }
+        if (store.backend != PersistentStoreBackend::sqlite)
+        {
+            return std::nullopt;
+        }
+        return load_audit_events_from_sqlite(store.sqlite_path, prefix, limit);
     }
 
 } // namespace detail

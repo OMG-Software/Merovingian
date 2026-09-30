@@ -649,6 +649,27 @@ remaining work before PostgreSQL-backed production operation.
   and admin action rows.
 - Policy rule and media blob helpers upsert durable rows and hydrate them after
   SQLite/PostgreSQL reopen.
+- Committed statements are not retained (AUTH-11). `commit_persistent_transaction`
+  used to append every committed `PreparedStatement`, bound parameters included,
+  to `PersistentStore::prepared_statements`, which nothing trimmed. The store now
+  keeps nothing unless a test calls `enable_statement_capture(store, capacity)`;
+  the capture is `PersistentStore::captured_statements`, holds at most
+  `capacity` statements (clamped to `max_statement_capture_capacity`, 65 536),
+  drops the oldest first, and is empty and disabled by default.
+  `sensitive_values_are_redacted` reads that capture and returns false when capture
+  is disabled instead of passing on an empty buffer. Production code never enables
+  capture: password and token hashes must not outlive the commit in process memory.
+- `PersistentStore::audit_log` is a bounded window (AUTH-1): the newest
+  `max_in_memory_audit_events` (1 024) rows, oldest dropped first, with
+  `audit_log_evicted` counting what left. The table is the complete record.
+  Append through `append_audit_event`; hydrate through `remember_audit_event`.
+  Hydration keeps the newest rows in insertion order on both backends (PostgreSQL
+  orders by `ctid`, the only ordering the column-less `audit_log` offers).
+  `load_audit_events_by_type_prefix(store, prefix, limit)` reads older rows straight
+  from the table (newest first, `limit` clamped to `max_audit_query_rows`, prefix
+  bound and matched literally); in-memory stores answer from the window.
+  `append_audit_event` cuts `actor`, `target` and `reason` to 255 bytes on a UTF-8
+  boundary. See `docs/observability-audit.md`, "Audit volume bounds".
 - Unit coverage for statement validation, executor gating, redaction, migration
   planning, and schema inventory.
 - Migration-plan validation coverage uses explicit hand-built plans, while

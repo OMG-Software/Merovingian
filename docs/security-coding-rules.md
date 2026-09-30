@@ -188,6 +188,19 @@ quickly finding everything a given `AGENTS.md` file contributed.
   path where a future secret-logging bug is one missed `if` away.
   Source: `security/coding-rules.md`.
 
+- **An audit event an unauthenticated client can trigger on every request must not write one
+  durable row per request, and client-supplied audit text is bounded.**
+  `access_token.rejected`, `rate_limit.exceeded` and `request.rejected` are admitted through
+  `AuditRateGate` (10 rows per kind per 60 s; the rest counted and reported as `suppressed=<n>`
+  on the next row); `actor`, `target` and `reason` are cut to 255 bytes on a UTF-8 boundary with
+  invalid bytes and control characters replaced.
+  Why: a durable, synchronous audit write per junk request under the runtime mutex hands a
+  client with no credential control over the server's write rate, memory and table growth
+  (CWE-400, CWE-770), and an unbounded or malformed attacker-supplied string in an audit row
+  or log line is a memory-exhaustion and log-forging vector (CWE-117).
+  Source: [ADR-0080](adr/0080-rate-cap-audit-rows-for-unauthenticated-rejections.md);
+  `src/observability/AGENTS.md`.
+
 ## Cryptography
 
 - **Never call libsodium functions directly from outside the permitted crypto boundary**
@@ -664,6 +677,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Making the unsafe sequence unrepresentable, rather than merely unused, is what closes
   the class rather than the one instance.
   Source: [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md); `src/auth/AGENTS.md`.
+
+- **Never retain committed statements in production; in-memory mirrors of append-only tables
+  are bounded windows.** Statement capture is opt-in, bounded and off by default;
+  `PersistentStore::audit_log` keeps only the newest 1 024 rows.
+  Why: a committed statement's parameters include password and token hashes, so retaining
+  every one keeps those hashes resident for the life of the process and grows memory with
+  every write (CWE-316, CWE-770); an unbounded mirror of an append-only table lets any write
+  path become a memory-exhaustion path.
+  Source: `src/database/AGENTS.md`.
 
 ## Media
 
