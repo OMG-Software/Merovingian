@@ -145,6 +145,15 @@ auto TlsConnection::fd() const noexcept -> int
     return m_fd;
 }
 
+auto TlsConnection::has_pending_input() const noexcept -> bool
+{
+    if (m_connection == nullptr)
+    {
+        return false;
+    }
+    return SSL_pending(m_connection) > 0 || SSL_has_pending(m_connection) == 1;
+}
+
 // M-07: the socket is non-blocking for the connection's whole life, so an
 // incomplete TLS record surfaces as SSL_ERROR_WANT_READ rather than blocking
 // inside OpenSSL. Both I/O paths therefore pump the same wait loop: retry the

@@ -72,10 +72,10 @@ namespace
 
 } // namespace
 
-ThreadPool::ThreadPool(std::size_t worker_count, std::function<void()> on_thread_start,
-                       std::size_t max_queue_depth)
+ThreadPool::ThreadPool(std::size_t worker_count, std::function<void()> on_thread_start, std::size_t max_queue_depth)
     : max_queue_depth_{max_queue_depth}
     , on_thread_start_{std::move(on_thread_start)}
+    , worker_count_{worker_count}
 {
     workers_.reserve(worker_count);
     try
@@ -157,6 +157,11 @@ auto ThreadPool::request_stop() -> void
             worker.join();
         }
     }
+}
+
+auto ThreadPool::worker_count() const noexcept -> std::size_t
+{
+    return worker_count_;
 }
 
 auto ThreadPool::running() const -> bool

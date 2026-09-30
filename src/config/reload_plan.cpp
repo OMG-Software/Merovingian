@@ -133,6 +133,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.http.ipv6_client_prefix_length");
     }
+    if (current_http.request_threads != next_http.request_threads)
+    {
+        add_change(plan, "server.http.request_threads");
+    }
 
     if (current.listeners().client.bind != next.listeners().client.bind)
     {

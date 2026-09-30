@@ -717,14 +717,11 @@ struct ListenerBinding final
     return true;
 }
 
-[[nodiscard]] auto serve_until_shutdown(merovingian::homeserver::ClientServerRuntime& runtime,
-                                        std::vector<ListenerBinding>& bindings,
-                                        merovingian::net::ShutdownSignal& shutdown)
-    -> merovingian::homeserver::HttpServeStats
+[[nodiscard]] auto serve_until_shutdown(
+    merovingian::homeserver::ClientServerRuntime& runtime, std::vector<ListenerBinding>& bindings,
+    merovingian::net::ShutdownSignal& shutdown) -> std::optional<merovingian::homeserver::HttpServeStats>
 {
     auto stats = merovingian::homeserver::HttpServeStats{};
-    // Main pool handles all non-sync request types. Keep this modest so that
-    // threads aren't wasted ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â sync long-polls are offloaded to sync_pool below.
     // #420: the audit sink's active-database pointer is thread_local (see
     // homeserver/local_services.cpp), installed by default only on the
     // thread that constructs HomeserverRuntime (main). HTTP handlers run on
@@ -735,18 +732,31 @@ struct ListenerBinding final
     auto const install_audit_sink_hook = [&runtime]() {
         merovingian::homeserver::install_local_audit_database(&runtime.homeserver.database);
     };
-    // Both pools are fed directly by the accept loops, one closure per accepted
-    // connection, so both are bounded (0.12.5 audit, finding 11). Past the cap
-    // the listener closes the connection instead of queueing it, which sheds
-    // load visibly rather than growing the queue until the OOM reaper fires.
     auto const max_queued_connections =
         static_cast<std::size_t>(runtime.homeserver.config.listeners().max_queued_connections);
-    auto pool = merovingian::net::ThreadPool{merovingian::homeserver::main_request_pool_threads,
-                                             install_audit_sink_hook, max_queued_connections};
+    // The main pool serves every request that is not a waiting /sync, on every
+    // listener. Its size is server.http.request_threads (HTTP-1, ADR-0077).
+    // No worker ever waits on a quiet connection: the dispatcher below holds
+    // those, and hands a connection to the pool only once it is readable, at
+    // most one per worker at a time and at most a quarter of the workers to
+    // one client address.
+    auto pool =
+        merovingian::net::ThreadPool{static_cast<std::size_t>(runtime.homeserver.config.server().http.request_threads),
+                                     install_audit_sink_hook, max_queued_connections};
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,
     // login, federation) are always serviced without delay.
     auto sync_pool = merovingian::net::ThreadPool{32U, install_audit_sink_hook, max_queued_connections};
+    // One dispatcher for every listener, so the per-client worker share is
+    // process-wide. Its thread starts here, after process hardening (ADR-0082).
+    auto dispatcher = merovingian::homeserver::HttpConnectionDispatcher{runtime, stats, pool, &sync_pool};
+    if (!dispatcher.start())
+    {
+        LOG_CRITICAL("Connection dispatcher failed to start; refusing to serve");
+        pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 
@@ -755,18 +765,18 @@ struct ListenerBinding final
         // Explicit init-capture binds `target` to bindings[i] directly rather
         // than to the per-iteration alias `binding`, which would dangle once
         // the loop advances.
-        threads.emplace_back([&runtime, &shutdown, &stats, &pool, &sync_pool, &target = binding]() {
+        threads.emplace_back([&shutdown, &dispatcher, &target = binding]() {
             auto const mode = target.role == merovingian::net::ListenerRole::client
                                   ? merovingian::homeserver::HttpDispatchMode::client_server
                                   : merovingian::homeserver::HttpDispatchMode::federation;
             if (target.tls_context.has_value())
             {
-                merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, shutdown, stats,
-                                                        mode, pool, &sync_pool);
+                merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, dispatcher, shutdown,
+                                                        mode);
             }
             else
             {
-                merovingian::homeserver::serve_http(target.acceptor, runtime, shutdown, stats, mode, pool, &sync_pool);
+                merovingian::homeserver::serve_http(target.acceptor, dispatcher, shutdown, mode);
             }
         });
     }
@@ -786,11 +796,11 @@ struct ListenerBinding final
         }
     }
 
-    pool.request_stop();
-    // Drain the sync pool after the main pool stops so no new long-polls can be
-    // submitted, but in-flight waits finish before the runtime is torn down.
-    sync_pool.request_stop();
-
+    // Order matters: stop accepting, close every parked connection, then let
+    // the workers finish the requests they hold (a finished kept-alive
+    // connection is closed, not re-parked, once the dispatcher has stopped),
+    // then drain the sync pool so in-flight waits end before the runtime is
+    // torn down.
     for (auto& worker : threads)
     {
         if (worker.joinable())
@@ -798,6 +808,9 @@ struct ListenerBinding final
             worker.join();
         }
     }
+    dispatcher.request_stop();
+    pool.request_stop();
+    sync_pool.request_stop();
 
     return stats;
 }
@@ -969,7 +982,13 @@ struct ListenerBinding final
         return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
     }
 
-    auto const stats = serve_until_shutdown(runtime, bindings, shutdown);
+    auto const served = serve_until_shutdown(runtime, bindings, shutdown);
+    if (!served.has_value())
+    {
+        merovingian::net::uninstall_shutdown_signal_handlers();
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+    }
+    auto const& stats = *served;
 
     merovingian::net::uninstall_shutdown_signal_handlers();
     LOG_INFO("Server stopped. accepted=" + std::to_string(stats.accepted_connections) + " completed=" +

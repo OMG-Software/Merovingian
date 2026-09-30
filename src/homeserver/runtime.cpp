@@ -673,6 +673,9 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
 
     auto runtime = HomeserverRuntime{};
     runtime.config = config;
+    // ADR-0079 caps are a fraction of the main request pool, which is now
+    // configured (server.http.request_threads, ADR-0077).
+    runtime.client_outbound_proxy_policy = client_outbound_proxy_policy_for_pool(config.server().http.request_threads);
     runtime.listeners = net::make_runtime_listeners(config);
     if (runtime.listeners.empty())
     {

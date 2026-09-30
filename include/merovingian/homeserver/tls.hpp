@@ -61,6 +61,11 @@ public:
     auto operator=(TlsConnection&& other) noexcept -> TlsConnection&;
 
     [[nodiscard]] auto fd() const noexcept -> int;
+    // True when OpenSSL already holds input read off the socket (a decrypted
+    // record not yet returned, or raw bytes not yet processed). poll() on the
+    // descriptor cannot see these, so a caller waiting for input must check
+    // this first or it waits for bytes that have already arrived.
+    [[nodiscard]] auto has_pending_input() const noexcept -> bool;
     [[nodiscard]] auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t;
     [[nodiscard]] auto write(std::string_view data) noexcept -> std::ptrdiff_t;
 

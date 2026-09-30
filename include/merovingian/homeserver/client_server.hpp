@@ -199,6 +199,16 @@ struct ClientServerStartOptions final
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                 bool can_wait = true) -> DispatchResult;
+// HTTP-1 / HTTP-6 (ADR-0077): decides from the request head alone whether a
+// media upload may have its body read under the raised
+// security.media.max_upload_size cap. `head` is the request with an empty
+// body. nullopt: its access token authenticates (a live session, or an
+// application service's as_token). Otherwise the response to send before
+// closing the connection unread: 401 M_MISSING_TOKEN or M_UNKNOWN_TOKEN (with
+// soft_logout for an expired token), with CORS headers, as the dispatcher
+// itself would answer. Takes the runtime lock; call it holding nothing.
+[[nodiscard]] auto media_upload_authentication_refusal(ClientServerRuntime& runtime, LocalHttpRequest const& head)
+    -> std::optional<LocalHttpResponse>;
 [[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime, std::string_view raw_request)
     -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;

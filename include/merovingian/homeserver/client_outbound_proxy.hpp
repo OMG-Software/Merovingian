@@ -15,12 +15,11 @@ namespace merovingian::homeserver
 
 struct HomeserverRuntime;
 
-// Threads in the main request pool (src/main.cpp). One named value so every cap
-// that is a fraction of the pool derives from it; the pool-size configuration
-// (audit finding HTTP-1) replaces this constant with the configured value and
-// the client-outbound caps below follow it.
-inline constexpr std::uint32_t main_request_pool_threads{8U};
-inline constexpr std::uint32_t default_main_request_pool_threads{main_request_pool_threads}; // RED-PHASE STUB
+// The shipped size of the main request pool (server.http.request_threads,
+// HTTP-1 / ADR-0077). The running server sizes its pool, and the caps below,
+// from the configured value; this default is what a runtime built without a
+// configuration uses.
+inline constexpr std::uint32_t default_main_request_pool_threads{16U};
 
 // How long the federation-worker round trip may exceed the request's own total
 // timeout, for calls with no tighter budget: the worker needs time to hand back
@@ -41,7 +40,7 @@ struct ClientOutboundProxyPolicy final
     // Calls in flight across every client. Half of the main request pool, so
     // the other half always stays available to requests that never leave this
     // server.
-    std::uint32_t global_cap{main_request_pool_threads / 2U};
+    std::uint32_t global_cap{default_main_request_pool_threads / 2U};
     // Calls in flight for one client address (rate_limit_client_key, which
     // honours trusted_proxies and groups IPv6 by prefix).
     std::uint32_t per_client_cap{1U};
@@ -70,7 +69,7 @@ struct ClientOutboundProxyPolicy final
 
 [[nodiscard]] constexpr auto default_client_outbound_proxy_policy() noexcept -> ClientOutboundProxyPolicy
 {
-    return client_outbound_proxy_policy_for_pool(main_request_pool_threads);
+    return client_outbound_proxy_policy_for_pool(default_main_request_pool_threads);
 }
 
 // A wall-clock deadline fixed when it is constructed. Discovery and each

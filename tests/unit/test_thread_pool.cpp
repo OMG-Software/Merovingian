@@ -340,3 +340,19 @@ SCENARIO("A ThreadPool with no configured depth stays unbounded", "[net][thread_
         }
     }
 }
+
+SCENARIO("ThreadPool reports how many workers it has", "[net][thread_pool][http-1]")
+{
+    GIVEN("a pool built with six workers")
+    {
+        auto pool = merovingian::net::ThreadPool{6U};
+
+        THEN("it reports six, before and after it is stopped")
+        {
+            // The connection dispatcher sizes its caps from this (ADR-0077).
+            REQUIRE(pool.worker_count() == 6U);
+            pool.request_stop();
+            REQUIRE(pool.worker_count() == 6U);
+        }
+    }
+}

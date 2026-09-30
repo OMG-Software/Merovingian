@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/http_server.hpp"
 
+#include "merovingian/config/config.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/tls.hpp"
@@ -12,6 +13,7 @@
 #include "merovingian/http/keep_alive.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/http/request_limits.hpp"
+#include "merovingian/net/connection_parker.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -67,47 +69,6 @@ namespace
         entry.events = events;
         auto const poll_result = ::poll(&entry, 1U, timeout_ms);
         return poll_result > 0 && (entry.revents & events) != 0;
-    }
-
-    // Loop on ::send() until the whole buffer is written or a non-recoverable
-    // error occurs.  This matches the TLS path's behaviour: a short write on a
-    // non-blocking socket is retried rather than silently truncated.
-    //
-    // Client sockets are non-blocking for the life of the connection, so a full
-    // peer receive window surfaces as EAGAIN rather than parking this thread in
-    // the kernel. Wait for writability against `timeout_ms` and give up when it
-    // expires: a peer that stops reading must cost one bounded timeout.
-    [[nodiscard]] auto send_all(int fd, std::string_view data, int timeout_ms) noexcept -> bool
-    {
-        auto const* ptr = data.data();
-        auto remaining = data.size();
-        while (remaining > 0U)
-        {
-            auto const n = ::send(fd, ptr, remaining, MSG_NOSIGNAL);
-            if (n < 0)
-            {
-                if (errno == EINTR)
-                {
-                    continue;
-                }
-                if (errno != EAGAIN && errno != EWOULDBLOCK)
-                {
-                    return false;
-                }
-                if (!poll_for_plain_io(fd, POLLOUT, timeout_ms))
-                {
-                    return false;
-                }
-                continue;
-            }
-            if (n == 0)
-            {
-                return false;
-            }
-            ptr += static_cast<std::size_t>(n);
-            remaining -= static_cast<std::size_t>(n);
-        }
-        return true;
     }
 
     // Convert the peer sockaddr captured at accept() time to a dotted-decimal
@@ -178,36 +139,19 @@ namespace
         log_diagnostic("sync.exception", std::move(fields));
     }
 
-    // Conservative deadlines for the minimal serve loop. The slowloris policy
-    // scaffolding in http/connection_guard.cpp will replace these once
-    // connection-level accounting lands.
+    // Per-read I/O timeout. Every wait below is also bounded by the deadline
+    // of whichever phase the connection is in; this is the ceiling.
     constexpr auto receive_timeout_milliseconds = 15000;
-    // B3: slowloris hardening. Two new caps layered on top of the per-byte
-    // poll above:
-    //   - overall request-head deadline (default 30 s): a slow client can
-    //     dribble a head indefinitely without ever filling the head buffer
-    //     or tripping the per-byte poll, so the worker would otherwise stay
-    //     parked until head_cap bytes had been dribbled in.
-    //   - per-byte inter-byte cap (default 5 s): a client that sends one
-    //     byte per recv poll would otherwise still be inside the 15 s
-    //     per-poll window; 5 s between bytes is a reasonable upper bound
-    //     for any non-attack traffic.
+    // B3: slowloris hardening for the request HEAD, which a worker reads once
+    // the connection is readable (ADR-0077: the first byte is waited for by
+    // the dispatcher, never by a worker):
+    //   - overall request-head deadline (30 s): a slow client can dribble a
+    //     head indefinitely without ever filling the head buffer.
+    //   - per-byte inter-byte cap (5 s) between bytes of the head.
+    // A client that dribbles heads holds at most its own share of the workers
+    // (max(1, pool / 4)) for at most 30 s each.
     constexpr auto request_head_deadline = std::chrono::seconds{30};
     constexpr auto inter_byte_timeout = std::chrono::seconds{5};
-    // M-06: the same two caps for the request BODY, which previously had
-    // neither — it relied solely on the per-read poll above, so each 4096-byte
-    // chunk got a fresh 15 s window and a client dribbling a declared
-    // Content-Length could hold a worker for (bytes / chunk) x 15 s without
-    // ever timing out. The head was hardened for this; the body was not.
-    //
-    // A flat deadline will not do here: a large media upload is legitimately
-    // slow. Instead the body deadline scales with the declared length at a
-    // minimum-throughput floor, which is what distinguishes a slow client from
-    // a dribbling one. The floor is deliberately far below any real connection
-    // (16 KiB/s), so honest uploads are never cut off, while a 1 MiB body gets
-    // ~94 s total rather than the ~65 minutes the old per-read window allowed.
-    constexpr auto request_body_base_deadline = std::chrono::seconds{30};
-    constexpr auto request_body_min_bytes_per_second = std::size_t{16U * 1024U};
     constexpr auto header_terminator = std::string_view{"\r\n\r\n"};
 
     class ConnectionStream
@@ -223,6 +167,11 @@ namespace
         auto operator=(ConnectionStream&&) -> ConnectionStream& = delete;
 
         [[nodiscard]] virtual auto fd() const noexcept -> int = 0;
+        // Input already held above the socket, which poll() cannot see.
+        [[nodiscard]] virtual auto has_buffered_input() const noexcept -> bool
+        {
+            return false;
+        }
         [[nodiscard]] virtual auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t = 0;
         [[nodiscard]] virtual auto write(std::string_view data) noexcept -> std::ptrdiff_t = 0;
     };
@@ -313,81 +262,233 @@ namespace
         int m_io_timeout_ms;
     };
 
+    // A TLS connection, borrowed from the HttpConnection that owns it for the
+    // length of one request round (or one sync-pool response).
     class TlsConnectionStream final : public ConnectionStream
     {
     public:
-        // Holds shared ownership of the TLS connection so that the read phase
-        // (this thread) and the async write phase (sync-pool thread) can each
-        // hold a reference without one dangling while the other is still running.
-        // Constructed from a shared_ptr built via shared_ptr{std::move(unique_ptr)}
-        // (not make_shared) to avoid GCC 16's spurious -Warray-bounds on the
-        // _Sp_counted_ptr_inplace co-allocation destructor path.
-        explicit TlsConnectionStream(
-            std::shared_ptr<TlsConnection> connection) noexcept // SHARED_PTR: reviewed — read/write pool split
-            : m_connection{std::move(connection)}
+        explicit TlsConnectionStream(TlsConnection& connection) noexcept
+            : m_connection{connection}
         {
         }
 
         [[nodiscard]] auto fd() const noexcept -> int override
         {
-            return m_connection->fd();
+            return m_connection.fd();
+        }
+
+        [[nodiscard]] auto has_buffered_input() const noexcept -> bool override
+        {
+            return m_connection.has_pending_input();
         }
 
         [[nodiscard]] auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t override
         {
-            return m_connection->read(buffer, capacity);
+            return m_connection.read(buffer, capacity);
         }
 
         [[nodiscard]] auto write(std::string_view data) noexcept -> std::ptrdiff_t override
         {
-            return m_connection->write(data);
+            return m_connection.write(data);
         }
 
     private:
-        std::shared_ptr<TlsConnection> m_connection; // SHARED_PTR: reviewed — shared by read and write pool threads
+        TlsConnection& m_connection;
     };
 
     // ---------------------------------------------------------------------
-    // HTTP/1.1 persistent connections (keep-alive)
+    // Connections and the dispatcher (ADR-0077)
     //
     // Matrix v1.19 is served over HTTP/1.1, where persistent connections are
-    // the default (RFC 9112 §9.3). A connection is served request-by-request
-    // in a sequential loop: read one request, drain its body exactly, write
-    // one response, then park the connection for the next request. Pipelining
-    // (more than one outstanding request) is NOT supported: pipelined bytes
-    // are buffered and served in order, one response at a time.
+    // the default (RFC 9112 §9.3). A connection is served one request round at
+    // a time: read one request, drain its body exactly, write one response.
+    // Between rounds, and before the first one, the connection is held by the
+    // dispatcher (net::ConnectionParker), NOT by a worker thread; a worker gets
+    // it back only once it is readable. Pipelining (more than one outstanding
+    // request) is NOT supported: pipelined bytes are buffered and served in
+    // order, one response at a time.
+    //
+    // Ownership: every connection is an HttpConnection behind a
+    // std::unique_ptr, owned by exactly one of the parker, one pool task, or
+    // one sync-pool task at any moment. Destroying it closes the socket and
+    // releases everything it holds (per-IP slot, parking reservation).
     // ---------------------------------------------------------------------
 
-    // ADR-0072: a connection's per-IP slot. It is shared, not unique, only
-    // because the pool tasks that carry a connection between threads are
-    // std::function and must be copyable; exactly one task owns the
-    // connection at a time, and the slot is released when the last of them
-    // (the one that closes the fd) is destroyed.
-    using SharedConnectionSlot =
-        std::shared_ptr<http::ConnectionLimiter::Slot>; // SHARED_PTR: reviewed — per-IP slot travels with the fd across
-                                                        // copyable pool tasks
+    using ConnectionOwner = std::unique_ptr<net::ConnectionParker::Connection>;
 
-    // Everything a connection-serving task needs. `runtime` and `stats`
-    // outlive every pool task (main.cpp stops the pools before the runtime
-    // is torn down). `owner_pool` is the pool whose worker runs this
-    // connection's loop — used to bound shutdown latency while parked.
-    // `connection_slot` holds the connection's per-IP slot; every task that
-    // takes over the fd must take a copy with it.
+    // A counted slot in one of the dispatcher's parking budgets (kept-alive
+    // connections between requests; new connections before their first
+    // request). The counter is shared so a reservation may outlive the
+    // dispatcher that issued it.
+    class ParkingReservation final
+    {
+    public:
+        using Counter = std::shared_ptr<std::atomic<std::uint32_t>>; // SHARED_PTR: reviewed — outlives the dispatcher
+
+        ParkingReservation(ParkingReservation const&) = delete;
+        auto operator=(ParkingReservation const&) -> ParkingReservation& = delete;
+        ParkingReservation(ParkingReservation&& other) noexcept
+            : m_counter{std::move(other.m_counter)}
+        {
+        }
+        auto operator=(ParkingReservation&& other) noexcept -> ParkingReservation&
+        {
+            if (this != &other)
+            {
+                release();
+                m_counter = std::move(other.m_counter);
+            }
+            return *this;
+        }
+        ~ParkingReservation()
+        {
+            release();
+        }
+
+        // A slot when fewer than `cap` are held; nullopt at the cap. A cap of
+        // 0 means unbounded.
+        [[nodiscard]] static auto try_acquire(Counter const& counter,
+                                              std::uint32_t cap) -> std::optional<ParkingReservation>
+        {
+            auto current = counter->load(std::memory_order_relaxed);
+            while (cap == 0U || current < cap)
+            {
+                if (counter->compare_exchange_weak(current, current + 1U, std::memory_order_relaxed,
+                                                   std::memory_order_relaxed))
+                {
+                    return ParkingReservation{counter};
+                }
+            }
+            return std::nullopt;
+        }
+
+    private:
+        explicit ParkingReservation(Counter counter) noexcept
+            : m_counter{std::move(counter)}
+        {
+        }
+        auto release() noexcept -> void
+        {
+            if (m_counter != nullptr)
+            {
+                m_counter->fetch_sub(1U, std::memory_order_relaxed);
+                m_counter = nullptr;
+            }
+        }
+
+        Counter m_counter{};
+    };
+
+    // One client connection and everything that travels with it.
+    class HttpConnection final : public net::ConnectionParker::Connection
+    {
+    public:
+        HttpConnection(core::SocketHandle client_socket, HttpDispatchMode dispatch_mode, std::string peer,
+                       std::string key) noexcept
+            : socket{std::move(client_socket)}
+            , mode{dispatch_mode}
+            , peer_addr{std::move(peer)}
+            , client_key{std::move(key)}
+            , opened_at{std::chrono::steady_clock::now()}
+        {
+        }
+        HttpConnection(HttpConnection const&) = delete;
+        auto operator=(HttpConnection const&) -> HttpConnection& = delete;
+        HttpConnection(HttpConnection&&) = delete;
+        auto operator=(HttpConnection&&) -> HttpConnection& = delete;
+        ~HttpConnection() override
+        {
+            // TLS state first (it does not own the descriptor), then an
+            // orderly shutdown; ~socket closes the descriptor last.
+            tls.reset();
+            if (socket.valid())
+            {
+                std::ignore = ::shutdown(socket.native_handle(), SHUT_RDWR);
+            }
+        }
+
+        [[nodiscard]] auto fd() const noexcept -> int override
+        {
+            return socket.native_handle();
+        }
+
+        // Pipelined bytes already read past the previous request, or TLS input
+        // OpenSSL holds: the next request is here even if the socket is quiet.
+        [[nodiscard]] auto has_buffered_input() const noexcept -> bool override
+        {
+            return !leftover.empty() || (tls.has_value() && tls->has_pending_input());
+        }
+
+        auto on_park_expired() noexcept -> void override
+        {
+            try
+            {
+                if (first_request)
+                {
+                    log_diagnostic("connection.first_byte_timeout",
+                                   {
+                                       {"phase", tls_handshake_owed ? "tls_handshake" : "request", false}
+                    });
+                }
+                else
+                {
+                    log_diagnostic("connection.keep_alive_idle_expired", {});
+                }
+            }
+            catch (...)
+            {
+            }
+        }
+
+        // Declared first so it is destroyed last: everything below may still
+        // refer to the descriptor while it is torn down.
+        core::SocketHandle socket;
+        // ADR-0072: the connection's per-IP slot; empty when exempt.
+        std::optional<http::ConnectionLimiter::Slot> connection_slot{};
+        std::optional<TlsConnection> tls{};
+        // Set on a TLS listener until the handshake has run (on a worker).
+        std::optional<std::reference_wrapper<TlsServerContext>> tls_handshake_owed{};
+        HttpDispatchMode mode;
+        std::string peer_addr;
+        // The per-client worker-share key; empty for a trusted proxy.
+        std::string client_key;
+        // Bytes read past the previous request (a pipelined next request).
+        std::string leftover{};
+        std::uint32_t requests_served{0U};
+        std::chrono::steady_clock::time_point opened_at;
+        bool first_request{true};
+        // Held while the connection is parked (see ParkingReservation).
+        std::optional<ParkingReservation> parked_reservation{};
+    };
+
+    [[nodiscard]] auto http_connection(ConnectionOwner const& owner) -> HttpConnection&
+    {
+        // Only HttpConnections are ever parked on an HTTP dispatcher.
+        return dynamic_cast<HttpConnection&>(*owner);
+    }
+
+    // Everything a request round needs besides the connection itself.
+    // `runtime` and `stats` outlive every pool task (main.cpp stops the pools
+    // before the runtime is torn down). `dispatcher` is null for direct
+    // serve_one_http_connection calls, which never keep a connection alive.
     struct ConnectionContext final
     {
         ClientServerRuntime& runtime;
         HttpServeStats& stats;
+        net::ThreadPool* sync_pool; // may be null (tests, no long-poll offload)
+        std::shared_ptr<HttpConnectionDispatcher::Impl>
+            dispatcher; // SHARED_PTR: reviewed — pool tasks keep the dispatcher alive
+        HttpServeTuning tuning;
         HttpDispatchMode dispatch_mode;
-        net::ThreadPool* sync_pool;  // may be null (tests, no long-poll offload)
-        net::ThreadPool* owner_pool; // may be null (direct serve_one calls)
         std::string peer_addr;
-        SharedConnectionSlot connection_slot; // null when exempt or not accepted here
     };
 
     struct ConnectionAdmission final
     {
         bool admitted{false};
-        SharedConnectionSlot slot{};
+        std::optional<http::ConnectionLimiter::Slot> slot{};
+        // The per-client worker-share key (ADR-0077); empty when exempt.
+        std::string client_key{};
     };
 
     // ADR-0072: decided at accept time, before a byte is read. A connection
@@ -396,140 +497,59 @@ namespace
     // then relies on the proxy and on the per-IP rate limiter, which sees the
     // forwarded address. Everything else is counted under its
     // client_address_key and refused once that key holds
-    // server.http.max_connections_per_ip connections.
+    // server.http.max_connections_per_ip connections. The same key (and the
+    // same exemption) is the connection's per-client worker share (ADR-0077).
     [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime, std::string const& peer_addr)
         -> ConnectionAdmission
     {
         auto const& server = runtime.homeserver.config.server();
         if (std::ranges::find(server.trusted_proxies, peer_addr) != server.trusted_proxies.end())
         {
-            return {true, nullptr};
+            return {true, std::nullopt, {}};
         }
         if (!runtime.connection_limiter)
         {
-            return {false, nullptr};
+            return {false, std::nullopt, {}};
         }
-        auto slot = runtime.connection_limiter->try_acquire(
-            http::client_address_key(peer_addr, server.http.ipv6_client_prefix_length),
-            server.http.max_connections_per_ip);
+        auto key = http::client_address_key(peer_addr, server.http.ipv6_client_prefix_length);
+        if (key.empty())
+        {
+            // Fail closed: an address we could not render still shares one
+            // budget rather than escaping the per-client caps.
+            key = "unknown";
+        }
+        auto slot = runtime.connection_limiter->try_acquire(key, server.http.max_connections_per_ip);
         if (!slot.has_value())
         {
-            return {false, nullptr};
+            return {false, std::nullopt, {}};
         }
-        return {true, std::make_shared<http::ConnectionLimiter::Slot>(std::move(*slot))};
+        auto admission = ConnectionAdmission{};
+        admission.admitted = true;
+        admission.slot.emplace(std::move(*slot));
+        admission.client_key = std::move(key);
+        return admission;
     }
-
-    enum class ServeOutcome : std::uint8_t
-    {
-        // The connection is finished. The caller owns the fd and must shut it
-        // down and close it.
-        connection_closed,
-        // A sync-pool long-poll task (or the keep-alive continuation it
-        // submits) now owns the fd; the caller must NOT close it.
-        transferred,
-    };
 
     enum class RoundOutcome : std::uint8_t
     {
         // One request round finished and the connection must close.
         close_connection,
-        // One request round finished with Connection: keep-alive; the caller
-        // parks the connection and reads the next request.
+        // One request round finished with Connection: keep-alive; the
+        // connection goes back to the dispatcher for its next request.
         continue_keep_alive,
-        // The request was a long-poll handed off to the sync pool (which
-        // hands the connection back to owner_pool for the next request when
-        // the client asked for keep-alive).
+        // The request was a long-poll handed off to the sync pool, which now
+        // owns the connection (and hands it back to the dispatcher itself).
         transferred,
     };
 
-    enum class NextRequestWait : std::uint8_t
-    {
-        // Bytes of the next request head arrived; read it.
-        data_ready,
-        // The keep-alive idle window passed with no next request.
-        idle_expired,
-        // The peer is gone or the pool is stopping; close without a response.
-        connection_dead,
-    };
-
-    // Process-wide count of connections parked waiting for a subsequent
-    // keep-alive request. All listeners share one main request pool, so the
-    // cap must be process-wide too: a parked connection occupies a main-pool
-    // worker thread, and without a cap a client could park one worker per
-    // connection and stall every new request until each idle window expired.
-    std::atomic<std::uint32_t> parked_keep_alive_connections{0U};
-
-    // RAII handle for one acquired parking slot. The count is only held
-    // while the connection is parked (idle, no request in flight); it is
-    // released as soon as the next request's bytes arrive, so the cap bounds
-    // parked threads, not active requests.
-    class ParkedKeepAliveSlot final
-    {
-    public:
-        ParkedKeepAliveSlot(ParkedKeepAliveSlot const&) = delete;
-        auto operator=(ParkedKeepAliveSlot const&) -> ParkedKeepAliveSlot& = delete;
-        ParkedKeepAliveSlot(ParkedKeepAliveSlot&& other) noexcept
-            : m_held{std::exchange(other.m_held, false)}
-        {
-        }
-        auto operator=(ParkedKeepAliveSlot&& other) noexcept -> ParkedKeepAliveSlot&
-        {
-            if (this != &other)
-            {
-                release();
-                m_held = std::exchange(other.m_held, false);
-            }
-            return *this;
-        }
-        ~ParkedKeepAliveSlot()
-        {
-            release();
-        }
-
-        // Acquires one parking slot when the operator cap allows it, so the
-        // number of parked connections stays bounded; nullopt means the cap
-        // is reached and the connection must be closed instead of parked.
-        [[nodiscard]] static auto try_acquire(http::KeepAlivePolicy const& policy) noexcept
-            -> std::optional<ParkedKeepAliveSlot>
-        {
-            auto current = parked_keep_alive_connections.load(std::memory_order_relaxed);
-            while (current < policy.max_connections)
-            {
-                if (parked_keep_alive_connections.compare_exchange_weak(
-                        current, current + 1U, std::memory_order_relaxed, std::memory_order_relaxed))
-                {
-                    return ParkedKeepAliveSlot{ConstructTag{}};
-                }
-            }
-            return std::nullopt;
-        }
-
-    private:
-        struct ConstructTag final
-        {
-        };
-        explicit ParkedKeepAliveSlot(ConstructTag) noexcept
-        {
-        }
-        auto release() noexcept -> void
-        {
-            if (m_held)
-            {
-                m_held = false;
-                parked_keep_alive_connections.fetch_sub(1U, std::memory_order_relaxed);
-            }
-        }
-        bool m_held{true};
-    };
-
-    // The effective keep-alive policy for one connection. Parking is disabled
-    // when there is no owning pool: direct serve_one_http_connection callers
-    // (tests) keep the one-request-per-call contract, and a sync-pool
-    // long-poll would have nowhere to hand the connection back to.
+    // The effective keep-alive policy for one connection. Keep-alive is off
+    // when there is no dispatcher to park the connection on: direct
+    // serve_one_http_connection callers keep the one-request-per-call
+    // contract.
     [[nodiscard]] auto keep_alive_policy_for(ConnectionContext const& ctx) noexcept -> http::KeepAlivePolicy
     {
         auto const& http_config = ctx.runtime.homeserver.config.server().http;
-        auto const enabled = http_config.keep_alive && ctx.owner_pool != nullptr;
+        auto const enabled = http_config.keep_alive && ctx.dispatcher != nullptr;
         return {enabled, http_config.keep_alive_idle_seconds, http_config.keep_alive_max_connections};
     }
 
@@ -547,17 +567,15 @@ namespace
     // mode; the caller closes the connection. Failing closed matters: a socket
     // left blocking silently reinstates the unbounded ::send() this was written
     // to remove, and nothing above would notice.
-    [[nodiscard]] auto make_connection_stream(
-        int fd,
-        std::shared_ptr<TlsConnection> tls) // SHARED_PTR: reviewed — read/write pool split
-        -> std::unique_ptr<ConnectionStream>
+    [[nodiscard]] auto make_connection_stream(HttpConnection& connection) -> std::unique_ptr<ConnectionStream>
     {
-        if (tls != nullptr)
+        if (connection.tls.has_value())
         {
             // accept_tls_connection already left this descriptor non-blocking
             // and deliberately never restores it (ADR-0054).
-            return std::make_unique<TlsConnectionStream>(std::move(tls));
+            return std::make_unique<TlsConnectionStream>(*connection.tls);
         }
+        auto const fd = connection.fd();
         if (!set_socket_nonblocking(fd))
         {
             log_diagnostic("connection.nonblocking_failed",
@@ -568,88 +586,6 @@ namespace
             return nullptr;
         }
         return std::make_unique<PlainConnectionStream>(fd, receive_timeout_milliseconds);
-    }
-
-    // The sync-pool write callback for one round: routes writes through the
-    // OpenSSL layer for TLS connections, raw ::send() for plain ones.
-    [[nodiscard]] auto make_async_write_fn(
-        std::shared_ptr<TlsConnection> const& tls) // SHARED_PTR: reviewed — sync-pool task outlives the round
-        -> std::function<std::ptrdiff_t(std::string_view)>
-    {
-        if (tls == nullptr)
-        {
-            return {};
-        }
-        return std::function<std::ptrdiff_t(std::string_view)>{[tls](std::string_view data) {
-            return tls->write(data);
-        }};
-    }
-
-    // Parks a kept-alive connection until the next request head starts
-    // arriving. Bounded by the keep-alive idle window (NOT by the slowloris
-    // policy — a quiet connection is not a slow client; see
-    // http::connection_should_close) and polls in one-second slices so a
-    // pool request_stop() is bounded to at most one slice regardless of the
-    // configured window.
-    [[nodiscard]] auto wait_for_next_request(ConnectionStream& stream, net::ThreadPool const* owner_pool,
-                                             http::KeepAlivePolicy const& policy) -> NextRequestWait
-    {
-        auto const slowloris = http::SlowlorisPolicy{};
-        auto const start = std::chrono::steady_clock::now();
-        while (true)
-        {
-            if (owner_pool != nullptr && !owner_pool->running())
-            {
-                return NextRequestWait::connection_dead;
-            }
-            auto const elapsed = std::chrono::steady_clock::now() - start;
-            auto const elapsed_seconds =
-                static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count());
-            // Phase-aware guard composition: awaiting_request is bounded only
-            // by the idle window. The slowloris policy still applies in full
-            // to the request head read that follows once bytes arrive.
-            if (http::connection_should_close(http::ConnectionPhase::awaiting_request,
-                                              http::RequestProgress{0U, elapsed_seconds}, slowloris, policy))
-            {
-                return NextRequestWait::idle_expired;
-            }
-            auto const idle_remaining = std::chrono::seconds{policy.idle_timeout_seconds} - elapsed;
-            // Sub-second remainder guard: the integer-second deadline above
-            // still reads `elapsed_seconds == idle` while the true window is
-            // already spent (e.g. 1.005 s into a 1 s window). Slicing that
-            // negative remainder into poll() would be treated by Linux as
-            // "block indefinitely" (any negative timeout is infinite), so a
-            // parked connection would never wake to expire. Treat a spent
-            // window as expired instead.
-            if (idle_remaining <= std::chrono::seconds{0})
-            {
-                return NextRequestWait::idle_expired;
-            }
-            auto const slice =
-                idle_remaining < std::chrono::milliseconds{1000U} ? idle_remaining : std::chrono::milliseconds{1000U};
-            auto entry = pollfd{};
-            entry.fd = stream.fd();
-            entry.events = POLLIN;
-            auto const poll_result = ::poll(
-                &entry, 1U, static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(slice).count()));
-            if (poll_result < 0)
-            {
-                if (errno == EINTR)
-                {
-                    continue;
-                }
-                return NextRequestWait::connection_dead;
-            }
-            if (poll_result > 0)
-            {
-                if ((entry.revents & POLLIN) != 0)
-                {
-                    return NextRequestWait::data_ready;
-                }
-                return NextRequestWait::connection_dead;
-            }
-            // Slice elapsed: re-evaluate the idle deadline and stop flag.
-        }
     }
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
@@ -680,6 +616,12 @@ namespace
     [[nodiscard]] auto recv_with_timeout(ConnectionStream& stream, char* buffer, std::size_t capacity,
                                          int budget_ms) noexcept -> std::ptrdiff_t
     {
+        // Input OpenSSL already holds is invisible to poll(): read it now, or
+        // the wait below runs out on bytes that have already arrived.
+        if (stream.has_buffered_input())
+        {
+            return stream.read(buffer, capacity);
+        }
         auto entry = pollfd{};
         entry.fd = stream.fd();
         entry.events = POLLIN;
@@ -808,8 +750,21 @@ namespace
         bool complete{false};
     };
 
+    // Reads exactly `expected` body bytes (never more than `cap`) under the
+    // minimum body rate (HTTP-1, ADR-0077): once `grace` has passed since the
+    // body read started, the bytes received so far must be at least
+    // `min_bytes_per_second` x (elapsed - grace). The rule is continuous: the
+    // moment the count falls behind the line the read ends and the caller
+    // answers 408. It replaced a whole-body deadline (30 s + length / 16 KiB)
+    // with a 5 s inter-byte gap, which let a client that sent one byte every
+    // 4.9 s hold a worker for most of an hour on a large upload.
+    //
+    // Bytes that arrived with the head count as received. A legitimate client
+    // at or above the floor never trips the rule however large the body;
+    // with the production values (10 s, 16 KiB/s) a 1 MiB body may take up to
+    // 74 s.
     [[nodiscard]] auto read_remaining_body(ConnectionStream& stream, std::string head_tail, std::size_t expected,
-                                           std::size_t cap) -> BodyReadResult
+                                           std::size_t cap, HttpServeTuning const& tuning) -> BodyReadResult
     {
         if (expected > cap)
         {
@@ -823,23 +778,22 @@ namespace
             return {std::move(body), std::move(leftover), true};
         }
         auto chunk = std::array<char, 4096U>{};
-        // M-06: bound the total time this body may take, and the gap between any
-        // two bytes of it. Without both, a worker thread is held for as long as
-        // the client cares to dribble.
+        auto const rate = std::max<std::uint64_t>(1U, tuning.body_min_bytes_per_second);
         auto const start = std::chrono::steady_clock::now();
-        auto const deadline =
-            start + request_body_base_deadline +
-            std::chrono::seconds{static_cast<std::int64_t>(expected / request_body_min_bytes_per_second)};
-        auto last_byte = start;
         while (body.size() < expected)
         {
             auto const now = std::chrono::steady_clock::now();
-            if (now >= deadline)
+            // The instant the bytes held so far stop satisfying the rule:
+            // grace plus the time the floor rate needs to deliver them.
+            auto const earned = std::chrono::milliseconds{
+                static_cast<std::int64_t>((static_cast<std::uint64_t>(body.size()) * 1000U) / rate)};
+            auto const trips_at = start + tuning.body_rate_grace + earned;
+            if (now >= trips_at)
             {
                 log_diagnostic(
                     "request.body_slowloris",
                     {
-                        {"reason",         "overall_deadline",                                                       false},
+                        {"reason",         "minimum_body_rate",                                                      false},
                         {"elapsed_ms",
                          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count()),
                          false                                                                                            },
@@ -848,26 +802,15 @@ namespace
                 });
                 return {};
             }
-            if (now - last_byte >= inter_byte_timeout)
-            {
-                log_diagnostic(
-                    "request.body_slowloris",
-                    {
-                        {"reason",         "inter_byte_timeout",                                                         false},
-                        {"elapsed_ms",
-                         std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - last_byte).count()),
-                         false                                                                                                },
-                        {"bytes_received", std::to_string(body.size()),                                                  false},
-                        {"bytes_expected", std::to_string(expected),                                                     false}
-                });
-                return {};
-            }
             auto const remaining = expected - body.size();
             auto const wanted = remaining < chunk.size() ? remaining : chunk.size();
-            // Same bounding as the head read above: a 15s poll would otherwise
-            // outlive the 5s inter-byte cap and make it unenforceable.
-            auto const received =
-                recv_with_timeout(stream, chunk.data(), wanted, recv_budget_ms(now, deadline, last_byte));
+            // Never wait past the moment the rule would trip: the rule is only
+            // checked between reads, so a longer poll would make it
+            // unenforceable.
+            auto const to_trip = std::chrono::duration_cast<std::chrono::milliseconds>(trips_at - now).count();
+            auto const budget = std::max<std::int64_t>(
+                1, std::min<std::int64_t>(static_cast<std::int64_t>(receive_timeout_milliseconds), to_trip));
+            auto const received = recv_with_timeout(stream, chunk.data(), wanted, static_cast<int>(budget));
             if (received == recv_budget_expired)
             {
                 continue;
@@ -877,7 +820,6 @@ namespace
                 return {};
             }
             body.append(chunk.data(), static_cast<std::size_t>(received));
-            last_byte = std::chrono::steady_clock::now();
         }
         return {std::move(body), {}, true};
     }
@@ -1225,35 +1167,276 @@ namespace
         return result;
     }
 
-    // Serves exactly one request round: read the head, drain the body exactly,
-    // route, write one response. `leftover` carries pipelined bytes in and, on
-    // keep-alive rounds, the bytes past this request's body back out so the
-    // next round never loses a request boundary. `first_request` marks the
-    // connection's opening round: a later round whose head read gets zero
-    // bytes is a client closing an idle parked connection and is closed
-    // silently rather than answered with a 408.
+} // namespace
+
+// The dispatcher's internals (ADR-0077). Shared: every pool task that carries a
+// connection holds a reference, so a worker finishing a round can always hand
+// its connection back (or close it once stopped) even if the public
+// HttpConnectionDispatcher has been destroyed.
+//
+// Threads: the parker thread calls dispatch(); pool workers call serve(); the
+// accept threads call accept(); workers and sync-pool tasks call
+// park_for_next_request(). None of these holds a lock across another: the
+// parker's lock is internal to net::ConnectionParker and is never held while
+// this class runs, and the parking counters are atomics.
+class HttpConnectionDispatcher::Impl final : public std::enable_shared_from_this<HttpConnectionDispatcher::Impl>
+{
+public:
+    Impl(ClientServerRuntime& runtime_ref, HttpServeStats& stats_ref, net::ThreadPool& pool_ref,
+         net::ThreadPool* sync_pool_ptr, HttpServeTuning tuning_value)
+        : runtime{runtime_ref}
+        , stats{stats_ref}
+        , pool{pool_ref}
+        , sync_pool{sync_pool_ptr}
+        , tuning{tuning_value}
+    {
+    }
+    Impl(Impl const&) = delete;
+    auto operator=(Impl const&) -> Impl& = delete;
+    Impl(Impl&&) = delete;
+    auto operator=(Impl&&) -> Impl& = delete;
+    ~Impl() = default;
+
+    [[nodiscard]] auto start() -> bool;
+    auto request_stop() -> void;
+    [[nodiscard]] auto running() const -> bool;
+
+    // Accept path: an admitted connection waits, parked, for its first byte.
+    auto accept(core::SocketHandle socket, std::string peer_addr, HttpDispatchMode mode, ConnectionAdmission admission,
+                std::optional<std::reference_wrapper<TlsServerContext>> tls_context) -> void;
+    // A worker or a sync-pool task hands a kept-alive connection back.
+    auto park_for_next_request(ConnectionOwner owner) -> void;
+
+    [[nodiscard]] auto try_reserve_keep_alive(std::uint32_t cap) -> std::optional<ParkingReservation>
+    {
+        return ParkingReservation::try_acquire(m_parked_keep_alive, cap);
+    }
+    [[nodiscard]] auto parked_keep_alive() const noexcept -> std::uint32_t
+    {
+        return m_parked_keep_alive->load(std::memory_order_relaxed);
+    }
+
+    ClientServerRuntime& runtime;
+    HttpServeStats& stats;
+    net::ThreadPool& pool;
+    net::ThreadPool* sync_pool;
+    HttpServeTuning const tuning;
+
+private:
+    auto park_awaiting_first_request(ConnectionOwner owner) -> void;
+    auto dispatch(net::ConnectionParker::Dispatched dispatched) -> void;
+    auto serve(net::ConnectionParker::Dispatched dispatched) -> void;
+
+    ParkingReservation::Counter m_parked_keep_alive{std::make_shared<std::atomic<std::uint32_t>>(0U)};
+    ParkingReservation::Counter m_parked_new{std::make_shared<std::atomic<std::uint32_t>>(0U)};
+    // Created by start() before any listener runs; the pointer never changes
+    // afterwards, so the threads that use it need no lock to read it.
+    std::unique_ptr<net::ConnectionParker> m_parker{};
+};
+
+namespace
+{
+
+    [[nodiscard]] auto is_media_upload_target(std::string_view target) noexcept -> bool
+    {
+        return target == "/_matrix/media/v3/upload" || target.starts_with("/_matrix/media/v3/upload?") ||
+               target == "/_matrix/client/v1/media/upload" || target.starts_with("/_matrix/client/v1/media/upload?");
+    }
+
+    [[nodiscard]] auto max_upload_bytes(ClientServerRuntime const& runtime) -> std::size_t
+    {
+        auto const parsed = config::parse_size_limit(runtime.homeserver.config.security().media.max_upload_size);
+        auto const raw = parsed.valid ? parsed.bytes : std::uint64_t{104857600U};
+        return raw > std::numeric_limits<std::size_t>::max() ? std::numeric_limits<std::size_t>::max()
+                                                             : static_cast<std::size_t>(raw);
+    }
+
+    // Connection framing for one response (RFC 9112 §9.3), decided when the
+    // response is about to be written: the client's Connection header and
+    // the keep-alive policy, then the per-connection caps (HTTP-8), then a
+    // slot in the parked-connection budget. A kept-alive response holds that
+    // slot (in the connection) until the connection is next dispatched, so
+    // the Keep-Alive header is never a promise the dispatcher cannot keep.
+    [[nodiscard]] auto decide_connection(ConnectionContext const& ctx, HttpConnection& connection,
+                                         http::HttpVersion version,
+                                         std::string_view connection_header) -> http::ConnectionPreference
+    {
+        ++connection.requests_served;
+        auto const policy = keep_alive_policy_for(ctx);
+        auto const parked = ctx.dispatcher != nullptr ? ctx.dispatcher->parked_keep_alive() : 0U;
+        auto const preference = http::connection_preference_for_response(version, connection_header, policy, parked);
+        if (preference != http::ConnectionPreference::keep_alive || ctx.dispatcher == nullptr)
+        {
+            return http::ConnectionPreference::close;
+        }
+        if (connection.requests_served >= ctx.tuning.max_requests_per_connection)
+        {
+            log_diagnostic("connection.request_cap_reached",
+                           {
+                               {"requests", std::to_string(connection.requests_served), false}
+            });
+            return http::ConnectionPreference::close;
+        }
+        if (std::chrono::steady_clock::now() - connection.opened_at >= ctx.tuning.max_connection_lifetime)
+        {
+            log_diagnostic(
+                "connection.lifetime_cap_reached",
+                {
+                    {"lifetime_seconds", std::to_string(ctx.tuning.max_connection_lifetime.count()), false}
+            });
+            return http::ConnectionPreference::close;
+        }
+        auto reservation = ctx.dispatcher->try_reserve_keep_alive(policy.max_connections);
+        if (!reservation.has_value())
+        {
+            log_diagnostic("connection.keep_alive_cap_reached",
+                           {
+                               {"limit", std::to_string(policy.max_connections), false}
+            });
+            return http::ConnectionPreference::close;
+        }
+        connection.parked_reservation = std::move(reservation);
+        return http::ConnectionPreference::keep_alive;
+    }
+
+    // A long-poll handed to the sync pool. It owns the connection from the
+    // moment it is submitted; everything it needs is held by value, since the
+    // round that created it may be gone by the time it runs.
+    struct SyncHandoff final
+    {
+        ConnectionOwner connection;
+        ConnectionContext ctx;
+        LocalHttpRequest request;
+        SyncWaitParams wait;
+        sync::SyncNotifier& notifier;
+        http::HttpVersion version;
+        std::string connection_header;
+    };
+
+    auto run_sync_handoff(SyncHandoff& handoff) -> void
+    {
+        auto& runtime = handoff.ctx.runtime;
+        auto& stats = handoff.ctx.stats;
+        auto* const sync_pool = handoff.ctx.sync_pool;
+        auto& connection = http_connection(handoff.connection);
+        auto const fd = connection.fd();
+        // Re-wait loop: after each notifier fire, call the handler with
+        // can_wait=true. If the handler returns needs_wait the wakeup was
+        // caused by an event irrelevant to this connection (e.g. another
+        // user's device key upload); advance the cursor past the irrelevant
+        // bump and continue polling. If it returns complete, send immediately.
+        auto dispatched_result = std::optional<DispatchResult>{};
+        auto client_gone = false;
+        try
+        {
+            // Poll in 1-second slices: short enough to detect a dropped client
+            // connection within one slice, and to bound shutdown
+            // (request_stop()) to one slice regardless of the client timeout.
+            constexpr auto poll_interval = std::chrono::milliseconds{1000U};
+            auto wait_params = handoff.wait;
+            auto const deadline = std::chrono::steady_clock::now() + wait_params.timeout;
+            while (sync_pool->running())
+            {
+                auto const remaining =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+                if (remaining.count() <= 0)
+                {
+                    break;
+                }
+                if (handoff.notifier.wait_for_change(wait_params.since_stream_ordering,
+                                                     wait_params.since_sync_stream_id,
+                                                     std::min(remaining, poll_interval)))
+                {
+                    auto interim = handle_client_server_request(runtime, handoff.request, true);
+                    if (interim.status == DispatchResult::Status::complete)
+                    {
+                        dispatched_result = std::move(interim);
+                        break;
+                    }
+                    wait_params = interim.wait;
+                }
+                else
+                {
+                    // Notifier did not fire (poll-slice timeout). Check whether
+                    // the peer is still connected via a non-blocking peek: when
+                    // the client closes (FIN or RST), recv returns 0 or a
+                    // connection error, not EAGAIN, so the thread exits at once
+                    // instead of waiting out the timeout. This prevents sync-pool
+                    // exhaustion when clients reconnect rapidly (an SDK reset
+                    // loop abandoning one long-poll every ~90 ms).
+                    auto peek_buf = std::array<char, 1>{};
+                    auto const n = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
+                    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+                    {
+                        client_gone = true;
+                        break;
+                    }
+                }
+            }
+        }
+        catch (...)
+        {
+            log_swallowed_exception("sync_pool_dispatch");
+        }
+        if (client_gone)
+        {
+            // Client closed before we could respond: close without logging a
+            // completed request.
+            handoff.connection.reset();
+            return;
+        }
+        auto const final_result = dispatched_result.has_value()
+                                      ? std::move(*dispatched_result)
+                                      : handle_client_server_request(runtime, handoff.request, false);
+        ++stats.completed_requests;
+        log_diagnostic("request.completed",
+                       {
+                           {"method",         handoff.request.method,                                       false},
+                           {"target",         observability::sanitized_http_target(handoff.request.target), false},
+                           {"status",         std::to_string(final_result.response.status),                 false},
+                           {"response_bytes", std::to_string(final_result.response.body.size()),            false}
+        });
+        auto const decision = decide_connection(handoff.ctx, connection, handoff.version, handoff.connection_header);
+        auto const formatted =
+            format_response(final_result.response.status, final_result.response.body, final_result.response.headers,
+                            decision, keep_alive_policy_for(handoff.ctx).idle_timeout_seconds);
+        auto stream = make_connection_stream(connection);
+        auto const written = stream != nullptr && send_all(*stream, formatted);
+        stream.reset();
+        if (written && decision == http::ConnectionPreference::keep_alive && handoff.ctx.dispatcher != nullptr)
+        {
+            // Back to the dispatcher for the next request: the next round runs
+            // on a main-pool worker (pool separation preserved).
+            handoff.ctx.dispatcher->park_for_next_request(std::move(handoff.connection));
+            return;
+        }
+        handoff.connection.reset();
+    }
+
+    // Serves exactly one request round on `connection`: read the head, drain
+    // the body exactly, route, write one response. Pipelined bytes past this
+    // request's body stay in connection.leftover for the next round. The
+    // connection's first round that gets zero bytes is a 408; a later one is a
+    // client closing an idle kept-alive connection and is closed silently.
     //
     // Returns close_connection / continue_keep_alive, or transferred when a
-    // long-poll was handed off to the sync pool: the sync task then owns the
-    // fd (the caller must NOT close it) and, when the client asked for
-    // keep-alive, re-submits the connection to ctx.owner_pool for its next
-    // round.
-    [[nodiscard]] auto serve_connection(
-        int fd,
-        std::shared_ptr<TlsConnection> tls, // SHARED_PTR: reviewed — read/write pool split
-        ConnectionContext& ctx) -> ServeOutcome;
-
-    [[nodiscard]] auto serve_request_round(
-        ConnectionStream& stream,
-        std::shared_ptr<TlsConnection> tls, // SHARED_PTR: reviewed — sync-pool task outlives the round
-        ConnectionContext& ctx, std::string& leftover, bool first_request) -> RoundOutcome
+    // long-poll was handed to the sync pool, which then owns the connection
+    // (`owner` is empty on return).
+    [[nodiscard]] auto serve_request_round(ConnectionContext& ctx, HttpConnection& connection,
+                                           ConnectionOwner& owner) -> RoundOutcome
     {
+        auto stream = make_connection_stream(connection);
+        if (stream == nullptr)
+        {
+            return RoundOutcome::close_connection;
+        }
         auto const limits = http::RequestLimits{};
         auto const head_cap = header_size_cap(limits);
-        auto [buffer, head_end] = read_request_head(stream, std::move(leftover), head_cap);
-        // std::move(leftover) leaves it valid-but-unspecified; reset it. It is
-        // re-assigned below with this round's surplus bytes on keep-alive paths.
-        leftover.clear();
+        auto const first_request = std::exchange(connection.first_request, false);
+        auto [buffer, head_end] = read_request_head(*stream, std::move(connection.leftover), head_cap);
+        // std::move leaves it valid-but-unspecified; reset it. It is re-assigned
+        // below with this round's surplus bytes on keep-alive paths.
+        connection.leftover.clear();
 
         if (head_end == std::string::npos)
         {
@@ -1273,7 +1456,7 @@ namespace
                                                        {"limit_bytes",    std::to_string(head_cap),      false},
                                                        {"reason",         "request head too large",      false}
                 });
-                write_error_response(stream, 413U, "request head too large",
+                write_error_response(*stream, 413U, "request head too large",
                                      transport_cors_headers(ctx, origin_from_raw_head(buffer)));
             }
             else
@@ -1283,7 +1466,7 @@ namespace
                                                        {"received_bytes", std::to_string(buffer.size()),          false},
                                                        {"reason",         "request head incomplete or timed out", false}
                 });
-                write_error_response(stream, 408U, "request head incomplete or timed out",
+                write_error_response(*stream, 408U, "request head incomplete or timed out",
                                      transport_cors_headers(ctx, origin_from_raw_head(buffer)));
             }
             return RoundOutcome::close_connection;
@@ -1301,49 +1484,44 @@ namespace
                                {"reason", http::request_error_name(parse.error),                   false}
             });
             write_error_response(
-                stream, http::request_error_status(parse.error), reason,
+                *stream, http::request_error_status(parse.error), reason,
                 transport_cors_headers(ctx, origin_from_raw_head(std::string_view{buffer.data(), head_end})));
             return RoundOutcome::close_connection;
         }
 
-        // Connection framing decision for this round (RFC 9112 §9.3): the
-        // client's Connection header, the keep-alive policy, and the parked-
-        // connection cap compose in http::connection_preference_for_response.
-        // The parked count read here is a hint for the response header; the
-        // authoritative slot acquisition happens when the connection parks,
-        // so a keep-alive header is advisory — the server may still close
-        // early (cap reached, shutdown), which is legal for a hint.
-        auto const keep_alive_policy = keep_alive_policy_for(ctx);
         auto const connection_header = find_header_value(parse.request, "connection");
-        auto const decision =
-            http::connection_preference_for_response(parse.request.version, connection_header, keep_alive_policy,
-                                                     parked_keep_alive_connections.load(std::memory_order_relaxed));
-
         auto body_tail = std::string{buffer.substr(head_end)};
         auto body = std::string{};
         if (parse.request.has_content_length && parse.request.content_length > 0U)
         {
             auto const expected = static_cast<std::size_t>(parse.request.content_length);
-            // Media upload routes permit up to max_upload_size; every other
-            // client-server route uses the smaller general body cap.
-            auto const effective_cap = [&]() -> std::size_t {
-                if (ctx.dispatch_mode == HttpDispatchMode::client_server && parse.request.method == "POST")
+            auto effective_cap = body_size_cap(limits);
+            // HTTP-1 / HTTP-6: the media upload routes may carry up to
+            // max_upload_size, but only for a request whose head already
+            // authenticates. Anything else is answered from the head alone,
+            // before a byte of a large body is read, and the connection closed
+            // (its unread body cannot be skipped).
+            if (ctx.dispatch_mode == HttpDispatchMode::client_server && parse.request.method == "POST" &&
+                is_media_upload_target(parse.request.target) && expected > effective_cap)
+            {
+                auto const head_only = build_local_request(parse.request, {}, ctx.peer_addr);
+                if (auto const refusal = media_upload_authentication_refusal(ctx.runtime, head_only);
+                    refusal.has_value())
                 {
-                    auto const& t = parse.request.target;
-                    auto const is_media =
-                        (t == "/_matrix/media/v3/upload" || t.starts_with("/_matrix/media/v3/upload?") ||
-                         t == "/_matrix/client/v1/media/upload" || t.starts_with("/_matrix/client/v1/media/upload?"));
-                    if (is_media)
-                    {
-                        auto const parsed =
-                            config::parse_size_limit(ctx.runtime.homeserver.config.security().media.max_upload_size);
-                        auto const raw = parsed.valid ? parsed.bytes : std::uint64_t{104857600U};
-                        return raw > std::numeric_limits<std::size_t>::max() ? std::numeric_limits<std::size_t>::max()
-                                                                             : static_cast<std::size_t>(raw);
-                    }
+                    ++ctx.stats.rejected_requests;
+                    log_diagnostic("request.rejected",
+                                   {
+                                       {"method",              parse.request.method,                                       false},
+                                       {"target",              observability::sanitized_http_target(parse.request.target), false},
+                                       {"status",              std::to_string(refusal->status),                            false},
+                                       {"expected_body_bytes", std::to_string(expected),                                   false},
+                                       {"reason",              "upload body refused before authentication",                false}
+                    });
+                    std::ignore = send_all(*stream, format_response(refusal->status, refusal->body, refusal->headers));
+                    return RoundOutcome::close_connection;
                 }
-                return body_size_cap(limits);
-            }();
+                effective_cap = max_upload_bytes(ctx.runtime);
+            }
             if (expected > effective_cap)
             {
                 ++ctx.stats.rejected_requests;
@@ -1361,12 +1539,12 @@ namespace
                 auto const cors_hdrs = transport_cors_headers(ctx, find_header_value(parse.request, "origin"));
                 auto const rejection =
                     format_response(413U, R"({"errcode":"M_TOO_LARGE","error":"request body too large"})", cors_hdrs);
-                std::ignore = send_all(stream, rejection);
+                std::ignore = send_all(*stream, rejection);
                 return RoundOutcome::close_connection;
             }
             // Drain the body exactly: read precisely Content-Length bytes and
             // keep any surplus (a pipelined next request) for the next round.
-            auto body_result = read_remaining_body(stream, std::move(body_tail), expected, effective_cap);
+            auto body_result = read_remaining_body(*stream, std::move(body_tail), expected, effective_cap, ctx.tuning);
             if (!body_result.complete)
             {
                 ++ctx.stats.rejected_requests;
@@ -1379,19 +1557,19 @@ namespace
                                    {"received_body_bytes", std::to_string(body_result.body.size()),                    false},
                                    {"reason",              "request body incomplete or timed out",                     false}
                 });
-                write_error_response(stream, 408U, "request body incomplete or timed out",
+                write_error_response(*stream, 408U, "request body incomplete or timed out",
                                      transport_cors_headers(ctx, find_header_value(parse.request, "origin")));
                 return RoundOutcome::close_connection;
             }
             body = std::move(body_result.body);
-            leftover = std::move(body_result.leftover);
+            connection.leftover = std::move(body_result.leftover);
         }
         else
         {
             // No body declared. Chunked transfer coding is rejected by the
             // parser, so a body can only arrive via Content-Length; every
             // byte past the head therefore belongs to the next request.
-            leftover = std::move(body_tail);
+            connection.leftover = std::move(body_tail);
         }
 
         auto const local_request = build_local_request(parse.request, std::move(body), ctx.peer_addr);
@@ -1407,199 +1585,38 @@ namespace
 
         if (result.status == DispatchResult::Status::needs_wait)
         {
-            auto* notifier = ctx.runtime.sync_notifier.get();
+            auto* const notifier = ctx.runtime.sync_notifier.get();
             if (notifier == nullptr)
             {
-                write_error_response(stream, 503U, matrix_error("M_UNKNOWN", "sync notifier unavailable"),
+                write_error_response(*stream, 503U, matrix_error("M_UNKNOWN", "sync notifier unavailable"),
                                      transport_cors_headers(ctx, find_header_value(parse.request, "origin")));
                 return RoundOutcome::close_connection;
             }
 
             if (ctx.sync_pool != nullptr)
             {
-                // Hand off to the dedicated sync pool. The current main-pool thread
-                // is freed immediately. The sync pool thread owns the fd exclusively
-                // from this point and must close it when done (or hand it back to
-                // the owner pool for the next keep-alive round).
-                //
-                // Poll in 5-second slices so that server shutdown (sync_pool.request_stop())
-                // is bounded to at most one slice even when clients request long timeouts.
-                // Clients re-poll immediately after an empty 200, so the slicing is transparent.
-                auto const fd = stream.fd();
-                auto const wait = result.wait;
-                // Everything the sync task outlives `ctx` for is copied out here:
-                // by the time this lambda runs, serve_request_round (and its
-                // caller's ConnectionContext) may already be gone. runtime and
-                // stats themselves outlive every pool task (main.cpp stops the
-                // pools before the runtime is torn down).
-                auto* runtime_ptr = &ctx.runtime;
-                auto* stats_ptr = &ctx.stats;
-                auto peer_addr_copy = ctx.peer_addr;
-                // The per-IP slot goes wherever the fd goes (ADR-0072).
-                auto connection_slot = ctx.connection_slot;
-                auto const dispatch_mode = ctx.dispatch_mode;
-                auto* sync_pool_ptr = ctx.sync_pool;
-                auto* owner_pool_ptr = ctx.owner_pool;
-                auto const idle_timeout_seconds = keep_alive_policy.idle_timeout_seconds;
-                // write_fn routes TLS writes through the OpenSSL layer; for
-                // plain HTTP it is null and ::send() is used directly.
-                auto write_fn = make_async_write_fn(tls);
-                // The submitted sync task must capture by VALUE only; a
-                // reference to the enclosing ctx would dangle once this round
-                // returns transferred.
-                auto submitted = sync_pool_ptr->submit([fd, write_fn = std::move(write_fn), runtime_ptr, stats_ptr,
-                                                        request_copy = local_request, wait, notifier, sync_pool_ptr,
-                                                        decision, idle_timeout_seconds, peer_addr_copy, dispatch_mode,
-                                                        owner_pool_ptr, tls, connection_slot]() mutable {
-                    // Re-wait loop: after each notifier fire, call the handler with
-                    // can_wait=true.  If the handler returns needs_wait the wakeup was
-                    // caused by an event irrelevant to this connection (e.g. another
-                    // user's device key upload); advance wait_params past the irrelevant
-                    // bump and continue polling.  If it returns complete, send immediately.
-                    // `wait` is captured const from the outer scope; use wait_params for
-                    // the mutable cursor that tracks the advancing since-values.
-                    // Local aliases so the loop body below keeps its original
-                    // shape; the pointers were captured because this task can
-                    // outlive the ConnectionContext that created it.
-                    auto& runtime = *runtime_ptr;
-                    auto& stats = *stats_ptr;
-                    auto* sync_pool = sync_pool_ptr;
-                    auto dispatched_result = std::optional<DispatchResult>{};
-                    auto client_gone = false;
-                    try
-                    {
-                        // Poll in 1-second slices: short enough to detect a dropped
-                        // client connection within one slice, yet not so short that
-                        // it generates excessive wakeups.  Shutdown (request_stop())
-                        // is bounded to one slice (≤1 s) regardless of client timeout.
-                        constexpr auto poll_interval = std::chrono::milliseconds{1000U};
-                        auto wait_params = wait; // mutable cursor
-                        auto const deadline = std::chrono::steady_clock::now() + wait_params.timeout;
-                        while (sync_pool->running())
-                        {
-                            auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                deadline - std::chrono::steady_clock::now());
-                            if (remaining.count() <= 0)
-                            {
-                                break;
-                            }
-                            if (notifier->wait_for_change(wait_params.since_stream_ordering,
-                                                          wait_params.since_sync_stream_id,
-                                                          std::min(remaining, poll_interval)))
-                            {
-                                auto interim = handle_client_server_request(runtime, request_copy, true);
-                                if (interim.status == DispatchResult::Status::complete)
-                                {
-                                    dispatched_result = std::move(interim);
-                                    break;
-                                }
-                                wait_params = interim.wait;
-                            }
-                            else
-                            {
-                                // Notifier did not fire (poll-slice timeout).  Check whether
-                                // the TCP peer is still connected via a non-blocking peek.
-                                // When the client closes (FIN or RST), recv returns 0 or a
-                                // connection error — not EAGAIN — so the thread exits
-                                // immediately instead of waiting for the next slice.  This
-                                // prevents sync-pool exhaustion when clients reconnect
-                                // rapidly (e.g. an SDK reset loop sends a new timeout=30000
-                                // every ~90 ms while abandoning the previous one).
-                                auto peek_buf = std::array<char, 1>{};
-                                auto const n = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
-                                if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-                                {
-                                    client_gone = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    catch (...)
-                    {
-                        log_swallowed_exception("sync_pool_dispatch");
-                    }
-                    if (client_gone)
-                    {
-                        // Client closed before we could respond; release the fd and
-                        // return the thread to the pool without logging a completed request.
-                        ::close(fd);
-                        return;
-                    }
-                    auto const final_result = dispatched_result.has_value()
-                                                  ? std::move(*dispatched_result)
-                                                  : handle_client_server_request(runtime, request_copy, false);
-                    ++stats.completed_requests;
-                    log_diagnostic("request.completed",
-                                   {
-                                       {"method",         request_copy.method,                                       false},
-                                       {"target",         observability::sanitized_http_target(request_copy.target), false},
-                                       {"status",         std::to_string(final_result.response.status),              false},
-                                       {"response_bytes", std::to_string(final_result.response.body.size()),         false}
-                    });
-                    auto const formatted =
-                        format_response(final_result.response.status, final_result.response.body,
-                                        final_result.response.headers, decision, idle_timeout_seconds);
-                    if (write_fn)
-                    {
-                        std::ignore = write_fn(formatted);
-                    }
-                    else
-                    {
-                        std::ignore = send_all(fd, formatted, receive_timeout_milliseconds);
-                    }
-                    // Keep-alive continuation: when the client asked to keep the
-                    // connection open, hand the fd back to the owner pool so the
-                    // next request is served on a main-pool worker (pool
-                    // separation preserved). All captures are values — this
-                    // task may be the last thing referencing the connection.
-                    auto const continue_connection = [&]() -> bool {
-                        if (decision != http::ConnectionPreference::keep_alive || owner_pool_ptr == nullptr)
-                        {
-                            return false;
-                        }
-                        return owner_pool_ptr->submit([fd, tls, peer_addr_copy, dispatch_mode, sync_pool_ptr,
-                                                       owner_pool_ptr, runtime_ptr, stats_ptr, connection_slot] {
-                            auto guard = core::SocketHandle{fd};
-                            auto connection_ctx =
-                                ConnectionContext{*runtime_ptr,   *stats_ptr,     dispatch_mode,
-                                                  sync_pool_ptr,  owner_pool_ptr, std::move(peer_addr_copy),
-                                                  connection_slot};
-                            if (serve_connection(fd, tls, connection_ctx) == ServeOutcome::transferred)
-                            {
-                                // The next long-poll (or its continuation) owns
-                                // the fd now.
-                                std::ignore = guard.release();
-                            }
-                            else
-                            {
-                                std::ignore = ::shutdown(fd, SHUT_RDWR);
-                                // ~guard closes the fd on any exit path.
-                            }
-                        });
-                    };
-                    if (!continue_connection())
-                    {
-                        std::ignore = ::shutdown(fd, SHUT_RDWR);
-                        ::close(fd);
-                    }
-                });
-                if (submitted)
+                // Hand off to the dedicated sync pool: this main-pool worker is
+                // freed at once, and the sync task owns the connection from
+                // here (closing it, or handing it back to the dispatcher for
+                // the next keep-alive round).
+                auto handoff =
+                    std::make_shared<SyncHandoff>(SyncHandoff{// SHARED_PTR: reviewed — copyable pool task
+                                                              std::move(owner), ctx, local_request, result.wait,
+                                                              *notifier, parse.request.version, connection_header});
+                if (ctx.sync_pool->submit([handoff] {
+                        run_sync_handoff(*handoff);
+                    }))
                 {
-                    return RoundOutcome::transferred; // fd is now owned by the sync pool thread
+                    return RoundOutcome::transferred;
                 }
-                // Sync pool is stopping; fall through to synchronous wait.
-                // write_fn was moved-from into the rejected lambda; the sync
-                // fallback path below uses stream.write() directly so that is fine.
+                // The sync pool is stopping: take the connection back and wait
+                // here instead.
+                owner = std::move(handoff->connection);
             }
 
-            // No sync_pool supplied (tests, pool shutting down): block this thread
-            // until new events arrive or the timeout expires.
-            // TLS connections use serve_tls_http which passes a sync_pool; they
-            // only reach this path if the pool is stopping.
-            // Re-wait loop mirrors the sync_pool path: after each notifier fire,
-            // call the handler with can_wait=true so it can park again when the
-            // wakeup was not relevant to this connection.
+            // No sync pool (tests, pool stopping): block this thread until new
+            // events arrive or the timeout expires. The re-wait loop mirrors
+            // the sync-pool path.
             {
                 auto wait = result.wait;
                 auto deadline = std::chrono::steady_clock::now() + wait.timeout;
@@ -1652,9 +1669,10 @@ namespace
                            {"status",         std::to_string(result.response.status),                     false},
                            {"response_bytes", std::to_string(result.response.body.size()),                false}
         });
+        auto const decision = decide_connection(ctx, connection, parse.request.version, connection_header);
         auto const formatted = format_response(result.response.status, result.response.body, result.response.headers,
-                                               decision, keep_alive_policy.idle_timeout_seconds);
-        if (!send_all(stream, formatted))
+                                               decision, keep_alive_policy_for(ctx).idle_timeout_seconds);
+        if (!send_all(*stream, formatted))
         {
             return RoundOutcome::close_connection;
         }
@@ -1662,81 +1680,181 @@ namespace
                                                                   : RoundOutcome::close_connection;
     }
 
-    // Serves a whole connection: request rounds in a sequential loop, parking
-    // between rounds for up to the keep-alive idle window. The first request
-    // is served immediately (no parking — the client just sent bytes, so no
-    // worker is held without work); each subsequent round first acquires one
-    // process-wide parked-connection slot. When the operator's cap is reached
-    // the connection closes after its current response instead of parking, so
-    // a single client cannot park a worker thread per connection beyond the
-    // configured budget. Idle parking is bounded ONLY by the idle window (the
-    // slowloris policy is not applied to a quiet connection — see
-    // http::connection_should_close); once request bytes arrive, the full
-    // per-request slowloris machinery applies to that head/body read again.
-    [[nodiscard]] auto serve_connection(
-        int fd,
-        std::shared_ptr<TlsConnection> tls, // SHARED_PTR: reviewed — read/write pool split
-        ConnectionContext& ctx) -> ServeOutcome
-    {
-        auto stream = make_connection_stream(fd, tls);
-        if (stream == nullptr)
-        {
-            return ServeOutcome::connection_closed;
-        }
-        auto leftover = std::string{};
-        auto first_request = true;
-        while (true)
-        {
-            auto const policy = keep_alive_policy_for(ctx);
-            // Only park when there is nothing buffered: a pipelined next
-            // request already sitting in `leftover` is served immediately —
-            // polling the socket would miss it (the bytes are in our buffer,
-            // not the kernel's) and the connection would wrongly idle out.
-            if (!first_request && leftover.empty())
-            {
-                auto slot = ParkedKeepAliveSlot::try_acquire(policy);
-                if (!slot.has_value())
-                {
-                    log_diagnostic("connection.keep_alive_cap_reached",
-                                   {
-                                       {"limit", std::to_string(policy.max_connections), false}
-                    });
-                    return ServeOutcome::connection_closed;
-                }
-                auto const wait = wait_for_next_request(*stream, ctx.owner_pool, policy);
-                // ~slot releases the parked-connection slot the moment the
-                // wait ends — bytes arrived, the idle window expired, or the
-                // peer went away. The cap bounds parked connections, not
-                // active requests.
-                if (wait != NextRequestWait::data_ready)
-                {
-                    if (wait == NextRequestWait::idle_expired)
-                    {
-                        log_diagnostic("connection.keep_alive_idle_expired",
-                                       {
-                                           {"idle_seconds", std::to_string(policy.idle_timeout_seconds), false}
-                        });
-                    }
-                    return ServeOutcome::connection_closed;
-                }
-            }
-            auto const was_first_request = first_request;
-            first_request = false;
-            switch (serve_request_round(*stream, tls, ctx, leftover, was_first_request))
-            {
-            case RoundOutcome::close_connection:
-                return ServeOutcome::connection_closed;
-            case RoundOutcome::continue_keep_alive:
-                continue;
-            case RoundOutcome::transferred:
-                // The sync-pool task (or the continuation it submits) owns the
-                // fd from here; the caller must NOT close it.
-                return ServeOutcome::transferred;
-            }
-        }
-    }
-
 } // namespace
+
+auto HttpConnectionDispatcher::Impl::start() -> bool
+{
+    if (m_parker != nullptr)
+    {
+        return m_parker->running();
+    }
+    // At most one connection per worker is out of the parker at once, so the
+    // pool's queue never holds more than its workers; and one client key may
+    // hold at most a quarter of them (HTTP-1). A trusted proxy's connections
+    // carry an empty key and are exempt from the second cap only.
+    auto const workers = std::max<std::size_t>(1U, pool.worker_count());
+    auto const limits = net::ConnectionParker::Limits{workers, std::max<std::size_t>(1U, workers / 4U)};
+    m_parker = std::make_unique<net::ConnectionParker>(
+        limits, [weak = weak_from_this()](net::ConnectionParker::Dispatched dispatched) {
+            if (auto const self = weak.lock(); self != nullptr)
+            {
+                self->dispatch(std::move(dispatched));
+            }
+        });
+    return m_parker->start();
+}
+
+auto HttpConnectionDispatcher::Impl::request_stop() -> void
+{
+    if (m_parker != nullptr)
+    {
+        m_parker->request_stop();
+    }
+}
+
+auto HttpConnectionDispatcher::Impl::running() const -> bool
+{
+    return m_parker != nullptr && m_parker->running();
+}
+
+auto HttpConnectionDispatcher::Impl::accept(core::SocketHandle socket, std::string peer_addr, HttpDispatchMode mode,
+                                            ConnectionAdmission admission,
+                                            std::optional<std::reference_wrapper<TlsServerContext>> tls_context) -> void
+{
+    ++stats.accepted_connections;
+    auto owner = std::make_unique<HttpConnection>(std::move(socket), mode, std::move(peer_addr),
+                                                  std::move(admission.client_key));
+    auto& connection = *owner;
+    if (admission.slot.has_value())
+    {
+        connection.connection_slot.emplace(std::move(*admission.slot));
+    }
+    connection.tls_handshake_owed = tls_context;
+    park_awaiting_first_request(std::move(owner));
+}
+
+// A connection that has not yet sent its first request: newly accepted, or a
+// TLS connection whose handshake has just completed. It must send a byte within
+// the first-byte timeout, and at most listeners.max_queued_connections such
+// connections wait at once (0: unbounded).
+auto HttpConnectionDispatcher::Impl::park_awaiting_first_request(ConnectionOwner owner) -> void
+{
+    auto& connection = http_connection(owner);
+    auto const cap = runtime.homeserver.config.listeners().max_queued_connections;
+    auto reservation = ParkingReservation::try_acquire(m_parked_new, cap);
+    if (!reservation.has_value())
+    {
+        log_diagnostic("connection.pending_cap_reached", {
+                                                             {"cap", std::to_string(cap), false}
+        });
+        return; // ~owner closes it
+    }
+    connection.parked_reservation = std::move(reservation);
+    auto key = connection.client_key;
+    if (!m_parker->park(std::move(owner), std::move(key), std::chrono::steady_clock::now() + tuning.first_byte_timeout))
+    {
+        log_diagnostic("connection.refused_stopping", {});
+    }
+}
+
+auto HttpConnectionDispatcher::Impl::park_for_next_request(ConnectionOwner owner) -> void
+{
+    auto& connection = http_connection(owner);
+    auto const idle = std::chrono::seconds{runtime.homeserver.config.server().http.keep_alive_idle_seconds};
+    auto key = connection.client_key;
+    // A stopped parker closes the connection: shutdown in progress.
+    std::ignore = m_parker->park(std::move(owner), std::move(key), std::chrono::steady_clock::now() + idle);
+}
+
+// On the parker thread, with no lock held. The job is shared only because pool
+// tasks are copyable std::functions; exactly one task runs it.
+auto HttpConnectionDispatcher::Impl::dispatch(net::ConnectionParker::Dispatched dispatched) -> void
+{
+    auto job = std::make_shared<net::ConnectionParker::Dispatched>( // SHARED_PTR: reviewed — copyable pool task
+        std::move(dispatched));
+    auto self = shared_from_this();
+    if (!pool.submit([self, job] {
+            self->serve(std::move(*job));
+        }))
+    {
+        // Only when the pool is stopping: the parker never has more
+        // connections out than the pool has workers. ~job closes it.
+        log_diagnostic("connection.dispatch_refused", {});
+    }
+}
+
+// On a pool worker. `dispatched.share` is this connection's claim on the
+// worker caps; it is released when this returns, whichever way.
+auto HttpConnectionDispatcher::Impl::serve(net::ConnectionParker::Dispatched dispatched) -> void
+{
+    auto owner = std::move(dispatched.connection);
+    auto& connection = http_connection(owner);
+    // No longer parked: its parking slot goes back.
+    connection.parked_reservation.reset();
+    if (connection.tls_handshake_owed.has_value())
+    {
+        // The ClientHello is readable; the handshake is bounded by the
+        // handshake timeout and counts against the client's worker share.
+        auto& tls_context = connection.tls_handshake_owed->get();
+        connection.tls_handshake_owed.reset();
+        auto accepted = accept_tls_connection(tls_context, connection.fd(), receive_timeout_milliseconds);
+        if (!accepted.ok())
+        {
+            ++stats.rejected_requests;
+            log_diagnostic("tls.handshake.rejected", {
+                                                         {"reason", accepted.error, false}
+            });
+            return; // ~owner closes it
+        }
+        connection.tls.emplace(std::move(*accepted.connection));
+        park_awaiting_first_request(std::move(owner));
+        return;
+    }
+    auto ctx =
+        ConnectionContext{runtime, stats, sync_pool, shared_from_this(), tuning, connection.mode, connection.peer_addr};
+    switch (serve_request_round(ctx, connection, owner))
+    {
+    case RoundOutcome::close_connection:
+        return; // ~owner closes it
+    case RoundOutcome::continue_keep_alive:
+        park_for_next_request(std::move(owner));
+        return;
+    case RoundOutcome::transferred:
+        return; // the sync-pool task owns it
+    }
+}
+
+HttpConnectionDispatcher::HttpConnectionDispatcher(ClientServerRuntime& runtime, HttpServeStats& stats,
+                                                   net::ThreadPool& pool, net::ThreadPool* sync_pool,
+                                                   HttpServeTuning tuning)
+    : m_impl{std::make_shared<Impl>(runtime, stats, pool, sync_pool, tuning)}
+{
+}
+
+HttpConnectionDispatcher::~HttpConnectionDispatcher()
+{
+    m_impl->request_stop();
+}
+
+auto HttpConnectionDispatcher::start() -> bool
+{
+    return m_impl->start();
+}
+
+auto HttpConnectionDispatcher::request_stop() -> void
+{
+    m_impl->request_stop();
+}
+
+auto HttpConnectionDispatcher::running() const -> bool
+{
+    return m_impl->running();
+}
+
+auto HttpConnectionDispatcher::impl() noexcept -> Impl&
+{
+    return *m_impl;
+}
 
 auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
     -> LocalHttpResponse
@@ -1808,254 +1926,157 @@ auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, Http
     -> bool
 {
     // Direct callers (tests, one-off embeds) keep the historical one-request-
-    // per-call contract: with no owning pool the keep-alive policy disables
-    // parking (see keep_alive_policy_for), so this serves a single round and
-    // reports whether the fd was transferred to the sync pool.
-    // Not an accept loop: the caller owns the connection and its admission.
-    auto connection_ctx =
-        ConnectionContext{runtime, stats, dispatch_mode, sync_pool, nullptr, std::string{peer_addr}, nullptr};
-    return serve_connection(client_fd, nullptr, connection_ctx) == ServeOutcome::transferred;
+    // per-call contract: with no dispatcher there is nowhere to park the
+    // connection, so keep-alive is off (see keep_alive_policy_for) and this
+    // serves a single round. The caller owns the descriptor unless it was
+    // transferred to the sync pool, which then closes it.
+    auto owner = ConnectionOwner{std::make_unique<HttpConnection>(core::SocketHandle{client_fd}, dispatch_mode,
+                                                                  std::string{peer_addr}, std::string{})};
+    auto& connection = http_connection(owner);
+    auto ctx =
+        ConnectionContext{runtime, stats, sync_pool, nullptr, HttpServeTuning{}, dispatch_mode, std::string{peer_addr}};
+    if (serve_request_round(ctx, connection, owner) == RoundOutcome::transferred)
+    {
+        return true;
+    }
+    // Not ours to close: give the descriptor back to the caller untouched.
+    std::ignore = connection.socket.release();
+    return false;
+}
+
+namespace
+{
+
+    // Accepts connections until `shutdown` fires, the acceptor fails, or the
+    // dispatcher stops, and parks each admitted one on the dispatcher. No
+    // worker is involved: a connection reaches the pool only once it is
+    // readable.
+    auto accept_until_shutdown(net::TcpAcceptor& acceptor, HttpConnectionDispatcher::Impl& dispatcher,
+                               net::ShutdownSignal& shutdown, HttpDispatchMode dispatch_mode,
+                               std::optional<std::reference_wrapper<TlsServerContext>> tls_context) -> void
+    {
+        auto const event_prefix = std::string{tls_context.has_value() ? "tls.connection." : "connection."};
+        while (!shutdown.fired() && acceptor.valid() && dispatcher.running())
+        {
+            auto entries = std::array<pollfd, 2U>{};
+            entries[0].fd = acceptor.fd();
+            entries[0].events = POLLIN;
+            entries[1].fd = shutdown.read_fd();
+            entries[1].events = POLLIN;
+
+            auto const poll_result = ::poll(entries.data(), entries.size(), -1);
+            if (poll_result < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                return;
+            }
+            if ((entries[1].revents & POLLIN) != 0 || shutdown.fired())
+            {
+                return;
+            }
+            if ((entries[0].revents & POLLIN) == 0)
+            {
+                continue;
+            }
+
+            sockaddr_storage peer_sa{};
+            socklen_t peer_len = sizeof(peer_sa);
+            // SOCK_CLOEXEC: accepted client sockets must not leak into worker
+            // subprocesses spawned via posix_spawn/fork() (federation workers,
+            // thumbnail worker) while a connection is still open. Matches the
+            // SOCK_CLOEXEC listening-socket pattern in net/tcp_acceptor.cpp.
+            //
+            // SOCK_NONBLOCK: the socket is non-blocking from the instant it
+            // exists, as ADR-0054 requires for the life of the connection; the
+            // TLS handshake keeps it that way.
+            auto raw_client = ::accept4(acceptor.fd(), reinterpret_cast<sockaddr*>(&peer_sa), &peer_len,
+                                        SOCK_CLOEXEC | SOCK_NONBLOCK);
+            if (raw_client < 0)
+            {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    continue;
+                }
+                // Transient resource exhaustion — retry after a brief pause
+                // rather than permanently killing the listener thread.
+                if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
+                {
+                    log_diagnostic(event_prefix + "accept_retry", {
+                                                                      {"errno", std::to_string(errno), false}
+                    });
+                    ::usleep(100000);
+                    continue;
+                }
+                log_diagnostic(event_prefix + "accept_failed", {
+                                                                   {"errno", std::to_string(errno), false}
+                });
+                return;
+            }
+            auto client = core::SocketHandle{raw_client};
+            auto peer_addr = peer_addr_to_string(peer_sa);
+            // ADR-0072: refuse before reading a byte (or starting a TLS
+            // handshake) once this client holds its share of connections;
+            // ~SocketHandle closes the refused descriptor.
+            auto admission = admit_connection(dispatcher.runtime, peer_addr);
+            if (!admission.admitted)
+            {
+                log_diagnostic(
+                    event_prefix + "per_ip_cap_reached",
+                    {
+                        {"cap",
+                         std::to_string(dispatcher.runtime.homeserver.config.server().http.max_connections_per_ip),
+                         false}
+                });
+                continue;
+            }
+            dispatcher.accept(std::move(client), std::move(peer_addr), dispatch_mode, std::move(admission),
+                              tls_context);
+        }
+    }
+
+} // namespace
+
+auto serve_http(net::TcpAcceptor& acceptor, HttpConnectionDispatcher& dispatcher, net::ShutdownSignal& shutdown,
+                HttpDispatchMode dispatch_mode) -> void
+{
+    accept_until_shutdown(acceptor, dispatcher.impl(), shutdown, dispatch_mode, std::nullopt);
+}
+
+auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, HttpConnectionDispatcher& dispatcher,
+                    net::ShutdownSignal& shutdown, HttpDispatchMode dispatch_mode) -> void
+{
+    accept_until_shutdown(acceptor, dispatcher.impl(), shutdown, dispatch_mode, std::ref(tls_context));
 }
 
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::ShutdownSignal& shutdown,
                 HttpServeStats& stats, HttpDispatchMode dispatch_mode, net::ThreadPool& pool,
-                net::ThreadPool* sync_pool, HttpServeTuning) -> void
+                net::ThreadPool* sync_pool, HttpServeTuning tuning) -> void
 {
-    while (!shutdown.fired() && acceptor.valid() && pool.running())
+    auto dispatcher = HttpConnectionDispatcher{runtime, stats, pool, sync_pool, tuning};
+    if (!dispatcher.start())
     {
-        auto entries = std::array<pollfd, 2U>{};
-        entries[0].fd = acceptor.fd();
-        entries[0].events = POLLIN;
-        entries[1].fd = shutdown.read_fd();
-        entries[1].events = POLLIN;
-
-        auto const poll_result = ::poll(entries.data(), entries.size(), -1);
-        if (poll_result < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            return;
-        }
-        if ((entries[1].revents & POLLIN) != 0 || shutdown.fired())
-        {
-            return;
-        }
-        if ((entries[0].revents & POLLIN) == 0)
-        {
-            continue;
-        }
-
-        sockaddr_storage peer_sa{};
-        socklen_t peer_len = sizeof(peer_sa);
-        // SOCK_CLOEXEC: accepted client sockets must not leak into worker
-        // subprocesses spawned via posix_spawn/fork() (federation workers,
-        // thumbnail worker) while a connection is still open. Matches the
-        // SOCK_CLOEXEC listening-socket pattern in net/tcp_acceptor.cpp.
-        //
-        // SOCK_NONBLOCK: the socket is non-blocking from the instant it
-        // exists, not from the instant a worker picks it up. Setting the flag
-        // later (make_connection_stream still does, for the entry points that
-        // do not come through this loop) leaves a window between accept and
-        // the worker's first I/O in which the descriptor is blocking, and the
-        // invariant ADR-0054 states is "for the life of the connection".
-        auto raw_client =
-            ::accept4(acceptor.fd(), reinterpret_cast<sockaddr*>(&peer_sa), &peer_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
-        if (raw_client < 0)
-        {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                continue;
-            }
-            // Transient resource exhaustion — retry after a brief pause
-            // rather than permanently killing the listener thread.
-            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
-            {
-                log_diagnostic("connection.accept_retry", {
-                                                              {"errno", std::to_string(errno), false}
-                });
-                ::usleep(100000);
-                continue;
-            }
-            log_diagnostic("connection.accept_failed", {
-                                                           {"errno", std::to_string(errno), false}
-            });
-            return;
-        }
-        auto peer_addr = peer_addr_to_string(peer_sa);
-        // Release from SocketHandle so the fd ownership transfers into the
-        // pool lambda. If the pool is stopping, submit returns false and we
-        // close the fd immediately. Inside the lambda the fd is wrapped in a
-        // SocketHandle for RAII so it is closed even on exceptions.
-        auto client = core::SocketHandle{raw_client};
-        // ADR-0072: refuse before reading a byte once this client holds its
-        // share of connections; ~SocketHandle closes the refused fd.
-        auto admission = admit_connection(runtime, peer_addr);
-        if (!admission.admitted)
-        {
-            log_diagnostic(
-                "connection.per_ip_cap_reached",
-                {
-                    {"cap", std::to_string(runtime.homeserver.config.server().http.max_connections_per_ip), false}
-            });
-            continue;
-        }
-        auto fd = client.release();
-        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, sync_pool, owner_pool = &pool, fd,
-                                      peer_addr = std::move(peer_addr), connection_slot = std::move(admission.slot)] {
-            auto guard = core::SocketHandle{fd};
-            ++stats.accepted_connections;
-            auto connection_ctx = ConnectionContext{
-                runtime, stats, dispatch_mode, sync_pool, owner_pool, std::move(peer_addr), connection_slot};
-            auto const handed_off = serve_connection(fd, nullptr, connection_ctx) == ServeOutcome::transferred;
-            if (handed_off)
-            {
-                // The sync pool thread (or the keep-alive continuation it
-                // submits back to this pool) owns the fd; do NOT shut it
-                // down here.
-                std::ignore = guard.release();
-            }
-            else
-            {
-                std::ignore = ::shutdown(fd, SHUT_RDWR);
-                // ~SocketHandle closes fd on both normal and exceptional exit.
-            }
-        });
-        if (!submitted)
-        {
-            // Pool is stopped — close the fd that nobody will handle.
-            std::ignore = ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
-        }
+        log_diagnostic("dispatcher.start_failed", {}, observability::LogEventSeverity::error);
+        return;
     }
+    serve_http(acceptor, dispatcher, shutdown, dispatch_mode);
+    dispatcher.request_stop();
 }
 
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
                     net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
-                    net::ThreadPool& pool, net::ThreadPool* sync_pool, HttpServeTuning) -> void
+                    net::ThreadPool& pool, net::ThreadPool* sync_pool, HttpServeTuning tuning) -> void
 {
-    while (!shutdown.fired() && acceptor.valid() && pool.running())
+    auto dispatcher = HttpConnectionDispatcher{runtime, stats, pool, sync_pool, tuning};
+    if (!dispatcher.start())
     {
-        auto entries = std::array<pollfd, 2U>{};
-        entries[0].fd = acceptor.fd();
-        entries[0].events = POLLIN;
-        entries[1].fd = shutdown.read_fd();
-        entries[1].events = POLLIN;
-
-        auto const poll_result = ::poll(entries.data(), entries.size(), -1);
-        if (poll_result < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            return;
-        }
-        if ((entries[1].revents & POLLIN) != 0 || shutdown.fired())
-        {
-            return;
-        }
-        if ((entries[0].revents & POLLIN) == 0)
-        {
-            continue;
-        }
-
-        sockaddr_storage tls_peer_sa{};
-        socklen_t tls_peer_len = sizeof(tls_peer_sa);
-        // SOCK_CLOEXEC: see the plain-HTTP accept loop above for why this
-        // matters — TLS long-poll connections are held open for the longest,
-        // maximizing the window during which a leaked fd could be inherited.
-        auto raw_client =
-            ::accept4(acceptor.fd(), reinterpret_cast<sockaddr*>(&tls_peer_sa), &tls_peer_len, SOCK_CLOEXEC);
-        if (raw_client < 0)
-        {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                continue;
-            }
-            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
-            {
-                log_diagnostic("tls.connection.accept_retry", {
-                                                                  {"errno", std::to_string(errno), false}
-                });
-                ::usleep(100000);
-                continue;
-            }
-            log_diagnostic("tls.connection.accept_failed", {
-                                                               {"errno", std::to_string(errno), false}
-            });
-            return;
-        }
-        auto tls_peer_addr = peer_addr_to_string(tls_peer_sa);
-        // Release from SocketHandle so the fd ownership transfers into the
-        // pool lambda. If the pool is stopping, submit returns false and we
-        // close the fd immediately. Inside the lambda the fd is wrapped in a
-        // SocketHandle for RAII so it is closed even on exceptions.
-        auto client = core::SocketHandle{raw_client};
-        // ADR-0072: refuse before the handshake once this client holds its
-        // share of connections; ~SocketHandle closes the refused fd.
-        auto admission = admit_connection(runtime, tls_peer_addr);
-        if (!admission.admitted)
-        {
-            log_diagnostic(
-                "tls.connection.per_ip_cap_reached",
-                {
-                    {"cap", std::to_string(runtime.homeserver.config.server().http.max_connections_per_ip), false}
-            });
-            continue;
-        }
-        auto fd = client.release();
-        auto submitted =
-            pool.submit([&tls_context, &runtime, &stats, dispatch_mode, sync_pool, owner_pool = &pool, fd,
-                         tls_peer_addr = std::move(tls_peer_addr), connection_slot = std::move(admission.slot)] {
-                auto guard = core::SocketHandle{fd};
-                ++stats.accepted_connections;
-                auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
-                if (!accepted_tls.ok())
-                {
-                    ++stats.rejected_requests;
-                    log_diagnostic("tls.handshake.rejected", {
-                                                                 {"reason", accepted_tls.error, false}
-                    });
-                    std::ignore = ::shutdown(fd, SHUT_RDWR);
-                    return;
-                    // ~SocketHandle closes fd on both normal and exceptional exit.
-                }
-
-                // Build shared ownership via unique_ptr → shared_ptr conversion.
-                // Using shared_ptr{std::move(unique_ptr)} (not make_shared) allocates
-                // the control block separately (_Sp_counted_deleter), avoiding the
-                // GCC 16 -Warray-bounds false positive that fires when make_shared's
-                // _Sp_counted_ptr_inplace co-allocation is inlined. The connection
-                // stream (read phase, this thread), the sync-pool write lambda, and
-                // the keep-alive continuation that re-enters serve_connection each
-                // hold a copy; the last one to finish cleans up.
-                auto tls_unique = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
-                auto tls_shared = std::shared_ptr<TlsConnection>{// SHARED_PTR: reviewed — cross-thread TLS ownership
-                                                                 std::move(tls_unique)};
-
-                auto connection_ctx = ConnectionContext{
-                    runtime, stats, dispatch_mode, sync_pool, owner_pool, std::move(tls_peer_addr), connection_slot};
-                auto const transferred = serve_connection(fd, tls_shared, connection_ctx) == ServeOutcome::transferred;
-                if (transferred)
-                {
-                    // The sync-pool thread now owns fd and holds tls_shared.
-                    // Release the guard so the fd is not closed on this thread.
-                    std::ignore = guard.release();
-                }
-                else
-                {
-                    std::ignore = ::shutdown(fd, SHUT_RDWR);
-                    // ~guard closes fd; ~tls_shared frees the TLS connection.
-                }
-            });
-        if (!submitted)
-        {
-            std::ignore = ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
-        }
+        log_diagnostic("dispatcher.start_failed", {}, observability::LogEventSeverity::error);
+        return;
     }
+    serve_tls_http(tls_context, acceptor, dispatcher, shutdown, dispatch_mode);
+    dispatcher.request_stop();
 }
 
 } // namespace merovingian::homeserver

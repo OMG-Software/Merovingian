@@ -14468,6 +14468,37 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 // needs_wait responses carry no HTTP response yet — CORS is applied on the
 // second call (can_wait=false) after the sync notifier fires, at which point
 // status will be complete and this branch runs normally.
+auto media_upload_authentication_refusal(ClientServerRuntime& rt,
+                                         LocalHttpRequest const& head) -> std::optional<LocalHttpResponse>
+{
+    // The same identities handle_client_server_request_impl accepts: a raw
+    // token in the internal masquerade shape is never trusted, an
+    // application service's as_token is, and anything else must be a live
+    // session. authenticated_session writes no audit row; the request is
+    // refused here, so it never reaches the audited path.
+    auto const guard = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+    auto const& token = head.access_token;
+    auto const authenticated = !token.empty() && !appservice::is_masquerade_token(token) &&
+                               (rt.homeserver.appservices.find_by_as_token(token) != nullptr ||
+                                authenticated_session(rt.homeserver, token).has_value());
+    if (authenticated)
+    {
+        return std::nullopt;
+    }
+    log_diagnostic("request.auth.rejected", {
+                                                {"method", head.method,                                       false},
+                                                {"target", observability::sanitized_http_target(head.target), false},
+                                                {"status", "401",                                             false},
+                                                {"reason", "unauthenticated upload refused before its body",  false}
+    });
+    auto const errcode = token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
+    if (!token.empty() && access_token_is_soft_logout(rt.homeserver, token))
+    {
+        return dispatch_err_soft_logout(head, rt, 401U, errcode, "unauthenticated").response;
+    }
+    return dispatch_err(head, rt, 401U, errcode, "unauthenticated").response;
+}
+
 auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait) -> DispatchResult
 {
     auto result = handle_client_server_request_impl(rt, req, can_wait);
