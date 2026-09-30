@@ -1,6 +1,7 @@
 federation_sources = files(
   'cached_server_discovery.cpp',
   'dispatch_worker.cpp',
+  'edu_idempotence.cpp',
   'event_query.cpp',
   'inbound_ingestion.cpp',
   'inbound_request.cpp',

@@ -1301,7 +1301,21 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;
+// Records that `subject_user_id`'s device list changed for `observer_user_id`.
+//
+// There is at most one row per (observer, subject) pair: a repeat replaces the
+// earlier row and takes the newest stream position, so a client whose since
+// token lies between the two positions still sees the change, and the table is
+// bounded by observers x subjects however many EDUs a peer sends (audit FED-7).
+// /sync only ever reports the latest change per subject
+// (sync::collect_device_list_delta), so nothing is lost by replacing.
 [[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool;
+// Records many changes as one unit: every change is validated first (any invalid
+// one rejects the whole batch), the rows share ONE newly allocated stream
+// position, and all writes go to the backend in a single transaction. An empty
+// batch succeeds without touching the sync stream.
+[[nodiscard]] auto record_device_list_changes(PersistentStore& store,
+                                              std::vector<PersistentDeviceListChange> changes) -> bool;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;

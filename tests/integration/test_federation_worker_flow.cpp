@@ -1024,8 +1024,14 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
         WHEN("an edu_ingest request carrying an m.direct_to_device megolm room-key share is handled")
         {
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const target_user = std::string{"@local:example.com"};
+            auto const target_user = "@local:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
+            // to-device messages are only delivered to existing local users (FED-3).
+            {
+                auto persistent = merovingian::database::PersistentUser{};
+                persistent.user_id = target_user;
+                runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
             auto const content_json = std::string{R"({"sender":")"} + sender +
                                       R"(","type":"m.room_key","message_id":"m1","messages":{")" + target_user +
                                       R"(":{")" + target_device +
@@ -1110,8 +1116,14 @@ SCENARIO("handle_edu_ingest_request delivers a realistically-shaped Olm-encrypte
         WHEN("an edu_ingest request carrying an Olm-encrypted m.room.encrypted-wrapped room key is handled")
         {
             auto const sender = std::string{"@james:matrix.ping.me.uk"};
-            auto const target_user = std::string{"@james:pong.ping.me.uk"};
+            auto const target_user = "@james:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
+            // to-device messages are only delivered to existing local users (FED-3).
+            {
+                auto persistent = merovingian::database::PersistentUser{};
+                persistent.user_id = target_user;
+                runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
             auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
             // ~2KB placeholder ciphertext body — long enough to match a real
             // Olm-encrypted payload's size, not just its alphabet.
@@ -1206,8 +1218,14 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
              "encrypted channel")
         {
             auto const sender = std::string{"@james:matrix.ping.me.uk"};
-            auto const target_user = std::string{"@james:pong.ping.me.uk"};
+            auto const target_user = "@james:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
+            // to-device messages are only delivered to existing local users (FED-3).
+            {
+                auto persistent = merovingian::database::PersistentUser{};
+                persistent.user_id = target_user;
+                runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
             auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
             // ~2KB placeholder ciphertext body — long enough to match a real
             // Olm-encrypted payload's size, not just its alphabet.

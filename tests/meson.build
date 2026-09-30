@@ -153,6 +153,7 @@ shell = find_program('sh')
       'unit/test_otk_signature_validation.cpp',
       'unit/test_outbound_dispatch.cpp',
       'unit/test_federation_security.cpp',
+      'unit/test_federation_edu_idempotence.cpp',
       'unit/test_federation_server_acl.cpp',
       'unit/test_federation_tls_origin.cpp',
       'unit/test_federation_transactions.cpp',

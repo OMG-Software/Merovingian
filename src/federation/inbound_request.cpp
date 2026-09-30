@@ -1236,6 +1236,17 @@ namespace
                 return {400U, serialize_response_object(std::move(err))};
             }
             auto const event_id = events::make_reference_hash_event_id(parsed_event.value, *room_version);
+            // Audit FED-5: the {eventId} in the URL is what the invite is filed
+            // under (invite metadata, the stored event), so it must be the ID
+            // the signed event really hashes to. The federation worker relay
+            // already checks this on its own path (ADR-0071); this is the same
+            // check for a request handled directly.
+            if (event_id.event_id.empty() || event_id.event_id != invite_request->event_id)
+            {
+                audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
+                                 "event-id-mismatch");
+                return {400U, homeserver::matrix_error("M_INVALID_PARAM", "invite event ID does not match the event")};
+            }
             auto pdu = FederationPdu{};
             pdu.event_id = event_id.event_id;
             pdu.room_id = event_envelope.event.room_id;

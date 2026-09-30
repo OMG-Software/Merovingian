@@ -237,4 +237,26 @@ private:
     return signed_event.event_json;
 }
 
+// The event ID a signed event really has: "$" + the reference hash of the
+// redacted event, per the room version's rules. An inbound /invite is filed
+// under the {eventId} in its URL, which the server now requires to equal this
+// (audit FED-5), so a test that sends one must use this value in the path.
+// Returns an empty string for JSON that does not parse or a version that is
+// not supported.
+[[nodiscard]] inline auto reference_hash_event_id(std::string_view signed_event_json, std::string_view room_version)
+    -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(signed_event_json);
+    if (parsed.error != merovingian::canonicaljson::ParseError::none)
+    {
+        return {};
+    }
+    auto const* policy = merovingian::rooms::find_room_version_policy(std::string{room_version});
+    if (policy == nullptr)
+    {
+        return {};
+    }
+    return merovingian::events::make_reference_hash_event_id(parsed.value, *policy).event_id;
+}
+
 } // namespace merovingian::federation::test

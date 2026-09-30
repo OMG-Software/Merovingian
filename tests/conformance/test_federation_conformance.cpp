@@ -23,6 +23,7 @@
 #include "../support/master_key.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -270,6 +271,27 @@ SCENARIO("Federation version endpoint is served without authentication",
                                                                                     key_seed, std::string{room_ver});
     return std::string{"{\"room_version\":\""} + std::string{room_ver} + "\",\"event\":" + signed_event +
            ",\"invite_room_state\":[]}";
+}
+
+// The event ID of the event carried in a v2 invite body. The {eventId} in the
+// invite URL must equal it (audit FED-5): "$" + the reference hash of the event.
+[[nodiscard]] auto v2_invite_body_event_id(std::string const& body, std::string_view room_ver = "12") -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    if (parsed.error != merovingian::canonicaljson::ParseError::none || root == nullptr)
+    {
+        return {};
+    }
+    for (auto const& member : *root)
+    {
+        if (member.key == "event")
+        {
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(*member.value);
+            return merovingian::federation::test::reference_hash_event_id(serialized.output, room_ver);
+        }
+    }
+    return {};
 }
 
 // Navigate a JSON object and return a pointer to the Value for `key`.
@@ -665,10 +687,10 @@ SCENARIO("invite v2 processes inbound invite and returns signed event", "[federa
 
         WHEN("a signed invite v2 request is dispatched")
         {
-            auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const body = make_signed_v2_invite_body(std::string{room_id}, "@remote:remote.example.org",
                                                          "@local:local.example.org");
+            auto const event_id = v2_invite_body_event_id(body);
+            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const request = signed_put_request(origin, key_id, key_seed, target, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -773,8 +795,6 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
 
         WHEN("a signed invite v1 request is dispatched")
         {
-            auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target = "/_matrix/federation/v1/invite/" + std::string{room_id} + "/" + event_id;
             // v1 invite body IS the bare signed event.
             // Build a properly signed invite event with state_key pointing to a local user.
             auto const unsigned_json =
@@ -783,6 +803,9 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
                 "\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
             auto const signed_body =
                 merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "12");
+            // The {eventId} must be the event's own reference-hash ID (audit FED-5).
+            auto const event_id = merovingian::federation::test::reference_hash_event_id(signed_body, "12");
+            auto const target = "/_matrix/federation/v1/invite/" + std::string{room_id} + "/" + event_id;
             auto const request = signed_put_request(origin, key_id, key_seed, target, signed_body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -2598,10 +2621,10 @@ SCENARIO("invite v2 response body contains the event key as a JSON object", "[fe
 
         WHEN("a signed invite v2 request is dispatched")
         {
-            auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const body =
                 make_signed_v2_invite_body(std::string{room_id}, "@alice:remote.example.org", "@bob:local.example.org");
+            auto const event_id = v2_invite_body_event_id(body);
+            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 

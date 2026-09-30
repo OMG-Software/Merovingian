@@ -528,6 +528,82 @@ SCENARIO("Persistent client transaction records keep the first response and scop
     }
 }
 
+SCENARIO("Batched device-list changes share one stream position and keep one row per pair",
+         "[database][persistence][device-list][fed7]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        using merovingian::database::PersistentDeviceListChange;
+
+        WHEN("one EDU's changes for three observers are recorded together")
+        {
+            auto const ok = merovingian::database::record_device_list_changes(
+                store, {
+                           {0U, "@a:example.org", "@r:remote.example", "changed"},
+                           {0U, "@b:example.org", "@r:remote.example", "changed"},
+                           {0U, "@c:example.org", "@r:remote.example", "changed"},
+            });
+
+            THEN("all rows are stored at a single newly allocated stream position")
+            {
+                REQUIRE(ok);
+                REQUIRE(store.device_list_changes.size() == 3U);
+                REQUIRE(store.next_sync_stream_id == 1U);
+                REQUIRE(std::ranges::all_of(store.device_list_changes, [](PersistentDeviceListChange const& change) {
+                    return change.stream_id == 1U;
+                }));
+            }
+        }
+
+        WHEN("the same pair is recorded again later, with a different change type")
+        {
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@a:example.org", "@r:remote.example", "changed"}));
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@a:example.org", "@other:remote.example", "changed"}));
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@a:example.org", "@r:remote.example", "left"}));
+
+            THEN("the pair keeps a single row at the newest position carrying the latest change type")
+            {
+                REQUIRE(store.device_list_changes.size() == 2U);
+                auto const row = std::ranges::find_if(store.device_list_changes, [](auto const& change) {
+                    return change.subject_user_id == "@r:remote.example";
+                });
+                REQUIRE(row != store.device_list_changes.end());
+                REQUIRE(row->stream_id == 3U);
+                REQUIRE(row->change_type == "left");
+            }
+        }
+
+        WHEN("a batch contains an invalid change")
+        {
+            auto const ok = merovingian::database::record_device_list_changes(
+                store, {
+                           {0U, "@a:example.org", "@r:remote.example", "changed"},
+                           {0U, "",               "@r:remote.example", "changed"},
+            });
+
+            THEN("nothing is recorded and the sync stream does not advance")
+            {
+                REQUIRE_FALSE(ok);
+                REQUIRE(store.device_list_changes.empty());
+                REQUIRE(store.next_sync_stream_id == 0U);
+            }
+        }
+
+        WHEN("an empty batch is recorded")
+        {
+            THEN("it succeeds without touching the sync stream")
+            {
+                REQUIRE(merovingian::database::record_device_list_changes(store, {}));
+                REQUIRE(store.next_sync_stream_id == 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("Device-list change records validate inputs and advance the sync stream monotonically",
          "[database][persistence][device-list]")
 {

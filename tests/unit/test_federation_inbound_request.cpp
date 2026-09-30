@@ -627,7 +627,9 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
             return std::string{"12"};
         };
         auto request = signed_request(origin, key_id, token, invite_event_json);
-        request.target = "/_matrix/federation/v1/invite/!room1:example.org/$event1:example.org";
+        // The {eventId} must be the event's own reference-hash ID (audit FED-5).
+        request.target = "/_matrix/federation/v1/invite/!room1:example.org/" +
+                         merovingian::federation::test::reference_hash_event_id(invite_event_json, "12");
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);

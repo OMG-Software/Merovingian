@@ -382,6 +382,18 @@ SCENARIO("A remote user's cross-signing key change reaches local clients",
         auto const alice = register_user(runtime, "alice");
         merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
         REQUIRE(runtime.homeserver.federation.edu_sink != nullptr);
+        // Only a local user who shares a joined room with bob is told his keys
+        // changed (audit FED-7), so alice shares a room with him.
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice.access_token, "{}"});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id_at = create.response.body.find("\"room_id\":\"");
+        REQUIRE(room_id_at != std::string::npos);
+        auto const room_id_begin = room_id_at + std::string{"\"room_id\":\""}.size();
+        auto const shared_room_id =
+            create.response.body.substr(room_id_begin, create.response.body.find('"', room_id_begin) - room_id_begin);
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {shared_room_id, std::string{bob}, "join", 0U});
         auto const since = sync_next_batch(runtime, alice.access_token, {}).first;
 
         auto const content = std::string{

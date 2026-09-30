@@ -17,8 +17,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <iterator>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <tuple>
@@ -3035,29 +3037,100 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     return drained;
 }
 
-[[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool
+[[nodiscard]] auto record_device_list_changes(PersistentStore& store,
+                                              std::vector<PersistentDeviceListChange> changes) -> bool
 {
-    if (change.observer_user_id.empty() || change.subject_user_id.empty())
+    if (changes.empty())
     {
-        return false;
+        return true;
     }
-    if (change.change_type != "changed" && change.change_type != "left")
+    for (auto const& change : changes)
     {
-        return false;
+        if (change.observer_user_id.empty() || change.subject_user_id.empty())
+        {
+            return false;
+        }
+        if (change.change_type != "changed" && change.change_type != "left")
+        {
+            return false;
+        }
     }
-    change.stream_id = allocate_sync_stream_id(store);
-    if (!record_and_persist(
-            store,
+    // A pair named twice in one batch keeps its last entry, so the batch can
+    // never insert the same (stream_id, observer, subject) key twice.
+    {
+        auto seen = std::set<std::pair<std::string, std::string>>{};
+        auto kept = std::vector<PersistentDeviceListChange>{};
+        kept.reserve(changes.size());
+        for (auto index = changes.size(); index > 0U; --index)
+        {
+            auto& change = changes[index - 1U];
+            if (seen.emplace(change.observer_user_id, change.subject_user_id).second)
+            {
+                kept.push_back(std::move(change));
+            }
+        }
+        std::ranges::reverse(kept);
+        changes = std::move(kept);
+    }
+    // The pairs the batch touches, and which of them already have a row: one
+    // pass over the table rather than one scan per change.
+    auto batch_pairs = std::set<std::pair<std::string_view, std::string_view>>{};
+    for (auto const& change : changes)
+    {
+        batch_pairs.emplace(change.observer_user_id, change.subject_user_id);
+    }
+    auto existing_pairs = std::set<std::pair<std::string_view, std::string_view>>{};
+    for (auto const& existing : store.device_list_changes)
+    {
+        if (batch_pairs.contains({existing.observer_user_id, existing.subject_user_id}))
+        {
+            existing_pairs.emplace(existing.observer_user_id, existing.subject_user_id);
+        }
+    }
+    // One stream position for the whole batch: the primary key is
+    // (stream_id, observer, subject), so rows for distinct pairs coexist.
+    auto const stream_id = allocate_sync_stream_id(store);
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(changes.size() * 2U);
+    for (auto& change : changes)
+    {
+        change.stream_id = stream_id;
+        // Replace, do not accumulate: drop the pair's earlier row (if we hold
+        // one) before inserting the new one, in the same transaction.
+        if (existing_pairs.contains({change.observer_user_id, change.subject_user_id}))
+        {
+            statements.push_back(
+                record_statement("delete_device_list_change",
+                                 "DELETE FROM device_list_changes WHERE observer_user_id = $1 AND "
+                                 "subject_user_id = $2",
+                                 {public_value(change.observer_user_id), public_value(change.subject_user_id)}));
+        }
+        statements.push_back(
             record_statement("insert_device_list_change",
                              "INSERT INTO device_list_changes (stream_id, observer_user_id, subject_user_id, "
                              "change_type) VALUES ($1, $2, $3, $4)",
                              {public_value(std::to_string(change.stream_id)), public_value(change.observer_user_id),
-                              public_value(change.subject_user_id), public_value(change.change_type)})))
+                              public_value(change.subject_user_id), public_value(change.change_type)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
-    store.device_list_changes.push_back(std::move(change));
+    // The views above point into `changes` and `store.device_list_changes`;
+    // they are done with before either is modified.
+    std::erase_if(store.device_list_changes, [&](PersistentDeviceListChange const& existing) {
+        return batch_pairs.contains({existing.observer_user_id, existing.subject_user_id});
+    });
+    store.device_list_changes.insert(store.device_list_changes.end(), std::make_move_iterator(changes.begin()),
+                                     std::make_move_iterator(changes.end()));
     return true;
+}
+
+[[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool
+{
+    auto batch = std::vector<PersistentDeviceListChange>{};
+    batch.push_back(std::move(change));
+    return record_device_list_changes(store, std::move(batch));
 }
 
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool

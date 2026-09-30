@@ -13357,7 +13357,7 @@ SCENARIO("Federated m.direct_to_device with nested encrypted content reaches /sy
         {
             deliver_federated_direct_to_device(
                 started.runtime, "txn-fed-td-1",
-                R"({"sender":"@bob:remote.example.org","type":"m.room.encrypted","messages":{"@alice:example.org":{"DEVICE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE1":{"body":"ciphertext-body","type":0}}}}}})");
+                R"({"sender":"@bob:remote.example.org","type":"m.room.encrypted","message_id":"fed-td-1","messages":{"@alice:example.org":{"DEVICE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE1":{"body":"ciphertext-body","type":0}}}}}})");
 
             THEN("the next /sync exposes the encrypted to-device event intact")
             {
@@ -13407,7 +13407,7 @@ SCENARIO("Federated m.direct_to_device fans out to every targeted local device",
         {
             deliver_federated_direct_to_device(
                 started.runtime, "txn-fed-td-2",
-                R"({"sender":"@bob:remote.example.org","type":"m.room.encrypted","messages":{"@alice:example.org":{"DEVICE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE1":{"body":"ciphertext-one","type":0}}},"DEVICE2":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE2":{"body":"ciphertext-two","type":0}}}}}})");
+                R"({"sender":"@bob:remote.example.org","type":"m.room.encrypted","message_id":"fed-td-1","messages":{"@alice:example.org":{"DEVICE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE1":{"body":"ciphertext-one","type":0}}},"DEVICE2":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE2":{"body":"ciphertext-two","type":0}}}}}})");
 
             THEN("each device receives exactly its own to-device payload on /sync")
             {

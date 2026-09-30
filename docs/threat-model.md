@@ -1738,6 +1738,49 @@ until the refresh).
   omit events it is entitled to omit; state resolution against other forks is
   the same residual risk every conformant server accepts.
 
+### Federation EDU identity, invite authorisation and device-list fan-out (audit FED-3, FED-5, FED-7)
+
+- **`m.direct_to_device` sender not bound to the sending server (FED-3).** The EDU's
+  `sender` was stored as given, targets were not checked to be local, and `message_id` was
+  never read. Any peer could deliver verification requests and key requests that appeared to
+  come from any user on any server, and invented targets grew the to-device queue without
+  bound. Mitigation: the sink requires `server_name(sender) == origin` (otherwise the whole
+  EDU is dropped and logged; the transaction still succeeds), queues only for existing local
+  active users, drops an EDU whose `message_id` is missing or over 32 codepoints, de-duplicates
+  on `(origin, message_id)` in `federation::EduIdempotenceWindow` (65 536 entries, 24 hours,
+  oldest evicted first), and stops at 1 000 (user, device) deliveries per EDU. **Residual
+  risk:** the window is in memory only, so a replay that straddles a restart is delivered
+  again, and a replay older than 24 hours or evicted by 65 536 newer messages from any origin
+  is too; persisting it would need a migration and buys little for a best-effort EDU. The
+  origin a federation worker relays with an `edu_ingest` frame is still taken from the worker
+  (the PDU relays re-verify, EDU relays do not; ADR-0071 covers PDUs only).
+- **Inbound `/invite` overwrote a ban with a forged invite (FED-5).** `invite_handler` ran no
+  room authorisation rules: it rewrote the target's membership row from `ban` to `invite` and
+  stored the remote event as the target's current `m.room.member` state, so local composition
+  then allowed a banned user to join an invite-only room. Mitigation: for a room whose create
+  event we hold, the invite is authorised against the room's current state first (sender
+  joined and permitted to invite, target not banned or joined; 403 `M_FORBIDDEN` on failure),
+  a `ban` row is never replaced on this path, and for such a room neither the event nor any
+  state row is written (spec: the invite is delivered again by a federation transaction,
+  whose path does the full PDU checks). The URL `{eventId}` must equal the event's
+  reference-hash ID (400 `M_INVALID_PARAM`), as the worker relay already required. An invite
+  for a room we hold no state for keeps the stripped-state behaviour, since nothing can be
+  checked. **Residual risk:** until the transaction copy arrives, a local user invited to an
+  invite-only room we host cannot join it from this server (their join is authorised against
+  state that lacks the invite); that is the spec's ordering, not a regression.
+- **Device-list and signing-key EDUs wrote one row per local user, per EDU (FED-7).** Each
+  EDU recorded a change for every local user (not only those sharing a room with the subject),
+  with no de-duplication or pruning, one synchronous commit per row under the runtime mutex.
+  Mitigation: a change is recorded only for local active users who share a joined room with
+  the subject; nothing is written if none does. All rows for one EDU are written as one
+  batch (one stream position, one transaction), and `device_list_changes` holds at most one
+  row per (observer, subject): a repeat replaces the earlier row at the newest stream
+  position, which is what `/sync` needs because it reports only the latest change per
+  subject. The table is thereby bounded by observers x subjects that share a room, so no
+  age-based pruning is needed and no sync token can lose a change. No migration was needed.
+  **Residual risk:** the per-origin EDU rate limit is not weighted by fan-out, and the write
+  still happens under the runtime mutex (now once per EDU rather than once per user).
+
 ## Security principles
 
 - Fail closed.

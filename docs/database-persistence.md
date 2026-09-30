@@ -148,6 +148,18 @@ remaining work before PostgreSQL-backed production operation.
   in durable rows (account data, to-device messages, device-list changes,
   presence) into the watermark on startup, so fresh upgrades start from the
   maximum persisted value rather than the table default.
+- `device_list_changes` holds at most one row per `(observer_user_id,
+  subject_user_id)`. `database::record_device_list_change()` and
+  `record_device_list_changes()` replace a pair's earlier row (a `DELETE` then an
+  `INSERT` in one transaction) so it carries the newest stream position and the
+  latest `change_type`; `/sync` reports only the latest change per subject, so
+  nothing is lost, and a peer sending the same EDU repeatedly cannot grow the
+  table. The batch form validates every change first, allocates one sync stream
+  position for all of them and commits once. This needs no migration: the primary
+  key stays `(stream_id, observer_user_id, subject_user_id)`. Rows written before
+  this rule (duplicates per pair) are harmless, are collapsed by
+  `sync::collect_device_list_delta()` on read, and are replaced the next time
+  their pair changes.
 - `event_stream_watermark` table stores the highest allocated timeline
   `stream_ordering` and is updated by `homeserver::allocate_stream_ordering()`
   (via `database::persist_event_stream_watermark()`) on every allocation. Some

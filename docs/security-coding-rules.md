@@ -472,6 +472,25 @@ quickly finding everything a given `AGENTS.md` file contributed.
   injecting E2EE identities").
   Source: `src/federation/AGENTS.md`.
 
+- **An inbound EDU's identity claims belong to the sending server: bind the `sender` /
+  `user_id` to the origin, deliver only to local users, de-duplicate by `message_id`, and
+  cap what one EDU can write.** `m.direct_to_device` requires `sender` on the origin, targets
+  only local active users, keeps a bounded `(origin, message_id)` replay window and queues at
+  most 1 000 messages per EDU; `m.device_list_update` / `m.signing_key_update` record a
+  change only for local users who share a joined room with the subject, as one batched write
+  with one row per (observer, subject).
+  Why: until 0.12.15 a peer could deliver verification and key-request to-device messages
+  that appeared to come from any user, fill the queue with invented targets, and write one
+  `device_list_changes` row per local user per EDU (audit FED-3, FED-7).
+  Source: `src/federation/AGENTS.md`.
+
+- **Authorise an inbound `/invite` for a room we hold against the room's current state before
+  signing it, never overwrite a `ban` from that path, and leave `current_state` to the
+  transaction path.** The URL event ID must equal the event's own reference-hash ID.
+  Why: the endpoint used to rewrite a banned user's membership to `invite` and store the
+  forged event as their state, so the ban could be undone by any remote server (audit FED-5).
+  Source: `src/federation/AGENTS.md`.
+
 ## Application Service API
 
 - **`as_token`/`hs_token` live in `core::SecretBuffer` and are never logged;

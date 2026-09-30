@@ -9,6 +9,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
+#include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
@@ -181,6 +182,12 @@ struct LocalDatabase final
 constexpr auto max_inbound_typing_entries = std::size_t{4096U};
 constexpr auto max_inbound_receipt_entries = std::size_t{65536U};
 
+// Most (user, device) deliveries one inbound m.direct_to_device EDU may queue
+// (audit FED-3). Deliveries past this are dropped and logged: a peer that names
+// thousands of devices in one EDU must not be able to grow the to-device queue
+// without bound. A "*" device counts as one delivery.
+constexpr auto max_inbound_direct_to_device_deliveries = std::size_t{1000U};
+
 struct InboundTypingUser final
 {
     std::string room_id{};
@@ -346,6 +353,10 @@ struct HomeserverRuntime final
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
+    // Replay window for inbound m.direct_to_device message IDs, keyed on
+    // (origin, message_id). In memory only: a restart forgets it (see
+    // federation/edu_idempotence.hpp). Guarded by `mutex` like the state above.
+    federation::EduIdempotenceWindow inbound_to_device_window{};
     // Per-room monotonic cursor advanced whenever the set of typing users in
     // the room changes.  Used by /sync and MSC4186 typing extensions to emit
     // the current (possibly empty) typing list on every change.

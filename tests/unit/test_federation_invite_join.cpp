@@ -193,19 +193,29 @@ auto constexpr remote_key_seed = "invite-join-test-seed";
                                                                  remote_key_seed, "12");
 }
 
-// Build a properly signed v2 invite body wrapping a signed m.room.member
-// invite event from the remote server.
-[[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id, std::string const& sender,
-                                              std::string const& state_key) -> std::string
+struct SignedInvite final
+{
+    std::string body{};
+    std::string event_id{};
+};
+
+[[nodiscard]] auto make_signed_invite(std::string const& room_id, std::string const& sender,
+                                      std::string const& state_key,
+                                      std::string const& room_version = "12") -> SignedInvite
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
                                "\",\"content\":{\"membership\":\"invite\"},\"depth\":1," +
                                "\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[]}";
-
     auto const signed_event = merovingian::federation::test::make_signed_event_json(
-        unsigned_json, remote_origin, remote_key_id, remote_key_seed, "12");
-    return "{\"room_version\":\"12\",\"event\":" + signed_event + ",\"invite_room_state\":[]}";
+        unsigned_json, remote_origin, remote_key_id, remote_key_seed, room_version);
+    auto const parsed = merovingian::canonicaljson::parse_lossless(signed_event);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* policy = merovingian::rooms::find_room_version_policy(room_version);
+    REQUIRE(policy != nullptr);
+    auto const id = merovingian::events::make_reference_hash_event_id(parsed.value, *policy);
+    return {"{\"room_version\":\"" + room_version + "\",\"event\":" + signed_event + ",\"invite_room_state\":[]}",
+            id.event_id};
 }
 
 // Plant an invite event directly into the store (simulates a local user
@@ -497,13 +507,15 @@ SCENARIO("invite_handler stores the signed invite event in the persistent event 
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
         auto const room_id = std::string{"!invite_test_room:remote.example.org"};
-        auto const invite_event_id = std::string{"$invite_for_local:remote.example.org"};
         auto const target_user = local_user.value; // @invited_user:example.org
 
         // v2 invite body: {room_version, event, invite_room_state}
         // The event is properly signed by the remote server so it passes
         // the PDU verification pipeline (signature + content hash + origin check).
-        auto const invite_body = make_signed_v2_invite_body(room_id, "@remote_host:remote.example.org", target_user);
+        // The URL event ID must be the event's own reference-hash ID (audit FED-5).
+        auto const signed_invite = make_signed_invite(room_id, "@remote_host:remote.example.org", target_user);
+        auto const invite_body = signed_invite.body;
+        auto const invite_event_id = signed_invite.event_id;
 
         WHEN("the remote server sends the invite via PUT /_matrix/federation/v2/invite/...")
         {
@@ -1385,7 +1397,6 @@ SCENARIO("federated invite does not downgrade an existing join membership to inv
 
         WHEN("the remote server re-sends a federated invite for the same user to the same room")
         {
-            auto const new_invite_event_id = std::string{"$stale_invite:remote.example.org"};
             // Build a properly signed v2 invite body so the PDU verification
             // pipeline (signature + content hash) accepts it.
             auto const unsigned_invite_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
@@ -1399,6 +1410,9 @@ SCENARIO("federated invite does not downgrade an existing join membership to inv
             auto const invite_body =
                 std::string{"{\"room_version\":\"10\",\"event\":"} + signed_invite_event + ",\"invite_room_state\":[]}";
 
+            // The URL event ID must be the event's own reference-hash ID (audit FED-5).
+            auto const new_invite_event_id =
+                merovingian::federation::test::reference_hash_event_id(signed_invite_event, "10");
             auto const path = "/_matrix/federation/v2/invite/" + room_id + "/" + new_invite_event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime.federation, signed_put(path, invite_body));
@@ -2605,6 +2619,224 @@ SCENARIO("split_send_join_state_events returns an empty split for an empty state
             {
                 REQUIRE(split.critical.empty());
                 REQUIRE(split.background.empty());
+            }
+        }
+    }
+}
+
+// --- inbound /invite for a room hosted here (audit FED-5) --------------------
+// Spec: Matrix Server-Server API v1.19, "Inviting to a room"
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#inviting-to-a-room
+//
+// "if the remote homeserver is already in the room, it will receive the
+// invite event twice; once through this endpoint, and again through a
+// federation transaction". The transaction path does the full PDU checks and
+// state handling, so the endpoint MUST NOT write the event into room state for
+// a room this server holds. The event is still subject to the room's
+// authorisation rules ("If the target user is banned, reject").
+namespace
+{
+
+// A local room where remote @carol has joined and may invite (invite level 0),
+// plus a second local user who can be the invite's target.
+struct HostedRoomFixture final
+{
+    HostedRoomFixture()
+        : started{merovingian::homeserver::start_runtime(registration_enabled_config())}
+    {
+        REQUIRE(sodium_init() >= 0);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        auto const host = merovingian::homeserver::register_local_user(runtime, "fed5host", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(host.ok);
+        host_id = host.value;
+        auto const victim = merovingian::homeserver::register_local_user(runtime, "fed5victim", "CorrectHorse7!",
+                                                                         merovingian::tests::registration_token);
+        REQUIRE(victim.ok);
+        victim_id = victim.value;
+        auto const login = merovingian::homeserver::login_local_user(runtime, host_id, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        host_token = login.value;
+
+        auto options = merovingian::homeserver::CreateRoomOptions{};
+        options.power_level_content_override.push_back(
+            merovingian::canonicaljson::make_member("invite", merovingian::canonicaljson::Value{std::int64_t{0}}));
+        auto const room = merovingian::homeserver::create_room(runtime, host_token, options);
+        REQUIRE(room.ok);
+        room_id = room.value;
+
+        // Carol is invited by the host, then joins over federation.
+        carol_id = std::string{"@carol:"} + remote_origin;
+        plant_invite_event(runtime, room_id, host_id, carol_id, "$fed5_invite_carol:example.org");
+        auto const& store = runtime.database.persistent_store;
+        auto const join_body = make_signed_join_body(
+            room_id, carol_id, merovingian::tests::fixture_auth_event_ids(store, room_id, carol_id, true),
+            merovingian::tests::fixture_prev_event_ids(store, room_id));
+        auto const join_response = merovingian::federation::handle_inbound_federation_request(
+            runtime.federation,
+            signed_put("/_matrix/federation/v2/send_join/" + room_id + "/$fed5_join_carol:remote.example.org",
+                       join_body));
+        REQUIRE(join_response.status == 200U);
+    }
+
+    [[nodiscard]] auto invite_victim() -> merovingian::federation::FederationResponse
+    {
+        auto const invite = make_signed_invite(room_id, carol_id, victim_id);
+        return merovingian::federation::handle_inbound_federation_request(
+            started.runtime.federation,
+            signed_put("/_matrix/federation/v2/invite/" + room_id + "/" + invite.event_id, invite.body));
+    }
+
+    // (event_type, state_key, event_id) of every current-state row of the room.
+    [[nodiscard]] auto state_snapshot() const -> std::vector<std::array<std::string, 3U>>
+    {
+        auto rows = std::vector<std::array<std::string, 3U>>{};
+        for (auto const& row : started.runtime.database.persistent_store.state)
+        {
+            if (row.room_id == room_id)
+            {
+                rows.push_back({row.event_type, row.state_key, row.event_id});
+            }
+        }
+        std::ranges::sort(rows);
+        return rows;
+    }
+
+    [[nodiscard]] auto victim_membership() const -> std::string
+    {
+        for (auto const& row : started.runtime.database.persistent_store.memberships)
+        {
+            if (row.room_id == room_id && row.user_id == victim_id)
+            {
+                return row.membership;
+            }
+        }
+        return {};
+    }
+
+    merovingian::homeserver::RuntimeStartResult started;
+    std::string host_id{};
+    std::string victim_id{};
+    std::string host_token{};
+    std::string room_id{};
+    std::string carol_id{};
+};
+
+} // namespace
+
+SCENARIO("A remote invite cannot undo a ban for a local user in a room hosted here",
+         "[homeserver][federation][invite-join][invite][security][fed5]")
+{
+    GIVEN("local user U banned in local room L, and a remote member who is allowed to invite")
+    {
+        auto fixture = HostedRoomFixture{};
+        REQUIRE(merovingian::homeserver::ban_user(fixture.started.runtime, fixture.host_token, fixture.room_id,
+                                                  fixture.victim_id)
+                    .ok);
+        REQUIRE(fixture.victim_membership() == "ban");
+        auto const state_before = fixture.state_snapshot();
+
+        WHEN("the remote server sends a validly signed invite for U into L")
+        {
+            auto const response = fixture.invite_victim();
+
+            THEN("the answer is 403 M_FORBIDDEN, U stays banned and L's state is unchanged")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(fixture.victim_membership() == "ban");
+                REQUIRE(fixture.state_snapshot() == state_before);
+            }
+        }
+    }
+}
+
+SCENARIO("A remote invite for a room hosted here is authorised against the room's current state",
+         "[homeserver][federation][invite-join][invite][security][fed5]")
+{
+    GIVEN("a local room and a remote sender who is not a member of it")
+    {
+        auto fixture = HostedRoomFixture{};
+        auto const state_before = fixture.state_snapshot();
+        auto const stranger = std::string{"@stranger:"} + remote_origin;
+        auto const invite = make_signed_invite(fixture.room_id, stranger, fixture.victim_id);
+
+        WHEN("the remote server sends an invite signed by that non-member")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                fixture.started.runtime.federation,
+                signed_put("/_matrix/federation/v2/invite/" + fixture.room_id + "/" + invite.event_id, invite.body));
+
+            THEN("the answer is 403 and neither membership nor state change")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(fixture.victim_membership().empty());
+                REQUIRE(fixture.state_snapshot() == state_before);
+            }
+        }
+    }
+}
+
+SCENARIO("A valid remote invite into a room hosted here does not write current state",
+         "[homeserver][federation][invite-join][invite][spec][fed5]")
+{
+    GIVEN("a local room, a joined remote member with invite power, and a local target")
+    {
+        auto fixture = HostedRoomFixture{};
+        auto const state_before = fixture.state_snapshot();
+
+        WHEN("the remote member's server sends a validly signed invite for the local target")
+        {
+            auto const response = fixture.invite_victim();
+
+            THEN("the invite is accepted and signed, and the target sees an invite")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(fixture.victim_membership() == "invite");
+            }
+
+            AND_THEN("the room's current state is untouched (the transaction path updates it)")
+            {
+                REQUIRE(fixture.state_snapshot() == state_before);
+            }
+        }
+    }
+}
+
+SCENARIO("An inbound invite whose URL event ID is not the event's own ID is refused",
+         "[homeserver][federation][invite-join][invite][security][fed5]")
+{
+    GIVEN("a local user and a remote server that sends a signed invite under a different event ID in the URL")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+        auto const local_user = merovingian::homeserver::register_local_user(runtime, "fed5idbind", "CorrectHorse7!",
+                                                                             merovingian::tests::registration_token);
+        REQUIRE(local_user.ok);
+        auto const room_id = std::string{"!bind_test_room:remote.example.org"};
+        auto const invite = make_signed_invite(room_id, "@remote_host:remote.example.org", local_user.value);
+
+        WHEN("the URL carries an event ID that does not match the signed event")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime.federation,
+                signed_put("/_matrix/federation/v2/invite/" + room_id + "/$not_the_real_event_id", invite.body));
+
+            THEN("the answer is 400 M_INVALID_PARAM and nothing is stored")
+            {
+                REQUIRE(response.status == 400U);
+                REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+                REQUIRE(std::ranges::none_of(runtime.database.persistent_store.memberships, [&](auto const& row) {
+                    return row.room_id == room_id;
+                }));
             }
         }
     }

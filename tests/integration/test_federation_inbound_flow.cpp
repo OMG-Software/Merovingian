@@ -34,9 +34,11 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/device_list_delta.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -44,6 +46,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <variant>
 
 #include <sodium.h>
@@ -541,7 +544,13 @@ SCENARIO("Homeserver routes an inbound m.direct_to_device EDU with a realistic O
         merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
 
         auto const sender = std::string{"@james:matrix.ping.me.uk"};
-        auto const target_user = std::string{"@james:pong.ping.me.uk"};
+        // to-device messages are only delivered to existing local users (FED-3).
+        auto const target_user = std::string{"@james:"} + std::string{local_server_name};
+        {
+            auto persistent = merovingian::database::PersistentUser{};
+            persistent.user_id = target_user;
+            runtime.database.persistent_store.users.push_back(std::move(persistent));
+        }
         auto const target_device = std::string{"DEVICE1"};
         auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
         // ~2KB placeholder ciphertext body, matching the size of a real Olm
@@ -590,7 +599,7 @@ SCENARIO("Homeserver routes an inbound m.direct_to_device EDU with a realistic O
 }
 
 // GIVEN a well-formed m.direct_to_device EDU whose store write fails (an
-// empty "sender" — edu_content_is_valid() only checks the field is present,
+// empty "type" — edu_content_is_valid() only checks the field is present,
 // not non-empty, so this reaches the sink) WHEN the sink processes it THEN
 // the disposition must not claim acceptance for a room-key share that was
 // never actually written to the recipient's to-device queue.
@@ -624,15 +633,24 @@ SCENARIO("An m.direct_to_device EDU that fails to persist is not silently report
         merovingian::homeserver::wire_federation_callbacks(runtime);
 
         auto const origin = std::string{"matrix.ping.me.uk"};
-        auto const target_user = std::string{"@james:pong.ping.me.uk"};
+        auto const target_user = std::string{"@james:"} + std::string{local_server_name};
         auto const target_device = std::string{"DEVICE1"};
+        {
+            auto persistent = merovingian::database::PersistentUser{};
+            persistent.user_id = target_user;
+            runtime.database.persistent_store.users.push_back(std::move(persistent));
+        }
 
         auto envelope = merovingian::federation::InboundEduEnvelope{};
         envelope.type = merovingian::federation::EduType::direct_to_device;
         envelope.edu_type = "m.direct_to_device";
         envelope.origin = origin;
-        envelope.content_json = std::string{"{\"sender\":\"\",\"type\":\"m.room_key\",\"messages\":{\""} + target_user +
-                                "\":{\"" + target_device + "\":{\"algorithm\":\"m.megolm.v1.aes-sha2\"}}}}";
+        // A valid sender on the origin, but an empty event type: it passes the
+        // envelope shape check yet is refused by enqueue_to_device_message().
+        envelope.content_json =
+            std::string{"{\"sender\":\"@james:matrix.ping.me.uk\",\"type\":\"\",\"message_id\":\"m1\","
+                        "\"messages\":{\""} +
+            target_user + "\":{\"" + target_device + "\":{\"algorithm\":\"m.megolm.v1.aes-sha2\"}}}}";
 
         WHEN("the edu_sink processes the envelope")
         {
@@ -773,6 +791,403 @@ SCENARIO("Homeserver rejects malformed overflow and private-address federation r
                 // Do NOT remove/change - recording state for rejected requests breaks idempotency
                 // and could allow a subsequent valid request for the same txnId to be dropped.
                 REQUIRE(runtime.federation.accepted_transactions.empty());
+            }
+        }
+    }
+}
+
+// --- m.direct_to_device sender binding, local-only targets, idempotence, fan-out cap ---
+// Spec: Matrix Server-Server API v1.19, "Send-to-device messaging" and "EDUs".
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#send-to-device-messaging
+//
+// message_id is "used for idempotence"; the EDU's `sender` is asserted by the
+// sending server, so it must be a user of that server (audit FED-3).
+namespace
+{
+
+struct ToDeviceFixture final
+{
+    ToDeviceFixture()
+        : started{merovingian::homeserver::start_runtime(sqlite_config())}
+    {
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+    }
+
+    [[nodiscard]] static auto sqlite_config() -> merovingian::config::Config
+    {
+        auto config = federation_config();
+        auto const tmp_dir = std::filesystem::temp_directory_path() /
+                             ("merovingian-to-device-fed3-" +
+                              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(tmp_dir);
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = (tmp_dir / "to-device-fed3.sqlite3").string();
+        return config;
+    }
+
+    auto add_local_user(std::string const& user_id) -> void
+    {
+        auto persistent = merovingian::database::PersistentUser{};
+        persistent.user_id = user_id;
+        started.runtime.database.persistent_store.users.push_back(std::move(persistent));
+        auto local = merovingian::homeserver::LocalUser{};
+        local.user_id = user_id;
+        started.runtime.database.users.push_back(std::move(local));
+    }
+
+    [[nodiscard]] auto deliver(std::string const& origin,
+                               std::string const& content_json) -> merovingian::federation::EduDispositionResult
+    {
+        auto envelope = merovingian::federation::InboundEduEnvelope{};
+        envelope.type = merovingian::federation::EduType::direct_to_device;
+        envelope.edu_type = "m.direct_to_device";
+        envelope.origin = origin;
+        envelope.content_json = content_json;
+        REQUIRE(started.runtime.federation.edu_sink != nullptr);
+        return started.runtime.federation.edu_sink(envelope);
+    }
+
+    // Delivers a device-list-style EDU (m.device_list_update or
+    // m.signing_key_update) through the wired edu_sink.
+    [[nodiscard]] auto deliver_key_edu(merovingian::federation::EduType type, std::string const& edu_type,
+                                       std::string const& origin,
+                                       std::string const& content_json) -> merovingian::federation::EduDispositionResult
+    {
+        auto envelope = merovingian::federation::InboundEduEnvelope{};
+        envelope.type = type;
+        envelope.edu_type = edu_type;
+        envelope.origin = origin;
+        envelope.content_json = content_json;
+        REQUIRE(started.runtime.federation.edu_sink != nullptr);
+        return started.runtime.federation.edu_sink(envelope);
+    }
+
+    auto add_joined_member(std::string const& room_id, std::string const& user_id) -> void
+    {
+        started.runtime.database.persistent_store.memberships.push_back({room_id, user_id, "join", 0U});
+    }
+
+    [[nodiscard]] auto device_list_rows(std::string const& observer, std::string const& subject) const -> std::size_t
+    {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(started.runtime.database.persistent_store.device_list_changes,
+                                  [&](merovingian::database::PersistentDeviceListChange const& c) {
+                                      return c.observer_user_id == observer && c.subject_user_id == subject;
+                                  }));
+    }
+
+    [[nodiscard]] auto queued_for(std::string const& user_id) const -> std::size_t
+    {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(started.runtime.database.persistent_store.to_device_messages,
+                                  [&](merovingian::database::PersistentToDeviceMessage const& m) {
+                                      return m.target_user_id == user_id;
+                                  }));
+    }
+
+    merovingian::homeserver::RuntimeStartResult started;
+};
+
+[[nodiscard]] auto to_device_content(std::string const& sender, std::string const& message_id,
+                                     std::string const& messages_json) -> std::string
+{
+    return "{\"sender\":\"" + sender + "\",\"type\":\"m.room_key_request\",\"message_id\":\"" + message_id +
+           "\",\"messages\":" + messages_json + "}";
+}
+
+} // namespace
+
+SCENARIO("An m.direct_to_device EDU whose sender is not on the sending server is dropped",
+         "[integration][federation][edu][to-device][security][fed3]")
+{
+    GIVEN("a local user and a remote server B that also claims a user on server A")
+    {
+        auto fixture = ToDeviceFixture{};
+        auto const local_user = std::string{"@alice:example.org"};
+        fixture.add_local_user(local_user);
+        auto const messages = "{\"" + local_user + "\":{\"DEV1\":{\"action\":\"request\"}}}";
+
+        WHEN("server B sends a to-device EDU whose sender is @x:a.example")
+        {
+            auto const disposition = fixture.deliver("b.example", to_device_content("@x:a.example", "m1", messages));
+
+            THEN("nothing is queued for the local user and the EDU is not accepted")
+            {
+                REQUIRE(fixture.queued_for(local_user) == 0U);
+                REQUIRE(disposition.status != merovingian::federation::EduDispositionStatus::accepted);
+            }
+        }
+
+        WHEN("server B sends the same EDU with a sender on its own server")
+        {
+            auto const disposition = fixture.deliver("b.example", to_device_content("@x:b.example", "m2", messages));
+
+            THEN("the message is queued for the local device")
+            {
+                REQUIRE(disposition.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(fixture.queued_for(local_user) == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("A replayed m.direct_to_device message_id is delivered once",
+         "[integration][federation][edu][to-device][idempotence][fed3]")
+{
+    GIVEN("a local user and a remote server that sends a to-device EDU")
+    {
+        auto fixture = ToDeviceFixture{};
+        auto const local_user = std::string{"@alice:example.org"};
+        fixture.add_local_user(local_user);
+        auto const messages = "{\"" + local_user + "\":{\"DEV1\":{\"action\":\"request\"}}}";
+        auto const content = to_device_content("@x:b.example", "same-id", messages);
+        REQUIRE(fixture.deliver("b.example", content).status ==
+                merovingian::federation::EduDispositionStatus::accepted);
+
+        WHEN("the same message_id from the same origin arrives again")
+        {
+            auto const replay = fixture.deliver("b.example", content);
+
+            THEN("the transaction path is not failed but the device still has only one queued message")
+            {
+                REQUIRE(replay.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(fixture.queued_for(local_user) == 1U);
+            }
+        }
+
+        WHEN("a different origin uses the same message_id")
+        {
+            auto const other = to_device_content("@y:c.example", "same-id", messages);
+            auto const disposition = fixture.deliver("c.example", other);
+
+            THEN("it is a distinct message and is delivered")
+            {
+                REQUIRE(disposition.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(fixture.queued_for(local_user) == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("An m.direct_to_device EDU without a valid message_id is dropped",
+         "[integration][federation][edu][to-device][idempotence][fed3]")
+{
+    GIVEN("a local user")
+    {
+        auto fixture = ToDeviceFixture{};
+        auto const local_user = std::string{"@alice:example.org"};
+        fixture.add_local_user(local_user);
+        auto const messages = "{\"" + local_user + "\":{\"DEV1\":{\"action\":\"request\"}}}";
+
+        WHEN("the message_id is absent or longer than 32 codepoints")
+        {
+            auto const missing = fixture.deliver(
+                "b.example",
+                "{\"sender\":\"@x:b.example\",\"type\":\"m.room_key_request\",\"messages\":" + messages + "}");
+            auto const too_long =
+                fixture.deliver("b.example", to_device_content("@x:b.example", std::string(33U, 'a'), messages));
+
+            THEN("nothing is queued")
+            {
+                REQUIRE(missing.status != merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(too_long.status != merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(fixture.queued_for(local_user) == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("An m.direct_to_device EDU queues messages only for local users",
+         "[integration][federation][edu][to-device][security][fed3]")
+{
+    GIVEN("a local user, and a remote user and an unknown local user named as targets")
+    {
+        auto fixture = ToDeviceFixture{};
+        auto const local_user = std::string{"@alice:example.org"};
+        fixture.add_local_user(local_user);
+        auto const remote_target = std::string{"@carol:c.example"};
+        auto const invented_local = std::string{"@nobody:example.org"};
+        auto const messages = "{\"" + remote_target + "\":{\"DEV1\":{\"a\":1}},\"" + invented_local +
+                              "\":{\"DEV1\":{\"a\":1}},\"" + local_user + "\":{\"DEV1\":{\"a\":1}}}";
+
+        WHEN("a remote server sends one EDU naming all three")
+        {
+            auto const disposition = fixture.deliver("b.example", to_device_content("@x:b.example", "m1", messages));
+
+            THEN("only the existing local user has a queued message")
+            {
+                REQUIRE(disposition.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(fixture.queued_for(local_user) == 1U);
+                REQUIRE(fixture.queued_for(remote_target) == 0U);
+                REQUIRE(fixture.queued_for(invented_local) == 0U);
+                REQUIRE(fixture.started.runtime.database.persistent_store.to_device_messages.size() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("An m.direct_to_device EDU is capped at 1000 deliveries",
+         "[integration][federation][edu][to-device][security][fed3]")
+{
+    GIVEN("a local user and an EDU naming 1200 devices of that user")
+    {
+        auto fixture = ToDeviceFixture{};
+        auto const local_user = std::string{"@alice:example.org"};
+        fixture.add_local_user(local_user);
+        auto devices = std::string{"{"};
+        for (auto index = 0; index < 1200; ++index)
+        {
+            devices += (index == 0 ? "" : ",");
+            devices += "\"D" + std::to_string(index) + "\":{\"a\":1}";
+        }
+        devices += "}";
+        auto const messages = "{\"" + local_user + "\":" + devices + "}";
+
+        WHEN("a remote server sends it")
+        {
+            std::ignore = fixture.deliver("b.example", to_device_content("@x:b.example", "big", messages));
+
+            THEN("at most 1000 messages are queued")
+            {
+                REQUIRE(fixture.queued_for(local_user) == 1000U);
+            }
+        }
+    }
+}
+
+// --- device-list and signing-key EDUs: only users who share a room, deduplicated (audit FED-7) ---
+// Spec: Matrix Server-Server API v1.19, "Device Management" (m.device_list_update)
+// and "Cross-signing" (m.signing_key_update); CS API v1.19 /sync `device_lists.changed`
+// ("users who have updated their device identity or cross-signing keys, or who now share
+// an encrypted room with the client").
+//
+// A remote user's key change only concerns local users who share a room with them.
+// Recording it for every local user let one peer write (local users) rows per EDU.
+namespace
+{
+
+[[nodiscard]] auto device_list_update_content(std::string const& user_id, int stream_id) -> std::string
+{
+    return "{\"user_id\":\"" + user_id + "\",\"device_id\":\"REMOTEDEV\",\"stream_id\":" + std::to_string(stream_id) +
+           ",\"prev_id\":[]}";
+}
+
+} // namespace
+
+SCENARIO("Device-list EDUs for a remote user who shares no room with a local user write nothing",
+         "[integration][federation][edu][device-list][security][fed7]")
+{
+    GIVEN("three local users and a remote user who shares no room with any of them")
+    {
+        auto fixture = ToDeviceFixture{};
+        for (auto const* name : {"@a:example.org", "@b:example.org", "@c:example.org"})
+        {
+            fixture.add_local_user(name);
+        }
+        auto const remote = std::string{"@r:b.example"};
+
+        WHEN("100 identical device-list update EDUs arrive from the remote user's server")
+        {
+            for (auto index = 0; index < 100; ++index)
+            {
+                auto const result =
+                    fixture.deliver_key_edu(merovingian::federation::EduType::device_list_update,
+                                            "m.device_list_update", "b.example", device_list_update_content(remote, 1));
+                REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
+            }
+
+            THEN("no device-list change rows are written")
+            {
+                REQUIRE(fixture.started.runtime.database.persistent_store.device_list_changes.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Repeated device-list EDUs keep one row per observer and subject and reach /sync",
+         "[integration][federation][edu][device-list][fed7]")
+{
+    GIVEN("a local user sharing a joined room with a remote user, and a local user sharing none")
+    {
+        auto fixture = ToDeviceFixture{};
+        auto const sharing = std::string{"@a:example.org"};
+        auto const bystander = std::string{"@c:example.org"};
+        fixture.add_local_user(sharing);
+        fixture.add_local_user(bystander);
+        auto const remote = std::string{"@r:b.example"};
+        fixture.add_joined_member("!shared:example.org", sharing);
+        fixture.add_joined_member("!shared:example.org", remote);
+
+        WHEN("100 identical device-list update EDUs arrive")
+        {
+            for (auto index = 0; index < 100; ++index)
+            {
+                REQUIRE(fixture
+                            .deliver_key_edu(merovingian::federation::EduType::device_list_update,
+                                             "m.device_list_update", "b.example", device_list_update_content(remote, 1))
+                            .status == merovingian::federation::EduDispositionStatus::accepted);
+            }
+
+            THEN("the sharing user sees the subject in device_lists.changed and the table holds one row for the pair")
+            {
+                auto const delta = merovingian::sync::collect_device_list_delta(
+                    fixture.started.runtime.database.persistent_store, sharing, 0U);
+                REQUIRE(delta.changed == std::vector<std::string>{remote});
+                REQUIRE(fixture.device_list_rows(sharing, remote) == 1U);
+            }
+
+            AND_THEN("the user who shares no room has no row and the table holds nothing else")
+            {
+                REQUIRE(fixture.device_list_rows(bystander, remote) == 0U);
+                REQUIRE(fixture.started.runtime.database.persistent_store.device_list_changes.size() == 1U);
+            }
+        }
+
+        WHEN("a later signing-key update arrives after a client has already synced the first change")
+        {
+            REQUIRE(fixture
+                        .deliver_key_edu(merovingian::federation::EduType::device_list_update, "m.device_list_update",
+                                         "b.example", device_list_update_content(remote, 1))
+                        .status == merovingian::federation::EduDispositionStatus::accepted);
+            auto const synced_to = fixture.started.runtime.database.persistent_store.next_sync_stream_id;
+            REQUIRE(fixture
+                        .deliver_key_edu(merovingian::federation::EduType::signing_key_update, "m.signing_key_update",
+                                         "b.example", "{\"user_id\":\"" + remote + "\"}")
+                        .status == merovingian::federation::EduDispositionStatus::accepted);
+
+            THEN("the row moves to the newer stream position so an incremental /sync still reports the subject")
+            {
+                REQUIRE(fixture.device_list_rows(sharing, remote) == 1U);
+                auto const delta = merovingian::sync::collect_device_list_delta(
+                    fixture.started.runtime.database.persistent_store, sharing, synced_to);
+                REQUIRE(delta.changed == std::vector<std::string>{remote});
+            }
+        }
+    }
+}
+
+SCENARIO("A device-list EDU naming a user of another server is still refused",
+         "[integration][federation][edu][device-list][security][fed7]")
+{
+    GIVEN("a local user sharing a room with a user of server a.example")
+    {
+        auto fixture = ToDeviceFixture{};
+        auto const sharing = std::string{"@a:example.org"};
+        fixture.add_local_user(sharing);
+        fixture.add_joined_member("!shared:example.org", sharing);
+        fixture.add_joined_member("!shared:example.org", "@victim:a.example");
+
+        WHEN("server b.example sends a device-list update for @victim:a.example")
+        {
+            auto const result =
+                fixture.deliver_key_edu(merovingian::federation::EduType::device_list_update, "m.device_list_update",
+                                        "b.example", device_list_update_content("@victim:a.example", 1));
+
+            THEN("it is rejected and nothing is recorded")
+            {
+                REQUIRE(result.status != merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(fixture.started.runtime.database.persistent_store.device_list_changes.empty());
             }
         }
     }

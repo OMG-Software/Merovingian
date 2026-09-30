@@ -394,16 +394,18 @@ SCENARIO("invite with invalid PDU signature is rejected", "[security][federation
         auto const room_id = std::string{"!room462:example.org"};
         auto const sender = std::string{"@remote_host:"} + remote_origin;
         auto const target_user = std::string{"@local_user:"} + local_server;
-        auto const invite_event_id = std::string{"$invite462:"} + remote_origin;
 
         // Forged invite event with a garbage signature.
-        auto const forged_invite_body =
-            std::string{"{\"room_version\":\"12\",\"event\":{\"type\":\"m.room.member\",\"state_key\":\""} +
-            target_user + "\",\"content\":{\"membership\":\"invite\"},\"room_id\":\"" + room_id + "\",\"sender\":\"" +
-            sender + "\",\"event_id\":\"" + invite_event_id +
+        auto const forged_event =
+            std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + target_user +
+            "\",\"content\":{\"membership\":\"invite\"},\"room_id\":\"" + room_id + "\",\"sender\":\"" + sender +
             "\",\"depth\":1,\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"x\"}," +
-            "\"origin_server_ts\":1000,\"signatures\":{\"remote.example.org\":{\"ed25519:auto\":\"AAAA\"}}}," +
-            "\"invite_room_state\":[]}";
+            "\"origin_server_ts\":1000,\"signatures\":{\"remote.example.org\":{\"ed25519:auto\":\"AAAA\"}}}";
+        // The URL event ID must be the event's real one (audit FED-5) so the
+        // request reaches the signature check this scenario is about.
+        auto const invite_event_id = merovingian::federation::test::reference_hash_event_id(forged_event, "12");
+        auto const forged_invite_body =
+            std::string{"{\"room_version\":\"12\",\"event\":"} + forged_event + ",\"invite_room_state\":[]}";
 
         auto const target = "/_matrix/federation/v2/invite/" + room_id + "/" + invite_event_id;
 
@@ -440,11 +442,13 @@ SCENARIO("invite with valid PDU signature is accepted", "[security][federation][
         auto const room_id = std::string{"!room462b:example.org"};
         auto const sender = std::string{"@remote_host:"} + remote_origin;
         auto const target_user = std::string{"@local_user:"} + local_server;
-        auto const invite_event_id = std::string{"$invite462b:"} + remote_origin;
 
         // Build a properly signed invite event.
         auto const signed_invite = make_signed_invite_pdu(room_id, sender, target_user);
         REQUIRE_FALSE(signed_invite.empty());
+        // The URL event ID must be the event's real one (audit FED-5).
+        auto const invite_event_id = merovingian::federation::test::reference_hash_event_id(signed_invite, "12");
+        REQUIRE_FALSE(invite_event_id.empty());
 
         auto const invite_body = make_v2_invite_body(signed_invite);
         auto const target = "/_matrix/federation/v2/invite/" + room_id + "/" + invite_event_id;
@@ -483,7 +487,6 @@ SCENARIO("invite with sender/origin mismatch is rejected", "[security][federatio
         // Sender claims to be from a DIFFERENT server than the X-Matrix origin.
         auto const sender = std::string{"@evil:evil.example.org"};
         auto const target_user = std::string{"@local_user:"} + local_server;
-        auto const invite_event_id = std::string{"$invite462c:"} + remote_origin;
 
         // Build a signed PDU signed by remote.example.org but with sender from evil.example.org.
         auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
@@ -494,6 +497,10 @@ SCENARIO("invite with sender/origin mismatch is rejected", "[security][federatio
         auto const signed_invite = merovingian::federation::test::make_signed_event_json(
             unsigned_json, remote_origin, remote_key_id, remote_key_seed, "12");
         REQUIRE_FALSE(signed_invite.empty());
+        // The URL event ID must be the event's real one (audit FED-5) so the
+        // request reaches the sender/origin check this scenario is about.
+        auto const invite_event_id = merovingian::federation::test::reference_hash_event_id(signed_invite, "12");
+        REQUIRE_FALSE(invite_event_id.empty());
 
         auto const invite_body = make_v2_invite_body(signed_invite);
         auto const target = "/_matrix/federation/v2/invite/" + room_id + "/" + invite_event_id;

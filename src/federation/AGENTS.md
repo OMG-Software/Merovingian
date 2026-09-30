@@ -60,6 +60,21 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    back to current state — and `get_missing_events` is a bounded walk (limit at most 20), not
    a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
 
+8. **An inbound EDU's identity claims are the sending server's, so bind them to it.** A
+   `m.direct_to_device` `sender` must be a user of the sending origin, and only local, active
+   users may be targeted; `message_id` (1 to 32 codepoints) is de-duplicated per
+   `(origin, message_id)` through `EduIdempotenceWindow` and one EDU queues at most
+   `max_inbound_direct_to_device_deliveries` messages. A `m.device_list_update` /
+   `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
+   joined room with the subject, as one batch (`record_device_list_changes`), one row per
+   (observer, subject). Every new EDU type needs the same three answers: whose claim is this,
+   who may it reach, and what bounds its cost (audit FED-3, FED-7).
+
+9. **An inbound `/invite` for a room whose state we hold is authorised against that state
+   before we sign it, never overwrites a `ban`, and never writes room state.** The
+   transaction path is what updates state. The `{eventId}` in the URL must equal the event's
+   own reference-hash ID (audit FED-5).
+
 ## Key files
 
 | File | Responsibility |
@@ -75,6 +90,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
+| `edu_idempotence.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, message_id) |
 | `dispatch_worker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
 | `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, and owns the origin-in-room gate (`origin_may_read_room`) |
 | `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
