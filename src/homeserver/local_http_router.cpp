@@ -1477,6 +1477,15 @@ namespace
                     }
                     for (auto const& receipt_type_member : *receipt_types)
                     {
+                        // Spec (S-S API, m.receipt): "only a single <receipt_type> should be
+                        // used: m.read. m.read.private MUST NOT appear in this federated
+                        // m.receipt EDU." Any other type from a peer is dropped, not stored, so
+                        // a remote server can neither plant a private or fully-read receipt nor
+                        // grow the receipt table with invented types (CSAZ-4).
+                        if (receipt_type_member.key != "m.read")
+                        {
+                            continue;
+                        }
                         auto const* users = std::get_if<canonicaljson::Object>(&receipt_type_member.value->storage());
                         if (users == nullptr)
                         {

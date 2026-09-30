@@ -541,6 +541,54 @@ SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id 
     }
 }
 
+// Spec (S-S API, m.receipt): "only a single <receipt_type> should be used: m.read.
+// m.read.private MUST NOT appear in this federated m.receipt EDU." A peer that sends other
+// receipt types anyway must not get them stored, because the client-server surface would
+// otherwise have to be trusted to withhold them (CSAZ-4).
+SCENARIO("Inbound receipt EDUs keep only m.read receipts", "[homeserver][federation][edu][receipt][security][csaz-4]")
+{
+    GIVEN("a started client-server runtime with a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "receipt-types-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@local:example.org", "join", 1U});
+
+        auto const content =
+            R"({"!room:example.org":{)"
+            R"("m.read":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":42}}},)"
+            R"("m.read.private":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":43}}},)"
+            R"("m.fully_read":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":44}}}}})";
+        auto const transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.receipt", content);
+        REQUIRE(transaction.has_value());
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-receipt-types-1"};
+
+        WHEN("the EDU carrying m.read, m.read.private and m.fully_read is delivered")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"PUT", target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "PUT", target, *transaction),
+                                     *transaction});
+
+            THEN("only the m.read receipt is stored")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime.homeserver.receipts.size() == 1U);
+                REQUIRE(runtime.homeserver.receipts.front().receipt_type == "m.read");
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound presence and device-list EDUs reject user IDs from a different origin",
          "[homeserver][federation][edu][origin-check][review][regression]")
 {

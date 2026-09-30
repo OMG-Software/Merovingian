@@ -335,6 +335,12 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
         };
 
         auto store = merovingian::database::PersistentStore{};
+        // The receipts/typing extensions only serve rooms the caller has joined (CSAZ-1), so
+        // alice is joined to both rooms the fixture reports on.
+        store.memberships = {
+            {"!room-a:example.org", "@alice:example.org", "join", 1U},
+            {"!room-b:example.org", "@alice:example.org", "join", 2U},
+        };
         REQUIRE(merovingian::database::enqueue_to_device_message(
             store, {0U, "@bob:example.org", "@alice:example.org", "ALICE", "m.room.encrypted", "{not-json"}));
         REQUIRE(merovingian::database::enqueue_to_device_message(
@@ -428,6 +434,68 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
                 auto const* typing_user = std::get_if<std::string>(&(*user_ids)[0].storage());
                 REQUIRE(typing_user != nullptr);
                 REQUIRE(*typing_user == "@bob:example.org");
+            }
+        }
+    }
+}
+
+// Spec (C-S API, Room history visibility): a user needs to join a room to view events in it,
+// and (Receipts) "Servers MUST NOT send the m.read.private receipt to any other user than the
+// one which originally sent it". CSAZ-1 / CSAZ-4 at the extension builder.
+SCENARIO("Sliding sync receipts and typing extensions serve only joined rooms and visible receipts",
+         "[sync][sliding-sync][extensions][security][csaz-1][csaz-4]")
+{
+    GIVEN("alice joined to one room, an outsider room she is not in, and receipts from bob and alice")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        runtime.receipts = {
+            {"!joined:example.org",  "m.read",         "@bob:example.org",   "$bob-public",    10U, 5U},
+            {"!joined:example.org",  "m.read.private", "@bob:example.org",   "$bob-private",   11U, 6U},
+            {"!joined:example.org",  "m.fully_read",   "@bob:example.org",   "$bob-fully",     12U, 7U},
+            {"!joined:example.org",  "m.read.private", "@alice:example.org", "$alice-private", 13U, 8U},
+            {"!outside:example.org", "m.read",         "@bob:example.org",   "$outside",       14U, 9U},
+        };
+        runtime.typing_users = {
+            {"!outside:example.org", "@bob:example.org", true, 0U},
+        };
+        runtime.room_typing_stream_id = {
+            {"!outside:example.org", 4U},
+        };
+        auto store = merovingian::database::PersistentStore{};
+        store.memberships = {
+            {"!joined:example.org",  "@alice:example.org", "join",  1U},
+            {"!outside:example.org", "@alice:example.org", "leave", 2U},
+        };
+
+        auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
+        requests.receipts = merovingian::sync::ExtReceiptsRequest{
+            true, {"!joined:example.org", "!outside:example.org"}
+        };
+        requests.typing = merovingian::sync::ExtTypingRequest{true, {"!outside:example.org"}};
+
+        WHEN("the extensions are built for alice with rooms named explicitly")
+        {
+            auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
+                                                                       0U, 10U, store, {"!joined:example.org"});
+
+            THEN("the room she has left is dropped from both extensions")
+            {
+                REQUIRE(responses.receipts.has_value());
+                REQUIRE_FALSE(responses.receipts->rooms_json.contains("!outside:example.org"));
+                REQUIRE(responses.typing.has_value());
+                REQUIRE(responses.typing->rooms_json.empty());
+            }
+
+            THEN("in the joined room she sees bob's public receipt and her own private one only")
+            {
+                REQUIRE(responses.receipts->rooms_json.contains("!joined:example.org"));
+                auto const event = parse_object(responses.receipts->rooms_json.at("!joined:example.org"));
+                auto const* content = object_member(event, "content");
+                REQUIRE(content != nullptr);
+                REQUIRE(object_member(*content, "$bob-public") != nullptr);
+                REQUIRE(object_member(*content, "$alice-private") != nullptr);
+                REQUIRE(object_member(*content, "$bob-private") == nullptr);
+                REQUIRE(object_member(*content, "$bob-fully") == nullptr);
             }
         }
     }

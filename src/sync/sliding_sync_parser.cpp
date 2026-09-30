@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -77,6 +78,12 @@ namespace
             }
         }
         return out;
+    }
+
+    // A client-supplied timeline_limit, reduced to the server maximum.
+    [[nodiscard]] auto clamp_timeline_limit(std::int64_t requested) noexcept -> std::uint64_t
+    {
+        return std::min(static_cast<std::uint64_t>(requested), sliding_sync_max_timeline_limit);
     }
 
     // ── Sub-parsers ──────────────────────────────────────────────────────────
@@ -238,7 +245,7 @@ namespace
         {
             if (auto const* n = as_int(*v); n != nullptr && *n >= 0)
             {
-                list.timeline_limit = static_cast<std::uint64_t>(*n);
+                list.timeline_limit = clamp_timeline_limit(*n);
             }
         }
 
@@ -278,7 +285,7 @@ namespace
         {
             if (auto const* n = as_int(*v); n != nullptr && *n >= 0)
             {
-                sub.timeline_limit = static_cast<std::uint64_t>(*n);
+                sub.timeline_limit = clamp_timeline_limit(*n);
             }
         }
         if (auto const* v = find_member(obj, "include_heroes"); v != nullptr)
@@ -506,6 +513,31 @@ auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingS
     }
 
     return req;
+}
+
+auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request) -> std::optional<std::string_view>
+{
+    if (request.room_subscriptions.size() > sliding_sync_max_room_subscriptions)
+    {
+        return "too many room_subscriptions";
+    }
+    for (auto const& [name, list] : request.lists)
+    {
+        std::ignore = name;
+        if (list.required_state.size() > sliding_sync_max_required_state_entries)
+        {
+            return "too many required_state entries in a list";
+        }
+    }
+    for (auto const& [room_id, subscription] : request.room_subscriptions)
+    {
+        std::ignore = room_id;
+        if (subscription.required_state.size() > sliding_sync_max_required_state_entries)
+        {
+            return "too many required_state entries in a room subscription";
+        }
+    }
+    return std::nullopt;
 }
 
 auto parse_sliding_sync_pos(std::string_view target) -> std::optional<StreamToken>

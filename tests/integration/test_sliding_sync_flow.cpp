@@ -1733,15 +1733,15 @@ SCENARIO("MSC4186 sliding sync withholds a non-state timeline event from an igno
 }
 
 // Spec MUST (Server behaviour): "Servers must not send room invites from
-// ignored users to clients." MSC4186 has no separate invite-state surface
-// like legacy /sync's rooms.invite.<room_id>.invite_state; an invite reaches
-// a sliding sync client through an explicit room_subscription's
-// required_state (a client that already knows the room_id — e.g. from a
-// push notification — can subscribe to it before "joining" it). This proves
-// the same suppression applies there.
-SCENARIO("MSC4186 sliding sync withholds an ignored user's room invite from an explicitly-subscribed room's "
-         "required_state",
-         "[homeserver][sliding-sync][integration][ignoring-users]")
+// ignored users to clients." An invited user has not joined, so an explicit
+// room_subscription for the room is answered with the invite's stripped state
+// (`invite_state`) only - never timeline or required_state (CSAZ-1). This
+// proves the ignore-list suppression still applies on that surface: an invite
+// from an ignored inviter is withheld entirely, while another inviter's
+// invite is reported as stripped state.
+SCENARIO("MSC4186 sliding sync withholds an ignored user's room invite from an explicitly-subscribed room and "
+         "reports other invites as stripped state only",
+         "[homeserver][sliding-sync][integration][ignoring-users][csaz-1]")
 {
     GIVEN("alice has ignored bob, and both bob and carol have invited her to a room")
     {
@@ -1769,42 +1769,498 @@ SCENARIO("MSC4186 sliding sync withholds an ignored user's room invite from an e
         WHEN("alice subscribes to both rooms with required_state naming her own membership")
         {
             auto const body = R"({"room_subscriptions":{")" + bob_room +
-                              R"(":{"required_state":[["m.room.member","$ME"]],"timeline_limit":0},")" + carol_room +
-                              R"(":{"required_state":[["m.room.member","$ME"]],"timeline_limit":0}}})";
+                              R"(":{"required_state":[["m.room.member","$ME"]],"timeline_limit":10},")" + carol_room +
+                              R"(":{"required_state":[["m.room.member","$ME"]],"timeline_limit":10}}})";
             auto const result = sliding_sync(rt, alice_token, body);
             REQUIRE(result.response.status == 200U);
 
-            THEN("bob's invite is withheld from required_state while carol's is present")
+            THEN("bob's invite is withheld entirely")
             {
                 auto const rooms = rooms_object(result.response.body);
+                REQUIRE(object_member_as_object(rooms, bob_room) == nullptr);
+            }
 
-                auto const* bob_room_obj = object_member_as_object(rooms, bob_room);
-                REQUIRE(bob_room_obj != nullptr);
-                auto const* bob_required_state = object_member_as_array(*bob_room_obj, "required_state");
-                auto const bob_has_own_member =
-                    bob_required_state != nullptr &&
-                    std::ranges::any_of(*bob_required_state, [](merovingian::canonicaljson::Value const& v) {
-                        auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
-                        if (ev == nullptr)
-                            return false;
-                        auto const* state_key = string_member(*ev, "state_key");
-                        return state_key != nullptr && *state_key == "@alice:example.org";
-                    });
-                REQUIRE_FALSE(bob_has_own_member);
-
+            THEN("carol's invite is reported as stripped state with no timeline or required_state")
+            {
+                auto const rooms = rooms_object(result.response.body);
                 auto const* carol_room_obj = object_member_as_object(rooms, carol_room);
                 REQUIRE(carol_room_obj != nullptr);
-                auto const* carol_required_state = object_member_as_array(*carol_room_obj, "required_state");
-                REQUIRE(carol_required_state != nullptr);
-                auto const carol_has_own_member =
-                    std::ranges::any_of(*carol_required_state, [](merovingian::canonicaljson::Value const& v) {
+
+                auto const* invite_state = object_member_as_array(*carol_room_obj, "invite_state");
+                REQUIRE(invite_state != nullptr);
+                auto const has_own_invite =
+                    std::ranges::any_of(*invite_state, [](merovingian::canonicaljson::Value const& v) {
                         auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
                         if (ev == nullptr)
                             return false;
+                        auto const* type = string_member(*ev, "type");
                         auto const* state_key = string_member(*ev, "state_key");
-                        return state_key != nullptr && *state_key == "@alice:example.org";
+                        return type != nullptr && *type == "m.room.member" && state_key != nullptr &&
+                               *state_key == "@alice:example.org";
                     });
-                REQUIRE(carol_has_own_member);
+                REQUIRE(has_own_invite);
+
+                auto const* required_state = object_member_as_array(*carol_room_obj, "required_state");
+                REQUIRE((required_state == nullptr || required_state->empty()));
+                auto const* timeline = object_member_as_array(*carol_room_obj, "timeline");
+                REQUIRE((timeline == nullptr || timeline->empty()));
+            }
+        }
+    }
+}
+
+// ── CSAZ-1 / CSAZ-4: sliding sync membership gate and receipt visibility ─────
+
+namespace
+{
+
+[[nodiscard]] auto post_expect_ok(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                                  std::string const& path, std::string const& body) -> std::string
+{
+    auto const resp = merovingian::homeserver::handle_client_server_request(rt, {"POST", path, token, body});
+    REQUIRE(resp.response.status == 200U);
+    return resp.response.body;
+}
+
+// Invite `invitee_localpart` (private rooms default to join_rule=invite) and have them join.
+auto invite_and_join(merovingian::homeserver::ClientServerRuntime& rt, std::string const& owner_token,
+                     std::string const& invitee_localpart, std::string const& invitee_token,
+                     std::string const& room_id) -> void
+{
+    std::ignore = post_expect_ok(rt, owner_token, "/_matrix/client/v3/rooms/" + room_id + "/invite",
+                                 R"({"user_id":"@)" + invitee_localpart + R"(:example.org"})");
+    std::ignore = post_expect_ok(rt, invitee_token, "/_matrix/client/v3/rooms/" + room_id + "/join", "{}");
+}
+
+// extensions.<name>.rooms as a copy; empty when the extension or its rooms are absent.
+[[nodiscard]] auto extension_rooms(std::string const& response_body,
+                                   std::string_view extension) -> merovingian::canonicaljson::Object
+{
+    auto const body = parse_object(response_body);
+    auto const* ext = object_member_as_object(body, "extensions");
+    if (ext == nullptr)
+        return {};
+    auto const* named = object_member_as_object(*ext, extension);
+    if (named == nullptr)
+        return {};
+    auto const* rooms = object_member_as_object(*named, "rooms");
+    return rooms == nullptr ? merovingian::canonicaljson::Object{} : *rooms;
+}
+
+// Names of every receipt type present in an m.receipt event for `room_id`, and whether
+// `user_id` appears under any of them.
+struct ReceiptView final
+{
+    bool room_present{false};
+    bool any_receipt_from_user{false};
+    bool has_type_for_user{false};
+    std::vector<std::string> receipt_types{};
+};
+
+[[nodiscard]] auto inspect_receipts(merovingian::canonicaljson::Object const& receipt_rooms, std::string const& room_id,
+                                    std::string_view user_id, std::string_view type_of_interest) -> ReceiptView
+{
+    auto view = ReceiptView{};
+    auto const* event = object_member_as_object(receipt_rooms, room_id);
+    if (event == nullptr)
+        return view;
+    view.room_present = true;
+    auto const* content = object_member_as_object(*event, "content");
+    if (content == nullptr)
+        return view;
+    for (auto const& by_event : *content)
+    {
+        auto const* by_type = std::get_if<merovingian::canonicaljson::Object>(&by_event.value->storage());
+        if (by_type == nullptr)
+            continue;
+        for (auto const& type_member : *by_type)
+        {
+            view.receipt_types.push_back(type_member.key);
+            auto const* users = std::get_if<merovingian::canonicaljson::Object>(&type_member.value->storage());
+            if (users == nullptr)
+                continue;
+            if (object_member_as_object(*users, user_id) != nullptr)
+            {
+                view.any_receipt_from_user = true;
+                if (type_member.key == type_of_interest)
+                    view.has_type_for_user = true;
+            }
+        }
+    }
+    return view;
+}
+
+// m.fully_read room account data delivered through extensions.account_data.rooms[room_id].
+[[nodiscard]] auto account_data_types_for_room(std::string const& response_body,
+                                               std::string const& room_id) -> std::vector<std::string>
+{
+    auto out = std::vector<std::string>{};
+    auto const rooms = extension_rooms(response_body, "account_data");
+    auto const* events = object_member_as_array(rooms, room_id);
+    if (events == nullptr)
+        return out;
+    for (auto const& ev : *events)
+    {
+        auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&ev.storage());
+        auto const* type = obj == nullptr ? nullptr : string_member(*obj, "type");
+        if (type != nullptr)
+            out.push_back(*type);
+    }
+    return out;
+}
+
+constexpr auto everything_body_prefix = std::string_view{R"({"required_state":[["*","*"]],"timeline_limit":1000})"};
+
+} // namespace
+
+// Spec (C-S API, Room history visibility): "In all cases except world_readable, a user
+// needs to join a room to view events in that room." CSAZ-1: a room_subscription or an
+// extension room list must not be a way around that.
+SCENARIO("MSC4186 sliding sync does not serve a room to a user who never joined it",
+         "[homeserver][sliding-sync][integration][security][csaz-1]")
+{
+    GIVEN("alice in a private room with a message, a read receipt and a typing notification, and mallory in no room")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const mallory_token = register_and_login(rt, "mallory", "CorrectHorse7!", "MALLORY");
+        auto const room_id = create_room(rt, alice_token);
+        auto const event_id = send_message_get_id(rt, alice_token, room_id, "top-secret-plans");
+        std::ignore = post_expect_ok(rt, alice_token,
+                                     "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + event_id, "{}");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/typing/@alice:example.org", alice_token,
+                         R"({"typing":true,"timeout":30000})"})
+                    .response.status == 200U);
+
+        WHEN("mallory subscribes to the room with a wildcard required_state and names it in receipts and typing")
+        {
+            auto const body =
+                std::string{R"({"room_subscriptions":{")"} + room_id + R"(":)" + std::string{everything_body_prefix} +
+                R"(},"extensions":{"receipts":{"enabled":true,"rooms":[")" + room_id +
+                R"("]},"typing":{"enabled":true,"rooms":[")" + room_id + R"("]},"account_data":{"enabled":true}}})";
+            auto const result = sliding_sync(rt, mallory_token, body);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("the response has no entry for the room and both extensions are empty")
+            {
+                auto const rooms = rooms_object(result.response.body);
+                REQUIRE(object_member_as_object(rooms, room_id) == nullptr);
+                REQUIRE(extension_rooms(result.response.body, "receipts").empty());
+                REQUIRE(extension_rooms(result.response.body, "typing").empty());
+                REQUIRE(result.response.body.find("top-secret-plans") == std::string::npos);
+                REQUIRE(result.response.body.find("@alice:example.org") == std::string::npos);
+            }
+        }
+
+        WHEN("mallory names the room only through the receipts and typing extensions")
+        {
+            auto const body = std::string{R"({"extensions":{"receipts":{"enabled":true,"rooms":[")"} + room_id +
+                              R"("]},"typing":{"enabled":true,"rooms":[")" + room_id + R"("]}}})";
+            auto const result = sliding_sync(rt, mallory_token, body);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("neither extension returns data for the room")
+            {
+                REQUIRE(extension_rooms(result.response.body, "receipts").empty());
+                REQUIRE(extension_rooms(result.response.body, "typing").empty());
+            }
+        }
+
+        WHEN("alice, who is joined, makes the same subscription")
+        {
+            auto const body = std::string{R"({"room_subscriptions":{")"} + room_id + R"(":)" +
+                              std::string{everything_body_prefix} + R"(}})";
+            auto const result = sliding_sync(rt, alice_token, body);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("the room is served to her")
+            {
+                auto const rooms = rooms_object(result.response.body);
+                REQUIRE(object_member_as_object(rooms, room_id) != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 sliding sync does not serve a room to a user who left or was banned",
+         "[homeserver][sliding-sync][integration][security][csaz-1]")
+{
+    GIVEN("a room with a message, a former member who left and a member who was banned")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const carol_token = register_and_login(rt, "carol", "CorrectHorse7!", "CAROL");
+        auto const room_id = create_room(rt, alice_token);
+        invite_and_join(rt, alice_token, "bob", bob_token, room_id);
+        invite_and_join(rt, alice_token, "carol", carol_token, room_id);
+        std::ignore = post_expect_ok(rt, bob_token, "/_matrix/client/v3/rooms/" + room_id + "/leave", "{}");
+        std::ignore = post_expect_ok(rt, alice_token, "/_matrix/client/v3/rooms/" + room_id + "/ban",
+                                     R"({"user_id":"@carol:example.org"})");
+        std::ignore = send_message_get_id(rt, alice_token, room_id, "after-they-left");
+
+        auto const body = std::string{R"({"room_subscriptions":{")"} + room_id + R"(":)" +
+                          std::string{everything_body_prefix} +
+                          R"(},"extensions":{"receipts":{"enabled":true,"rooms":[")" + room_id +
+                          R"("]},"typing":{"enabled":true,"rooms":[")" + room_id + R"("]}}})";
+
+        WHEN("the user who left subscribes")
+        {
+            auto const result = sliding_sync(rt, bob_token, body);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("the room is omitted and nothing about it leaks")
+            {
+                auto const rooms = rooms_object(result.response.body);
+                REQUIRE(object_member_as_object(rooms, room_id) == nullptr);
+                REQUIRE(extension_rooms(result.response.body, "receipts").empty());
+                REQUIRE(extension_rooms(result.response.body, "typing").empty());
+                REQUIRE(result.response.body.find("after-they-left") == std::string::npos);
+            }
+        }
+
+        WHEN("the banned user subscribes")
+        {
+            auto const result = sliding_sync(rt, carol_token, body);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("the room is omitted and nothing about it leaks")
+            {
+                auto const rooms = rooms_object(result.response.body);
+                REQUIRE(object_member_as_object(rooms, room_id) == nullptr);
+                REQUIRE(extension_rooms(result.response.body, "receipts").empty());
+                REQUIRE(extension_rooms(result.response.body, "typing").empty());
+                REQUIRE(result.response.body.find("after-they-left") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 sliding sync rejects requests that exceed the subscription and required_state limits",
+         "[homeserver][sliding-sync][integration][security][csaz-1]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+
+        WHEN("the request has 257 room_subscriptions")
+        {
+            auto body = std::string{R"({"room_subscriptions":{)"};
+            for (auto i = 0; i < 257; ++i)
+            {
+                body += (i == 0 ? "" : ",") + std::string{"\"!room"} + std::to_string(i) + R"(:example.org":{})";
+            }
+            body += "}}";
+            auto const result = sliding_sync(rt, token, body);
+
+            THEN("it is rejected with 400 M_INVALID_PARAM")
+            {
+                REQUIRE(result.response.status == 400U);
+                REQUIRE(result.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("the request has exactly 256 room_subscriptions")
+        {
+            auto body = std::string{R"({"room_subscriptions":{)"};
+            for (auto i = 0; i < 256; ++i)
+            {
+                body += (i == 0 ? "" : ",") + std::string{"\"!room"} + std::to_string(i) + R"(:example.org":{})";
+            }
+            body += "}}";
+            auto const result = sliding_sync(rt, token, body);
+
+            THEN("it is accepted")
+            {
+                REQUIRE(result.response.status == 200U);
+            }
+        }
+
+        auto required_state_entries = [](int count) {
+            auto out = std::string{"["};
+            for (auto i = 0; i < count; ++i)
+            {
+                out += (i == 0 ? "" : ",") + std::string{R"(["m.custom.)"} + std::to_string(i) + R"(",""])";
+            }
+            return out + "]";
+        };
+
+        WHEN("a subscription has 257 required_state entries")
+        {
+            auto const body = R"({"room_subscriptions":{"!room:example.org":{"required_state":)" +
+                              required_state_entries(257) + "}}}";
+            auto const result = sliding_sync(rt, token, body);
+
+            THEN("it is rejected with 400 M_INVALID_PARAM")
+            {
+                REQUIRE(result.response.status == 400U);
+                REQUIRE(result.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("a list has 257 required_state entries")
+        {
+            auto const body =
+                R"({"lists":{"all":{"ranges":[[0,9]],"required_state":)" + required_state_entries(257) + "}}}";
+            auto const result = sliding_sync(rt, token, body);
+
+            THEN("it is rejected with 400 M_INVALID_PARAM")
+            {
+                REQUIRE(result.response.status == 400U);
+                REQUIRE(result.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 sliding sync clamps an oversized timeline_limit",
+         "[homeserver][sliding-sync][integration][security][csaz-1]")
+{
+    GIVEN("a room with 110 messages")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_id = create_room(rt, token);
+        for (auto i = 0; i < 110; ++i)
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-clamp-" + std::to_string(i),
+                 token, R"({"msgtype":"m.text","body":"filler"})"});
+            REQUIRE(resp.response.status == 200U);
+        }
+
+        WHEN("the user subscribes with timeline_limit 100000")
+        {
+            auto const body = std::string{R"({"room_subscriptions":{")"} + room_id + R"(":{"timeline_limit":100000}}})";
+            auto const result = sliding_sync(rt, token, body);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("no more than 100 timeline events are returned")
+            {
+                auto const rooms = rooms_object(result.response.body);
+                auto const* room = object_member_as_object(rooms, room_id);
+                REQUIRE(room != nullptr);
+                auto const* timeline = object_member_as_array(*room, "timeline");
+                REQUIRE(timeline != nullptr);
+                REQUIRE(timeline->size() <= 100U);
+                REQUIRE(timeline->size() > 0U);
+            }
+        }
+    }
+}
+
+// Spec (C-S API, Receipts): "Servers MUST NOT send the m.read.private receipt to any other
+// user than the one which originally sent it." and (receipt endpoint) "m.fully_read does not
+// appear under m.receipt". CSAZ-4, sliding-sync surface.
+SCENARIO("MSC4186 sliding sync sends m.read.private only to its owner and never sends m.fully_read as a receipt",
+         "[homeserver][sliding-sync][integration][security][receipts][csaz-4]")
+{
+    GIVEN("alice and bob in a room with a message from bob")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token);
+        invite_and_join(rt, alice_token, "bob", bob_token, room_id);
+        auto const event_id = send_message_get_id(rt, bob_token, room_id, "hello");
+
+        auto const sync_body =
+            std::string{R"({"lists":{"all":{"ranges":[[0,9]],"timeline_limit":1}},)"} +
+            R"("extensions":{"receipts":{"enabled":true,"rooms":["*"]},"account_data":{"enabled":true}}})";
+        auto const alice_init = sliding_sync(rt, alice_token, sync_body);
+        auto const bob_init = sliding_sync(rt, bob_token, sync_body);
+        REQUIRE(alice_init.response.status == 200U);
+        REQUIRE(bob_init.response.status == 200U);
+        auto const alice_pos = sliding_sync_pos(alice_init.response.body);
+        auto const bob_pos = sliding_sync_pos(bob_init.response.body);
+
+        WHEN("alice sends an m.read.private receipt and both poll")
+        {
+            std::ignore = post_expect_ok(
+                rt, alice_token, "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read.private/" + event_id, "{}");
+            auto const alice_result = sliding_sync(rt, alice_token, sync_body, alice_pos);
+            auto const bob_result = sliding_sync(rt, bob_token, sync_body, bob_pos);
+            REQUIRE(alice_result.response.status == 200U);
+            REQUIRE(bob_result.response.status == 200U);
+
+            THEN("bob sees no receipt from alice")
+            {
+                auto const view = inspect_receipts(extension_rooms(bob_result.response.body, "receipts"), room_id,
+                                                   "@alice:example.org", "m.read.private");
+                REQUIRE_FALSE(view.any_receipt_from_user);
+                REQUIRE(std::ranges::find(view.receipt_types, "m.read.private") == view.receipt_types.end());
+                REQUIRE(bob_result.response.body.find("m.read.private") == std::string::npos);
+            }
+
+            THEN("alice sees her own private receipt")
+            {
+                auto const view = inspect_receipts(extension_rooms(alice_result.response.body, "receipts"), room_id,
+                                                   "@alice:example.org", "m.read.private");
+                REQUIRE(view.has_type_for_user);
+            }
+        }
+
+        WHEN("alice sends an m.fully_read receipt and both poll")
+        {
+            std::ignore = post_expect_ok(
+                rt, alice_token, "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.fully_read/" + event_id, "{}");
+            auto const alice_result = sliding_sync(rt, alice_token, sync_body, alice_pos);
+            auto const bob_result = sliding_sync(rt, bob_token, sync_body, bob_pos);
+            REQUIRE(alice_result.response.status == 200U);
+            REQUIRE(bob_result.response.status == 200U);
+
+            THEN("m.fully_read is not under m.receipt for either user")
+            {
+                for (auto const* body : {&alice_result.response.body, &bob_result.response.body})
+                {
+                    auto const view = inspect_receipts(extension_rooms(*body, "receipts"), room_id,
+                                                       "@alice:example.org", "m.fully_read");
+                    REQUIRE_FALSE(view.has_type_for_user);
+                    REQUIRE(std::ranges::find(view.receipt_types, "m.fully_read") == view.receipt_types.end());
+                }
+            }
+
+            THEN("alice receives m.fully_read as room account data and bob does not")
+            {
+                auto const alice_types = account_data_types_for_room(alice_result.response.body, room_id);
+                REQUIRE(std::ranges::find(alice_types, "m.fully_read") != alice_types.end());
+                auto const bob_types = account_data_types_for_room(bob_result.response.body, room_id);
+                REQUIRE(std::ranges::find(bob_types, "m.fully_read") == bob_types.end());
+            }
+        }
+
+        WHEN("alice sets all three markers through read_markers and bob polls")
+        {
+            std::ignore = post_expect_ok(rt, alice_token, "/_matrix/client/v3/rooms/" + room_id + "/read_markers",
+                                         R"({"m.fully_read":")" + event_id + R"(","m.read":")" + event_id +
+                                             R"(","m.read.private":")" + event_id + R"("})");
+            auto const bob_result = sliding_sync(rt, bob_token, sync_body, bob_pos);
+            REQUIRE(bob_result.response.status == 200U);
+
+            THEN("bob sees alice's public m.read receipt only")
+            {
+                auto const view = inspect_receipts(extension_rooms(bob_result.response.body, "receipts"), room_id,
+                                                   "@alice:example.org", "m.read");
+                REQUIRE(view.has_type_for_user);
+                REQUIRE(view.receipt_types == std::vector<std::string>{"m.read"});
             }
         }
     }

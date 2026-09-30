@@ -17,7 +17,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace
 {
@@ -288,6 +291,264 @@ SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} rejects a malform
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_BAD_JSON");
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Shared fixture for the receipt-visibility scenarios: alice and bob in a public room, and an
+// event from bob for alice to read.
+struct SharedRoom final
+{
+    std::string alice{};
+    std::string bob{};
+    std::string room_id{};
+    std::string event_id{};
+};
+
+[[nodiscard]] auto make_shared_room(merovingian::homeserver::ClientServerRuntime& runtime) -> SharedRoom
+{
+    auto fixture = SharedRoom{};
+    fixture.alice = logged_in_token(runtime, "alice");
+    fixture.bob = logged_in_token(runtime, "bob");
+    auto const create = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/createRoom", fixture.alice, R"({"preset":"public_chat"})"});
+    REQUIRE(create.response.status == 200U);
+    fixture.room_id = room_id_from_create(create.response.body);
+    REQUIRE(merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + fixture.room_id + "/join", fixture.bob, "{}"})
+                .response.status == 200U);
+    auto const send = merovingian::homeserver::handle_client_server_request(
+        runtime, {"PUT", "/_matrix/client/v3/rooms/" + fixture.room_id + "/send/m.room.message/txn_vis", fixture.bob,
+                  R"({"msgtype":"m.text","body":"hello"})"});
+    REQUIRE(send.response.status == 200U);
+    fixture.event_id = event_id_from_send(send.response.body);
+    return fixture;
+}
+
+// Every receipt type/user pair present in m.receipt ephemeral events for a room in /sync.
+struct SyncReceipts final
+{
+    std::vector<std::string> receipt_types{};
+    std::vector<std::string> users_with_any_receipt{};
+    std::vector<std::string> users_with_type{};
+};
+
+[[nodiscard]] auto sync_receipts(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                 std::string const& room_id, std::string_view type_of_interest) -> SyncReceipts
+{
+    auto out = SyncReceipts{};
+    auto const events = first_room_ephemeral_events(runtime, token, room_id);
+    for (auto const& ev : events)
+    {
+        auto const* ev_obj = std::get_if<merovingian::canonicaljson::Object>(&ev.storage());
+        if (ev_obj == nullptr)
+            continue;
+        auto const* type = string_member(*ev_obj, "type");
+        if (type == nullptr || *type != "m.receipt")
+            continue;
+        auto const* content = object_member_as_object(*ev_obj, "content");
+        if (content == nullptr)
+            continue;
+        for (auto const& by_event : *content)
+        {
+            auto const* by_type = std::get_if<merovingian::canonicaljson::Object>(&by_event.value->storage());
+            if (by_type == nullptr)
+                continue;
+            for (auto const& type_member : *by_type)
+            {
+                out.receipt_types.push_back(type_member.key);
+                auto const* users = std::get_if<merovingian::canonicaljson::Object>(&type_member.value->storage());
+                if (users == nullptr)
+                    continue;
+                for (auto const& user : *users)
+                {
+                    out.users_with_any_receipt.push_back(user.key);
+                    if (type_member.key == type_of_interest)
+                        out.users_with_type.push_back(user.key);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// event_id carried by the room account data event of `event_type` in the user's /sync, or empty.
+[[nodiscard]] auto room_account_data_event_id(merovingian::homeserver::ClientServerRuntime& runtime,
+                                              std::string const& token, std::string const& room_id,
+                                              std::string_view event_type) -> std::string
+{
+    auto const sync =
+        merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+    REQUIRE(sync.response.status == 200U);
+    auto const body = parse_object(sync.response.body);
+    auto const* rooms = object_member_as_object(body, "rooms");
+    auto const* join = rooms == nullptr ? nullptr : object_member_as_object(*rooms, "join");
+    auto const* room = join == nullptr ? nullptr : object_member_as_object(*join, room_id);
+    auto const* account_data = room == nullptr ? nullptr : object_member_as_object(*room, "account_data");
+    auto const* events = account_data == nullptr ? nullptr : object_member_as_array(*account_data, "events");
+    if (events == nullptr)
+        return {};
+    for (auto const& ev : *events)
+    {
+        auto const* ev_obj = std::get_if<merovingian::canonicaljson::Object>(&ev.storage());
+        auto const* type = ev_obj == nullptr ? nullptr : string_member(*ev_obj, "type");
+        if (type == nullptr || *type != event_type)
+            continue;
+        auto const* content = object_member_as_object(*ev_obj, "content");
+        auto const* event_id = content == nullptr ? nullptr : string_member(*content, "event_id");
+        return event_id == nullptr ? std::string{} : *event_id;
+    }
+    return {};
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19
+// Section: Receipts — Security considerations (private read receipts)
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#receipts
+//
+// "Servers MUST NOT send the m.read.private receipt to any other user than the one which
+// originally sent it."
+SCENARIO("/sync sends an m.read.private receipt only to the user who sent it",
+         "[conformance][client-server][receipt][security][csaz-4]")
+{
+    GIVEN("alice and bob in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const fixture = make_shared_room(started.runtime);
+
+        WHEN("alice sends an m.read.private receipt")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {"POST",
+                         "/_matrix/client/v3/rooms/" + fixture.room_id + "/receipt/m.read.private/" + fixture.event_id,
+                         fixture.alice,
+                         {}})
+                        .response.status == 200U);
+
+            THEN("bob's /sync contains no receipt from alice")
+            {
+                auto const bob_view = sync_receipts(started.runtime, fixture.bob, fixture.room_id, "m.read.private");
+                REQUIRE(bob_view.users_with_any_receipt.empty());
+                REQUIRE(bob_view.users_with_type.empty());
+            }
+
+            THEN("alice's own /sync contains her private receipt")
+            {
+                auto const alice_view =
+                    sync_receipts(started.runtime, fixture.alice, fixture.room_id, "m.read.private");
+                REQUIRE(alice_view.users_with_type == std::vector<std::string>{"@alice:example.org"});
+            }
+        }
+
+        WHEN("alice sends both an m.read and an m.read.private receipt")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {"POST",
+                         "/_matrix/client/v3/rooms/" + fixture.room_id + "/receipt/m.read/" + fixture.event_id,
+                         fixture.alice,
+                         {}})
+                        .response.status == 200U);
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {"POST",
+                         "/_matrix/client/v3/rooms/" + fixture.room_id + "/receipt/m.read.private/" + fixture.event_id,
+                         fixture.alice,
+                         {}})
+                        .response.status == 200U);
+
+            THEN("bob sees the public m.read receipt but not the private one")
+            {
+                auto const bob_view = sync_receipts(started.runtime, fixture.bob, fixture.room_id, "m.read");
+                REQUIRE(bob_view.users_with_type == std::vector<std::string>{"@alice:example.org"});
+                REQUIRE(bob_view.receipt_types == std::vector<std::string>{"m.read"});
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Section: Receipts / Fully read markers
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#fully-read-markers
+//
+// "`m.fully_read` does not appear under `m.receipt`: this endpoint effectively calls
+// `/read_markers` internally when presented with a receipt type of `m.fully_read`." The
+// marker is "kept as an event in the room's account data" and, on update, "the server MUST
+// send the updated account data event through to the client via the event stream".
+SCENARIO("m.fully_read is delivered as room account data and never under m.receipt",
+         "[conformance][client-server][receipt][read-markers][csaz-4]")
+{
+    GIVEN("alice and bob in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const fixture = make_shared_room(started.runtime);
+
+        WHEN("alice sends an m.fully_read receipt")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {"POST",
+                         "/_matrix/client/v3/rooms/" + fixture.room_id + "/receipt/m.fully_read/" + fixture.event_id,
+                         fixture.alice,
+                         {}})
+                        .response.status == 200U);
+
+            THEN("m.fully_read appears under m.receipt for neither user")
+            {
+                auto const alice_view = sync_receipts(started.runtime, fixture.alice, fixture.room_id, "m.fully_read");
+                auto const bob_view = sync_receipts(started.runtime, fixture.bob, fixture.room_id, "m.fully_read");
+                REQUIRE(alice_view.users_with_type.empty());
+                REQUIRE(bob_view.users_with_type.empty());
+                REQUIRE(alice_view.receipt_types.empty());
+                REQUIRE(bob_view.receipt_types.empty());
+            }
+
+            THEN("alice receives m.fully_read as room account data and bob does not")
+            {
+                REQUIRE(room_account_data_event_id(started.runtime, fixture.alice, fixture.room_id, "m.fully_read") ==
+                        fixture.event_id);
+                REQUIRE(
+                    room_account_data_event_id(started.runtime, fixture.bob, fixture.room_id, "m.fully_read").empty());
+            }
+        }
+
+        WHEN("alice sets m.fully_read, m.read and m.read.private through /read_markers")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {"POST", "/_matrix/client/v3/rooms/" + fixture.room_id + "/read_markers", fixture.alice,
+                         R"({"m.fully_read":")" + fixture.event_id + R"(","m.read":")" + fixture.event_id +
+                             R"(","m.read.private":")" + fixture.event_id + R"("})"})
+                        .response.status == 200U);
+
+            THEN("alice has the fully-read marker as account data")
+            {
+                REQUIRE(room_account_data_event_id(started.runtime, fixture.alice, fixture.room_id, "m.fully_read") ==
+                        fixture.event_id);
+            }
+
+            THEN("bob sees only alice's public m.read receipt")
+            {
+                auto const bob_view = sync_receipts(started.runtime, fixture.bob, fixture.room_id, "m.read");
+                REQUIRE(bob_view.receipt_types == std::vector<std::string>{"m.read"});
+                REQUIRE(bob_view.users_with_type == std::vector<std::string>{"@alice:example.org"});
+            }
+
+            THEN("alice sees her m.read and m.read.private receipts but no m.fully_read receipt")
+            {
+                auto const alice_view = sync_receipts(started.runtime, fixture.alice, fixture.room_id, "m.read");
+                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.read") != alice_view.receipt_types.end());
+                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.read.private") !=
+                        alice_view.receipt_types.end());
+                REQUIRE(std::ranges::find(alice_view.receipt_types, "m.fully_read") == alice_view.receipt_types.end());
             }
         }
     }

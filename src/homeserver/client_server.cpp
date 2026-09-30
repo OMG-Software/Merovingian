@@ -50,6 +50,8 @@
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
+#include "merovingian/sync/receipt_visibility.hpp"
+#include "merovingian/sync/room_access.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sliding_sync_extensions.hpp"
 #include "merovingian/sync/sliding_sync_parser.hpp"
@@ -3362,6 +3364,19 @@ namespace
         return set_account_data(runtime, {std::string{user_id}, std::string{room_id}, "m.tag", serialized, 0U});
     }
 
+    // Spec (client-server-api.md, "Fully read markers"): the marker "is kept as an event in
+    // the room's account data", type `m.fully_read`, content `{"event_id": ...}`, and "will be
+    // pushed down the event stream when updated". It is private to its owner and is not a
+    // receipt: it must never be stored where the `m.receipt` builders can find it.
+    [[nodiscard]] auto store_fully_read_marker(ClientServerRuntime& runtime, std::string_view user_id,
+                                               std::string_view room_id, std::string_view event_id) -> bool
+    {
+        auto content = canonicaljson::Object{};
+        content.push_back(json_member("event_id", json_str(std::string{event_id})));
+        return set_account_data(runtime, {std::string{user_id}, std::string{room_id}, "m.fully_read",
+                                          json_serialize(json_obj(std::move(content))), 0U});
+    }
+
     [[nodiscard]] auto build_current_state_events_array(database::PersistentStore const& store,
                                                         sync::EventTypeFilter const& filter, std::string_view room_id)
         -> canonicaljson::Array
@@ -3427,11 +3442,10 @@ namespace
         return lazy;
     }
 
-    [[nodiscard]] auto build_room_ephemeral_events_array(HomeserverRuntime const& runtime, std::string_view room_id,
-                                                         std::uint64_t since_sync_stream_id,
-                                                         std::uint64_t& max_observed_stream_id,
-                                                         std::unordered_set<std::string> const& ignored_senders = {})
-        -> canonicaljson::Array
+    [[nodiscard]] auto build_room_ephemeral_events_array(
+        HomeserverRuntime const& runtime, std::string_view room_id, std::string_view viewer,
+        std::uint64_t since_sync_stream_id, std::uint64_t& max_observed_stream_id,
+        std::unordered_set<std::string> const& ignored_senders = {}) -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
 
@@ -3485,6 +3499,12 @@ namespace
             if (receipt.stream_id > max_observed_stream_id)
             {
                 max_observed_stream_id = receipt.stream_id;
+            }
+            // Spec (Receipts): m.read.private goes to the sending user only, and
+            // m.fully_read is never an m.receipt. One helper, shared with sliding sync.
+            if (!sync::receipt_visible_to(receipt.receipt_type, receipt.user_id, viewer))
+            {
+                continue;
             }
             // Ignoring Users: a read receipt is an event sent by its
             // `user_id` (not a state event), so it is withheld the same way
@@ -3902,8 +3922,8 @@ namespace
             {
                 state_events = build_current_state_events_array(store, filter.room.state, room.room_id);
             }
-            auto ephemeral_events = build_room_ephemeral_events_array(rt.homeserver, room.room_id, since_sync_stream_id,
-                                                                      max_observed_sync_stream_id, ignored_senders);
+            auto ephemeral_events = build_room_ephemeral_events_array(
+                rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
 
             // unread_notifications: counts are relative to the user's last
             // m.read/m.read.private receipt, not the sync position (#417,
@@ -4189,9 +4209,13 @@ namespace
         obj.push_back(json_member("timeline", json_arr(std::move(tl_events))));
         if (room.invite_state_json.has_value())
         {
-            auto iv_events = canonicaljson::Array{};
-            iv_events.push_back(parse_json(*room.invite_state_json));
-            obj.push_back(json_member("invite_state", json_arr(std::move(iv_events))));
+            // invite_state_json is a pre-serialised JSON array of stripped state events.
+            auto invite_state = parse_json(*room.invite_state_json);
+            if (!std::holds_alternative<canonicaljson::Array>(invite_state.storage()))
+            {
+                invite_state = json_arr(canonicaljson::Array{});
+            }
+            obj.push_back(json_member("invite_state", std::move(invite_state)));
         }
         return canonicaljson::Value{std::move(obj)};
     }
@@ -4552,7 +4576,8 @@ namespace
                     });
                 bool const has_relevant_receipts =
                     wants_receipts && std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
-                        return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user);
+                        return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user) &&
+                               sync::receipt_visible_to(r.receipt_type, r.user_id, user);
                     });
                 bool const has_relevant_typing =
                     wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
@@ -4596,12 +4621,29 @@ namespace
                 }
             }
         }
+        // CSAZ-1. A room ID in `room_subscriptions` is a claim, not an entitlement (spec:
+        // "In all cases except `world_readable`, a user needs to join a room to view events in
+        // that room"). Only a room the caller has JOINED is served in full; an invited room is
+        // answered with its stripped invite state alone (below); every other membership is
+        // omitted silently. Nothing about an omitted room may reach the response, so it must not
+        // enter `response_room_ids`, which also scopes the account_data extension.
+        auto invited_subscription_ids = std::vector<std::string>{};
         for (auto const& [room_id, sub_unused] : ssreq.room_subscriptions)
         {
             std::ignore = sub_unused;
-            if (seen_rooms.insert(room_id).second)
+            switch (sync::room_access_for(store, room_id, user))
             {
-                response_room_ids.push_back(room_id);
+            case sync::RoomAccess::joined:
+                if (seen_rooms.insert(room_id).second)
+                {
+                    response_room_ids.push_back(room_id);
+                }
+                break;
+            case sync::RoomAccess::invited:
+                invited_subscription_ids.push_back(room_id);
+                break;
+            case sync::RoomAccess::none:
+                break;
             }
         }
 
@@ -4687,6 +4729,37 @@ namespace
             {
                 ++rooms_skipped;
             }
+        }
+
+        // Invited rooms named by a subscription: stripped invite state only (the same
+        // `invite_state` events /sync reports), no timeline, no required_state. The
+        // connection's `rooms_seen` records `invite:<room_id>` so an unchanged invite is
+        // reported once per connection, without disturbing the `initial` bookkeeping of the
+        // room itself should the invite later be accepted. An invite from an ignored user is
+        // withheld entirely ("Servers must not send room invites from ignored users to clients").
+        auto invites_reported = std::vector<std::string>{};
+        for (auto const& room_id : invited_subscription_ids)
+        {
+            auto const invite_record = database::find_invite(store, room_id, user);
+            if (invite_record.has_value() &&
+                trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
+                                                     /*is_state_event=*/true, /*is_new_room_invite=*/true))
+            {
+                continue;
+            }
+            auto const seen_key = "invite:" + room_id;
+            auto const seen_it = conn.rooms_seen.find(seen_key);
+            if (seen_it != conn.rooms_seen.end() &&
+                (!invite_record.has_value() || invite_record->stream_ordering <= seen_it->second))
+            {
+                continue;
+            }
+            auto invite_room = sync::SlidingSyncRoomResponse{};
+            invite_room.initial = true;
+            invite_room.invite_state_json =
+                json_serialize(json_arr(build_invite_state_events_array(store, room_id, user)));
+            rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(invite_room))));
+            invites_reported.push_back(seen_key);
         }
 
         // ── Extensions ──────────────────────────────────────────────────────
@@ -4838,6 +4911,10 @@ namespace
             // this connection.  Future requests on the same connection will treat
             // this as the delta floor, not the global request pos.
             next_state.rooms_seen[room_id] = cur_event;
+        }
+        for (auto const& seen_key : invites_reported)
+        {
+            next_state.rooms_seen[seen_key] = cur_event;
         }
         for (auto const& [room_id, included] : lazy_members_included_by_room)
         {
@@ -12064,6 +12141,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invalid sliding sync request body");
         }
+        // CSAZ-1: bound what one request may ask for (each named room costs an event-store scan).
+        if (auto const violation = sync::sliding_sync_request_limit_violation(*sliding_req); violation.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{*violation});
+        }
         // Prefer query-string pos/timeout; fall back to the newer body-level fields.
         auto pos = sync::parse_sliding_sync_pos(req.target);
         if (!pos.has_value() && sliding_req->pos.has_value())
@@ -13266,11 +13348,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     upsert_receipt("m.read", std::string{*m_read});
                 }
 
-                // m.fully_read — local-only account data marker, not a receipt EDU.
+                // m.fully_read — the owner's room account data, not a receipt: never
+                // federated and never part of an m.receipt event.
                 auto const* m_fully_read = string_member(*body_obj, "m.fully_read");
                 if (m_fully_read != nullptr && !m_fully_read->empty())
                 {
-                    upsert_receipt("m.fully_read", std::string{*m_fully_read});
+                    if (!store_fully_read_marker(rt, *user, room_id, *m_fully_read))
+                    {
+                        return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the fully read marker");
+                    }
                 }
 
                 // m.read.private — local-only receipt, MUST NOT be federated.
@@ -13341,8 +13427,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                           std::chrono::system_clock::now().time_since_epoch())
                                                           .count());
-                        // m.read.private MUST NOT be federated (local-only receipt).
-                        if (receipt_type != "m.read.private")
+                        // Spec (S-S API, m.receipt): "only a single <receipt_type> should be used:
+                        // m.read. m.read.private MUST NOT appear in this federated m.receipt EDU."
+                        // m.fully_read is private room account data, so it is not federated either.
+                        if (receipt_type == "m.read")
                         {
                             auto const edu_content_opt =
                                 federation::build_receipt_edu_content(room_id, receipt_type, *user, event_id, now_ts);
@@ -13360,6 +13448,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     });
                                 }
                             }
+                        }
+                        // Spec: for m.fully_read this endpoint "effectively calls /read_markers
+                        // internally", i.e. it sets the room account data marker, not a receipt.
+                        if (receipt_type == "m.fully_read")
+                        {
+                            if (!store_fully_read_marker(rt, *user, room_id, event_id))
+                            {
+                                return dispatch_err(req, rt, 500U, "M_UNKNOWN",
+                                                    "failed to persist the fully read marker");
+                            }
+                            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
                         }
                         auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
                             return r.room_id == room_id && r.user_id == *user && r.receipt_type == receipt_type;

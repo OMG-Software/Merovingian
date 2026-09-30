@@ -16,7 +16,14 @@ namespace merovingian::sync
 // Returns nullopt when the body is malformed JSON or not a JSON object.
 // Returns nullopt when any list contains overlapping ranges.
 // Unknown top-level keys are silently ignored per MSC4186 extensibility rules.
+// Any `timeline_limit` above `sliding_sync_max_timeline_limit` is clamped to it.
 [[nodiscard]] auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingSyncRequest>;
+
+// Describes the first request limit the parsed request exceeds (too many room_subscriptions,
+// or too many required_state entries on one list or subscription), or nullopt when the
+// request is within limits. The caller answers a violation with 400 M_INVALID_PARAM.
+[[nodiscard]] auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request)
+    -> std::optional<std::string_view>;
 
 // Extract and decode the ?pos= query parameter from a request target.
 // Returns nullopt when pos is absent or cannot be decoded as a StreamToken.

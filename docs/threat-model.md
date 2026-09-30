@@ -1781,6 +1781,42 @@ until the refresh).
   **Residual risk:** the per-origin EDU rate limit is not weighted by fan-out, and the write
   still happens under the runtime mutex (now once per EDU rather than once per user).
 
+### Sliding sync served rooms by name; private receipts reached every member (audit CSAZ-1, CSAZ-4)
+
+- **Sliding sync trusted every room ID the client named.** A `room_subscriptions` key
+  was served without a membership check (name, members, all matching state and up to an
+  unclamped number of timeline events), and the `receipts` and `typing` extensions
+  returned whatever rooms the client listed. The only secret protecting a room was its
+  ID, and IDs below room version 12 are sequential. Each subscription also scanned the
+  whole event store, so one request was a CPU amplifier.
+- **Mitigation:** `sync::room_access_for` classifies the caller's current membership. A
+  subscription is served in full only for `join`; `invite` yields `invite_state` only (an
+  ignored inviter's invite is omitted); every other membership omits the room. The
+  extensions drop rooms the caller has not joined. `timeline_limit` is clamped to 100, and
+  more than 256 subscriptions or 256 `required_state` pairs on a list or subscription is a
+  400 `M_INVALID_PARAM`. `world_readable` is deliberately not treated as permission to
+  subscribe. Tests: `[csaz-1]` in `tests/integration/test_sliding_sync_flow.cpp` and
+  `tests/unit/test_sliding_sync.cpp`.
+- **`m.read.private` and `m.fully_read` were delivered as ordinary receipts.** Both
+  `/sync` and sliding sync indexed every stored receipt of a room by type and user, so
+  every member saw a user's private read position (spec: "Servers MUST NOT send the
+  `m.read.private` receipt to any other user than the one which originally sent it").
+  `m.fully_read` was stored as a receipt too, and `POST .../receipt/m.fully_read/...` also
+  federated it.
+- **Mitigation:** one shared predicate, `sync::receipt_visible_to`, gates both surfaces:
+  `m.read` is public, `m.read.private` is visible only to its sender, `m.fully_read` never
+  appears under `m.receipt`, and an unknown type is withheld. `m.fully_read` is now stored
+  as the owner's `m.fully_read` room account data, delivered through `/sync` and the
+  sliding sync `account_data` extension. Only `m.read` is federated, and an inbound
+  `m.receipt` EDU keeps only `m.read` entries. Tests: `[csaz-4]` in
+  `tests/conformance/test_receipt_conformance.cpp`,
+  `tests/integration/test_receipt_federation_flow.cpp` and
+  `tests/integration/test_sliding_sync_flow.cpp`.
+- **Residual risk:** the `receipts`/`typing` extension `rooms` lists are not themselves
+  length-capped, so a request can still name many rooms; each is one membership lookup.
+  An invited user's `invite_state` is the invite's stored stripped state (see audit
+  CSAZ-7 for what that state contains).
+
 ## Security principles
 
 - Fail closed.

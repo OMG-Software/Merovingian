@@ -10220,6 +10220,66 @@ SCENARIO("/sync clears notification_count after an m.read.private receipt",
                 REQUIRE(notification_count != nullptr);
                 REQUIRE(*notification_count == 0);
             }
+
+            THEN("bob's own /sync carries the private receipt but alice's /sync carries no receipt from bob")
+            {
+                // Spec MUST (Receipts, security considerations): "Servers MUST NOT send
+                // the m.read.private receipt to any other user than the one which
+                // originally sent it."
+                auto receipt_users_in_sync = [&](std::string const& token) {
+                    auto users = std::vector<std::string>{};
+                    auto const sync = merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+                    REQUIRE(sync.response.status == 200U);
+                    auto const body = parse_object(sync.response.body);
+                    auto const* sync_rooms = object_member_as_object(body, "rooms");
+                    auto const* sync_joins =
+                        sync_rooms == nullptr ? nullptr : object_member_as_object(*sync_rooms, "join");
+                    auto const* sync_room =
+                        sync_joins == nullptr ? nullptr : object_member_as_object(*sync_joins, *room_id);
+                    auto const* ephemeral =
+                        sync_room == nullptr ? nullptr : object_member_as_object(*sync_room, "ephemeral");
+                    auto const* events = ephemeral == nullptr ? nullptr : object_member_as_array(*ephemeral, "events");
+                    if (events == nullptr)
+                    {
+                        return users;
+                    }
+                    for (auto const& ev : *events)
+                    {
+                        auto const* ev_obj = std::get_if<merovingian::canonicaljson::Object>(&ev.storage());
+                        auto const* content = ev_obj == nullptr ? nullptr : object_member_as_object(*ev_obj, "content");
+                        if (content == nullptr)
+                        {
+                            continue;
+                        }
+                        for (auto const& by_event : *content)
+                        {
+                            auto const* by_type =
+                                std::get_if<merovingian::canonicaljson::Object>(&by_event.value->storage());
+                            if (by_type == nullptr)
+                            {
+                                continue;
+                            }
+                            for (auto const& type_member : *by_type)
+                            {
+                                auto const* who =
+                                    std::get_if<merovingian::canonicaljson::Object>(&type_member.value->storage());
+                                if (who == nullptr)
+                                {
+                                    continue;
+                                }
+                                for (auto const& user : *who)
+                                {
+                                    users.push_back(type_member.key + "/" + user.key);
+                                }
+                            }
+                        }
+                    }
+                    return users;
+                };
+                REQUIRE(receipt_users_in_sync(alice).empty());
+                REQUIRE(receipt_users_in_sync(bob) == std::vector<std::string>{"m.read.private/@bob:example.org"});
+            }
         }
     }
 }
