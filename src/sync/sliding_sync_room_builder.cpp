@@ -539,6 +539,17 @@ auto count_highlights(database::PersistentStore const& store, std::string_view r
 // ("m.room.member", "*") is also present, since the wildcard already matches
 // every state_key; the subsumption rules reuse the anonymous-namespace matcher
 // so they stay identical to the runtime matching rules.
+auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
+                         SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
+                         bool is_initial, database::PersistentStore const& store,
+                         std::unordered_set<std::string> const& lazy_members_already_sent,
+                         std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncRoomResponse
+{
+    auto visibility = HistoryVisibility{store, user};
+    return build_room_response(rt, room_id, user, sub, room_since_event_ordering, is_initial, store,
+                               lazy_members_already_sent, ignored_senders, visibility);
+}
+
 auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscription const& sub)
     -> SlidingSyncRoomSubscription
 {
@@ -601,7 +612,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
-                         std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncRoomResponse
+                         std::unordered_set<std::string> const& ignored_senders,
+                         HistoryVisibility& visibility) -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
@@ -688,6 +700,12 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
             continue;
         }
         if (!is_initial && ev.stream_ordering <= room_since_event_ordering)
+        {
+            continue;
+        }
+        // m.room.history_visibility (CSAZ-3): an event the user may not see is not part of
+        // their timeline, however recently the room was synced.
+        if (!visibility.can_see(ev))
         {
             continue;
         }

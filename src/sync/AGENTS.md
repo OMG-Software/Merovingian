@@ -20,6 +20,8 @@ Spec authority:
 | `sliding_sync_extensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
 | `room_access.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none |
 | `receipt_visibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
+| `history_visibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
+| `room_read_access.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
 | `sliding_sync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
 | `device_list_delta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
 
@@ -61,6 +63,39 @@ receipt through `receipt_visible_to()` and nothing else: `m.read` is public, `m.
 is visible only to the user who sent it, `m.fully_read` never appears in `m.receipt` (it is
 the owner's room account data), and an unknown type is withheld. Do not index
 `rt.receipts` by type without going through it.
+
+## History visibility and room read access
+
+**Every client read path that returns room events or room state goes through these two, and
+nothing else decides what a user may see** (ADR-0084; audit CSAZ-2, CSAZ-3).
+
+- `HistoryVisibility{store, user}` (`history_visibility.hpp`) answers "may this user see this
+  event?" by the spec's five rules against the state recorded for the event (its ADR-0064 state
+  group), with the two before-or-after special cases (`m.room.history_visibility` events and
+  the user's own `m.room.member` events). Build **one per request** and reuse it across rooms
+  and events: it caches per state group and builds its indexes over the store lazily, once.
+  Call `can_see()` on every event a response would carry: timelines (`/sync`, sliding sync),
+  `/messages`, `/context` (target and both lists), `/event`, `/search` and its per-result
+  context, `/relations`, `/threads`, the `initialSync` chunk. A new endpoint that returns room
+  events must call it.
+- It fails closed. A broken group chain, a group naming an event the store lacks, or a
+  rejected or soft-failed event means not visible. Never substitute the room's current state.
+  An event with no state group (pre-ADR-0064 history) is judged by rule 2 alone from the user's
+  own membership timeline; an undeterminable timeline denies.
+- `room_read_access_for(store, room, user)` (`room_read_access.hpp`) answers "what room state
+  may this user read?": `current` (joined), `as_of` (was joined and left, was kicked or banned:
+  the state recorded at the event that ended the join, `boundary_event_id`), or `none` (knock,
+  invite, declined invite, never joined, forgotten). `room_state_event_ids()` returns the state
+  for it, optionally at an `at` position, never later than the boundary. It gates `initialSync`,
+  `/members`, `/joined_members` (current only), `/state` and `/state/{type}/{key}`.
+- A user with no read access may still peek events (not `/members` or `/state`) when the
+  room's **current** visibility is `world_readable` (`room_is_world_readable`); each event is
+  still judged on its own state.
+- `/messages` moves its token past hidden events and examines at most
+  `ClientApiLimits::max_messages_events_examined` events per page.
+
+Tests that write events straight into a `PersistentStore` must record a state group for them
+(`tests/support/room_history_fixture.hpp`), or the filter hides them.
 
 ## Device lists
 

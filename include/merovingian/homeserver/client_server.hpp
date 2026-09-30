@@ -72,6 +72,11 @@ struct ClientApiLimits final
     // `next_batch` continuation, so one cheap authenticated request cannot
     // force an O(store size) scan.
     std::size_t max_search_events_scanned{2000U};
+    // GET /messages hides events the user may not see (m.room.history_visibility), and
+    // any number of consecutive events can be hidden. This bounds how many events one page
+    // examines before it returns what it has, with an `end` token to continue from; the spec
+    // allows it ("an empty chunk does not necessarily imply that no more events are available").
+    std::size_t max_messages_events_examined{2000U};
 };
 
 // Wall-clock source for the rate-limit engine. The engine takes a

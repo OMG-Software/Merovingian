@@ -43,6 +43,8 @@
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_rules.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/history_visibility.hpp"
+#include "merovingian/sync/room_read_access.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -6348,25 +6350,32 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     {
         return make_operation_result(false, {}, "unknown room", 403U);
     }
-    if (!room_has_member(*room, *user_id))
+    // Spec: 403 "You aren't a member of the room and weren't previously a member of the
+    // room." A joined user reads the current state; a user who has left, or was banned, reads
+    // the state as of the event that ended their join; an invite, a knock or a declined invite
+    // reads nothing (CSAZ-2, sync::room_read_access_for).
+    auto const access = sync::room_read_access_for(runtime.database.persistent_store, room_id, *user_id);
+    if (access.kind == sync::RoomReadKind::none)
     {
         return make_operation_result(false, {}, "not joined", 403U);
     }
+    auto const state_ids = sync::room_state_event_ids(runtime.database.persistent_store, room_id, access, std::nullopt);
+    if (!state_ids.has_value())
+    {
+        // The state as of the user's departure cannot be determined: fail closed.
+        return make_operation_result(false, {}, "not joined", 403U);
+    }
 
-    // Build a JSON array of the current state events for this room.
+    // Build a JSON array of the state events the user may read.
     // Spec v1.19: GET /rooms/{roomId}/state returns an array of ClientEvent,
     // so each entry must carry event_id and unsigned.replaces_state.
     auto state_array = canonicaljson::Array{};
-    for (auto const& state : runtime.database.persistent_store.state)
+    for (auto const& state_event_id : *state_ids)
     {
-        if (state.room_id != room_id)
-        {
-            continue;
-        }
         auto const* event = static_cast<database::PersistentEvent const*>(nullptr);
         for (auto const& candidate : runtime.database.persistent_store.events)
         {
-            if (candidate.event_id == state.event_id)
+            if (candidate.event_id == state_event_id)
             {
                 event = &candidate;
                 break;
@@ -6504,10 +6513,13 @@ namespace
     }
 
     auto const& store = runtime.database.persistent_store;
-    auto const parent_exists = std::ranges::any_of(store.events, [&request](database::PersistentEvent const& event) {
+    // Room History Visibility (CSAZ-3): one filter for the request. A parent the user may not
+    // see is "not found", like GET /event, and children they may not see are not listed.
+    auto visibility = sync::HistoryVisibility{store, *user_id};
+    auto const parent = std::ranges::find_if(store.events, [&request](database::PersistentEvent const& event) {
         return event.room_id == request.room_id && event.event_id == request.event_id;
     });
-    if (!parent_exists)
+    if (parent == store.events.end() || !visibility.can_see(*parent))
     {
         return make_operation_result(false, {}, "parent event not found", 404U);
     }
@@ -6576,6 +6588,10 @@ namespace
         }
         auto const* rel_type = string_member(*relates_obj, "rel_type");
         if (request.rel_type.has_value() && (rel_type == nullptr || *rel_type != *request.rel_type))
+        {
+            continue;
+        }
+        if (!visibility.can_see(event))
         {
             continue;
         }
@@ -6723,6 +6739,10 @@ namespace
     // Resolved once for the whole request, never inside the per-event loop.
     auto const ignored_senders = trust_safety::resolve_ignored_users(store, *user_id);
 
+    // Room History Visibility (CSAZ-3): a child the user may not see does not count towards
+    // a thread, and a root they may not see is not listed.
+    auto visibility = sync::HistoryVisibility{store, *user_id};
+
     // One pass over the room's events collects, for every thread root, the number
     // of m.thread children, the most recent child, and whether the caller
     // participated.
@@ -6782,6 +6802,11 @@ namespace
             continue;
         }
 
+        if (!visibility.can_see(event))
+        {
+            continue;
+        }
+
         auto* aggregate = find_aggregate(*root_id);
         if (aggregate == nullptr)
         {
@@ -6810,7 +6835,7 @@ namespace
             continue;
         }
         auto* aggregate = find_aggregate(event.event_id);
-        if (aggregate == nullptr)
+        if (aggregate == nullptr || !visibility.can_see(event))
         {
             continue;
         }

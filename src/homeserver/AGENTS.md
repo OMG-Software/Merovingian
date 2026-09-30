@@ -108,6 +108,20 @@ inline by `refuse_forbidden_worker_request`, which takes no runtime and so canno
 `runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
 type. Do not add a worker-to-main frame that signs caller-supplied bytes.
 
+## Read paths that return room events or state
+
+Every client-server endpoint that returns room events goes through `sync::HistoryVisibility`
+(one instance per request), and every one that returns room state or the roster goes through
+`sync::room_read_access_for`. The rules, and why, are in `src/sync/AGENTS.md` ("History
+visibility and room read access") and ADR-0084. Checking "is the user a member" is not enough:
+the user may be joined but not entitled to an old event, and a user who has left or been banned
+may still read what they saw. Today these are `/messages`, `/context`, `/event`, `/search`,
+`/relations`, `/threads`, `/sync`, sliding sync, `initialSync`, `/members`, `/joined_members`,
+`/state` and `/state/{type}/{key}`. A new endpoint of that kind gets a conformance scenario in
+`tests/conformance/test_history_visibility_conformance.cpp`. `/notifications` is the one
+deliberate exception (its rows are created at delivery for a then-joined user); say so if you
+add another.
+
 ## Body size limits
 
 - **Default cap**: `rt.limits.max_body_bytes` (64 KiB) — applied at the top of the dispatch function

@@ -34,6 +34,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_federation_media_conformance.cpp` | [SS API § Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}](../../docs/matrix-v1.19-spec/server-server-api.md#content-repository) |
 | `test_federation_space_media_conformance.cpp` | [SS API § Spaces](../../docs/matrix-v1.19-spec/server-server-api.md#spaces) (`/hierarchy/{roomId}`) · [§ Content Repository](../../docs/matrix-v1.19-spec/server-server-api.md#content-repository) (`/media/download/{mediaId}`) |
 | `test_federation_transaction_conformance.cpp` | [SS API § PUT /send/{txnId}](../../docs/matrix-v1.19-spec/server-server-api.md#transactions) |
+| `test_history_visibility_conformance.cpp` | [CS API § Room History Visibility](../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility) · [`GET /rooms/{roomId}/{messages,event/{eventId},context/{eventId},members,state,initialSync}`](../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers) |
 | `test_identifier_grammar.cpp` | [Appendices § Identifier Grammar](../../docs/matrix-v1.19-spec/appendices.md#identifier-grammar) |
 | `test_ignoring_users_conformance.cpp` | [CS API § Ignoring Users](../../docs/matrix-v1.19-spec/client-server-api.md#ignoring-users) |
 | `test_key_publication_conformance.cpp` | [SS API § Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys) |

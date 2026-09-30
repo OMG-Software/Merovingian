@@ -2265,3 +2265,69 @@ SCENARIO("MSC4186 sliding sync sends m.read.private only to its owner and never 
         }
     }
 }
+
+// ── CSAZ-3: sliding sync honours m.room.history_visibility ───────────────────
+
+// Spec (C-S API, Room history visibility, server behaviour): the rules depend on the state of
+// the room at the event; with `joined`, events sent before the user joined are not visible to
+// them, with `shared` they are. Sliding sync's room timeline is one of the read paths.
+SCENARIO("MSC4186 sliding sync timeline honours m.room.history_visibility",
+         "[homeserver][sliding-sync][integration][security][csaz-3]")
+{
+    GIVEN("a room with a message sent before bob joined, and bob then joined")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token);
+
+        for (auto const* visibility : {"joined", "shared"})
+        {
+            WHEN(std::string{"the room's history visibility is "} + visibility)
+            {
+                REQUIRE(merovingian::homeserver::handle_client_server_request(
+                            rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.history_visibility",
+                                 alice_token, std::string{R"({"history_visibility":")"} + visibility + R"("})"})
+                            .response.status == 200U);
+                // send_message_get_id reuses one transaction ID, which would replay the first
+                // event; these two messages need distinct ones.
+                auto const send_with_txn = [&](std::string const& txn, std::string_view text) {
+                    auto const sent = merovingian::homeserver::handle_client_server_request(
+                        rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn, alice_token,
+                             std::string{R"({"msgtype":"m.text","body":")"} + std::string{text} + "\"}"});
+                    REQUIRE(sent.response.status == 200U);
+                    auto const sent_body = parse_object(sent.response.body);
+                    auto const* sent_id = string_member(sent_body, "event_id");
+                    REQUIRE(sent_id != nullptr);
+                    return *sent_id;
+                };
+                auto const before_join = send_with_txn("hv-before", "before-bob-joined");
+                invite_and_join(rt, alice_token, "bob", bob_token, room_id);
+                auto const after_join = send_with_txn("hv-after", "after-bob-joined");
+
+                auto const body = std::string{R"({"room_subscriptions":{")"} + room_id +
+                                  R"(":{"required_state":[],"timeline_limit":100}}})";
+                auto const result = sliding_sync(rt, bob_token, body);
+                REQUIRE(result.response.status == 200U);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* room_obj = object_member_as_object(rooms, room_id);
+                REQUIRE(room_obj != nullptr);
+                auto const* timeline = object_member_as_array(*room_obj, "timeline");
+                REQUIRE(timeline != nullptr);
+
+                THEN("the message after the join is delivered")
+                {
+                    REQUIRE(array_has_event_id(*timeline, after_join));
+                }
+
+                THEN("the message before the join is delivered only when the visibility is shared")
+                {
+                    REQUIRE(array_has_event_id(*timeline, before_join) == (std::string_view{visibility} == "shared"));
+                }
+            }
+        }
+    }
+}

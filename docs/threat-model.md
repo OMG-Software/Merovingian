@@ -1817,6 +1817,52 @@ until the refresh).
   An invited user's `invite_state` is the invite's stored stripped state (see audit
   CSAZ-7 for what that state contains).
 
+### History visibility was never enforced; state reads admitted any membership row (audit CSAZ-2, CSAZ-3)
+
+- **`m.room.history_visibility` was read only for `/publicRooms`, the initialSync peek
+  and the space hierarchy.** In a room set to `joined` or `invited`, a newcomer read the
+  entire earlier history through `/messages`, `/context`, `/event`, `/search`, `/relations`,
+  `/threads`, `/sync` and sliding sync; the owner's setting had no effect. Only the default,
+  `shared`, behaved.
+- **`initialSync`, `/members` and `/state/{type}/{key}` admitted any membership row.** An
+  invite, a knock (anyone can create one in a knock room), a declined invite, a ban and a
+  leave all passed, and the answer was the room's *current* state, roster and newest
+  messages, indefinitely: a banned or departed user kept reading. `/members` also ignored
+  `at`.
+- **Mitigation:** one filter, `sync::HistoryVisibility`, applies the spec's five rules to the
+  state recorded at each event (ADR-0064 state groups; ADR-0084), with the two
+  before-or-after special cases (`m.room.history_visibility` events and the user's own
+  `m.room.member` events). It is built once per request, caches per state group, and fails
+  closed: an event with no recorded state, a broken group chain, or a rejected or soft-failed
+  status is not visible. Every client read path that returns room events goes through it:
+  `/messages` (the page skips hidden events and its token still advances), `/context` (target
+  404, `events_before`/`events_after` filtered, `state` pinned to the last returned event),
+  `/event` (404), `/search` and its per-result context, `/relations`, `/threads`, `/sync`
+  timelines (including the initial join snapshot), the sliding sync timeline and the
+  `initialSync` chunk. One predicate, `sync::room_read_access_for`, gates state reads: `current`
+  for a joined user, `as_of` (the state recorded at the event that ended their join) for a user
+  who left or was banned, `none` for a knock, an invite, a declined invite or a forgotten room.
+  It drives `initialSync`, `/members` (which now honours `at`, capped at a departed user's
+  leave), `/joined_members` (joined only), `/state` and `/state/{type}/{key}`. A user with no
+  read access may peek (`/messages`, `/event`, `/context`, `initialSync`) only when the room's
+  current visibility is `world_readable`. Tests: `[csaz-2]` and `[csaz-3]` in
+  `tests/conformance/test_history_visibility_conformance.cpp`,
+  `tests/unit/test_sync_history_visibility.cpp` and
+  `tests/integration/test_sliding_sync_flow.cpp`.
+- **Residual risk:** history stored before state groups existed has no recorded state, so
+  its visibility at the time cannot be proved: it is visible only to users who were joined when
+  it was sent (rule 2 from their own membership timeline, undeterminable means denied), and
+  `shared` or `world_readable` history from that period is not shown to later joiners or
+  peekers until state is recorded for it. The unread counts
+  (`notification_count`, `highlight_count`, and the `by_notification_count` room ordering)
+  still count every event after the user's read receipt without the filter, so a newcomer to a
+  `joined` room can learn how many messages preceded their join (never their content). `/notifications` rows are
+  returned as recorded: they were created for a user who was joined at delivery, and are not
+  re-filtered. `/messages` examines at most `max_messages_events_examined` (2000) events per
+  page, but each request still builds a sorted list of the room's events, so its cost grows
+  with room history, as before. The per-request indexes (events, state groups) are O(store)
+  to build, in line with the store's existing linear scans.
+
 ## Security principles
 
 - Fail closed.

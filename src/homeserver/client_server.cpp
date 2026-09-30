@@ -50,8 +50,10 @@
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
+#include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/receipt_visibility.hpp"
 #include "merovingian/sync/room_access.hpp"
+#include "merovingian/sync/room_read_access.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sliding_sync_extensions.hpp"
 #include "merovingian/sync/sliding_sync_parser.hpp"
@@ -3408,13 +3410,10 @@ namespace
     // the flag exactly where it matters most: pagination repeats the payload
     // for every page. Non-member state is unaffected — it is all relevant to
     // rendering the chunk regardless.
-    [[nodiscard]] auto build_chunk_relevant_state_events_array(database::PersistentStore const& store,
-                                                               sync::EventTypeFilter const& filter,
-                                                               std::string_view room_id,
-                                                               std::unordered_set<std::string> const& chunk_senders)
-        -> canonicaljson::Array
+    [[nodiscard]] auto apply_lazy_member_loading(sync::EventTypeFilter const& filter,
+                                                 std::unordered_set<std::string> const& chunk_senders,
+                                                 canonicaljson::Array state_events) -> canonicaljson::Array
     {
-        auto state_events = build_current_state_events_array(store, filter, room_id);
         if (!filter.lazy_load_members)
         {
             return state_events;
@@ -3806,6 +3805,10 @@ namespace
         // list below — never re-read per event.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
 
+        // m.room.history_visibility (CSAZ-3): one filter for the request, shared by every
+        // joined room's timeline.
+        auto history_visibility = sync::HistoryVisibility{store, user};
+
         log_diagnostic("sync.request",
                        {
                            {"user",                    std::string{user},                                   false},
@@ -3872,6 +3875,12 @@ namespace
                 // sender.
                 if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
                                                          trust_safety::event_json_is_state_event(event.json)))
+                {
+                    continue;
+                }
+                // Room History Visibility: the timeline, including the join snapshot of an
+                // initial sync, holds only events the user may see.
+                if (!history_visibility.can_see(event))
                 {
                     continue;
                 }
@@ -4415,6 +4424,10 @@ namespace
         // extensions below — never re-read per event.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
 
+        // m.room.history_visibility (CSAZ-3): ONE filter for the whole request, shared by
+        // every room's timeline so its indexes over the store are built once.
+        auto history_visibility = sync::HistoryVisibility{store, user};
+
         auto const conn_key = sliding_sync_connection_key(
             user, device_id, ssreq.conn_id.has_value() ? std::string_view{*ssreq.conn_id} : "__default__");
 
@@ -4708,7 +4721,7 @@ namespace
             auto const& lazy_already_sent =
                 lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
             auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
-                                                  lazy_already_sent, ignored_senders);
+                                                  lazy_already_sent, ignored_senders, history_visibility);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;
@@ -6589,13 +6602,101 @@ namespace
         return parsed;
     }
 
+    // Extracts the "type" field from a stored event's JSON, or an empty
+    // string when the JSON is malformed/not an object. Used to apply a
+    // RoomEventFilter's types/not_types predicates to PersistentEvent rows,
+    // which do not carry a parsed event type of their own.
+    [[nodiscard]] auto stored_event_type(database::PersistentEvent const& event) -> std::string
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (obj == nullptr)
+        {
+            return {};
+        }
+        auto const* type = string_member(*obj, "type");
+        return type == nullptr ? std::string{} : *type;
+    }
+
+    // Builds a ClientEvent array from an explicit list of state event IDs
+    // (e.g. from federation::resolve_state_event_ids_at), applying the same
+    // RoomEventFilter type/sender predicate build_current_state_events_array
+    // applies to the room's current state. Unknown event IDs are skipped.
+    [[nodiscard]] auto build_state_events_array_for_ids(
+        database::PersistentStore const& store, sync::EventTypeFilter const& filter,
+        std::vector<std::string> const& state_event_ids) -> canonicaljson::Array
+    {
+        auto state_events = canonicaljson::Array{};
+        for (auto const& event_id : state_event_ids)
+        {
+            auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
+                return candidate.event_id == event_id;
+            });
+            if (event == store.events.end() ||
+                !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
+            {
+                continue;
+            }
+            state_events.push_back(client_event_with_id(store, *event));
+        }
+        return state_events;
+    }
+
+    // Parses a pagination token an endpoint accepts as `at`: the plain stream ordering that
+    // /messages and /sync's `prev_batch` use, or a full /sync `next_batch` token, whose event
+    // ordering is the position. nullopt for anything else.
+    [[nodiscard]] auto parse_position_token(std::string_view token) -> std::optional<std::uint64_t>
+    {
+        if (auto const plain = parse_u64(token); plain.has_value())
+        {
+            return plain;
+        }
+        if (auto const decoded = sync::decode_stream_token(token); decoded.has_value())
+        {
+            return decoded->event_ordering;
+        }
+        return std::nullopt;
+    }
+
+    // May this user reach an endpoint that returns room events? Spec (Room History Visibility):
+    // "In all cases except `world_readable`, a user needs to join a room to view events in that
+    // room." A user who was joined keeps the events they were allowed to see (`as_of`), and a
+    // room whose CURRENT visibility is `world_readable` may be read without joining.
+    // Which events they then see is decided per event by sync::HistoryVisibility.
+    [[nodiscard]] auto may_read_room_events(database::PersistentStore const& store, std::string_view room_id,
+                                            std::string_view user_id) -> bool
+    {
+        return sync::room_read_access_for(store, room_id, user_id).kind != sync::RoomReadKind::none ||
+               sync::room_is_world_readable(store, room_id);
+    }
+
+    // The state events `GET /messages` returns beside the chunk. A joined user, or a peek of a
+    // world_readable room, sees the current state; a user who has left sees the state as of the
+    // event that ended their join, never later.
+    [[nodiscard]] auto messages_state_events(database::PersistentStore const& store,
+                                             sync::EventTypeFilter const& filter, std::string_view room_id,
+                                             sync::RoomReadAccess const& access) -> canonicaljson::Array
+    {
+        if (access.kind != sync::RoomReadKind::as_of)
+        {
+            return build_current_state_events_array(store, filter, room_id);
+        }
+        auto const ids = sync::room_state_event_ids(store, room_id, access, std::nullopt);
+        return ids.has_value() ? build_state_events_array_for_ids(store, filter, *ids) : canonicaljson::Array{};
+    }
+
     [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target,
                                      std::string_view user_id) -> std::string
     {
         auto const& store = rt.homeserver.database.persistent_store;
         auto const dir = messages_query_value(target, "dir");
         auto const backwards = dir != "f"; // both default and "b" walk backward
-        auto const from_token = parse_u64(messages_query_value(target, "from"));
+        auto const from_text = messages_query_value(target, "from");
+        auto const from_token = parse_u64(from_text);
         auto limit = std::size_t{10U};
         if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
         {
@@ -6630,22 +6731,32 @@ namespace
         std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering < rhs->stream_ordering;
         });
+        // Room History Visibility (CSAZ-3): an event the user may not see is skipped, but the
+        // token still moves past it, so a page of hidden events yields a token to continue
+        // from rather than repeating itself.
+        auto visibility = sync::HistoryVisibility{store, user_id};
         auto chunk = canonicaljson::Array{};
         auto start_token = std::string{};
         auto end_token = std::string{};
+        auto examined = std::size_t{0U};
         // Senders appearing in the chunk, for lazy-loaded membership state below.
         auto chunk_senders = std::unordered_set<std::string>{};
-        auto const append = [&chunk, &chunk_senders, &start_token, &end_token, &store,
-                             limit](database::PersistentEvent const& event) {
-            if (chunk.size() >= limit)
+        // Returns false once the page is complete (full, or out of examination budget).
+        auto const consider = [&](database::PersistentEvent const& event) {
+            if (chunk.size() >= limit || examined >= rt.limits.max_messages_events_examined)
             {
                 return false;
+            }
+            ++examined;
+            end_token = std::to_string(event.stream_ordering);
+            if (!visibility.can_see(event))
+            {
+                return true;
             }
             if (chunk.empty())
             {
                 start_token = std::to_string(event.stream_ordering);
             }
-            end_token = std::to_string(event.stream_ordering);
             chunk.push_back(client_event_with_id(store, event));
             chunk_senders.insert(event.sender_user_id);
             return true;
@@ -6658,7 +6769,7 @@ namespace
                 {
                     continue;
                 }
-                if (!append(**it))
+                if (!consider(**it))
                 {
                     break;
                 }
@@ -6672,70 +6783,30 @@ namespace
                 {
                     continue;
                 }
-                if (!append(*event))
+                if (!consider(*event))
                 {
                     break;
                 }
             }
+        }
+        if (chunk.empty() && !from_text.empty())
+        {
+            start_token = from_text;
         }
         // The request's own RoomEventFilter drives this: it carries
         // lazy_load_members, and a default-constructed filter silently ignored it.
         auto const state_filter = sync::parse_room_event_filter_argument(messages_query_value(target, "filter"))
                                       .value_or(sync::RoomFilter{})
                                       .timeline;
-        auto state = build_chunk_relevant_state_events_array(rt.homeserver.database.persistent_store, state_filter,
-                                                             room_id, chunk_senders);
+        auto state = apply_lazy_member_loading(
+            state_filter, chunk_senders,
+            messages_state_events(store, state_filter, room_id, sync::room_read_access_for(store, room_id, user_id)));
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
             json_member("end", json_str(end_token)),
             json_member("state", json_arr(std::move(state))),
         }));
-    }
-
-    // Extracts the "type" field from a stored event's JSON, or an empty
-    // string when the JSON is malformed/not an object. Used to apply a
-    // RoomEventFilter's types/not_types predicates to PersistentEvent rows,
-    // which do not carry a parsed event type of their own.
-    [[nodiscard]] auto stored_event_type(database::PersistentEvent const& event) -> std::string
-    {
-        auto const parsed = canonicaljson::parse_lossless(event.json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return {};
-        }
-        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (obj == nullptr)
-        {
-            return {};
-        }
-        auto const* type = string_member(*obj, "type");
-        return type == nullptr ? std::string{} : *type;
-    }
-
-    // Builds a ClientEvent array from an explicit list of state event IDs
-    // (e.g. from federation::resolve_state_event_ids_at), applying the same
-    // RoomEventFilter type/sender predicate build_current_state_events_array
-    // applies to the room's current state. Unknown event IDs are skipped.
-    [[nodiscard]] auto build_state_events_array_for_ids(database::PersistentStore const& store,
-                                                        sync::EventTypeFilter const& filter,
-                                                        std::vector<std::string> const& state_event_ids)
-        -> canonicaljson::Array
-    {
-        auto state_events = canonicaljson::Array{};
-        for (auto const& event_id : state_event_ids)
-        {
-            auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
-                return candidate.event_id == event_id;
-            });
-            if (event == store.events.end() ||
-                !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
-            {
-                continue;
-            }
-            state_events.push_back(client_event_with_id(store, *event));
-        }
-        return state_events;
     }
 
     // Builds the GET /rooms/{roomId}/context/{eventId} response body.
@@ -6764,6 +6835,11 @@ namespace
         // would be a worse outcome than showing one message from an ignored
         // sender they explicitly navigated to.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
+
+        // Room History Visibility (CSAZ-3): the caller has already checked that `target` is
+        // visible; events_before and events_after hold only events the user may see, and the
+        // `state` below is pinned to the last event returned, which is one of them.
+        auto visibility = sync::HistoryVisibility{store, user_id};
 
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
@@ -6817,6 +6893,10 @@ namespace
                 {
                     continue;
                 }
+                if (!visibility.can_see(*candidate))
+                {
+                    continue;
+                }
                 events_before.push_back(client_event_with_id(store, *candidate));
                 start_token = std::to_string(candidate->stream_ordering);
             }
@@ -6842,6 +6922,10 @@ namespace
                 }
                 if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
                                                          trust_safety::event_json_is_state_event(candidate->json)))
+                {
+                    continue;
+                }
+                if (!visibility.can_see(*candidate))
                 {
                     continue;
                 }
@@ -7100,8 +7184,8 @@ namespace
     // the same plain stream-ordering format /messages produces.
     [[nodiscard]] auto build_search_event_context(ClientServerRuntime const& rt,
                                                   database::PersistentEvent const& target, SearchRequest const& request,
-                                                  std::unordered_set<std::string> const& ignored_senders)
-        -> canonicaljson::Value
+                                                  std::unordered_set<std::string> const& ignored_senders,
+                                                  sync::HistoryVisibility& visibility) -> canonicaljson::Value
     {
         auto const& store = rt.homeserver.database.persistent_store;
         auto entries = std::vector<database::PersistentEvent const*>{};
@@ -7146,6 +7230,12 @@ namespace
             {
                 continue;
             }
+            // Room History Visibility (CSAZ-3): a match's context holds only events the user
+            // may see, like GET /context.
+            if (!visibility.can_see(*candidate))
+            {
+                continue;
+            }
             events_before.push_back(client_event_with_id(store, *candidate));
             senders_in_context.insert(candidate->sender_user_id);
             start_token = std::to_string(candidate->stream_ordering);
@@ -7163,6 +7253,10 @@ namespace
             }
             if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
                                                      trust_safety::event_json_is_state_event(candidate->json)))
+            {
+                continue;
+            }
+            if (!visibility.can_see(*candidate))
             {
                 continue;
             }
@@ -7242,6 +7336,10 @@ namespace
         // Ignoring Users: resolved once for the whole request, not per event
         // (trust_safety/ignore_list.hpp's documented contract).
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
+
+        // Room History Visibility (CSAZ-3): a search matches only events the user may see,
+        // however they came by the room.
+        auto visibility = sync::HistoryVisibility{store, user_id};
 
         auto candidates = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
@@ -7347,6 +7445,11 @@ namespace
             {
                 continue;
             }
+            // Checked last: only an event that would be returned costs a visibility lookup.
+            if (!visibility.can_see(*candidate))
+            {
+                continue;
+            }
             matches.push_back(SearchMatch{candidate, *rank});
         }
 
@@ -7420,7 +7523,7 @@ namespace
             by_room[event.room_id].push_back(event.event_id);
             by_sender[event.sender_user_id].push_back(event.event_id);
 
-            auto context = build_search_event_context(rt, event, request, ignored_senders);
+            auto context = build_search_event_context(rt, event, request, ignored_senders, visibility);
             results.push_back(json_obj({
                 json_member("rank", canonicaljson::Value{match.rank}),
                 json_member("result", client_event_with_id(store, event)),
@@ -7504,7 +7607,8 @@ namespace
     // Defaults to the most recent 20 events, capped at 100, and honours the
     // ?limit= query parameter used by Element Web when previewing rooms.
     [[nodiscard]] auto build_initial_sync_messages(ClientServerRuntime const& rt, std::string_view room_id,
-                                                   std::string_view target) -> InitialSyncMessages
+                                                   std::string_view target,
+                                                   sync::HistoryVisibility& visibility) -> InitialSyncMessages
     {
         auto limit = std::size_t{20U};
         if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
@@ -7512,10 +7616,12 @@ namespace
             limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
         }
 
+        auto const& store = rt.homeserver.database.persistent_store;
         auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : rt.homeserver.database.persistent_store.events)
+        for (auto const& event : store.events)
         {
-            if (event.room_id == room_id)
+            // ADR-0064 phase B2: a rejected or soft-failed event is never relayed to clients.
+            if (event.room_id == room_id && event.status != "rejected" && event.status != "soft_failed")
             {
                 entries.push_back(&event);
             }
@@ -7524,6 +7630,8 @@ namespace
             return lhs->stream_ordering < rhs->stream_ordering;
         });
 
+        // Room History Visibility (CSAZ-3): only events the user may see. For a user who has
+        // left, that stops at their departure, because nothing received after it is visible.
         auto chunk = canonicaljson::Array{};
         auto start_token = std::string{};
         auto end_token = std::string{};
@@ -7533,12 +7641,16 @@ namespace
             {
                 break;
             }
+            if (!visibility.can_see(**it))
+            {
+                continue;
+            }
             if (chunk.empty())
             {
                 start_token = std::to_string((*it)->stream_ordering);
             }
             end_token = std::to_string((*it)->stream_ordering);
-            chunk.push_back(client_event_with_id(rt.homeserver.database.persistent_store, **it));
+            chunk.push_back(client_event_with_id(store, **it));
         }
         return {std::move(chunk), std::move(start_token), std::move(end_token)};
     }
@@ -7546,15 +7658,34 @@ namespace
     // Build the RoomInfo response for GET /rooms/{roomId}/initialSync.
     // The caller has already verified that the requester is a current/previous
     // member or is permitted to peek a world_readable room.
+    //
+    // `access` decides which state the user is shown: the current state for a joined user (and
+    // for a peek of a world_readable room), and for a user who has left the state as of the
+    // event that ended their join. nullopt when that state cannot be determined.
     [[nodiscard]] auto room_initial_sync_json(ClientServerRuntime const& rt, std::string_view room_id,
                                               std::string_view user_id, std::string_view target,
-                                              std::string_view membership) -> std::string
+                                              std::string_view membership,
+                                              sync::RoomReadAccess const& access) -> std::optional<std::string>
     {
         auto const& store = rt.homeserver.database.persistent_store;
         auto const index = build_state_index(store);
 
-        auto const messages = build_initial_sync_messages(rt, room_id, target);
-        auto state_events = build_current_state_events_array(store, sync::EventTypeFilter{}, room_id);
+        auto event_visibility = sync::HistoryVisibility{store, user_id};
+        auto const messages = build_initial_sync_messages(rt, room_id, target, event_visibility);
+        auto state_events = canonicaljson::Array{};
+        if (access.kind == sync::RoomReadKind::as_of)
+        {
+            auto const state_ids = sync::room_state_event_ids(store, room_id, access, std::nullopt);
+            if (!state_ids.has_value())
+            {
+                return std::nullopt;
+            }
+            state_events = build_state_events_array_for_ids(store, sync::EventTypeFilter{}, *state_ids);
+        }
+        else
+        {
+            state_events = build_current_state_events_array(store, sync::EventTypeFilter{}, room_id);
+        }
 
         auto account_data = canonicaljson::Array{};
         for (auto const& row : store.account_data)
@@ -12417,18 +12548,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return complete(result);
         }
         // GET /_matrix/client/v3/rooms/{roomId}/event/{eventId}
-        // Spec: returns the full event for a room the requester is a member of.
+        // Spec: "You must have permission to retrieve this event e.g. by being a member in the
+        // room for this event." 404: "The event was not found or you do not have permission to
+        // read this event." (Room History Visibility, CSAZ-3.)
         if (req.method == "GET")
         {
             if (auto const path = room_event_path_parts(req.target); path.has_value())
             {
                 auto const& store = rt.homeserver.database.persistent_store;
-                auto const is_joined =
-                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
-                        return membership.room_id == path->room_id && membership.user_id == *user &&
-                               membership.membership == "join";
-                    });
-                if (!is_joined)
+                if (!may_read_room_events(store, path->room_id, *user))
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
                 }
@@ -12439,7 +12567,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // never relayed to clients (spec "Rejection", "Soft
                 // failure") — treated the same as not found, so a member
                 // cannot distinguish "never existed" from "was filtered".
-                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed")
+                // An event the user may not see is the same 404, for the same reason.
+                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed" ||
+                    !sync::HistoryVisibility{store, *user}.can_see(*event))
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
@@ -12463,12 +12593,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (auto const path = room_context_path_parts(req.target); path.has_value())
             {
                 auto const& store = rt.homeserver.database.persistent_store;
-                auto const is_joined =
-                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
-                        return membership.room_id == path->room_id && membership.user_id == *user &&
-                               membership.membership == "join";
-                    });
-                if (!is_joined)
+                if (!may_read_room_events(store, path->room_id, *user))
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
                 }
@@ -12476,8 +12601,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return current.room_id == path->room_id && current.event_id == path->event_id;
                 });
                 // ADR-0064 phase B2: same fail-closed 404 as GET .../event/{eventId}
-                // above for a rejected or soft-failed target event.
-                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed")
+                // above for a rejected or soft-failed target event, and for one the user may
+                // not see (Room History Visibility, CSAZ-3).
+                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed" ||
+                    !sync::HistoryVisibility{store, *user}.can_see(*event))
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
@@ -12510,92 +12637,79 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // a room"): "If the user is joined to the room then the state is
         // taken from the current state of the room. If the user has left
         // the room then the state is taken from the state of the room when
-        // they left." Anyone else - no membership row at all, an
-        // invite/knock membership, or a room that does not exist - gets the
-        // identical 403 below: a non-member must not be able to tell "no
-        // such room" apart from "room I am not in".
+        // they left." 403: "You aren't a member of the room and weren't
+        // previously a member of the room." Anyone else - no membership row at
+        // all, an invite/knock, a declined invite, or a room that does not
+        // exist - gets the identical 403 below: a non-member must not be able
+        // to tell "no such room" apart from "room I am not in".
+        // sync::room_read_access_for is the one predicate (CSAZ-2): a banned user
+        // "left" too, and reads the state as of the event that ended their join.
         if (req.method == "GET")
         {
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
                 auto const& store = rt.homeserver.database.persistent_store;
-                auto const membership_it =
-                    std::ranges::find_if(store.memberships, [&](database::PersistentMembership const& membership) {
-                        return membership.room_id == path->room_id && membership.user_id == *user;
-                    });
-                // "join" and "leave" only. The spec sentence quoted above names
-                // exactly those two states, and a ban is not a leave: a banned
-                // user is ejected rather than departing, and giving them a
-                // readable snapshot of the room they were banned from would hand
-                // back more than the endpoint that returns the room's full state,
-                // which admits joined members alone. Invite and knock are also
-                // excluded — neither has ever conferred read access to state.
-                auto const readable = membership_it != store.memberships.end() &&
-                                      (membership_it->membership == "join" || membership_it->membership == "leave");
-                if (!readable)
+                auto const access = sync::room_read_access_for(store, path->room_id, *user);
+                if (access.kind == sync::RoomReadKind::none)
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
                 }
-
                 auto resolved_event_id = std::string{};
-                if (membership_it->membership == "join")
+                if (access.kind == sync::RoomReadKind::current)
                 {
                     auto const state_it =
                         std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
                             return s.room_id == path->room_id && s.event_type == path->event_type &&
                                    s.state_key == path->state_key;
                         });
-                    if (state_it == store.state.end())
+                    if (state_it != store.state.end())
                     {
-                        return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "state event not found");
+                        resolved_event_id = state_it->event_id;
                     }
-                    resolved_event_id = state_it->event_id;
                 }
                 else
                 {
-                    // Left or banned: the live PersistentStateEvent pointer
-                    // tracks *current* state, which may postdate the
-                    // caller's departure and would leak room history they
-                    // never had access to. There is no historical-state
-                    // index, so scan this room's events for the requested
-                    // type/state_key at or before the leave point and keep
-                    // the newest match - that is the state that was in
-                    // force when the caller left.
-                    auto const leave_point = membership_it->stream_ordering;
-                    auto best_it = store.events.end();
-                    for (auto it = store.events.begin(); it != store.events.end(); ++it)
+                    // Left or banned: the live current state may postdate the caller's
+                    // departure and would leak history they never had access to, so read the
+                    // state recorded as of the event that ended their join. Undeterminable
+                    // state fails closed.
+                    auto const readable_ids = sync::room_state_event_ids(store, path->room_id, access, std::nullopt);
+                    if (!readable_ids.has_value())
                     {
-                        if (it->room_id != path->room_id || it->stream_ordering > leave_point)
+                        return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                    }
+                    for (auto const& candidate_id : *readable_ids)
+                    {
+                        auto const candidate =
+                            std::ranges::find_if(store.events, [&](database::PersistentEvent const& e) {
+                                return e.event_id == candidate_id;
+                            });
+                        if (candidate == store.events.end())
                         {
                             continue;
                         }
-                        auto const parsed = canonicaljson::parse_lossless(it->json);
-                        if (parsed.error != canonicaljson::ParseError::none)
+                        auto const parsed_candidate = canonicaljson::parse_lossless(candidate->json);
+                        auto const* candidate_obj =
+                            parsed_candidate.error == canonicaljson::ParseError::none
+                                ? std::get_if<canonicaljson::Object>(&parsed_candidate.value.storage())
+                                : nullptr;
+                        if (candidate_obj == nullptr)
                         {
                             continue;
                         }
-                        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                        if (obj == nullptr)
+                        auto const* type_str = string_member(*candidate_obj, "type");
+                        auto const* state_key_str = string_member(*candidate_obj, "state_key");
+                        if (type_str != nullptr && *type_str == path->event_type && state_key_str != nullptr &&
+                            *state_key_str == path->state_key)
                         {
-                            continue;
-                        }
-                        auto const* type_str = string_member(*obj, "type");
-                        auto const* state_key_str = string_member(*obj, "state_key");
-                        if (type_str == nullptr || *type_str != path->event_type || state_key_str == nullptr ||
-                            *state_key_str != path->state_key)
-                        {
-                            continue;
-                        }
-                        if (best_it == store.events.end() || it->stream_ordering > best_it->stream_ordering)
-                        {
-                            best_it = it;
+                            resolved_event_id = candidate_id;
+                            break;
                         }
                     }
-                    if (best_it == store.events.end())
-                    {
-                        return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "state event not found");
-                    }
-                    resolved_event_id = best_it->event_id;
+                }
+                if (resolved_event_id.empty())
+                {
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "state event not found");
                 }
 
                 auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& e) {
@@ -12685,12 +12799,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (auto const room_id = room_joined_members_path_room_id(req.target); room_id.has_value())
             {
                 auto const& store = rt.homeserver.database.persistent_store;
-                auto const requester_joined =
-                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
-                        return membership.room_id == *room_id && membership.user_id == *user &&
-                               membership.membership == "join";
-                    });
-                if (!requester_joined)
+                // Spec: only the joined members, and only to a joined user: a user who has
+                // left, was banned, knocked or was invited gets 403 (CSAZ-2).
+                if (sync::room_read_access_for(store, *room_id, *user).kind != sync::RoomReadKind::current)
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
                 }
@@ -12767,7 +12878,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 };
                 auto const not_membership = parse_qparam(query_string, "not_membership");
                 auto const membership_filter = parse_qparam(query_string, "membership");
-
                 auto const& store = rt.homeserver.database.persistent_store;
                 auto const room_it = std::ranges::find_if(store.rooms, [&room_id](auto const& r) {
                     return r.room_id == room_id;
@@ -12777,19 +12887,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
                 }
 
-                // Spec §GET /rooms/{roomId}/members: 403 if the requester is not a
-                // current or previous room member. Check memberships first; fall back to
-                // state events so the state-only code path (e.g. regression tests that
-                // deliberately clear the membership projection) still works correctly.
-                auto const is_or_was_member =
-                    std::ranges::any_of(store.memberships,
-                                        [&](database::PersistentMembership const& m) {
-                                            return m.room_id == room_id && m.user_id == *user;
-                                        }) ||
-                    std::ranges::any_of(store.state, [&](database::PersistentStateEvent const& s) {
-                        return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == *user;
-                    });
-                if (!is_or_was_member)
+                // Spec §GET /rooms/{roomId}/members: "If you are joined to the room then this
+                // will be the current members of the room. If you have left the room then this
+                // will be the members of the room when you left." 403: "You aren't a member of
+                // the room and weren't previously a member of the room." An invite, a knock
+                // and a declined invite are not membership (CSAZ-2); sync::room_read_access_for
+                // is the one predicate.
+                auto const access = sync::room_read_access_for(store, room_id, *user);
+                if (access.kind == sync::RoomReadKind::none)
                 {
                     log_diagnostic("room.members.rejected",
                                    {
@@ -12800,65 +12905,118 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
                 }
 
-                auto chunk = canonicaljson::Array{};
-                auto state_backed_members = std::vector<std::string>{};
-                for (auto const& state_entry : store.state)
+                // `at`: a pagination token, which is only read once the caller is known to be
+                // entitled to a roster at all.
+                auto const at_text = parse_qparam(query_string, "at");
+                auto at_position = std::optional<std::uint64_t>{};
+                if (!at_text.empty())
                 {
-                    if (state_entry.room_id != room_id || state_entry.event_type != "m.room.member")
+                    at_position = parse_position_token(core::percent_decode(at_text));
+                    if (!at_position.has_value())
                     {
-                        continue;
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "at is not a pagination token");
                     }
-                    auto const event_it =
-                        std::ranges::find_if(store.events, [&state_entry](database::PersistentEvent const& event) {
-                            return event.event_id == state_entry.event_id;
-                        });
-                    if (event_it == store.events.end())
-                    {
-                        continue;
-                    }
-                    auto const parsed = canonicaljson::parse_lossless(event_it->json);
-                    auto const* event = parsed.error == canonicaljson::ParseError::none
-                                            ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
-                                            : nullptr;
-                    auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
-                    auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
-                    if (event == nullptr || membership == nullptr)
-                    {
-                        continue;
-                    }
-                    if (!not_membership.empty() && *membership == not_membership)
-                    {
-                        continue;
-                    }
-                    if (!membership_filter.empty() && *membership != membership_filter)
-                    {
-                        continue;
-                    }
-                    chunk.push_back(client_event_with_id(store, *event_it));
-                    state_backed_members.push_back(state_entry.state_key);
                 }
-                for (auto const& m : store.memberships)
+
+                auto const membership_allowed = [&](std::string_view membership) {
+                    if (!not_membership.empty() && membership == not_membership)
+                    {
+                        return false;
+                    }
+                    return membership_filter.empty() || membership == membership_filter;
+                };
+
+                auto chunk = canonicaljson::Array{};
+                if (access.kind == sync::RoomReadKind::as_of || at_position.has_value())
                 {
-                    if (m.room_id != room_id)
-                        continue;
-                    if (!not_membership.empty() && m.membership == not_membership)
-                        continue;
-                    if (!membership_filter.empty() && m.membership != membership_filter)
-                        continue;
-                    if (std::ranges::find(state_backed_members, m.user_id) != state_backed_members.end())
-                        continue;
-                    // Fallback: construct a synthetic m.room.member event from the
-                    // membership record only when current state is missing entirely.
-                    auto ev = canonicaljson::Object{};
-                    ev.push_back(
-                        canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
-                    ev.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
-                    ev.push_back(canonicaljson::make_member("sender", canonicaljson::Value{m.user_id}));
-                    ev.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{m.user_id}));
-                    auto content = canonicaljson::Object{};
-                    content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{m.membership}));
-                    ev.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
-                    chunk.push_back(canonicaljson::Value{std::move(ev)});
+                    // The roster as of a point in the room's history: the user's departure for
+                    // someone who left (never later, whatever `at` says), or the requested
+                    // position. Read from the state recorded at that point (ADR-0064).
+                    auto const state_ids = sync::room_state_event_ids(store, room_id, access, at_position);
+                    if (!state_ids.has_value())
+                    {
+                        return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
+                    }
+                    for (auto const& state_event_id : *state_ids)
+                    {
+                        auto const event_it = std::ranges::find_if(
+                            store.events, [&state_event_id](database::PersistentEvent const& event) {
+                                return event.event_id == state_event_id;
+                            });
+                        if (event_it == store.events.end())
+                        {
+                            continue;
+                        }
+                        auto const parsed = canonicaljson::parse_lossless(event_it->json);
+                        auto const* event = parsed.error == canonicaljson::ParseError::none
+                                                ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                                : nullptr;
+                        auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+                        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                        if (type == nullptr || *type != "m.room.member" || membership == nullptr ||
+                            !membership_allowed(*membership))
+                        {
+                            continue;
+                        }
+                        chunk.push_back(client_event_with_id(store, *event_it));
+                    }
+                }
+                else
+                {
+                    auto state_backed_members = std::vector<std::string>{};
+                    for (auto const& state_entry : store.state)
+                    {
+                        if (state_entry.room_id != room_id || state_entry.event_type != "m.room.member")
+                        {
+                            continue;
+                        }
+                        auto const event_it =
+                            std::ranges::find_if(store.events, [&state_entry](database::PersistentEvent const& event) {
+                                return event.event_id == state_entry.event_id;
+                            });
+                        if (event_it == store.events.end())
+                        {
+                            continue;
+                        }
+                        auto const parsed = canonicaljson::parse_lossless(event_it->json);
+                        auto const* event = parsed.error == canonicaljson::ParseError::none
+                                                ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                                : nullptr;
+                        auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                        if (event == nullptr || membership == nullptr)
+                        {
+                            continue;
+                        }
+                        if (!membership_allowed(*membership))
+                        {
+                            continue;
+                        }
+                        chunk.push_back(client_event_with_id(store, *event_it));
+                        state_backed_members.push_back(state_entry.state_key);
+                    }
+                    for (auto const& m : store.memberships)
+                    {
+                        if (m.room_id != room_id)
+                            continue;
+                        if (!membership_allowed(m.membership))
+                            continue;
+                        if (std::ranges::find(state_backed_members, m.user_id) != state_backed_members.end())
+                            continue;
+                        // Fallback: construct a synthetic m.room.member event from the
+                        // membership record only when current state is missing entirely.
+                        auto ev = canonicaljson::Object{};
+                        ev.push_back(
+                            canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+                        ev.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
+                        ev.push_back(canonicaljson::make_member("sender", canonicaljson::Value{m.user_id}));
+                        ev.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{m.user_id}));
+                        auto content = canonicaljson::Object{};
+                        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{m.membership}));
+                        ev.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+                        chunk.push_back(canonicaljson::Value{std::move(ev)});
+                    }
                 }
                 log_diagnostic("room.members.accepted", {
                                                             {"actor",   *user,   false},
@@ -13032,19 +13190,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     }
                 }
 
-                auto const is_banned = membership.has_value() && *membership == "ban";
-                auto const is_or_was_member = membership.has_value();
-
-                auto can_peek = false;
-                if (!is_or_was_member && !is_banned)
-                {
-                    auto const index = build_state_index(store);
-                    auto const history_visibility = room_state_string(
-                        store, index, *initial_sync_room, "m.room.history_visibility", "history_visibility");
-                    can_peek = history_visibility.has_value() && *history_visibility == "world_readable";
-                }
-
-                if (!is_or_was_member && !can_peek)
+                // Spec: "The user's membership state in this room" is one of invite, join,
+                // leave, ban; 403 "You aren't a member of the room and weren't previously a
+                // member of the room". initialSync is for members, former members, and peeking
+                // a world_readable room. An invite, a knock or a declined invite is none of
+                // those (CSAZ-2), so it is refused unless the room is world_readable.
+                auto const access = sync::room_read_access_for(store, *initial_sync_room, *user);
+                auto const can_peek =
+                    access.kind == sync::RoomReadKind::none && sync::room_is_world_readable(store, *initial_sync_room);
+                if (access.kind == sync::RoomReadKind::none && !can_peek)
                 {
                     log_diagnostic("room.initial_sync.rejected",
                                    {
@@ -13055,14 +13209,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
                 }
 
-                auto const membership_value = membership.value_or("leave");
+                // The membership reported is the user's own. A peek of a world_readable room by
+                // someone with no read access reports an invite as `invite` and anything else
+                // (knock, a declined invite, no row) as `leave`: the spec's enum has no other
+                // value for a non-member.
+                auto const membership_value =
+                    access.kind == sync::RoomReadKind::none
+                        ? std::string{membership == std::optional<std::string>{"invite"} ? "invite" : "leave"}
+                        : membership.value_or("leave");
                 log_diagnostic("room.initial_sync.response", {
                                                                  {"actor",      *user,              false},
                                                                  {"room_id",    *initial_sync_room, false},
                                                                  {"membership", membership_value,   false}
                 });
-                return dispatch_resp(
-                    req, rt, 200U, room_initial_sync_json(rt, *initial_sync_room, *user, req.target, membership_value));
+                auto const body =
+                    room_initial_sync_json(rt, *initial_sync_room, *user, req.target, membership_value, access);
+                if (!body.has_value())
+                {
+                    // The state as of the user's departure cannot be determined: fail closed.
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                }
+                return dispatch_resp(req, rt, 200U, *body);
             }
         }
 
@@ -13083,7 +13250,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
                 }
-                if (!joined(*room, *user))
+                // Spec: 403 "You aren't a member of the room". A user who was joined and has left
+                // reads what they were allowed to see; a world_readable room may be read
+                // without joining. sync::HistoryVisibility then decides per event.
+                if (!may_read_room_events(rt.homeserver.database.persistent_store, *messages_room, *user))
                 {
                     log_diagnostic("room.messages.rejected",
                                    {

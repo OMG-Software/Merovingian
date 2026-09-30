@@ -832,6 +832,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   that either desyncs the client or leaks stream-position information it shouldn't.
   Source: `src/sync/AGENTS.md`.
 
+- **Every client read path that returns room events or room state goes through
+  `sync::HistoryVisibility` (events) and `sync::room_read_access_for` (state), and nothing
+  else decides what a user may see.**
+  Why: the spec judges visibility from the state at each event, and a path that re-derives a
+  rule, or checks only "is a member", discloses history the room's owner restricted and lets a
+  banned or departed user read on (audit CSAZ-2, CSAZ-3). The filter fails closed: no recorded
+  state at an event means not visible, never a fallback to current state.
+  Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
 ## Trust and safety
 
 - **Never hard-code moderation decisions — all rules come from config or an
@@ -988,7 +997,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
-| `src/homeserver/AGENTS.md` | HTTP and network boundary; Federation |
+| `src/homeserver/AGENTS.md` | HTTP and network boundary; Federation; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |
 | `migrations/AGENTS.md` | Database |

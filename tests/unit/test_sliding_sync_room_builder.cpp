@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/room_history_fixture.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
@@ -203,6 +204,11 @@ SCENARIO("Sliding sync room builder populates timeline_json for new events after
         append_event(store, "$msg", "!room:example.org", R"({"type":"m.room.message","content":{"body":"hello"}})",
                      15U);
 
+        // The fixture writes events straight into the store, so record the state group the
+        // room service would have: alice is joined, and the history-visibility filter
+        // (CSAZ-3) hides an event that has no state.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
+
         auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
         sub.timeline_limit = 20U;
 
@@ -331,6 +337,11 @@ SCENARIO("Sliding sync room builder scopes required_state \"$LAZY\" to timeline 
         append_event(store, "$bob-msg", "!room:example.org",
                      R"({"type":"m.room.message","sender":"@bob:example.org","content":{"body":"hi"}})", 10U);
 
+        // The fixture writes events straight into the store, so record the state group the
+        // room service would have: alice is joined, and the history-visibility filter
+        // (CSAZ-3) hides an event that has no state.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
+
         auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
         sub.required_state = {
             {"m.room.member", "$LAZY"}
@@ -384,6 +395,11 @@ SCENARIO("Sliding sync room builder's \"$LAZY\" bypasses the delta floor for a m
 
         append_event(store, "$dave-msg", "!room:example.org",
                      R"({"type":"m.room.message","sender":"@dave:example.org","content":{"body":"hello"}})", 50U);
+
+        // The fixture writes events straight into the store, so record the state group the
+        // room service would have: alice is joined, and the history-visibility filter
+        // (CSAZ-3) hides an event that has no state.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
 
         auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
         sub.required_state = {
@@ -444,6 +460,11 @@ SCENARIO("Sliding sync room builder resolves \"$LAZY\" and \"$ME\" together, mat
 
         append_event(store, "$bob-msg", "!room:example.org",
                      R"({"type":"m.room.message","sender":"@bob:example.org","content":{"body":"hi"}})", 10U);
+
+        // The fixture writes events straight into the store, so record the state group the
+        // room service would have: alice is joined, and the history-visibility filter
+        // (CSAZ-3) hides an event that has no state.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
 
         auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
         sub.required_state = {
@@ -676,6 +697,11 @@ SCENARIO("Sliding sync timeline events never carry a duplicate event_id key",
                                 {},
                                 {},
                                 {}});
+
+        // The fixture writes events straight into the store, so record the state group the
+        // room service would have: alice is joined, and the history-visibility filter
+        // (CSAZ-3) hides an event that has no state.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
 
         auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
         sub.timeline_limit = 20U;

@@ -23,6 +23,7 @@
 
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/room_history_fixture.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -1022,6 +1023,9 @@ SCENARIO("Federation-joined room state events are visible to incremental sync",
             merovingian::database::PersistentStateEvent{room_id, "m.room.member", alice_id, "$event_hash_fed"};
         REQUIRE(merovingian::database::store_event_with_state(
             store, state_event, std::optional<merovingian::database::PersistentStateEvent>{state}));
+        // The fixture bypasses the room service, so it records the state group the service
+        // would have: the history-visibility filter hides an event that has none.
+        merovingian::tests::record_joined_state_for_room(store, room_id, alice_id);
 
         // Advance sync stream counter so the notifier wakes clients.
         store.next_sync_stream_id += 1U;
@@ -1420,6 +1424,8 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
             merovingian::database::PersistentStateEvent{room_id, "m.room.member", alice_id, join_event_id};
         REQUIRE(merovingian::database::store_event_with_state(
             store, join_pe, std::optional<merovingian::database::PersistentStateEvent>{join_state}));
+        // As above: record the state group the room service would have recorded.
+        merovingian::tests::record_joined_state_for_room(store, room_id, alice_id);
         REQUIRE(merovingian::database::update_membership(store, room_id, alice_id, "join", join_stream));
         std::ignore = merovingian::database::delete_invite(store, room_id, alice_id);
         rt.homeserver.database.rooms.push_back({room_id, alice_id, std::vector<std::string>{alice_id}, {}});
