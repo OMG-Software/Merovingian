@@ -41,6 +41,23 @@ current in-process runtime path.
   `security.media.max_upload_size`, so client upload hints match the policy
   enforced by the repository.
 - Downloads serve local media owned by the configured server name.
+- Remote media fetches are opt-in (`security.media.remote_fetch_enabled`, default `false`) and
+  the flag is checked first: `download_local_media` and `download_local_media_thumbnail` answer
+  `404 M_NOT_FOUND` for a remote `serverName` before any policy hook, server discovery or outbound
+  call when it is off, and likewise when the request carries `allow_remote=false` (spec: "the server
+  should not attempt to fetch the media if it is deemed remote"). This applies to the legacy
+  `/_matrix/media/v3/` and the authenticated `/_matrix/client/v1/media/` download and thumbnail
+  routes, and so to the federation-media fallback inside `fetch_remote_media_live`. Previously the
+  flag was consulted only in `media::fetch_remote_media`, after the bytes had been downloaded
+  (audit OUT-7). The refusal is counted (`remote_fetch_rejections`) and audited
+  (`media.remote_fetch_rejected`). This repository holds no cache of remote media: a fetched
+  remote item is stored under a system owner but downloads of a remote `serverName` are always
+  answered by a live fetch, so there is nothing to serve locally when fetching is off.
+- When enabled, a remote fetch takes a slot in the client-outbound budget (4 in flight overall,
+  1 per client address, `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 over it) and every step
+  (discovery, the federation media request, the legacy fallback, a `Location` redirect follow)
+  draws from one 30 s deadline (audit HTTP-2; ADR-0079; `docs/http-transport.md` "Client-triggered
+  outbound proxying"). The deadline replaces the earlier 30 s discovery + 120 s per request budget.
 - Remote media fetches are live: the homeserver resolves the origin server via
   federation server discovery (`.well-known`, SRV, direct), then tries the
   mandatory authenticated endpoint first per spec (changed in v1.11):
@@ -77,7 +94,7 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
     - prefix check,
     so media SSRF blocking and federation SSRF blocking cannot drift apart. `security.media
         .remote_fetch_timeout` is parsed today,
-    but the live fetch path still uses hard - coded discovery / HTTP timeout values.- Upload and remote
+    but the live fetch path uses the fixed 30 s client-outbound deadline instead (ADR-0079).- Upload and remote
         - ingest bytes pass through the same hardened processing boundary : upstream - supplied AV scanner result,
     sandboxed worker requirement, decoder safety, decompression expansion limits,
     and thumbnail metadata generation.Merovingian currently does not launch or configure an AV engine itself; `security.media.enable_av_scanner` only controls whether the policy
@@ -253,6 +270,8 @@ The local HTTP router preserves the media repository status code instead of flat
 - `400` for malformed media IDs or malformed media route input.
 - `401` for unauthenticated upload or admin media requests.
 - `404` for missing or removed local media.
+- `404` for remote media when `security.media.remote_fetch_enabled` is off or the request sets `allow_remote=false`.
+- `429` when the client-outbound in-flight budget is exhausted (`M_LIMIT_EXCEEDED`, `retry_after_ms` 1000).
 - `413` for uploads that exceed the configured size limit.
 - `415` for disallowed MIME types when policy rejects instead of quarantines.
 - `451` for quarantined media download attempts.

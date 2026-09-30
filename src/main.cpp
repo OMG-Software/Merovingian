@@ -9,6 +9,7 @@
 #include "merovingian/database/runtime_database.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/http_server.hpp"
@@ -740,7 +741,8 @@ struct ListenerBinding final
     // load visibly rather than growing the queue until the OOM reaper fires.
     auto const max_queued_connections =
         static_cast<std::size_t>(runtime.homeserver.config.listeners().max_queued_connections);
-    auto pool = merovingian::net::ThreadPool{8U, install_audit_sink_hook, max_queued_connections};
+    auto pool = merovingian::net::ThreadPool{merovingian::homeserver::main_request_pool_threads,
+                                             install_audit_sink_hook, max_queued_connections};
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,
     // login, federation) are always serviced without delay.

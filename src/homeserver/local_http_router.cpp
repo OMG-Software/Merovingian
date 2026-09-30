@@ -423,7 +423,14 @@ namespace
 
     [[nodiscard]] auto response_from_media_operation(OperationResult const& result) -> LocalHttpResponse
     {
-        return response(result.status, result.ok ? result.value : result.reason);
+        auto out = response(result.status, result.ok ? result.value : result.reason);
+        if (result.retry_after_ms > 0U)
+        {
+            // A throttled result (the client-outbound budget, ADR-0079) carries its
+            // delay across the internal boundary as the standard header, in seconds.
+            out.headers.emplace_back("Retry-After", std::to_string((result.retry_after_ms + 999U) / 1000U));
+        }
+        return out;
     }
 
     // Extracts `access_token` from a request target's query string
@@ -1040,6 +1047,30 @@ namespace
             }
         }
         return params;
+    }
+
+    // What a remote media download or thumbnail needs to know about its request
+    // beyond the media it names: which client to count it against
+    // (rate_limit_client_key, so trusted_proxies applies) and whether the caller
+    // set allow_remote=false. Only a literal `false` opts out, matching the
+    // spec's boolean; anything else leaves the default (true).
+    [[nodiscard]] auto remote_media_context(LocalHttpRequest const& request,
+                                            HomeserverRuntime const& runtime) -> RemoteMediaRequestContext
+    {
+        auto context = RemoteMediaRequestContext{};
+        context.client_key = rate_limit_client_key(request, runtime.config.server());
+        auto const query_start = request.target.find('?');
+        if (query_start != std::string::npos)
+        {
+            for (auto const& kv : parse_audit_query_string(std::string_view{request.target}.substr(query_start + 1U)))
+            {
+                if (kv.first == "allow_remote" && kv.second == "false")
+                {
+                    context.allow_remote = false;
+                }
+            }
+        }
+        return context;
     }
 
     [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
@@ -4532,7 +4563,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1], true);
+        auto const result =
+            download_local_media(runtime, (*parts)[0], (*parts)[1], true, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
@@ -4544,8 +4576,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const params = parse_thumbnail_params(request.target);
-        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
-                                                           params.height, params.method, true);
+        auto const result =
+            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height,
+                                           params.method, true, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
@@ -4557,8 +4590,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const params = parse_thumbnail_params(request.target);
-        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
-                                                           params.height, params.method, false);
+        auto const result =
+            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height,
+                                           params.method, false, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
@@ -4569,7 +4603,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1], false);
+        auto const result =
+            download_local_media(runtime, (*parts)[0], (*parts)[1], false, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};

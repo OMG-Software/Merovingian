@@ -92,6 +92,28 @@ default-constructed and assigned in order to survive it.
 See [`docs/http-transport.md`](../../docs/http-transport.md) "Request lock and
 blocking network calls".
 
+## Client requests that call another server
+
+`publicRooms?server=` (GET and POST), a remote room-alias lookup and remote media download or
+thumbnail make this server call a peer it does not control, and the spec lets clients make them
+without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
+the main pool's threads for the round trip. Every such call therefore:
+
+1. takes a slot first: `admit_client_outbound_proxy(runtime, rate_limit_client_key(...))`
+   (`client_outbound_proxy.hpp`). No slot means `429 M_LIMIT_EXCEEDED` with
+   `policy.retry_after_ms`, at once, before any discovery or outbound call. The slot is an RAII
+   `http::InFlightBudget::Slot`; keep it until the call has ended and take it before the
+   `RuntimeLockRelease` scope opens;
+2. runs under one `OutboundDeadline` (10 s directory lookups via `perform_bounded_outbound_call`,
+   30 s media), which discovery and every request draw from, never longer than
+   `remote_timeout`;
+3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
+   anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
+
+The caps derive from `main_request_pool_threads`; they are constants, not configuration. A new
+route that proxies to a remote server without one of these three is the defect. See ADR-0079 and
+`docs/http-transport.md` "Client-triggered outbound proxying".
+
 ## Federation worker relays are untrusted input
 
 A frame from the federation worker is input from the process most exposed to

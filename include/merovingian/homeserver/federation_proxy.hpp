@@ -3,9 +3,11 @@
 #pragma once
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -44,8 +46,13 @@ public:
     // Sends a pre-signed OutboundRequest to the worker shard for room_id to
     // execute. The HTTP call runs in the worker's thread pool; the signing key
     // never crosses the IPC boundary.
-    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request,
-                                             std::string_view room_id) -> http::OutboundResult;
+    // The IPC wait is request.total_timeout_seconds plus `ipc_margin`, which
+    // gives the worker time to hand back a result once its own transport has
+    // timed out. Calls with a tight deadline pass a small margin so the round
+    // trip cannot exceed the deadline by much (ADR-0079).
+    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
+                                             std::chrono::seconds ipc_margin = default_worker_ipc_margin)
+        -> http::OutboundResult;
 
     // Tells the worker shard that owns room_id to refresh its otherwise-stale
     // copy of that room from the database. See WorkerPool::notify_room_changed.

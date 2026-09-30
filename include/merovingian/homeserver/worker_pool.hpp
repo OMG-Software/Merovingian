@@ -4,12 +4,14 @@
 
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/net/thread_pool.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -172,8 +174,9 @@ public:
     // Sends a pre-signed outbound HTTP request to the worker shard that owns
     // room_id for execution. The worker calls OutboundClient::perform() in its
     // own thread pool, keeping the main process handler thread free.
-    // IPC timeout = request.total_timeout_seconds + 10 s buffer.
-    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+    // IPC timeout = request.total_timeout_seconds + `ipc_margin` (10 s by default).
+    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
+                                             std::chrono::seconds ipc_margin = default_worker_ipc_margin)
         -> http::OutboundResult;
 
     // Tells the worker shard that owns room_id to re-read that room from the

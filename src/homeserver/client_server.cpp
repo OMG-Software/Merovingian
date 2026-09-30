@@ -33,6 +33,7 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -7751,6 +7752,28 @@ namespace
         return json_serialize(json_obj({json_member("content_uri", json_str(content_uri))}));
     }
 
+    // ADR-0079: a slot in the client-outbound budget for a request that makes this
+    // server call another one before it can answer. nullopt means over the
+    // global or the per-client cap; the caller answers client_proxy_refused()
+    // and makes no outbound call. Keyed like the rate limiter, so
+    // `trusted_proxies` decides which address is "the client".
+    [[nodiscard]] auto admit_client_proxy(ClientServerRuntime& rt,
+                                          LocalHttpRequest const& req) -> std::optional<http::InFlightBudget::Slot>
+    {
+        return admit_client_outbound_proxy(rt.homeserver, rate_limit_client_key(req, rt.homeserver.config.server()));
+    }
+
+    [[nodiscard]] auto client_proxy_refused(LocalHttpRequest const& req,
+                                            ClientServerRuntime const& rt) -> DispatchResult
+    {
+        log_diagnostic("client_outbound_proxy.refused",
+                       {
+                           {"target", observability::sanitized_http_target(req.target), false}
+        });
+        return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many concurrent remote lookups, retry shortly",
+                            rt.homeserver.client_outbound_proxy_policy.retry_after_ms);
+    }
+
     // The local media router returns successful download/thumbnail results as
     // "content_type|bytes" so that both pieces survive the internal request
     // boundary. This converts that pipe-delimited payload into the raw HTTP
@@ -7759,6 +7782,24 @@ namespace
     [[nodiscard]] auto media_download_dispatch_result(LocalHttpRequest const& req, ClientServerRuntime const& rt,
                                                       LocalHttpResponse const& local_response) -> DispatchResult
     {
+        if (local_response.status == 429U)
+        {
+            // The client-outbound budget refused this remote fetch (ADR-0079).
+            // The local router carries the delay as a Retry-After header in
+            // seconds; hand it back as the Matrix-standard retry_after_ms.
+            auto retry_after_ms = rt.homeserver.client_outbound_proxy_policy.retry_after_ms;
+            for (auto const& [name, value] : local_response.headers)
+            {
+                auto seconds = std::uint32_t{0U};
+                if (name == "Retry-After" &&
+                    std::from_chars(value.data(), value.data() + value.size(), seconds).ec == std::errc{} &&
+                    seconds > 0U && seconds <= 3600U)
+                {
+                    retry_after_ms = seconds * 1000U;
+                }
+            }
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", local_response.body, retry_after_ms);
+        }
         if (local_response.status != 200U)
         {
             return dispatch_err(req, rt, local_response.status,
@@ -9114,6 +9155,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& our_server = rt.homeserver.config.server().server_name;
         if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
         {
+            // ADR-0079: reachable without authentication and blocks this thread
+            // on a peer we do not control, so it runs under the in-flight budget.
+            auto const proxy_slot = admit_client_proxy(rt, req);
+            if (!proxy_slot.has_value())
+            {
+                return client_proxy_refused(req, rt);
+            }
+            auto const proxy_deadline = effective_client_outbound_deadline(
+                rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
@@ -9135,8 +9185,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
-                                                  rt.homeserver.federation.config.remote_timeout_seconds);
+                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+                                                     proxy_deadline);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -9183,6 +9233,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& our_server = rt.homeserver.config.server().server_name;
         if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
         {
+            // ADR-0079: reachable without authentication and blocks this thread
+            // on a peer we do not control, so it runs under the in-flight budget.
+            auto const proxy_slot = admit_client_proxy(rt, req);
+            if (!proxy_slot.has_value())
+            {
+                return client_proxy_refused(req, rt);
+            }
+            auto const proxy_deadline = effective_client_outbound_deadline(
+                rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
@@ -9212,8 +9271,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
-                                                  rt.homeserver.federation.config.remote_timeout_seconds);
+                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+                                                     proxy_deadline);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -9231,6 +9290,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const alias_server = server_name_from_room_alias(room_alias);
         if (!alias_server.empty() && alias_server != our_server)
         {
+            // ADR-0079: as for publicRooms?server= above.
+            auto const proxy_slot = admit_client_proxy(rt, req);
+            if (!proxy_slot.has_value())
+            {
+                return client_proxy_refused(req, rt);
+            }
+            auto const proxy_deadline = effective_client_outbound_deadline(
+                rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
@@ -9244,8 +9311,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // reloadable runtime state (rt.cors), and every other return path
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
-                                                  rt.homeserver.federation.config.remote_timeout_seconds);
+                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
+                                                     proxy_deadline);
             }();
             if (!ok)
             {

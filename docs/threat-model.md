@@ -1863,6 +1863,48 @@ until the refresh).
   with room history, as before. The per-request indexes (events, state groups) are O(store)
   to build, in line with the store's existing linear scans.
 
+### Unauthenticated proxying pinned request workers; the remote-fetch opt-in was not enforced (audit HTTP-2, OUT-7)
+
+- **HTTP-2: `publicRooms?server=`, a remote-alias directory lookup and remote media fetches
+  held a main-pool thread for the whole outbound round trip.** The spec lets a client call
+  them without authentication, and they ran server discovery and a federation request
+  synchronously with a 60 s `remote_timeout` (a federation-worker round trip waited up to 10 s
+  longer). Releasing the runtime mutex frees the mutex, not the thread, so a peer that
+  accepted a connection and never answered pinned all 8 request-pool threads at about 8
+  requests a minute and stalled every client and inbound federation request. It also made the
+  server send signed requests on the attacker's schedule.
+- **OUT-7: `security.media.remote_fetch_enabled=false` (the default) did not stop remote media
+  fetches.** The flag was checked only in `media::fetch_remote_media`, after discovery, the
+  federation request (up to `max_upload_size` bytes, 120 s) and the legacy fallback had already
+  run, and the result was then discarded. On the default configuration any unauthenticated
+  caller could make the server connect to an arbitrary server and download up to about 50 MiB,
+  which also made OUT-1 and OUT-2 reachable on the default configuration.
+- **Mitigation (ADR-0079):**
+  - OUT-7: the flag, and the `allow_remote=false` query parameter the spec defines on the
+    download and thumbnail routes, are checked at the top of every remote media route (legacy
+    `/_matrix/media/v3/` and authenticated `/_matrix/client/v1/media/`, download and
+    thumbnail, including the federation-media fallback) before any discovery or outbound
+    call. The answer is `404 M_NOT_FOUND`.
+  - HTTP-2: every client-triggered outbound call (the routes above plus remote media when
+    enabled) takes a slot in `http::InFlightBudget` before it leaves: 4 in flight overall (half
+    the pool) and 1 per client address (`rate_limit_client_key`, so `trusted_proxies` applies).
+    Over either cap the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000, at once. The
+    total deadline, discovery included, is 10 s for directory lookups and 30 s for media, and
+    the federation-worker round trip may exceed it by at most 2 s. The slot is an RAII object
+    taken before the runtime lock is released and dropped on every exit path. Tests:
+    `[http-2]` and `[out-7]` in `tests/integration/test_client_outbound_proxy_flow.cpp`,
+    `tests/unit/test_http_in_flight_budget.cpp`, `tests/unit/test_client_outbound_proxy.cpp`.
+- **Residual risk:** an attacker holding 4 slots costs the pool 4 of 8 threads for up to 10 s
+  (30 s for media) at a time, and each address needs to be distinct to hold more than one, so a
+  botnet can keep the 4 slots busy and lock legitimate remote lookups out with 429; the other 4
+  threads stay available to everything that does not leave this server. Threads are still
+  blocked while a call is in flight: the fix bounds how many, and a separate pool or an
+  asynchronous proxy path was rejected for now. Outbound calls to operator-configured
+  destinations that an unauthenticated client can trigger (appservice `query_user` and
+  `query_room_alias`, identity-server `requestToken`) are not under the budget. DNS lookups
+  inside server discovery are bounded by the resolver, not by the deadline. Clients behind a
+  shared address that is not a configured trusted proxy share one per-client slot.
+
 ## Security principles
 
 - Fail closed.

@@ -345,11 +345,37 @@ SCENARIO("Integrated media upload rejects oversized and unknown MIME uploads", "
     }
 }
 
-SCENARIO("Remote media download falls back to 502 when server discovery fails", "[media][repository][integration]")
+SCENARIO("Remote media download is refused with 404 while remote fetching is disabled",
+         "[media][repository][integration][out-7]")
 {
-    GIVEN("a running homeserver and an unresolvable remote origin")
+    GIVEN("a running homeserver with the default security.media.remote_fetch_enabled=false")
     {
         auto started = merovingian::homeserver::start_runtime(media_test_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+
+        WHEN("a remote media download is requested")
+        {
+            auto const remote = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_matrix/media/v3/download/remote.example.org/media123", {}, {}});
+
+            THEN("the request is answered 404 before any discovery and the refusal is counted")
+            {
+                REQUIRE(remote.status == 404U);
+                REQUIRE(remote.body == "media not found");
+                REQUIRE(runtime.media_repository.metrics.remote_fetch_rejections == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media download falls back to 502 when server discovery fails", "[media][repository][integration]")
+{
+    GIVEN("a running homeserver with remote fetching enabled and an unresolvable remote origin")
+    {
+        auto config = media_test_config();
+        config.security().media.remote_fetch_enabled = true;
+        auto started = merovingian::homeserver::start_runtime(std::move(config));
         REQUIRE(started.started);
         auto runtime = std::move(started.runtime);
 

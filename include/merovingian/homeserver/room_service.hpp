@@ -8,6 +8,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -132,6 +133,35 @@ struct SendJoinStateSplit final
                                               std::string_view key_id, std::span<std::uint8_t const> secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                               std::uint64_t max_response_bytes = 0U) -> std::pair<bool, std::string>;
+// perform_sync_outbound_call for calls a client can trigger without
+// authentication (publicRooms?server=, a remote alias lookup): `deadline_seconds`
+// is a total wall-clock budget for server discovery plus the request, not a
+// per-step timeout, and the federation-worker round trip may exceed it by at
+// most runtime.client_outbound_proxy_policy.worker_margin_seconds instead of the
+// usual 10 s. A budget already used up is reported as "deadline exceeded" without
+// touching the network. Callers hold a client-outbound budget slot around it
+// (ADR-0079, `admit_client_outbound_proxy`).
+[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+                                                 federation::OutboundTransaction const& transaction,
+                                                 std::string_view key_id, std::span<std::uint8_t const> secret_key,
+                                                 std::string_view diagnostic_event,
+                                                 std::uint32_t deadline_seconds) -> std::pair<bool, std::string>;
+
+// The limits of a bounded call: one wall-clock deadline for discovery plus the
+// request, and the margin the federation-worker round trip may add to it.
+struct BoundedOutboundLimits final
+{
+    OutboundDeadline deadline;
+    std::chrono::seconds worker_margin;
+};
+
+// The shared implementation of perform_sync_outbound_call (bounded == nullopt)
+// and perform_bounded_outbound_call. Prefer those two.
+[[nodiscard]] auto perform_outbound_call(
+    HomeserverRuntime& runtime, std::string_view room_id, federation::OutboundTransaction const& transaction,
+    std::string_view key_id, std::span<std::uint8_t const> secret_key, std::string_view diagnostic_event,
+    std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+    std::optional<BoundedOutboundLimits> const& bounded) -> std::pair<bool, std::string>;
 
 // ADR-0064 phase B1: joined_members is what callers used before (the user
 // IDs found with membership="join" among the ingested state entries);

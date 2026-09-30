@@ -193,6 +193,14 @@ because the outbound call borrows a span into the runtime's `SecretBuffer`. See
 [`http-transport.md`](http-transport.md) "Request lock and blocking network
 calls".
 
+Releasing the mutex frees the mutex, not the thread, so client requests that
+proxy to a remote server (`publicRooms?server=`, a remote alias lookup, remote
+media) additionally run under a bounded in-flight budget
+(`http::InFlightBudget`, held by `HomeserverRuntime::client_outbound_budget`)
+and a short total deadline, sized from the main request pool
+(`homeserver/client_outbound_proxy.hpp`, ADR-0079). See
+[`http-transport.md`](http-transport.md) "Client-triggered outbound proxying".
+
 **The recursion hazard, and how 0.12.6 removed it.**
 `HomeserverRuntime::mutex` is recursive so that self-locking service functions
 (`create_room`, `join_room`, `leave_room`, `invite_user_by_threepid`) stay

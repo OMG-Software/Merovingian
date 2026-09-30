@@ -1662,6 +1662,37 @@ namespace
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                               std::uint64_t max_response_bytes) -> std::pair<bool, std::string>
 {
+    return perform_outbound_call(runtime, room_id, transaction, key_id, secret_key, diagnostic_event, timeout_seconds,
+                                 max_response_bytes, std::nullopt);
+}
+
+[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+                                                 federation::OutboundTransaction const& transaction,
+                                                 std::string_view key_id, std::span<std::uint8_t const> secret_key,
+                                                 std::string_view diagnostic_event,
+                                                 std::uint32_t deadline_seconds) -> std::pair<bool, std::string>
+{
+    auto const bounded = std::optional<BoundedOutboundLimits>{
+        BoundedOutboundLimits{OutboundDeadline{deadline_seconds},
+                              std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}
+    };
+    return perform_outbound_call(runtime, room_id, transaction, key_id, secret_key, diagnostic_event, deadline_seconds,
+                                 0U, bounded);
+}
+
+[[nodiscard]] auto perform_outbound_call(
+    HomeserverRuntime& runtime, std::string_view room_id, federation::OutboundTransaction const& transaction,
+    std::string_view key_id, std::span<std::uint8_t const> secret_key, std::string_view diagnostic_event,
+    std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+    std::optional<BoundedOutboundLimits> const& bounded) -> std::pair<bool, std::string>
+{
+    if (bounded.has_value() && bounded->deadline.expired())
+    {
+        log_diagnostic(diagnostic_event, {
+                                             {"reason", "deadline exceeded", false}
+        });
+        return {false, "deadline exceeded"};
+    }
     // Test-only: bypass discover_server() entirely when the destination has a
     // forced resolution wired (see TestOnlyForcedOutboundResolution in
     // runtime.hpp). Always empty in production, so this branch never executes
@@ -1733,7 +1764,23 @@ namespace
     // 0 means "not configured — use FederationCall defaults (connect=10s, total=60s)".
     // Overwriting with 0 would make the IPC wait only 10 s (0+10 buffer in WorkerPool),
     // so only apply the caller's budget when it is actually set.
-    if (timeout_seconds > 0U)
+    if (bounded.has_value())
+    {
+        // Discovery and everything before this point drew from the same
+        // deadline; what is left is all this request may take.
+        auto const remaining = bounded->deadline.remaining_seconds();
+        if (remaining == 0U)
+        {
+            log_diagnostic(diagnostic_event, {
+                                                 {"reason", "deadline exceeded", false}
+            });
+            return {false, "deadline exceeded"};
+        }
+        auto const total = std::min(timeout_seconds, remaining);
+        call.connect_timeout_seconds = std::min(total, 30U);
+        call.total_timeout_seconds = total;
+    }
+    else if (timeout_seconds > 0U)
     {
         call.connect_timeout_seconds = std::min(timeout_seconds, 30U);
         call.total_timeout_seconds = timeout_seconds;
@@ -1757,7 +1804,8 @@ namespace
     if (runtime.federation_proxy)
     {
         auto const unlocked = RuntimeLockRelease{};
-        outcome = runtime.federation_proxy->send_outbound_request(request, room_id);
+        outcome = runtime.federation_proxy->send_outbound_request(
+            request, room_id, bounded.has_value() ? bounded->worker_margin : default_worker_ipc_margin);
     }
     else if (runtime.outbound_client)
     {

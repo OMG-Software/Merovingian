@@ -396,6 +396,8 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
+    , client_outbound_budget(std::move(other.client_outbound_budget))
+    , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
 {
@@ -438,6 +440,8 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     typing_users = std::move(other.typing_users);
     receipts = std::move(other.receipts);
     room_typing_stream_id = std::move(other.room_typing_stream_id);
+    client_outbound_budget = std::move(other.client_outbound_budget);
+    client_outbound_proxy_policy = other.client_outbound_proxy_policy;
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
     return *this;

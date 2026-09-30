@@ -12,7 +12,9 @@
 #include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/repository.hpp"
@@ -364,6 +366,12 @@ struct HomeserverRuntime final
     // Per-connection MSC4186 sliding sync state.
     // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
     std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};
+    // In-flight budget and limits for client-triggered outbound proxying (ADR-0079):
+    // publicRooms?server=, remote alias lookups and remote media fetches. The
+    // budget has its own mutex and is never held together with `mutex`. Held
+    // through a unique_ptr so the address slots refer to survives a runtime move.
+    std::unique_ptr<http::InFlightBudget> client_outbound_budget{std::make_unique<http::InFlightBudget>()};
+    ClientOutboundProxyPolicy client_outbound_proxy_policy{default_client_outbound_proxy_policy()};
     // Failed-login counters keyed on the claimed user ID. See FailedLoginRecord.
     std::unordered_map<std::string, FailedLoginRecord> failed_logins{};
     std::uint64_t next_request_sequence{1U};

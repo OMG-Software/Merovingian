@@ -678,6 +678,65 @@ Rules for anything added to these paths:
   guard it was handed, and restores exactly that many on exit. See "One release
   primitive" below for why that matters.
 
+## Client-triggered outbound proxying (ADR-0079)
+
+Releasing the runtime mutex during a network call frees the mutex, not the
+thread: the request still occupies one of the 8 main-pool threads until the peer
+answers or the call times out. Several client requests make this server call
+another one before they can answer, and the spec lets clients make them without
+authentication, so a peer that accepts a connection and never answers could pin
+the whole pool (audit findings HTTP-2 and OUT-7). Every one of them therefore
+runs under a small in-flight budget and a short total deadline.
+
+The paths under the budget:
+
+| Request | Outbound call |
+|---|---|
+| `GET /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET /publicRooms` |
+| `POST /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET` or `POST /publicRooms` |
+| `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
+| `GET /_matrix/media/v3/download` and `/thumbnail` for remote media | discovery, federation media, legacy fallback, redirect follow |
+| `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media | as above |
+
+Rules:
+
+- **Budget.** `http::InFlightBudget` (RAII `Slot`, thread-safe, never waits),
+  held by `HomeserverRuntime::client_outbound_budget`. Global cap 4 (half of
+  `main_request_pool_threads`, so the other half of the pool always serves
+  requests that never leave this server); per-client cap 1, keyed by
+  `rate_limit_client_key` (the same key the rate limiter uses, so
+  `trusted_proxies` and the IPv6 prefix grouping apply). Authenticated callers
+  count too. Local `publicRooms`, local aliases and local media never take a slot.
+- **Refusal.** Over either cap the answer is `429 M_LIMIT_EXCEEDED` with
+  `retry_after_ms` 1000 and a `Retry-After: 1` header, immediately, before any
+  discovery or outbound call. Nothing queues.
+- **Deadline.** 10 s for directory lookups, 30 s for remote media, in total:
+  server discovery and the request(s) that follow draw from one
+  `OutboundDeadline`. Never longer than the operator's
+  `security.federation.remote_timeout` when that is set. The federation-worker
+  round trip for these calls may exceed the deadline by at most 2 s
+  (`ClientOutboundProxyPolicy::worker_margin_seconds`), where other worker
+  calls allow 10 s. A deadline that runs out during discovery or between the
+  federation request and the legacy fallback ends the call as `502`.
+- **Lock.** The slot is taken while the runtime lock is held and before it is
+  released for the call (`RuntimeLockRelease`); it is dropped on every exit path
+  by its destructor.
+- **Constants, not configuration.** The caps and deadlines live in
+  `ClientOutboundProxyPolicy` (`include/merovingian/homeserver/client_outbound_proxy.hpp`),
+  derived from the one named constant `main_request_pool_threads`. A
+  configuration key would let an operator raise the caps above the pool size,
+  which is the defect. Tests lower the deadline through
+  `runtime.client_outbound_proxy_policy`.
+- **Not covered.** Outbound calls to operator-configured destinations that an
+  unauthenticated client can still trigger (appservice `query_user` and
+  `query_room_alias`, the identity-server `requestToken` routes, the
+  trust-safety policy server) are not under this budget: the destination is
+  chosen by the operator, not the caller. They still hold a thread for the round
+  trip.
+
+The alternative of a separate thread pool or an asynchronous proxy path was
+considered and rejected for now; see ADR-0079.
+
 ### `resolve_policy_server_hook` (0.12.1)
 
 `resolve_policy_server_hook` (`src/homeserver/runtime.cpp`) performs a

@@ -153,14 +153,14 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     return pool_->handle(verified_request, room_id);
 }
 
-auto FederationProxy::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
-    -> http::OutboundResult
+auto FederationProxy::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
+                                            std::chrono::seconds ipc_margin) -> http::OutboundResult
 {
     if (!pool_)
     {
         return {false, {}, http::OutboundError::network_error, "federation worker pool not available"};
     }
-    return pool_->send_outbound_request(request, room_id);
+    return pool_->send_outbound_request(request, room_id, ipc_margin);
 }
 
 auto FederationProxy::notify_room_changed(std::string_view room_id) -> void

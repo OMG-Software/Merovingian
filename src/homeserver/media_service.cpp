@@ -9,6 +9,7 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -18,6 +19,7 @@
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cstddef>
@@ -451,6 +453,47 @@ namespace
         return parts;
     }
 
+    // OUT-7: a remote `serverName` is answered 404 M_NOT_FOUND, before any
+    // discovery or outbound call, when live remote fetching is off
+    // (security.media.remote_fetch_enabled, default false) or the request set
+    // allow_remote=false (spec: the server "should not attempt to fetch the media
+    // if it is deemed remote"). Counted, and logged; not audited: any
+    // unauthenticated client can trigger this, so it must not write a durable
+    // row per request (ADR-0080).
+    [[nodiscard]] auto remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
+                                            std::string_view media_id,
+                                            RemoteMediaRequestContext const& remote) -> std::optional<OperationResult>
+    {
+        auto const enabled = runtime.media_repository.config.remote_fetch_enabled;
+        if (enabled && remote.allow_remote)
+        {
+            return std::nullopt;
+        }
+        ++runtime.media_repository.metrics.remote_fetch_rejections;
+        log_diagnostic("remote_fetch.refused",
+                       {
+                           {"origin_server", std::string{origin_server},                                    false},
+                           {"media_id",      std::string{media_id},                                         false},
+                           {"reason",        enabled ? "allow_remote=false" : "remote_fetch_enabled=false", false}
+        });
+        return make_operation_result(false, {}, "media not found", 404U);
+    }
+
+    // The fetch's shared deadline (ADR-0079) ran out. 502, like every other
+    // failure to obtain the remote bytes.
+    [[nodiscard]] auto remote_media_deadline_exceeded(HomeserverRuntime& runtime, std::string_view origin_server,
+                                                      std::string_view media_id) -> OperationResult
+    {
+        log_diagnostic("remote_fetch.deadline_exceeded", {
+                                                             {"origin_server", std::string{origin_server}, false},
+                                                             {"media_id",      std::string{media_id},      false}
+        });
+        ++runtime.media_repository.metrics.remote_fetch_rejections;
+        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.remote_fetch_rejected",
+                           "server", std::string{origin_server} + '/' + std::string{media_id}, "deadline exceeded");
+        return make_operation_result(false, {}, "remote media fetch deadline exceeded", 502U);
+    }
+
     // Shared tail for both the authenticated and the deprecated fetch paths:
     // stores the fetched bytes through the media policy pipeline and records
     // the outcome in diagnostics/audit.
@@ -510,13 +553,19 @@ namespace
     // body). Any other outcome — success, a Location redirect (followed
     // SSRF-safely when possible), or a definitive failure such as 429/502/504 —
     // is returned directly, since the spec only mandates falling back on 404.
-    [[nodiscard]] auto fetch_remote_media_via_federation_endpoint(HomeserverRuntime& runtime,
-                                                                  federation::ServerDiscoveryResult const& resolution,
-                                                                  std::string_view origin_server,
-                                                                  std::string_view media_id, std::uint64_t max_bytes,
-                                                                  std::string_view trusted_ca_pem)
-        -> std::optional<OperationResult>
+    [[nodiscard]] auto fetch_remote_media_via_federation_endpoint(
+        HomeserverRuntime& runtime, federation::ServerDiscoveryResult const& resolution, std::string_view origin_server,
+        std::string_view media_id, std::uint64_t max_bytes, std::string_view trusted_ca_pem,
+        OutboundDeadline const& deadline) -> std::optional<OperationResult>
     {
+        // ADR-0079: the whole fetch shares one deadline. With none left there is
+        // no time for the legacy fallback either, so this is a final answer,
+        // not a std::nullopt "try the next endpoint".
+        auto const federation_budget = deadline.remaining_seconds();
+        if (federation_budget == 0U)
+        {
+            return remote_media_deadline_exceeded(runtime, origin_server, media_id);
+        }
         auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
         auto const signing_key = ensure_runtime_server_signing_key(runtime);
         if (!signing_key.has_value() || runtime.database.signing_secret_key.bytes().size() != expected_secret_bytes)
@@ -545,8 +594,8 @@ namespace
         call.key_id = signing_key->key_id;
         call.secret_key = runtime.database.signing_secret_key.bytes();
         call.trusted_ca_pem = std::string{trusted_ca_pem};
-        call.connect_timeout_seconds = 30U;
-        call.total_timeout_seconds = 120U;
+        call.connect_timeout_seconds = std::min(federation_budget, 30U);
+        call.total_timeout_seconds = federation_budget;
         // A small fixed allowance over the raw media cap covers the
         // multipart/mixed envelope (boundary markers, part headers, and the
         // empty JSON metadata part) wrapping the media bytes on this endpoint.
@@ -657,8 +706,13 @@ namespace
             redirect_req.url = std::string{parsed.location};
             redirect_req.pinned_addresses = redirect_resolution.discovery.pinned_addresses;
             redirect_req.trusted_ca_pem = std::string{trusted_ca_pem};
-            redirect_req.connect_timeout_seconds = 30U;
-            redirect_req.total_timeout_seconds = 120U;
+            auto const redirect_budget = deadline.remaining_seconds();
+            if (redirect_budget == 0U)
+            {
+                return remote_media_deadline_exceeded(runtime, origin_server, media_id);
+            }
+            redirect_req.connect_timeout_seconds = std::min(redirect_budget, 30U);
+            redirect_req.total_timeout_seconds = redirect_budget;
             redirect_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);
 
             auto const redirect_result = [&]() {
@@ -703,8 +757,16 @@ namespace
     // back to remote_media_fetch_disabled() when federation infrastructure is
     // unavailable.
     [[nodiscard]] auto fetch_remote_media_live(HomeserverRuntime& runtime, std::string_view origin_server,
-                                               std::string_view media_id) -> OperationResult
+                                               std::string_view media_id,
+                                               RemoteMediaRequestContext const& remote) -> OperationResult
     {
+        // OUT-7: every entry point has already asked, before its own policy
+        // hook; asking again here means no future caller can reach discovery or
+        // the network with the opt-in off.
+        if (auto refusal = remote_media_refusal(runtime, origin_server, media_id, remote); refusal.has_value())
+        {
+            return std::move(*refusal);
+        }
         auto* const outbound_client = runtime.outbound_client.get();
         auto* const discovery_network = runtime.discovery_network.get();
         if (outbound_client == nullptr || discovery_network == nullptr)
@@ -715,6 +777,23 @@ namespace
             });
             return remote_media_fetch_disabled(runtime, origin_server, media_id);
         }
+
+        // ADR-0079: this fetch holds a request-pool thread for as long as the
+        // remote takes, and it is reachable without authentication. Take a slot
+        // in the client-outbound budget before releasing the runtime lock for
+        // discovery, and keep it until the fetch has ended, on every path.
+        auto const proxy_slot = admit_client_outbound_proxy(runtime, remote.client_key);
+        if (!proxy_slot.has_value())
+        {
+            log_diagnostic("remote_fetch.over_budget", {
+                                                           {"origin_server", std::string{origin_server}, false}
+            });
+            auto refused = make_operation_result(false, {}, "too many concurrent remote media fetches", 429U);
+            refused.retry_after_ms = runtime.client_outbound_proxy_policy.retry_after_ms;
+            return refused;
+        }
+        auto const deadline = OutboundDeadline{
+            effective_client_outbound_deadline(runtime, runtime.client_outbound_proxy_policy.media_deadline_seconds)};
 
         // Test-only: bypass discover_server() entirely when the destination has a
         // forced resolution wired (see TestOnlyForcedOutboundResolution in
@@ -737,9 +816,13 @@ namespace
         }
         else
         {
-            auto constexpr discovery_timeout = std::uint32_t{30U};
+            auto const discovery_timeout = std::min(deadline.remaining_seconds(), std::uint32_t{30U});
             auto const unlocked = RuntimeLockRelease{};
             resolution = federation::discover_server(origin_server, *discovery_network, discovery_timeout);
+        }
+        if (deadline.expired())
+        {
+            return remote_media_deadline_exceeded(runtime, origin_server, media_id);
         }
         if (!resolution.discovery_allowed)
         {
@@ -765,10 +848,15 @@ namespace
         // fetch 404 against servers that have disabled it, which is the default
         // on current Synapse and Merovingian deployments.
         if (auto federated = fetch_remote_media_via_federation_endpoint(runtime, resolution, origin_server, media_id,
-                                                                        max_bytes, trusted_ca_pem);
+                                                                        max_bytes, trusted_ca_pem, deadline);
             federated.has_value())
         {
             return std::move(*federated);
+        }
+        auto const legacy_budget = deadline.remaining_seconds();
+        if (legacy_budget == 0U)
+        {
+            return remote_media_deadline_exceeded(runtime, origin_server, media_id);
         }
 
         // M-02: build the URL from the certificate identity, not the resolved
@@ -786,8 +874,8 @@ namespace
         out_req.url = std::move(url);
         out_req.pinned_addresses = resolution.pinned_addresses;
         out_req.trusted_ca_pem = trusted_ca_pem;
-        out_req.connect_timeout_seconds = 30U;
-        out_req.total_timeout_seconds = 120U;
+        out_req.connect_timeout_seconds = std::min(legacy_budget, 30U);
+        out_req.total_timeout_seconds = legacy_budget;
         out_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);
 
         auto const out_result = [&]() {
@@ -1006,8 +1094,17 @@ namespace
 }
 
 [[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
-                                        std::string_view media_id, bool legacy_endpoint) -> OperationResult
+                                        std::string_view media_id, bool legacy_endpoint,
+                                        RemoteMediaRequestContext const& remote) -> OperationResult
 {
+    // OUT-7: before the policy hook, which can itself make a network call.
+    if (server_name != runtime.config.server().server_name)
+    {
+        if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
+        {
+            return std::move(*refusal);
+        }
+    }
     auto const policy = media_policy_decision(runtime, media_id);
     if (!policy.allowed)
     {
@@ -1020,7 +1117,7 @@ namespace
                                               {"origin_server", std::string{server_name}, false},
                                               {"media_id",      std::string{media_id},    false}
         });
-        return fetch_remote_media_live(runtime, server_name, media_id);
+        return fetch_remote_media_live(runtime, server_name, media_id, remote);
     }
 
     auto const result = media::download_local_media(runtime.media_repository, server_name, media_id, legacy_endpoint);
@@ -1043,9 +1140,17 @@ namespace
 
 [[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
                                                   std::string_view media_id, std::uint32_t width, std::uint32_t height,
-                                                  media::ThumbnailMethod method, bool legacy_endpoint)
-    -> OperationResult
+                                                  media::ThumbnailMethod method, bool legacy_endpoint,
+                                                  RemoteMediaRequestContext const& remote) -> OperationResult
 {
+    // OUT-7: as in download_local_media.
+    if (server_name != runtime.config.server().server_name)
+    {
+        if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
+        {
+            return std::move(*refusal);
+        }
+    }
     auto const policy = media_policy_decision(runtime, media_id);
     if (!policy.allowed)
     {
@@ -1060,7 +1165,7 @@ namespace
         });
         // Fetch the remote media first, then resample it locally so a thumbnail
         // request never answers with the full-size original.
-        auto const fetch_result = fetch_remote_media_live(runtime, server_name, media_id);
+        auto const fetch_result = fetch_remote_media_live(runtime, server_name, media_id, remote);
         if (!fetch_result.ok || fetch_result.status < 200U || fetch_result.status >= 300U)
         {
             return fetch_result;

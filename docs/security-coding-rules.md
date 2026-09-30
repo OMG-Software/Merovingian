@@ -623,6 +623,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   borrows a span into the runtime's `SecretBuffer`.
   Source: `src/homeserver/AGENTS.md`.
 
+- **A client request that makes this server call another one takes a slot in the
+  client-outbound budget first, and runs under a short total deadline.** Take it with
+  `homeserver::admit_client_outbound_proxy` (key: `rate_limit_client_key`), answer `429
+  M_LIMIT_EXCEEDED` with `retry_after_ms` when it is refused, hold the slot until the call has
+  ended, and draw discovery and every request from one `OutboundDeadline`
+  (`homeserver/client_outbound_proxy.hpp`). Remote media additionally checks
+  `security.media.remote_fetch_enabled` and `allow_remote` before any discovery.
+  Why: releasing the runtime mutex frees the mutex, not the thread; `publicRooms?server=`, a
+  remote alias lookup and remote media are reachable without authentication, and a peer that
+  never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079).
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and
   no code below the HTTP layer may perform a blocking I/O call on a connection
   descriptor.** Drive `SSL_read`/`SSL_write` through a non-blocking retry loop

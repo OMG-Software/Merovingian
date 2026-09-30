@@ -706,6 +706,18 @@ rooms.
 | `security.federation.remote_timeout` | `60s` | General outbound federation HTTP timeout. |
 | `security.federation.max_transaction_size` | `10MiB` | Cap on inbound transaction body size. The shipped example sets `20MiB`. |
 
+Remote lookups that a client triggers (`GET`/`POST /publicRooms?server=`, a
+room-alias lookup for a remote alias, and remote media when
+`security.media.remote_fetch_enabled` is on) are not governed by
+`remote_timeout` alone: they are limited to 4 in flight at once across all
+clients and 1 per client address, and end after at most 10 s (30 s for media),
+whichever of that and `remote_timeout` is shorter. A request over the limit is
+answered `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 and a `Retry-After`
+header; a lookup that runs out of time is answered `502`. These limits are
+fixed, not configuration keys: they exist to keep half of the 8-thread request
+pool free for requests that never leave this server. Behind a reverse proxy set
+`server.trusted_proxies`, or every client shares one address and so one slot.
+
 #### Federation join/leave budget — `security.federation.join_*`
 
 | Key | Default | When to change |
@@ -909,8 +921,8 @@ record but no additional bytes.
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |
-| `security.media.remote_fetch_enabled` | `false` | Opt-in for live remote media fetching. |
-| `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path still uses hard-coded timeouts. |
+| `security.media.remote_fetch_enabled` | `false` | Opt-in for live remote media fetching. While it is `false` (the default) a download or thumbnail of media hosted on another server is answered `404 M_NOT_FOUND` before any server discovery or outbound call, on the legacy `/_matrix/media/v3/` routes and the authenticated `/_matrix/client/v1/media/` routes alike. When it is `true`, fetches run under a fixed in-flight budget (4 at once across all clients, 1 per client address; over it the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000) and a 30 s total deadline. A request that carries `allow_remote=false` is never fetched remotely, whatever this is set to. |
+| `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path does not read it: remote fetches use the fixed 30 s client-outbound deadline (bounded further by `security.federation.remote_timeout` when that is shorter). |
 | `security.media.decode_in_sandbox` | `true` | Decode/thumbnail media inside a sandboxed child process. |
 | `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |

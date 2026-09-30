@@ -1,5 +1,6 @@
 homeserver_sources = files(
   'auth_service.cpp',
+  'client_outbound_proxy.cpp',
   'client_server.cpp',
   'default_push_ruleset.cpp',
   'federation_proxy.cpp',
