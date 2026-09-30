@@ -1819,7 +1819,7 @@ auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, Http
 
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::ShutdownSignal& shutdown,
                 HttpServeStats& stats, HttpDispatchMode dispatch_mode, net::ThreadPool& pool,
-                net::ThreadPool* sync_pool) -> void
+                net::ThreadPool* sync_pool, HttpServeTuning) -> void
 {
     while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
@@ -1933,7 +1933,7 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
 
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
                     net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
-                    net::ThreadPool& pool, net::ThreadPool* sync_pool) -> void
+                    net::ThreadPool& pool, net::ThreadPool* sync_pool, HttpServeTuning) -> void
 {
     while (!shutdown.fired() && acceptor.valid() && pool.running())
     {

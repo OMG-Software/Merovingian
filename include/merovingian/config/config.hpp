@@ -66,6 +66,7 @@ struct HttpTransportConfig final
     std::uint32_t keep_alive_max_connections{8U};
     std::uint32_t max_connections_per_ip{64U};
     std::uint8_t ipv6_client_prefix_length{64U};
+    std::uint32_t request_threads{16U};
 };
 
 struct TurnServerConfig final

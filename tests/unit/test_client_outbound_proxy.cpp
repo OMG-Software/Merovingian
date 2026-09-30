@@ -4,6 +4,8 @@
 // HTTP-2 / OUT-7 / ADR-0079: the policy, deadline and admission helpers that
 // bound client-triggered outbound proxying. Tags: [http-2][out-7][homeserver].
 
+#include "../support/master_key.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
@@ -11,7 +13,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <thread>
+#include <vector>
 
 using namespace merovingian::homeserver;
 
@@ -21,10 +26,13 @@ SCENARIO("The client outbound proxy caps are derived from the main request pool 
     {
         auto const policy = default_client_outbound_proxy_policy();
 
-        THEN("the global cap is half the pool and each client may hold one call")
+        THEN("the global cap is half the default pool of sixteen and each client may hold one call")
         {
-            REQUIRE(policy.global_cap == main_request_pool_threads / 2U);
-            REQUIRE(policy.global_cap == 4U);
+            // HTTP-1 made the pool configurable (server.http.request_threads,
+            // default 16); the default policy follows the default pool.
+            REQUIRE(default_main_request_pool_threads == 16U);
+            REQUIRE(policy.global_cap == default_main_request_pool_threads / 2U);
+            REQUIRE(policy.global_cap == 8U);
             REQUIRE(policy.per_client_cap == 1U);
         }
 
@@ -86,17 +94,20 @@ SCENARIO("Admission to client outbound proxying honours the runtime policy", "[h
             }
         }
 
-        WHEN("four different clients hold slots")
+        WHEN("as many different clients as the global cap hold slots")
         {
-            auto const a = admit_client_outbound_proxy(runtime, "192.0.2.1");
-            auto const b = admit_client_outbound_proxy(runtime, "192.0.2.2");
-            auto const c = admit_client_outbound_proxy(runtime, "192.0.2.3");
-            auto const d = admit_client_outbound_proxy(runtime, "192.0.2.4");
-            REQUIRE((a.has_value() && b.has_value() && c.has_value() && d.has_value()));
-
-            THEN("a fifth client is refused")
+            auto held = std::vector<std::optional<merovingian::http::InFlightBudget::Slot>>{};
+            auto all_admitted = true;
+            for (auto index = 0U; index < runtime.client_outbound_proxy_policy.global_cap; ++index)
             {
-                REQUIRE_FALSE(admit_client_outbound_proxy(runtime, "192.0.2.5").has_value());
+                held.push_back(admit_client_outbound_proxy(runtime, "192.0.2." + std::to_string(index + 1U)));
+                all_admitted = all_admitted && held.back().has_value();
+            }
+            REQUIRE(all_admitted);
+
+            THEN("one more client is refused")
+            {
+                REQUIRE_FALSE(admit_client_outbound_proxy(runtime, "198.51.100.1").has_value());
             }
         }
     }
@@ -187,6 +198,28 @@ SCENARIO("An outbound deadline reports the time left and when it has passed", "[
         THEN("the sub-second remainder still rounds up to one second")
         {
             REQUIRE(deadline.remaining_seconds() == 1U);
+        }
+    }
+}
+
+SCENARIO("A runtime started from configuration derives its outbound caps from the configured pool size",
+         "[http-1][http-2][homeserver]")
+{
+    GIVEN("a configuration with a main request pool of thirty-two threads")
+    {
+        auto config = merovingian::config::Config{};
+        config.server().http.request_threads = 32U;
+        config.security().secrets.master_key_file = merovingian::tests::shared_master_key_file();
+
+        WHEN("the runtime starts")
+        {
+            auto const started = start_runtime(config);
+
+            THEN("the global outbound cap is half the configured pool")
+            {
+                REQUIRE(started.started);
+                REQUIRE(started.runtime.client_outbound_proxy_policy.global_cap == 16U);
+            }
         }
     }
 }

@@ -20,6 +20,7 @@ struct HomeserverRuntime;
 // (audit finding HTTP-1) replaces this constant with the configured value and
 // the client-outbound caps below follow it.
 inline constexpr std::uint32_t main_request_pool_threads{8U};
+inline constexpr std::uint32_t default_main_request_pool_threads{main_request_pool_threads}; // RED-PHASE STUB
 
 // How long the federation-worker round trip may exceed the request's own total
 // timeout, for calls with no tighter budget: the worker needs time to hand back

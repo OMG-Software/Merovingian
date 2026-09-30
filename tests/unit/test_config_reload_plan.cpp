@@ -285,6 +285,7 @@ SCENARIO("Reload plan flags every HTTP transport change as restart required", "[
         server.http.keep_alive_max_connections = 16U;
         server.http.max_connections_per_ip = 8U;
         server.http.ipv6_client_prefix_length = 48U;
+        server.http.request_threads = 32U;
 
         auto const next = merovingian::config::Config{
             server,
@@ -303,12 +304,12 @@ SCENARIO("Reload plan flags every HTTP transport change as restart required", "[
             {
                 for (auto const* key : {"server.http.keep_alive", "server.http.keep_alive_idle_seconds",
                                         "server.http.keep_alive_max_connections", "server.http.max_connections_per_ip",
-                                        "server.http.ipv6_client_prefix_length"})
+                                        "server.http.ipv6_client_prefix_length", "server.http.request_threads"})
                 {
                     INFO(key);
                     REQUIRE(plan_has_key(plan, key));
                 }
-                REQUIRE(plan.restart_required_change_count() == 5U);
+                REQUIRE(plan.restart_required_change_count() == 6U);
                 REQUIRE(plan.reloadable_change_count() == 0U);
             }
         }
