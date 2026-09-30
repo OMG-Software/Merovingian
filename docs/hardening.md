@@ -420,7 +420,10 @@ separate process on the same host:
     constructor. Until `start_writers()` is called it writes each line
     synchronously under a mutex (stdout, and the log file when one is open), so
     an early message is neither lost nor able to deadlock. The worker and the
-    server call `start_writers()` only after their hardening is applied.
+    server call `start_writers()` only after their hardening is applied. The
+    server's request pools and its connection dispatcher thread (ADR-0077)
+    are likewise created in `serve_until_shutdown`, after the hardening
+    self-check has passed.
     Because Landlock has no thread-sync flag on older kernels, this ordering is
     the only thing that confines a thread against Landlock.
   * **`SECCOMP_FILTER_FLAG_TSYNC`.** Every seccomp filter (main, worker and

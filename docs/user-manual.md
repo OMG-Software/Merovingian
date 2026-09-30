@@ -395,30 +395,49 @@ forbids that combination. CORS is **not** hot-reloadable — a change to any
 
 #### HTTP transport — `server.http.*`
 
-Controls HTTP/1.1 persistent connections (keep-alive). Connections are served
-as sequential request rounds; each kept-alive connection is parked for at most
-`keep_alive_idle_seconds` while waiting for the client's next request, and
-each parked connection holds one request-pool worker thread, so
-`keep_alive_max_connections` caps the process-wide total.
+Controls the main request pool and HTTP/1.1 persistent connections
+(keep-alive). A worker thread of the request pool is only ever given a
+connection that has a request to read: new connections before their first
+byte, and kept-alive connections between requests, are held by one connection
+dispatcher thread, which closes a new connection that sends nothing within
+5 seconds and a kept-alive one that stays idle for `keep_alive_idle_seconds`.
+One client address may hold at most a quarter of the workers at once
+(`request_threads / 4`, at least one); its further requests wait until one of
+its own requests finishes, while other clients are served.
 
 | Key | Default | When to change |
 |---|---|---|
+| `server.http.request_threads` | `16` | Threads in the main request pool that serves every listener, 4..256. Raise for a busy server with many cores; each client address may use a quarter of them, and remote directory and media proxying at most half. |
 | `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
-| `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to free worker threads sooner. |
-| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. Raise only alongside a larger request pool. |
+| `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to close idle connections sooner. |
+| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. A parked connection holds no worker thread, so this bounds open descriptors and memory and need not match `request_threads`; raise it to let more clients re-use their connections. |
 | `server.http.max_connections_per_ip` | `64` | Open connections one client may hold on the client and federation listeners, 1..65535. A further connection is closed at accept time, before a byte is read or a TLS handshake starts. Raise if many users share one NAT address. |
-| `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by for the connection cap and the per-IP rate limiter, 1..128. `128` counts each address separately; a shorter prefix groups a whole allocation. |
+| `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by for the connection cap, the per-client worker share and the per-IP rate limiter, 1..128. `128` counts each address separately; a shorter prefix groups a whole allocation. |
 
-The parser rejects idle windows outside 1..300 seconds, parked-connection caps
-outside 1..4096, per-IP caps outside 1..65535 and prefix lengths outside
-1..128. These keys are read when the listeners start and are **not**
-hot-reloadable — a change to any `server.http.*` key requires a restart.
+The parser rejects pool sizes outside 4..256, idle windows outside 1..300
+seconds, parked-connection caps outside 1..4096, per-IP caps outside 1..65535
+and prefix lengths outside 1..128. These keys are read when the listeners start
+and are **not** hot-reloadable — a change to any `server.http.*` key requires a
+restart.
+
+Fixed limits that are not configurable:
+
+- a request head must arrive within 30 seconds, with no gap over 5 seconds;
+- a request body may start slowly, but from 10 seconds into the body it must
+  have arrived at an average of at least 16 KiB/s, or the server answers
+  `408` and closes the connection;
+- a media upload larger than 1 MiB is read only if its request carries a
+  valid access token; otherwise the server answers `401`
+  (`M_MISSING_TOKEN` / `M_UNKNOWN_TOKEN`) without reading the body and closes
+  the connection;
+- a connection is closed (`Connection: close` on the response) after 1 000
+  requests or one hour, and clients open a new one.
 
 **Behind a reverse proxy**, every client arrives from the proxy's address, so
 addresses listed in `server.trusted_proxies` are exempt from the per-IP
-connection cap. Limit connections per client at the proxy (for example nginx
-`limit_conn`); the per-IP rate limiter still applies to the forwarded client
-address.
+connection cap and from the per-client worker share. Limit connections and
+concurrent requests per client at the proxy (for example nginx `limit_conn`);
+the per-IP rate limiter still applies to the forwarded client address.
 
 #### TURN server — `server.turn.*`
 
@@ -539,14 +558,16 @@ opaque provider id (may itself contain dots, e.g.
 | `listeners.federation.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.federation.tls_certificate_file` | (empty) | Required when federation TLS is enabled. |
 | `listeners.federation.tls_private_key_file` | (empty) | Required when federation TLS is enabled. |
-| `listeners.max_queued_connections` | `1024` | Connections allowed to wait for a worker thread before new ones are refused. `0` disables the cap. |
+| `listeners.max_queued_connections` | `1024` | Accepted connections allowed to wait for their first request before new ones are refused. `0` disables the cap. |
 
-`listeners.max_queued_connections` bounds the accept loops' work queues. Each
-accepted connection queues one closure, so without a cap a connection flood
-grows the queue until the process is killed by the OOM reaper. Past the cap the
-listener closes the connection immediately, which sheds load in the one way the
+`listeners.max_queued_connections` bounds how many accepted connections may be
+waiting, at once, for their first request (they are held by the connection
+dispatcher, not by worker threads). Without a cap a connection flood grows
+that set until the process runs out of descriptors or memory. Past the cap a
+new connection is closed immediately, which sheds load in the one way the
 client can observe and retry. Raise it if legitimate bursts are being refused;
-lower it to shed load sooner under a smaller memory budget. Restart required.
+lower it to shed load sooner under a smaller memory budget. The long-poll
+`/sync` pool's queue uses the same bound. Restart required.
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
 `localhost`, `::1`, or `[::1]`) **and** declare `reverse_proxy=true`, which is

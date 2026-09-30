@@ -145,8 +145,13 @@ All foundation modules depend on `core` (RAII utilities, `not_null`,
 
 ```text
 merovingian-server
-  - main pool (8 threads): all non-sync requests
+  - main pool (`server.http.request_threads`, default 16): all non-sync
+    requests; a worker is given a connection only once it is readable, and one
+    client address may hold at most a quarter of the pool (ADR-0077)
   - sync pool (32 threads): `/sync` long-polls only
+  - connection dispatcher thread: holds every connection that is not being
+    served (before its first byte, between keep-alive requests) in one
+    `poll(2)` set and hands readable ones to the main pool (ADR-0077)
   - client listener thread: plain TCP accept loop
   - client TLS listener thread: OpenSSL accept loop
   - federation listener thread: plain TCP accept loop

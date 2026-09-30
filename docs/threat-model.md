@@ -70,7 +70,7 @@ flowchart TB
 |---|---|---|
 | Malicious local user | Client-server API | Access-token auth, login-enumeration-resistant errors, rate limits, bounded parsers |
 | Malicious federated server | Federation transactions | X-Matrix verification, per-PDU content-hash + sender-domain Ed25519 checks, auth rules before persist, EDU origin-ownership checks, and per-room `m.room.server_acl` enforcement on protected endpoints and inbound PDUs/EDUs |
-| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers, bounded keep-alive idle parking (per-connection idle window + process-wide parked-connection cap) |
+| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers, connection dispatcher: no worker waits on an idle or unreadable connection, per-client worker share, minimum body rate, per-connection request and lifetime caps (ADR-0077) |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation; public listeners require TLS and cannot declare a local reverse proxy, while loopback cleartext requires an explicit `reverse_proxy=true` declaration |
 | Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317), and the worker holds no signing capability at all — no `sign_request` frame, a refusing provider (ADR-0078); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
@@ -1201,26 +1201,52 @@ threat it closes; the controls above are the standing defences these reinforce.
 - **Idle-connection thread holding through HTTP keep-alive parking.** With
   HTTP/1.1 persistent connections (RFC 9112 §9.3) a client that has received
   its response can leave the connection open and simply never send the next
-  request; a naive keep-alive loop would then park one main-pool worker
-  thread per connection for as long as the client cares to wait, and an
-  attacker needs nothing more than N open sockets to stall all request
-  handling. Three bounds compose to close this: (1) each park is limited to
-  the operator-tunable idle window (`server.http.keep_alive_idle_seconds`,
-  default 15 s — strictly shorter than the 30 s slowloris head deadline that
-  already bounds a worker per connection, so the parking surface is no wider
-  than the pre-existing one), polled in one-second slices so shutdown stays
-  bounded; (2) a process-wide CAS counter caps how many connections may be
-  parked at once (`server.http.keep_alive_max_connections`, default 8) —
-  beyond the cap the server answers `Connection: close` instead of parking,
-  so a single client cannot convert open sockets into held worker threads
-  beyond the operator's budget; and (3) the slowloris guard is phase-aware
-  (`http::connection_should_close`): an idle park is bounded only by the
-  idle window — a quiet connection is not a slow client — while the full
-  slowloris rate policy applies unchanged to the request head/body read the
-  moment bytes arrive, so an attacker cannot use keep-alive to outlive the
-  per-request slowloris kill. The parked slot is held only while no request
-  is in flight; it is released the moment the next request's first bytes
-  arrive, so the cap bounds parked threads, not active requests.
+  request. Until the 2026-09-29 audit (HTTP-1) a parked connection held a
+  main-pool worker thread for its whole idle window, and the parked-connection
+  cap (`server.http.keep_alive_max_connections`, default 8) equalled the pool
+  size, so this text's earlier claim that the cap stopped "a single client
+  [from converting] open sockets into held worker threads beyond the
+  operator's budget" was wrong: eight sockets sending one request every
+  idle − 1 seconds held every worker indefinitely. Now (ADR-0077) no worker
+  ever waits on a quiet connection: the connection dispatcher holds every
+  parked connection (and every new one before its first byte) on one
+  `poll(2)` thread and hands it to a worker only once it is readable. The idle
+  window (`server.http.keep_alive_idle_seconds`, default 15 s) and the
+  parked-connection cap still apply, but they bound open descriptors and
+  memory, not workers. Once bytes arrive the head and body limits apply to
+  that request as before.
+
+- **One client holding every worker (2026-09-29 audit HTTP-1 and HTTP-8,
+  ADR-0077).** Besides keep-alive parking, a single client could hold the
+  whole main pool by opening connections and sending nothing (5 s each), by
+  dribbling request heads (30 s each), by dribbling a TLS ClientHello, or by
+  trickling request bodies one byte every 4.9 s under a 5 s inter-byte gap
+  (about 94 s per POST, and nearly an hour for an upload declaring the 50 MiB
+  maximum, which the transport accepted before authentication). Mitigations,
+  which compose:
+  - the dispatcher above, so idle and not-yet-readable connections cost no
+    worker;
+  - a per-client worker share: at most `max(1, server.http.request_threads /
+    4)` connections from one client address (IPv6 grouped by
+    `server.http.ipv6_client_prefix_length`) are held by workers at once; a
+    readable connection over the share waits in the dispatcher, out of the
+    poll set, until one of that client's workers is released;
+  - a continuous minimum body rate: once 10 s have passed since the body read
+    started, the body must have delivered at least 16 KiB/s × (elapsed − 10 s)
+    or the server answers 408 and closes;
+  - a media upload is read under `security.media.max_upload_size` only when
+    its request head authenticates; otherwise the server answers 401
+    `M_MISSING_TOKEN`/`M_UNKNOWN_TOKEN` before reading the body and closes;
+  - HTTP-8: a connection is closed (`Connection: close`) after 1 000 requests
+    or one hour, so a kept-alive connection cannot be held indefinitely;
+  - `server.http.request_threads` (default 16, range 4..256) sizes the pool.
+  **Residual:** a client can still hold its own share of workers for the head
+  deadline (30 s) or at the minimum body rate; many distinct addresses can
+  still share out the whole pool (the share bounds one address, not a
+  distributed attack); and connections from a `server.trusted_proxies`
+  address are exempt from the per-client share — the reverse proxy must
+  enforce per-client fairness itself. The TLS handshake still runs on a
+  worker, bounded by the 15 s handshake timeout and the per-client share.
 
 - **One host filling the global connection budget (0.12.13 audit item 1,
   ADR-0072).** Admission was bounded only by the global queue depth and the
@@ -1235,7 +1261,9 @@ threat it closes; the controls above are the standing defences these reinforce.
   **Residual:** addresses in `server.trusted_proxies` are exempt, so behind a
   reverse proxy the per-client connection limit is the proxy's job; and many
   distinct hosts can still share out the global budget — the cap bounds one
-  host's share, not a distributed flood.
+  host's share of *connections*, not a distributed flood. It never bounded one
+  host's share of *worker threads*: the cap (64) was eight times the pool.
+  That is the per-client worker share of ADR-0077 (see the bullet above).
 
 - **Unauthenticated audit flood (2026-09-29 audit AUTH-1, ADR-0080).** A request
   with an unknown bearer token, one the rate limiter refused, or one refused
@@ -1460,6 +1488,10 @@ threat it closes; the controls above are the standing defences these reinforce.
   `pump()` driving `WANT_READ`/`WANT_WRITE` against a deadline for both
   reads and writes. See
   [ADR-0054](adr/0054-tls-sockets-stay-non-blocking-for-the-life-of-the-connection.md).
+  The body deadline was later replaced by a continuous minimum body rate
+  (2026-09-29 audit HTTP-1, ADR-0077): with the old deadline and a 5 s
+  inter-byte gap, one byte every 4.9 s still held a worker for most of an hour
+  on a large upload.
 - **Unconfined decoder on the primary production platform (0.12.7):** the
   thumbnail worker exists so a libpng/libjpeg-turbo memory-safety bug is
   contained rather than fatal, and OpenBSD (`pledge("stdio")`) and FreeBSD

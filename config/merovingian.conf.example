@@ -50,11 +50,19 @@ server.cors.max_age=86400
 # with "Connection: close". Pipelining (multiple outstanding requests) is
 # not supported; pipelined bytes are buffered and answered in order.
 # keep_alive_idle_seconds bounds how long an idle kept-alive connection is
-# held before the server closes it (1..300). Every parked connection holds a
-# request-pool worker thread, so keep_alive_max_connections (1..4096) caps
-# how many connections the whole process will park at once — beyond the cap
-# the server answers with "Connection: close" instead of parking. These
-# keys are read when the listeners start; changes require a restart.
+# held before the server closes it (1..300). Idle connections are held by the
+# connection dispatcher, not by request-pool worker threads (ADR-0077);
+# keep_alive_max_connections (1..4096) caps how many connections the whole
+# process will park at once — beyond the cap the server answers with
+# "Connection: close" instead of parking. A connection is also closed after
+# 1000 requests or one hour. These keys are read when the listeners start;
+# changes require a restart.
+#
+# request_threads (4..256) sizes the main request pool that serves every
+# listener. One client address may hold at most a quarter of its workers at
+# once (addresses in server.trusted_proxies are exempt), and remote directory
+# and media proxying at most half. Restart required.
+server.http.request_threads=16
 server.http.keep_alive=true
 server.http.keep_alive_idle_seconds=15
 server.http.keep_alive_max_connections=8

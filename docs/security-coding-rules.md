@@ -632,7 +632,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `security.media.remote_fetch_enabled` and `allow_remote` before any discovery.
   Why: releasing the runtime mutex frees the mutex, not the thread; `publicRooms?server=`, a
   remote alias lookup and remote media are reachable without authentication, and a peer that
-  never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079).
+  never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079). The caps are
+  half of `server.http.request_threads`, never a separate setting.
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and
@@ -646,6 +647,28 @@ quickly finding everything a given `AGENTS.md` file contributed.
   the server believes it is enforcing, parking one worker thread for as long as the
   attacker holds the connection open.
   Source: [ADR-0054](adr/0054-tls-sockets-stay-non-blocking-for-the-life-of-the-connection.md).
+
+- **No worker thread may wait on a connection with nothing to read.** Waiting for a first
+  byte or the next keep-alive request is the connection dispatcher's job
+  (`homeserver::HttpConnectionDispatcher` over `net::ConnectionParker`); a request round
+  that has written its response hands the connection back rather than waiting on it. A
+  connection is dispatched only when readable, at most one per worker and at most
+  `max(1, request_threads / 4)` per client address (trusted proxies exempt), and it is owned
+  by exactly one of the dispatcher, one pool task or one sync-pool task.
+  Why: a worker tied to its connection through idle and partial-read phases let one client
+  hold the whole pool with eight sockets — kept alive with one request every idle − 1
+  seconds, trickled bodies, or connects that never send a byte (audit HTTP-1, ADR-0077).
+  Source: `src/net/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **Request bodies are read under a minimum rate, and a large upload only after its head
+  authenticates.** After a 10 s grace the body must have delivered 16 KiB/s × (elapsed −
+  10 s) or the round ends with 408; the media upload routes read beyond the 1 MiB transport
+  cap only once `media_upload_authentication_refusal` has accepted the access token, and
+  otherwise answer 401 from the head and close. A new route that accepts a large body gets
+  the same pre-body authentication.
+  Why: a whole-body deadline with a 5 s inter-byte gap let one byte every 4.9 s hold a worker
+  for most of an hour on an unauthenticated 50 MiB upload (audit HTTP-1, HTTP-6; ADR-0077).
+  Source: `src/homeserver/AGENTS.md`, `src/http/AGENTS.md`.
 
 ## Database
 

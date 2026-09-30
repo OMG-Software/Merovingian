@@ -110,7 +110,9 @@ the main pool's threads for the round trip. Every such call therefore:
 3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
    anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
 
-The caps derive from `main_request_pool_threads`; they are constants, not configuration. A new
+The caps derive from the main request pool size (`server.http.request_threads`, applied by
+`start_runtime` through `client_outbound_proxy_policy_for_pool`); they have no configuration of their
+own. A new
 route that proxies to a remote server without one of these three is the defect. See ADR-0079 and
 `docs/http-transport.md` "Client-triggered outbound proxying".
 
@@ -148,7 +150,20 @@ add another.
 
 - **Default cap**: `rt.limits.max_body_bytes` (64 KiB) — applied at the top of the dispatch function
 - **Media uploads**: bypass the default cap; use `config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size)`
+- The transport (`http_server.cpp`) reads a media upload body larger than its 1 MiB cap only after
+  `media_upload_authentication_refusal` has accepted the head's access token (HTTP-1, HTTP-6,
+  ADR-0077); an unauthenticated one gets its 401 before a byte of the body is read. A new route that
+  accepts large bodies must get the same pre-body authentication, not just a larger cap.
 - Any new endpoint that accepts large bodies must explicitly opt out of the default cap
+
+## Connections and worker threads (ADR-0077)
+
+`http_server.cpp` never lets a worker wait on a quiet connection: `HttpConnectionDispatcher` holds
+every connection that is not being served and hands it to the main pool only once it is readable,
+at most `max(1, pool / 4)` per client address. Code in a request round must therefore not wait for
+the *next* request or for a client that has gone quiet; return the connection (`continue_keep_alive`)
+and let the dispatcher wait. A connection is owned by exactly one of the dispatcher, one pool task or
+one sync-pool task (`std::unique_ptr<HttpConnection>`); pass it on by moving it, never by sharing it.
 
 ## Media upload boundary
 

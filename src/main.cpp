@@ -739,10 +739,14 @@ struct ListenerBinding final
     // No worker ever waits on a quiet connection: the dispatcher below holds
     // those, and hands a connection to the pool only once it is readable, at
     // most one per worker at a time and at most a quarter of the workers to
-    // one client address.
-    auto pool =
-        merovingian::net::ThreadPool{static_cast<std::size_t>(runtime.homeserver.config.server().http.request_threads),
-                                     install_audit_sink_hook, max_queued_connections};
+    // one client address. Connections waiting for a worker therefore wait in
+    // the dispatcher (bounded by listeners.max_queued_connections); every item
+    // in the pool's own queue holds one of the dispatcher's per-worker shares,
+    // so the queue never exceeds one item per worker. That is its bound: a
+    // small max_queued_connections must not make the pool refuse a connection
+    // the dispatcher has already handed it.
+    auto const request_threads = static_cast<std::size_t>(runtime.homeserver.config.server().http.request_threads);
+    auto pool = merovingian::net::ThreadPool{request_threads, install_audit_sink_hook, request_threads};
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,
     // login, federation) are always serviced without delay.
