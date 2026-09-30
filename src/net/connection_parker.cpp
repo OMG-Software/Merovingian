@@ -200,7 +200,8 @@ private:
 
     // Hands out every ready connection the caps allow, oldest first. The
     // selection happens under the lock; the callbacks run after it is dropped.
-    auto dispatch_ready(std::shared_ptr<State> const& self, std::deque<Entry>& ready) -> void
+    auto dispatch_ready(std::shared_ptr<State> const& self, // SHARED_PTR: reviewed — poll keeps State alive
+                        std::deque<Entry>& ready) -> void
     {
         auto out = std::vector<Dispatched>{};
         {
@@ -372,7 +373,9 @@ auto ConnectionParker::State::run(std::shared_ptr<State> self) -> void // SHARED
     });
 }
 
-ConnectionParker::ActiveShare::ActiveShare(std::shared_ptr<State> state, std::string client_key) noexcept
+ConnectionParker::ActiveShare::ActiveShare(
+    std::shared_ptr<State> state, // SHARED_PTR: reviewed — RAII owner token moved into member
+    std::string client_key) noexcept
     : m_state{std::move(state)}
     , m_client_key{std::move(client_key)}
 {

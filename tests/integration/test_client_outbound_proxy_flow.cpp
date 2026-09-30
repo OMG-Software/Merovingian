@@ -129,13 +129,15 @@ private:
 class CountingDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
 {
 public:
-    explicit CountingDiscoveryNetwork(std::shared_ptr<std::atomic<int>> calls)
+    explicit CountingDiscoveryNetwork(
+        std::shared_ptr<std::atomic<int>> calls // SHARED_PTR: reviewed — test shares counter with caller
+        )
         : m_calls{std::move(calls)}
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view,
-                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
     {
         m_calls->fetch_add(1);
         return {};
@@ -147,15 +149,15 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view,
-                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         m_calls->fetch_add(1);
         return {false, {}, "not found"};
     }
 
 private:
-    std::shared_ptr<std::atomic<int>> m_calls;
+    std::shared_ptr<std::atomic<int>> m_calls; // SHARED_PTR: reviewed — test fixture member shared with caller
 };
 
 [[nodiscard]] auto proxy_test_config(bool remote_fetch_enabled) -> merovingian::config::Config
@@ -181,8 +183,8 @@ struct Answer final
 };
 
 [[nodiscard]] auto send(ClientServerRuntime& runtime, std::string method, std::string target,
-                        std::string const& client_address, std::string const& token = {},
-                        std::string body = {}) -> Answer
+                        std::string const& client_address, std::string const& token = {}, std::string body = {})
+    -> Answer
 {
     auto request = merovingian::homeserver::LocalHttpRequest{};
     request.method = std::move(method);

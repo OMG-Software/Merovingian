@@ -85,7 +85,7 @@ struct HttpServeTuning final
 };
 
 // Owns every connection that is not being served (ADR-0077, audit finding
-// HTTP-1): new connections before their first byte, and kept-alive connections
+// HTTP-1): fresh connections before their first byte, and kept-alive connections
 // between requests, all on one poll(2) thread (net::ConnectionParker). A
 // connection reaches a worker of `pool` only once it is readable, at most
 // pool-size connections are out at once, and at most max(1, pool-size / 4) of

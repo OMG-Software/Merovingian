@@ -200,8 +200,8 @@ struct SignedInvite final
 };
 
 [[nodiscard]] auto make_signed_invite(std::string const& room_id, std::string const& sender,
-                                      std::string const& state_key,
-                                      std::string const& room_version = "12") -> SignedInvite
+                                      std::string const& state_key, std::string const& room_version = "12")
+    -> SignedInvite
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
@@ -2023,8 +2023,8 @@ namespace
     return reparsed.value;
 }
 
-[[nodiscard]] auto unsigned_member_event(std::string const& room_id,
-                                         std::string const& user_id) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto unsigned_member_event(std::string const& room_id, std::string const& user_id)
+    -> merovingian::canonicaljson::Value
 {
     auto raw = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""};
     raw += user_id;
@@ -2041,9 +2041,10 @@ namespace
 
 // A member event for `user_id` signed with this runtime's own current signing
 // key, under the key ID the server publishes for it.
-[[nodiscard]] auto own_signed_member_event(
-    merovingian::homeserver::HomeserverRuntime& runtime, std::string const& room_id, std::string const& user_id,
-    merovingian::rooms::RoomVersionPolicy const& policy) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto own_signed_member_event(merovingian::homeserver::HomeserverRuntime& runtime,
+                                           std::string const& room_id, std::string const& user_id,
+                                           merovingian::rooms::RoomVersionPolicy const& policy)
+    -> merovingian::canonicaljson::Value
 {
     auto const own_key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
     REQUIRE(own_key.has_value());
@@ -2051,8 +2052,9 @@ namespace
                             runtime.database.signing_secret_key.bytes());
 }
 
-[[nodiscard]] auto counting_resolver(std::shared_ptr<std::atomic<bool>> const& called)
-    -> merovingian::federation::RemoteKeyResolver
+[[nodiscard]] auto counting_resolver(
+    std::shared_ptr<std::atomic<bool>> const& called // SHARED_PTR: reviewed — test callback shares bool flag
+    ) -> merovingian::federation::RemoteKeyResolver
 {
     return [called](std::string_view,
                     std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
@@ -2235,8 +2237,8 @@ namespace
     return parsed.value;
 }
 
-[[nodiscard]] auto v12_create_event(std::string const& creator,
-                                    std::string const& nonce) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto v12_create_event(std::string const& creator, std::string const& nonce)
+    -> merovingian::canonicaljson::Value
 {
     return parse_test_event(R"({"type":"m.room.create","state_key":"","sender":")" + creator +
                             R"(","depth":1,"origin_server_ts":1000,"prev_events":[],"auth_events":[],)"
