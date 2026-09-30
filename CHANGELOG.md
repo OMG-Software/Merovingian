@@ -1,3 +1,98 @@
+## 0.12.15
+
+- **FIXED: worker-pool starvation via idle and slow connections (HTTP-1) and
+  keep-alive lifetime limits (HTTP-8).** New `net::ConnectionParker` and
+  `homeserver::HttpConnectionDispatcher` hold every connection that is not being
+  served on one `poll(2)` thread and dispatch it to the main request pool only
+  once it is readable. A single client address can hold at most
+  `max(1, request_threads / 4)` workers at once (trusted reverse proxies are
+  exempt). Request bodies are read under a continuous minimum rate of 16 KiB/s
+  after a 10 s grace. Media uploads above the transport cap authenticate the
+  request head before any body bytes are read. Connections are closed after
+  1 000 requests or one hour of lifetime. New config key
+  `server.http.request_threads` (4..256, default 16) sizes the main pool and is
+  wired to the client-triggered outbound proxy caps so they stay at half the
+  pool. ADR-0077; amends ADR-0072.
+
+- **FIXED: state-resolution and event-authorisation divergences (EVT-2, EVT-3,
+  EVT-4, EVT-6).** `m.room.power_levels` is now read from the resolved room state,
+  not from the most recent event with that type. Negative per-user power levels
+  are honoured. State resolution correctly handles partitions with three or more
+  groups and applies Kahn topological ordering to power-level events before the
+  mainline tie-break.
+
+- **FIXED: SIGPIPE handling and thread-start ordering (HTTP-5, ISO-1).** Every
+  executable entry point ignores `SIGPIPE`. No thread is started before process
+  hardening and seccomp are installed, and seccomp filters are applied with
+  `TSYNC`. ADR-0082.
+
+- **FIXED: federation worker signing oracle (CRY-1).** The federation worker no
+  longer carries a signing provider; the main process refuses `sign_request`
+  frames from the worker. ADR-0078 supersedes the relevant part of ADR-0015.
+
+- **FIXED: bad-signature backoff charged to the source address, not the claimed
+  origin (FED-4).** Failed signature verification now accrues backoff against the
+  connecting peer's address and the backoff decays. ADR-0081.
+
+- **FIXED: PostgreSQL `bytea` round-trip (DB-1).** `bytea` columns are decoded
+  from the server's hex form on read and bound as binary on write, so the
+  signing key and other binary rows survive a restart on PostgreSQL.
+
+- **FIXED: `send_join` state binding and own-domain verification (FED-1).** The
+  `state` array of a `send_join` response is bound to the room being joined.
+  Events whose sender domain matches the local server are now verified against
+  our own signing keys, and the federation resolver refuses to fetch keys for
+  our own server name. ADR-0083.
+
+- **FIXED: federation room reads and missing-events bounds (FED-2).** Federation
+  endpoints that return room events or state now require the origin server to
+  be a member of the room or for the room to be world-readable, and
+  `/get_missing_events` is bounded.
+
+- **FIXED: audit-row flooding and retained prepared statements (AUTH-1,
+  AUTH-11).** Unauthenticated rejection paths that write audit rows are
+  rate-capped, use a bounded in-memory window (1 024 rows) and 255-byte fields,
+  and no prepared statements are retained across calls. ADR-0080.
+
+- **FIXED: to-device sender binding, inbound invite authorisation and device-list
+  fan-out (FED-3, FED-5, FED-7).** To-device EDUs bind the sender, are
+  deduplicated by `message_id`, and cannot overwrite a ban. Inbound invites are
+  authorised against room state before acceptance. Device-list EDUs fan out only
+  to sharers of the room, deduplicated. ADR-0085.
+
+- **FIXED: sliding-sync room access and private receipts (CSAZ-1, CSAZ-4).**
+  Sliding-sync subscriptions are refused for rooms the user cannot access, and
+  `m.read.private` / `m.fully_read` receipts are returned only to their owner.
+
+- **FIXED: client read gates and history visibility on every read path (CSAZ-2,
+  CSAZ-3).** `initialSync`, `/members`, `/state`, `/messages`, `/context`,
+  `/event`, `/search`, `/relations`, `/threads`, `/sync` and sliding sync now
+  judge history visibility from the room state recorded at each event and apply
+  room-read access checks. Banned users see state as of the ban. ADR-0084.
+
+- **FIXED: client-triggered outbound budget and remote-media fetch gate (HTTP-2,
+  OUT-7).** `publicRooms?server=`, remote room-alias lookups and remote media
+  downloads now take a slot in a bounded in-flight budget before any outbound
+  call and run under a short deadline. `security.media.remote_fetch_enabled=false`
+  now blocks remote media fetches before discovery. ADR-0079.
+
+### Operator- and client-visible behaviour changes in 0.12.15
+
+- History visibility is now enforced on every client read path. Pre-state-group
+  history is visible only to users who were joined when the event was sent.
+- Banned users see room state as of their ban event.
+- Sliding sync enforces `timeline_limit` ≤ 100 and caps subscriptions and
+  `required_state` pairs to 256 each.
+- Client-triggered outbound proxy calls return `429 M_LIMIT_EXCEEDED` when the
+  in-flight budget is exhausted.
+- `security.media.remote_fetch_enabled=false` now really blocks remote media
+  fetches and thumbnails.
+- Inbound `m.receipt` events now accept only `m.read`; other receipt types are
+  rejected.
+- The unauthenticated audit window is 1 024 rows.
+- New configuration key: `server.http.request_threads` (4..256, default 16,
+  restart required).
+
 ## 0.12.14
 
 - **DOCS: second full security audit (September 2026).**
