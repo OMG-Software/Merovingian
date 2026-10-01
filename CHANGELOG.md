@@ -12,6 +12,15 @@
   `runtime.mutex` and moves it into the call, so releasing the mutex around the
   network round trip can no longer dangle on a rotated key. ADR-0086.
 
+- **FIXED: OpenBSD build failure in TLS layer (TLS-1).**
+  `src/homeserver/tls.cpp` now detects LibreSSL at compile time and omits the
+  `SSL_has_pending` call that is not present in the OpenBSD base system.
+
+- **FIXED: FreeBSD/NetBSD build failure in sync history-visibility tests
+  (SYNC-1).** `tests/unit/test_sync_history_visibility.cpp` now explicitly
+  includes `<algorithm>` so `std::ranges::find` is visible on libc++
+  implementations that do not pull it in transitively.
+
 - **FIXED: worker-pool starvation via idle and slow connections (HTTP-1) and
   keep-alive lifetime limits (HTTP-8).** New `net::ConnectionParker` and
   `homeserver::HttpConnectionDispatcher` hold every connection that is not being
