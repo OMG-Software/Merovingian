@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -1054,8 +1055,8 @@ namespace
     // (rate_limit_client_key, so trusted_proxies applies) and whether the caller
     // set allow_remote=false. Only a literal `false` opts out, matching the
     // spec's boolean; anything else leaves the default (true).
-    [[nodiscard]] auto remote_media_context(LocalHttpRequest const& request,
-                                            HomeserverRuntime const& runtime) -> RemoteMediaRequestContext
+    [[nodiscard]] auto remote_media_context(LocalHttpRequest const& request, HomeserverRuntime const& runtime)
+        -> RemoteMediaRequestContext
     {
         auto context = RemoteMediaRequestContext{};
         context.client_key = rate_limit_client_key(request, runtime.config.server());
@@ -2767,14 +2768,14 @@ namespace
     }
 
     [[nodiscard]] auto signing_material_for_backfill(HomeserverRuntime& runtime)
-        -> std::pair<std::string, std::span<std::uint8_t const>>
+        -> std::pair<std::string, core::SecretBuffer>
     {
         auto const signing_key = find_active_server_signing_key(runtime);
         if (!signing_key.has_value())
         {
             return {};
         }
-        return {signing_key->key_id, runtime.database.signing_secret_key.bytes()};
+        return {signing_key->key_id, core::SecretBuffer{runtime.database.signing_secret_key.bytes()}};
     }
 
     // Fetch a list of event JSON bodies from the origin via
@@ -2785,8 +2786,8 @@ namespace
                                                 std::vector<std::string> const& earliest_events, std::size_t limit)
         -> std::optional<std::vector<std::string>>
     {
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             LOG_WARNING("Backfill signing key unavailable; cannot fetch missing events");
             return std::nullopt;
@@ -2819,7 +2820,7 @@ namespace
             std::string{origin}, "POST", "/_matrix/federation/v1/get_missing_events/" + std::string{room_id},
             runtime.config.server().server_name, serialized.output);
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.get_missing_events_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.get_missing_events_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
@@ -2969,8 +2970,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -2978,7 +2979,7 @@ namespace
             std::string{origin}, "GET", "/_matrix/federation/v1/event/" + core::percent_encode_path_component(event_id),
             runtime.config.server().server_name, "");
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.event_fetch_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_fetch_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
@@ -2999,8 +3000,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -3008,7 +3009,7 @@ namespace
             std::string{origin}, "GET", "/_matrix/federation/v1/event/" + core::percent_encode_path_component(event_id),
             runtime.config.server().server_name, "");
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.snapshot_event_fetch_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.snapshot_event_fetch_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
@@ -3058,8 +3059,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -3068,9 +3069,9 @@ namespace
                           "?event_id=" + core::percent_encode_path_component(event_id);
         auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
                                                         runtime.config.server().server_name, "");
-        auto const [ok, body] =
-            perform_sync_outbound_call(runtime, room_id, tx, key_id, secret_key, "federation.backfill.state_ids_failed",
-                                       runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.state_ids_failed",
+            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
             return std::nullopt;
@@ -3108,8 +3109,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -3119,7 +3120,7 @@ namespace
         auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
                                                         runtime.config.server().server_name, "");
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.event_auth_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_auth_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {

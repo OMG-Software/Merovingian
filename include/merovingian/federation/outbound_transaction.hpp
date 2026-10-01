@@ -3,12 +3,12 @@
 
 #pragma once
 
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,13 +64,12 @@ struct OutboundCall final
     std::vector<std::string> pinned_addresses{};
     std::string key_id{};
     // Raw 64-byte libsodium Ed25519 secret key for this server's signing
-    // identity, used to sign the X-Matrix Authorization header. Carried as a
-    // non-owning span: the caller (the runtime's SecretBuffer for synchronous
-    // calls, or DispatchWorkerConfig::secret_key for async dispatch) owns and
-    // outlives the signing operation, so the key is never copied into an
-    // unpinned std::string. build_outbound_request signs synchronously and
-    // discards the span before the owner can be released.
-    std::span<std::uint8_t const> secret_key{};
+    // identity, used to sign the X-Matrix Authorization header. Owned by the
+    // call object as an mlocked, zeroised core::SecretBuffer so no caller has
+    // to keep an external buffer alive across lock releases, async worker tasks,
+    // or orphan futures. build_outbound_request signs synchronously and discards
+    // its span before the OutboundCall is destroyed.
+    core::SecretBuffer secret_key{};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{60U};
     // Optional PEM CA bundle trusted in place of the system trust store,

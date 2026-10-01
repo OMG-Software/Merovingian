@@ -71,7 +71,7 @@ namespace
         // verifier uses so the project speaks a single signing scheme.
         auto signature =
             make_federation_signature(call.transaction.origin, call.transaction.destination, call.transaction.method,
-                                      call.transaction.target, call.transaction.body, call.secret_key);
+                                      call.transaction.target, call.transaction.body, call.secret_key.bytes());
         auto header = std::string{"X-Matrix origin=\""};
         header += call.transaction.origin;
         header += "\",destination=\"";

@@ -79,9 +79,11 @@ that already holds the mutex still frees it outright. That is not a nicety:
 releasing a single level shipped as a server-wide stall three times
 (`create_room` 0.12.1, `leave_room` 0.12.3, `invite_user_by_threepid` 0.12.6).
 
-Keep every read and mutation of runtime state outside the scope. In particular
-request signing stays under the lock, because `OutboundCall::secret_key` borrows
-a span into the runtime's `SecretBuffer`.
+Keep every read and mutation of runtime state outside the scope. The signing
+secret is copied into an owned `core::SecretBuffer` before the release (while
+`runtime.mutex` is still held) and moved into `OutboundCall::secret_key`; the call
+then owns the key and can sign after releasing the mutex without dangling on the
+runtime buffer.
 
 When the released region produces values the code after it consumes, return
 them from an immediately-invoked lambda — or a named function, as `join_room`

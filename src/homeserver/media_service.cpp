@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
@@ -461,8 +462,8 @@ namespace
     // unauthenticated client can trigger this, so it must not write a durable
     // row per request (ADR-0080).
     [[nodiscard]] auto remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
-                                            std::string_view media_id,
-                                            RemoteMediaRequestContext const& remote) -> std::optional<OperationResult>
+                                            std::string_view media_id, RemoteMediaRequestContext const& remote)
+        -> std::optional<OperationResult>
     {
         auto const enabled = runtime.media_repository.config.remote_fetch_enabled;
         if (enabled && remote.allow_remote)
@@ -592,7 +593,9 @@ namespace
         call.resolved_port = resolution.resolved_port;
         call.pinned_addresses = resolution.pinned_addresses;
         call.key_id = signing_key->key_id;
-        call.secret_key = runtime.database.signing_secret_key.bytes();
+        // Own the signing key so the outbound call can release runtime.mutex
+        // without borrowing from the runtime's mlocked buffer.
+        call.secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
         call.trusted_ca_pem = std::string{trusted_ca_pem};
         call.connect_timeout_seconds = std::min(federation_budget, 30U);
         call.total_timeout_seconds = federation_budget;
@@ -757,8 +760,8 @@ namespace
     // back to remote_media_fetch_disabled() when federation infrastructure is
     // unavailable.
     [[nodiscard]] auto fetch_remote_media_live(HomeserverRuntime& runtime, std::string_view origin_server,
-                                               std::string_view media_id,
-                                               RemoteMediaRequestContext const& remote) -> OperationResult
+                                               std::string_view media_id, RemoteMediaRequestContext const& remote)
+        -> OperationResult
     {
         // OUT-7: every entry point has already asked, before its own policy
         // hook; asking again here means no future caller can reach discovery or

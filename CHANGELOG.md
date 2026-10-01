@@ -1,5 +1,17 @@
 ## 0.12.15
 
+- **FIXED: critical logs lost when the process exits after hardening refusal
+  (LOG-1).** `LOG_CRITICAL` messages now bypass the asynchronous writer queues
+  and are written synchronously to console and file, so startup/hardening
+  refusal lines are visible before the main thread exits. ADR-0087.
+
+- **FIXED: heap-use-after-free in outbound federation signing (CRY-2).**
+  `federation::OutboundCall` now owns its copy of the Ed25519 signing secret in
+  a `core::SecretBuffer` instead of borrowing a span from `runtime.database
+  .signing_secret_key`. Every caller copies the secret while holding
+  `runtime.mutex` and moves it into the call, so releasing the mutex around the
+  network round trip can no longer dangle on a rotated key. ADR-0086.
+
 - **FIXED: worker-pool starvation via idle and slow connections (HTTP-1) and
   keep-alive lifetime limits (HTTP-8).** New `net::ConnectionParker` and
   `homeserver::HttpConnectionDispatcher` hold every connection that is not being

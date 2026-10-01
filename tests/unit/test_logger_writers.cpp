@@ -201,3 +201,36 @@ SCENARIO("A logger that never starts its writers still delivers every message", 
         }
     }
 }
+
+SCENARIO("A CRITICAL log is written synchronously even after writer threads have started",
+         "[observability][logger][critical]")
+{
+    GIVEN("a logger whose writers are running and a file sink")
+    {
+        auto const directory = merovingian::tests::temporary_directory() / "merovingian-logger-critical-test";
+        std::filesystem::create_directories(directory);
+        auto const log_path = directory / "critical.log";
+
+        auto console_capture = CoutCapture{};
+        auto logger = SingleLog{};
+        logger.set_console_log_level(LogLevel::info);
+        logger.set_file_log_level(LogLevel::info);
+        logger.set_log_file_path(log_path.string());
+        REQUIRE(logger.start_writers());
+
+        WHEN("a CRITICAL message is logged and the logger is left running")
+        {
+            logger.critical("critical-test", "fatal startup refusal");
+
+            THEN("the message is already on the console and in the file before any flush or destruction")
+            {
+                REQUIRE(count_occurrences(console_capture.text(), "fatal startup refusal") == 1U);
+                REQUIRE(count_occurrences(read_file(log_path), "fatal startup refusal") == 1U);
+            }
+        }
+
+        // The logger destructor stops the writers; cleanup is safe after it runs.
+        std::error_code ec;
+        std::filesystem::remove_all(directory, ec);
+    }
+}

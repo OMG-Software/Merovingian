@@ -750,8 +750,9 @@ Rules for anything added to these paths:
 
 - Only the network call goes inside the unlock scope. Reads and mutations of
   runtime state stay outside it, before or after.
-- Request signing stays under the lock: `OutboundCall::secret_key` borrows a
-  span into the runtime's `SecretBuffer`, which the lock protects.
+- The signing secret is copied into an owned `core::SecretBuffer` before the
+  scope opens and moved into `OutboundCall::secret_key`; the call owns the key
+  and can sign after the mutex is released (ADR-0086).
 - The scope is a no-op when no guard is published and none is passed in (the
   federation worker, a test calling a service function directly).
 - It releases **every** recursion level the calling thread holds, not only the

@@ -28,6 +28,7 @@
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 
@@ -70,9 +71,8 @@ auto const test_key_id = std::string{"ed25519:auto"};
     call.resolved_port = 8448U;
     call.pinned_addresses = {"203.0.113.1"};
     call.key_id = test_key_id;
-    // Borrow the keypair's secret key as a span — kp must outlive the call, which
-    // each scenario guarantees by holding kp in the enclosing GIVEN scope.
-    call.secret_key = merovingian::federation::test::secret_key_span(kp);
+    // Own the keypair's secret key so the call does not rely on kp outliving it.
+    call.secret_key = merovingian::core::SecretBuffer{merovingian::federation::test::secret_key_span(kp)};
     return call;
 }
 

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -12,7 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -121,16 +121,17 @@ struct SendJoinStateSplit final
 // federation proxy (worker thread pool) if available, else direct outbound client.
 // Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
 // room_id is used only for worker shard routing; pass {} for non-room requests.
-// `secret_key` is the raw 64-byte Ed25519 secret key as a non-owning span —
-// callers pass runtime.database.signing_secret_key.bytes() directly so the key
-// is never copied into an unpinned std::string. The runtime outlives the call.
+// `secret_key` is an owned 64-byte Ed25519 secret key in a mlocked
+// core::SecretBuffer. Callers copy it from runtime.database.signing_secret_key
+// while holding runtime.mutex and std::move it in; the call may release the
+// mutex during the network round trip and must not dangle on the runtime buffer.
 // `max_response_bytes` overrides the outbound response body cap (0 = use the
 // OutboundCall default of 16 MiB); send_join passes
 // runtime.federation.config.join_response_max_bytes since a large room's
 // full state routinely exceeds the default.
 [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
-                                              std::string_view key_id, std::span<std::uint8_t const> secret_key,
+                                              std::string_view key_id, core::SecretBuffer secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                               std::uint64_t max_response_bytes = 0U) -> std::pair<bool, std::string>;
 // perform_sync_outbound_call for calls a client can trigger without
@@ -143,9 +144,9 @@ struct SendJoinStateSplit final
 // (ADR-0079, `admit_client_outbound_proxy`).
 [[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
-                                                 std::string_view key_id, std::span<std::uint8_t const> secret_key,
-                                                 std::string_view diagnostic_event,
-                                                 std::uint32_t deadline_seconds) -> std::pair<bool, std::string>;
+                                                 std::string_view key_id, core::SecretBuffer secret_key,
+                                                 std::string_view diagnostic_event, std::uint32_t deadline_seconds)
+    -> std::pair<bool, std::string>;
 
 // The limits of a bounded call: one wall-clock deadline for discovery plus the
 // request, and the margin the federation-worker round trip may add to it.
@@ -157,11 +158,12 @@ struct BoundedOutboundLimits final
 
 // The shared implementation of perform_sync_outbound_call (bounded == nullopt)
 // and perform_bounded_outbound_call. Prefer those two.
-[[nodiscard]] auto perform_outbound_call(
-    HomeserverRuntime& runtime, std::string_view room_id, federation::OutboundTransaction const& transaction,
-    std::string_view key_id, std::span<std::uint8_t const> secret_key, std::string_view diagnostic_event,
-    std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
-    std::optional<BoundedOutboundLimits> const& bounded) -> std::pair<bool, std::string>;
+[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
+                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
+                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+                                         std::optional<BoundedOutboundLimits> const& bounded)
+    -> std::pair<bool, std::string>;
 
 // ADR-0064 phase B1: joined_members is what callers used before (the user
 // IDs found with membership="join" among the ingested state entries);
@@ -190,8 +192,8 @@ struct SendJoinStateIngestResult final
 // to current_state, never counted as a member. join_room filters the arrays
 // before verification as well; this is the last line, at the writer.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, std::string_view room_id,
-                                          canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult;
+                                          canonicaljson::Array const& state_arr, rooms::RoomVersionPolicy const& policy)
+    -> SendJoinStateIngestResult;
 // FED-1 (ADR-0083): returns the entries of a send_join response's `state` or
 // `auth_chain` array that belong to `room_id`, the room being joined, dropping
 // every other entry. An event belongs to the room when its `room_id` equals

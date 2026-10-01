@@ -1658,33 +1658,34 @@ namespace
 // HTTP call runs in the worker's thread pool, freeing this handler thread.
 [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
-                                              std::string_view key_id, std::span<std::uint8_t const> secret_key,
+                                              std::string_view key_id, core::SecretBuffer secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                               std::uint64_t max_response_bytes) -> std::pair<bool, std::string>
 {
-    return perform_outbound_call(runtime, room_id, transaction, key_id, secret_key, diagnostic_event, timeout_seconds,
-                                 max_response_bytes, std::nullopt);
+    return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key), diagnostic_event,
+                                 timeout_seconds, max_response_bytes, std::nullopt);
 }
 
 [[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
-                                                 std::string_view key_id, std::span<std::uint8_t const> secret_key,
-                                                 std::string_view diagnostic_event,
-                                                 std::uint32_t deadline_seconds) -> std::pair<bool, std::string>
+                                                 std::string_view key_id, core::SecretBuffer secret_key,
+                                                 std::string_view diagnostic_event, std::uint32_t deadline_seconds)
+    -> std::pair<bool, std::string>
 {
     auto const bounded = std::optional<BoundedOutboundLimits>{
         BoundedOutboundLimits{OutboundDeadline{deadline_seconds},
                               std::chrono::seconds{runtime.client_outbound_proxy_policy.worker_margin_seconds}}
     };
-    return perform_outbound_call(runtime, room_id, transaction, key_id, secret_key, diagnostic_event, deadline_seconds,
-                                 0U, bounded);
+    return perform_outbound_call(runtime, room_id, transaction, key_id, std::move(secret_key), diagnostic_event,
+                                 deadline_seconds, 0U, bounded);
 }
 
-[[nodiscard]] auto perform_outbound_call(
-    HomeserverRuntime& runtime, std::string_view room_id, federation::OutboundTransaction const& transaction,
-    std::string_view key_id, std::span<std::uint8_t const> secret_key, std::string_view diagnostic_event,
-    std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
-    std::optional<BoundedOutboundLimits> const& bounded) -> std::pair<bool, std::string>
+[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
+                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
+                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+                                         std::optional<BoundedOutboundLimits> const& bounded)
+    -> std::pair<bool, std::string>
 {
     if (bounded.has_value() && bounded->deadline.expired())
     {
@@ -1743,7 +1744,7 @@ namespace
         pinned_addresses = resolution.pinned_addresses;
     }
     auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
-    if (secret_key.size() != expected_secret_bytes)
+    if (secret_key.bytes().size() != expected_secret_bytes)
     {
         log_diagnostic(diagnostic_event, {
                                              {"reason", "server signing key not initialized", false}
@@ -1758,9 +1759,10 @@ namespace
     call.pinned_addresses = pinned_addresses;
     call.trusted_ca_pem = trusted_ca_pem;
     call.key_id = std::string{key_id};
-    // Borrow the caller's span (backed by the runtime's SecretBuffer) for the
-    // synchronous build+send below. No std::string materialisation of the key.
-    call.secret_key = secret_key;
+    // The OutboundCall owns the key as an mlocked SecretBuffer so nothing the
+    // caller holds (runtime.mutex, a borrowed span, etc.) has to outlive the
+    // network round-trip or an orphan future.
+    call.secret_key = std::move(secret_key);
     // 0 means "not configured — use FederationCall defaults (connect=10s, total=60s)".
     // Overwriting with 0 would make the IPC wait only 10 s (0+10 buffer in WorkerPool),
     // so only apply the caller's budget when it is actually set.
@@ -1798,8 +1800,8 @@ namespace
     // Route via worker if available; fall back to direct outbound client. The
     // request is fully built and signed above, so nothing inside this block
     // reads runtime state that the lock protects — which is what makes it safe
-    // to run with runtime.mutex released. Signing deliberately stays above:
-    // `call.secret_key` borrows a span into the runtime's SecretBuffer.
+    // to run with runtime.mutex released. `call.secret_key` owns the key, so the
+    // span used for signing stays valid even if runtime.mutex is released.
     auto outcome = http::OutboundResult{};
     if (runtime.federation_proxy)
     {
@@ -3131,8 +3133,8 @@ namespace
 // are correctly persisted. Do NOT change the state-key check without updating the
 // corresponding test in tests/unit/test_federation_invite_join.cpp.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, std::string_view room_id,
-                                          canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult
+                                          canonicaljson::Array const& state_arr, rooms::RoomVersionPolicy const& policy)
+    -> SendJoinStateIngestResult
 {
     auto result = SendJoinStateIngestResult{};
     auto& joined_members = result.joined_members;
@@ -3516,7 +3518,7 @@ namespace
                                               std::vector<std::string> candidates,
                                               std::vector<std::string> const& supported_versions,
                                               std::optional<database::PersistentServerSigningKey> const& signing_key,
-                                              std::string_view key_id, std::span<std::uint8_t const> secret_key)
+                                              std::string_view key_id, core::SecretBuffer secret_key)
         -> FederatedJoinOutcome
     {
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
@@ -3567,9 +3569,13 @@ namespace
                                                              {"room_id",       room_id_copy, false},
                                                              {"remote_server", candidate,    false}
             });
-            race_futures.push_back(std::async(
-                std::launch::async, [&runtime, race_state, race_sem, room_id_copy, user_id_copy, our_server_copy,
-                                     key_id_copy, secret_key, sv_copy, per_call_timeout, cand = candidate]() mutable {
+            // Each racer needs its own owned copy of the signing key so orphan
+            // futures do not dangle on the parameter span.
+            auto secret_key_copy = core::SecretBuffer{secret_key.bytes()};
+            race_futures.push_back(
+                std::async(std::launch::async, [&runtime, race_state, race_sem, room_id_copy, user_id_copy,
+                                                our_server_copy, key_id_copy, secret_key = std::move(secret_key_copy),
+                                                sv_copy, per_call_timeout, cand = candidate]() mutable {
                     // Acquire a concurrency slot before making the HTTP call.
                     race_sem->acquire();
                     struct SemRelease
@@ -3597,8 +3603,9 @@ namespace
                     auto tx =
                         federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, cand,
                                                                   our_server_copy, room_id_copy, user_id_copy, sv_copy);
-                    auto [ok, body] = perform_sync_outbound_call(runtime, room_id_copy, tx, key_id_copy, secret_key,
-                                                                 "room.join.remote.make_join_failed", per_call_timeout);
+                    auto [ok, body] =
+                        perform_sync_outbound_call(runtime, room_id_copy, tx, key_id_copy, std::move(secret_key),
+                                                   "room.join.remote.make_join_failed", per_call_timeout);
                     auto lk = std::unique_lock{race_state->mtx};
                     if (ok && !race_state->winner.has_value())
                     {
@@ -3790,8 +3797,8 @@ namespace
                                            ? runtime.federation.config.join_timeout_seconds
                                            : runtime.federation.config.remote_timeout_seconds;
         auto const [send_ok, send_body] = perform_sync_outbound_call(
-            runtime, room_id, send_join_tx, key_id, secret_key, "room.join.remote.send_join_failed", send_join_timeout,
-            runtime.federation.config.join_response_max_bytes);
+            runtime, room_id, send_join_tx, key_id, std::move(secret_key), "room.join.remote.send_join_failed",
+            send_join_timeout, runtime.federation.config.join_response_max_bytes);
         if (!send_ok)
         {
             log_diagnostic("room.join.rejected",
@@ -4030,12 +4037,13 @@ namespace
         // Best-effort: load the key_id from the persistent store. If no usable key
         // record exists, perform_sync_outbound_call fails with "server signing key not
         // initialized", which join_room surfaces as 502 — the correct status for an
-        // upstream federation failure. The signing secret stays in the runtime's
-        // mlocked SecretBuffer; we borrow a span of it for the X-Matrix header,
-        // never copying the key into an unpinned std::string.
+        // upstream federation failure. The signing secret is copied into an owned
+        // mlocked SecretBuffer while we still hold runtime.mutex, then moved into the
+        // outbound calls; the workers release runtime.mutex before signing so the
+        // copy protects them from the runtime key being rotated underneath them.
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-        auto const secret_key = runtime.database.signing_secret_key.bytes();
+        auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
         // The whole federated join — make_join race, sign, send_join, and
         // signature verification of the state it returns — runs with
         // runtime.mutex released. RuntimeLockRelease drops every level this
@@ -4047,7 +4055,7 @@ namespace
             auto const released = RuntimeLockRelease{guard};
             std::ignore = released;
             return perform_federated_join(runtime, room_id, *user_id, our_server, std::move(candidates),
-                                          supported_versions, signing_key, key_id, secret_key);
+                                          supported_versions, signing_key, key_id, std::move(secret_key));
         }();
         if (joined.failure.has_value())
         {
@@ -4740,7 +4748,7 @@ namespace
         auto const remote_server = std::string{room_domain};
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-        auto const secret_key = runtime.database.signing_secret_key.bytes();
+        auto secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
 
         // Consumed after the released scope below closes (the membership write
         // in step 5 needs the lock), so it must outlive that scope.
@@ -4764,8 +4772,11 @@ namespace
                                                                {"room_id",       std::string{room_id}, false},
                                                                {"remote_server", remote_server,        false}
             });
+            // Two outbound calls need the same key; make the second copy before
+            // moving the first into the make_leave call.
+            auto secret_key_for_send = core::SecretBuffer{secret_key.bytes()};
             auto const [make_ok, make_body] = perform_sync_outbound_call(
-                runtime, room_id, make_leave_tx, key_id, secret_key, "room.leave.remote.make_leave_failed",
+                runtime, room_id, make_leave_tx, key_id, std::move(secret_key), "room.leave.remote.make_leave_failed",
                 runtime.federation.config.remote_timeout_seconds);
             if (!make_ok)
             {
@@ -4881,9 +4892,9 @@ namespace
                                                                {"remote_server", remote_server,            false},
                                                                {"event_id",      event_id_result.event_id, false}
             });
-            std::tie(send_ok, send_body) = perform_sync_outbound_call(runtime, room_id, send_leave_tx, key_id,
-                                                                      secret_key, "room.leave.remote.send_leave_failed",
-                                                                      runtime.federation.config.remote_timeout_seconds);
+            std::tie(send_ok, send_body) = perform_sync_outbound_call(
+                runtime, room_id, send_leave_tx, key_id, std::move(secret_key_for_send),
+                "room.leave.remote.send_leave_failed", runtime.federation.config.remote_timeout_seconds);
         }
 
         if (!send_ok)

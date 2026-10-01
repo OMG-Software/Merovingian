@@ -61,13 +61,15 @@ implementing custom cryptographic primitives.
   homeserver credentials. The outbound `Authorization` header that does cross IPC
   is our own request-bound X-Matrix signature (not a reusable peer credential);
   the signing secret itself never enters the worker (#317).
-- The outbound signing path keeps the server signing secret in a `core::SecretBuffer`
-  or a borrowing `std::span<std::uint8_t const>`, never a `std::string`. `make_federation_signature`,
-  `OutboundCall::secret_key`, `DispatchWorkerConfig::secret_key`, and `perform_sync_outbound_call`
-  accept a span; production call sites pass `signing_secret_key.bytes()` directly, and
-  `DispatchWorkerConfig::secret_key` owns an mlocked `SecretBuffer` copy constructed from
-  that span. This removes the `std::string{reinterpret_cast<…>(…bytes().data()…)}` copies that
-  left the key unpinned and unzeroised on the heap.
+- The outbound signing path keeps the server signing secret in a `core::SecretBuffer`,
+  never a `std::string`. `make_federation_signature` takes a `std::span<std::uint8_t const>`
+  from `SecretBuffer::bytes()` so the signing primitive still sees a span, but
+  `OutboundCall::secret_key`, `DispatchWorkerConfig::secret_key`, and
+  `perform_sync_outbound_call` now own an mlocked `SecretBuffer` copy made while the
+  caller holds `runtime.mutex`. This removes the `std::string{reinterpret_cast<…>(…bytes().data()…)}`
+  copies that left the key unpinned and unzeroised on the heap, and prevents a
+  dangling span if the runtime key is rotated during the network round trip
+  (ADR-0086).
 - Validation for Ed25519 public-key shape, signature shape, and key IDs.
 - Bounded random request-size validation.
 - Event-signing integration tests using deterministic provider doubles.

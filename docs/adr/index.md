@@ -87,6 +87,8 @@
 * [0083 - send_join responses are bound to the joined room; own-domain events are always signature-checked](0083-send-join-responses-are-bound-to-the-joined-room.md)
 * [0084 - History visibility is judged on the recorded state at each event, one filter per request, and fails closed](0084-history-visibility-is-judged-on-the-recorded-state-at-each-event.md)
 * [0085 - An inbound invite for a room we hold leaves room state to the transaction path](0085-inbound-invite-leaves-room-state-to-the-transaction-path.md)
+* [0086 - Outbound federation calls own the signing secret](0086-outbound-federation-calls-own-the-signing-secret.md)
+* [0087 - Critical logs are written synchronously](0087-critical-logs-are-written-synchronously.md)
 
 ## Rejected Records
 

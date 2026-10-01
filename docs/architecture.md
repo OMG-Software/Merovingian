@@ -193,8 +193,9 @@ on registration, room creation, and media download/thumbnail) therefore
 release it for the duration of the network round trip and re-acquire it before
 touching runtime state again. The release is RAII: the entry points publish
 their guard through `homeserver::RequestLockScope`, and each network call sits
-inside a `homeserver::RuntimeLockRelease` scope. Signing stays under the lock,
-because the outbound call borrows a span into the runtime's `SecretBuffer`. See
+inside a `homeserver::RuntimeLockRelease` scope. The signing secret is copied into
+an owned `core::SecretBuffer` before the scope opens and moved into the outbound
+call, so the call can sign after the mutex is released (ADR-0086). See
 [`http-transport.md`](http-transport.md) "Request lock and blocking network
 calls".
 

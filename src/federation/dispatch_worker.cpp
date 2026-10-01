@@ -326,17 +326,14 @@ auto DispatchWorker::run_once() -> bool
     call.tls_server_name = resolution->tls_server_name;
     call.resolved_port = resolution->resolved_port;
     call.pinned_addresses = resolution->pinned_addresses;
-    // Take a private copy of the signing identity under the lock: update_signing_identity
-    // may replace config_.secret_key while this attempt is mid-flight, which would leave
-    // a borrowed span dangling. The copy is an owned, mlocked SecretBuffer that outlives
-    // the stack-local OutboundCall borrowing it.
-    auto signing_key = core::SecretBuffer{};
+    // Take a private copy of the signing identity under the lock:
+    // update_signing_identity may replace config_.secret_key while this attempt
+    // is mid-flight, so OutboundCall owns its own mlocked copy.
     {
         auto lock = std::lock_guard{mutex_};
         call.key_id = config_.key_id;
-        signing_key = core::SecretBuffer{config_.secret_key.bytes()};
+        call.secret_key = core::SecretBuffer{config_.secret_key.bytes()};
     }
-    call.secret_key = signing_key.bytes();
 
     auto& destination = find_or_create_destination(transaction.destination);
     auto const result = perform_outbound_transaction(client_, call, destination, now);

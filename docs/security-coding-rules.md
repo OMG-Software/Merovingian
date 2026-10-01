@@ -619,8 +619,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
   denial-of-service lever — accepting a TCP connection and then never answering is enough
   to halt the whole homeserver for the length of the timeout, and both a `/keys/query`
   naming a user on the attacker's server and any media reference pointing at it reach that
-  path without privilege. Request signing must stay *inside* the lock: `OutboundCall::secret_key`
-  borrows a span into the runtime's `SecretBuffer`.
+  path without privilege. Copy the signing secret into an owned `core::SecretBuffer`
+  before the scope opens and move it into `OutboundCall::secret_key`; the call owns
+  the key and signs after the mutex is released (ADR-0086).
   Source: `src/homeserver/AGENTS.md`.
 
 - **A client request that makes this server call another one takes a slot in the

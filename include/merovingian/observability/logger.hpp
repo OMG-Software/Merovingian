@@ -441,13 +441,55 @@ private:
         // std::string instead of a StructuredLogField.
         auto const redacted = redact_log_message(line);
         auto const flush = level >= LogLevel::notice;
+        // CRITICAL logs precede process exit (hardening refusal, fatal startup
+        // errors). After ADR-0082 writer threads start before the final
+        // hardening self-check, so a queued CRITICAL message could be lost if
+        // the main thread exits before the writer flushes. Write CRITICAL
+        // synchronously on the calling thread, exactly as if writers had not
+        // started.
+        auto const is_critical = level >= LogLevel::critical;
         if (m_console_log_level.load() <= level)
         {
-            console_log(redacted, flush);
+            if (is_critical)
+            {
+                console_log_sync(redacted);
+            }
+            else
+            {
+                console_log(redacted, flush);
+            }
         }
         if (m_file_log_level.load() <= level)
         {
-            file_log(redacted, flush);
+            if (is_critical)
+            {
+                file_log_sync(redacted);
+            }
+            else
+            {
+                file_log(redacted, flush);
+            }
+        }
+    }
+
+    // Synchronous console output used by CRITICAL logs so a fatal message is
+    // never trapped in the bounded queue when the process is about to exit.
+    auto console_log_sync(std::string const& message) -> void
+    {
+        auto lock = std::lock_guard<std::mutex>{m_console_out_lock};
+        std::cout << message;
+        std::cout.flush();
+    }
+
+    // Synchronous file output used by CRITICAL logs so a fatal message is
+    // never trapped in the bounded queue when the process is about to exit.
+    auto file_log_sync(std::string const& message) -> void
+    {
+        auto lock = std::lock_guard<std::mutex>{m_file_lock};
+        if (m_file_out.is_open())
+        {
+            m_file_out << message;
+            m_file_out.flush();
         }
     }
 
