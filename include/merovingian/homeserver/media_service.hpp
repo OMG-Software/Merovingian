@@ -15,12 +15,30 @@ namespace merovingian::homeserver
 [[nodiscard]] auto upload_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                       std::string_view declared_mime_type, std::string_view sniffed_mime_type,
                                       bool scanner_clean, std::string_view bytes) -> OperationResult;
+// What a remote-media request carries beyond the media it names. Ignored for
+// media hosted on this server.
+struct RemoteMediaRequestContext final
+{
+    // The client the request is attributed to (rate_limit_client_key), which the
+    // per-client cap of the client-outbound budget counts under (ADR-0079).
+    // "unknown" is what a request with no peer address is keyed as.
+    std::string client_key{"unknown"};
+    // The `allow_remote` query parameter (default true). False means the caller
+    // does not want this server to go and fetch remote media (OUT-7).
+    bool allow_remote{true};
+};
+
+// Download / thumbnail of `server_name`/`media_id`. For a remote `server_name`:
+// 404 (nothing leaves the server) unless security.media.remote_fetch_enabled is
+// set and `remote.allow_remote` is true; 429 when the client-outbound budget is
+// exhausted; otherwise a live fetch under one 30 s deadline.
 [[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
-                                        std::string_view media_id, bool legacy_endpoint = false) -> OperationResult;
+                                        std::string_view media_id, bool legacy_endpoint = false,
+                                        RemoteMediaRequestContext const& remote = {}) -> OperationResult;
 [[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
                                                   std::string_view media_id, std::uint32_t width, std::uint32_t height,
-                                                  media::ThumbnailMethod method, bool legacy_endpoint = false)
-    -> OperationResult;
+                                                  media::ThumbnailMethod method, bool legacy_endpoint = false,
+                                                  RemoteMediaRequestContext const& remote = {}) -> OperationResult;
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                                 std::string_view media_id, std::string_view reason) -> OperationResult;
 [[nodiscard]] auto admin_release_local_media(HomeserverRuntime& runtime, std::string_view access_token,

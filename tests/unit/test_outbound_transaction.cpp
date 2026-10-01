@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "federation_signing_test_support.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
@@ -236,9 +237,9 @@ namespace
     call.resolved_port = 8448U;
     call.pinned_addresses = {"203.0.113.10"};
     call.key_id = "ed25519:auto";
-    // Borrow the keypair's secret key as a span — kp must outlive the call, which
-    // each scenario guarantees by holding kp in the enclosing GIVEN scope.
-    call.secret_key = merovingian::federation::test::secret_key_span(kp);
+    // Own the keypair's secret key in a SecretBuffer so the call does not rely
+    // on kp outliving it.
+    call.secret_key = merovingian::core::SecretBuffer{merovingian::federation::test::secret_key_span(kp)};
     return call;
 }
 

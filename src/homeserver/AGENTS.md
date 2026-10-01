@@ -79,9 +79,11 @@ that already holds the mutex still frees it outright. That is not a nicety:
 releasing a single level shipped as a server-wide stall three times
 (`create_room` 0.12.1, `leave_room` 0.12.3, `invite_user_by_threepid` 0.12.6).
 
-Keep every read and mutation of runtime state outside the scope. In particular
-request signing stays under the lock, because `OutboundCall::secret_key` borrows
-a span into the runtime's `SecretBuffer`.
+Keep every read and mutation of runtime state outside the scope. The signing
+secret is copied into an owned `core::SecretBuffer` before the release (while
+`runtime.mutex` is still held) and moved into `OutboundCall::secret_key`; the call
+then owns the key and can sign after releasing the mutex without dangling on the
+runtime buffer.
 
 When the released region produces values the code after it consumes, return
 them from an immediately-invoked lambda — or a named function, as `join_room`
@@ -91,6 +93,30 @@ default-constructed and assigned in order to survive it.
 
 See [`docs/http-transport.md`](../../docs/http-transport.md) "Request lock and
 blocking network calls".
+
+## Client requests that call another server
+
+`publicRooms?server=` (GET and POST), a remote room-alias lookup and remote media download or
+thumbnail make this server call a peer it does not control, and the spec lets clients make them
+without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
+the main pool's threads for the round trip. Every such call therefore:
+
+1. takes a slot first: `admit_client_outbound_proxy(runtime, rate_limit_client_key(...))`
+   (`client_outbound_proxy.hpp`). No slot means `429 M_LIMIT_EXCEEDED` with
+   `policy.retry_after_ms`, at once, before any discovery or outbound call. The slot is an RAII
+   `http::InFlightBudget::Slot`; keep it until the call has ended and take it before the
+   `RuntimeLockRelease` scope opens;
+2. runs under one `OutboundDeadline` (10 s directory lookups via `perform_bounded_outbound_call`,
+   30 s media), which discovery and every request draw from, never longer than
+   `remote_timeout`;
+3. for media, is checked against `security.media.remote_fetch_enabled` and `allow_remote` before
+   anything else (`remote_media_refusal`): 404 `M_NOT_FOUND`, counted but not audited.
+
+The caps derive from the main request pool size (`server.http.request_threads`, applied by
+`start_runtime` through `client_outbound_proxy_policy_for_pool`); they have no configuration of their
+own. A new
+route that proxies to a remote server without one of these three is the defect. See ADR-0079 and
+`docs/http-transport.md` "Client-triggered outbound proxying".
 
 ## Federation worker relays are untrusted input
 
@@ -103,11 +129,43 @@ anything is persisted (ADR-0071). Do it before taking `runtime.mutex`: resolving
 a key may go to the network. A new relay that carries a PDU follows the same
 pattern.
 
+Main never signs on a worker's behalf (ADR-0078). A `sign_request` frame is refused
+inline by `refuse_forbidden_worker_request`, which takes no runtime and so cannot take
+`runtime.mutex` or reach a crypto provider; the handler calls it before any other frame
+type. Do not add a worker-to-main frame that signs caller-supplied bytes.
+
+## Read paths that return room events or state
+
+Every client-server endpoint that returns room events goes through `sync::HistoryVisibility`
+(one instance per request), and every one that returns room state or the roster goes through
+`sync::room_read_access_for`. The rules, and why, are in `src/sync/AGENTS.md` ("History
+visibility and room read access") and ADR-0084. Checking "is the user a member" is not enough:
+the user may be joined but not entitled to an old event, and a user who has left or been banned
+may still read what they saw. Today these are `/messages`, `/context`, `/event`, `/search`,
+`/relations`, `/threads`, `/sync`, sliding sync, `initialSync`, `/members`, `/joined_members`,
+`/state` and `/state/{type}/{key}`. A new endpoint of that kind gets a conformance scenario in
+`tests/conformance/test_history_visibility_conformance.cpp`. `/notifications` is the one
+deliberate exception (its rows are created at delivery for a then-joined user); say so if you
+add another.
+
 ## Body size limits
 
 - **Default cap**: `rt.limits.max_body_bytes` (64 KiB) — applied at the top of the dispatch function
 - **Media uploads**: bypass the default cap; use `config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size)`
+- The transport (`http_server.cpp`) reads a media upload body larger than its 1 MiB cap only after
+  `media_upload_authentication_refusal` has accepted the head's access token (HTTP-1, HTTP-6,
+  ADR-0077); an unauthenticated one gets its 401 before a byte of the body is read. A new route that
+  accepts large bodies must get the same pre-body authentication, not just a larger cap.
 - Any new endpoint that accepts large bodies must explicitly opt out of the default cap
+
+## Connections and worker threads (ADR-0077)
+
+`http_server.cpp` never lets a worker wait on a quiet connection: `HttpConnectionDispatcher` holds
+every connection that is not being served and hands it to the main pool only once it is readable,
+at most `max(1, pool / 4)` per client address. Code in a request round must therefore not wait for
+the *next* request or for a client that has gone quiet; return the connection (`continue_keep_alive`)
+and let the dispatcher wait. A connection is owned by exactly one of the dispatcher, one pool task or
+one sync-pool task (`std::unique_ptr<HttpConnection>`); pass it on by moving it, never by sharing it.
 
 ## Media upload boundary
 

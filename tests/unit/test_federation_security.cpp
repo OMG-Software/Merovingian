@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <string>
 
 SCENARIO("Federation discovery accepts public TLS remotes and rejects SSRF targets",
@@ -189,6 +190,74 @@ SCENARIO("Remote trust controls cover rate limit, backoff, circuit breaker, repu
                 REQUIRE(reputation_decision.reason == "remote reputation is too low");
                 REQUIRE_FALSE(quarantine_decision.accepted);
                 REQUIRE(quarantine_decision.reason == "remote server is quarantined");
+            }
+        }
+    }
+}
+
+SCENARIO("Remote backoff decays after a quiet period and a fresh failure restarts the count",
+         "[federation][security][trust][fed4]")
+{
+    GIVEN("a remote whose consecutive-failure backoff was tripped at a known time")
+    {
+        auto const tripped_at = std::chrono::steady_clock::time_point{std::chrono::hours{100}};
+        auto state = merovingian::federation::RemoteTrustState{};
+        state.consecutive_failures = 3U;
+        state.last_failure_at = tripped_at;
+        auto const window = merovingian::federation::remote_backoff_decay_window;
+
+        WHEN("the policy is evaluated before, exactly at, and after the decay window")
+        {
+            auto const before = merovingian::federation::remote_trust_policy(state, tripped_at + window / 2);
+            auto const at_edge = merovingian::federation::remote_trust_policy(state, tripped_at + window);
+            auto const after =
+                merovingian::federation::remote_trust_policy(state, tripped_at + window + std::chrono::seconds{1});
+
+            THEN("the backoff holds until the window has elapsed and is then lifted")
+            {
+                REQUIRE(window == std::chrono::minutes{5});
+                REQUIRE_FALSE(before.accepted);
+                REQUIRE(before.apply_backoff);
+                REQUIRE(at_edge.accepted);
+                REQUIRE(after.accepted);
+            }
+        }
+
+        WHEN("a failure is recorded after the quiet period")
+        {
+            auto const later = tripped_at + window + std::chrono::seconds{1};
+            merovingian::federation::record_remote_trust_failure(state, later);
+
+            THEN("the stale count is discarded and the failure counts as the first")
+            {
+                REQUIRE(state.consecutive_failures == 1U);
+                REQUIRE(state.last_failure_at == later);
+            }
+        }
+
+        WHEN("failures are recorded inside the window")
+        {
+            merovingian::federation::record_remote_trust_failure(state, tripped_at + std::chrono::seconds{10});
+
+            THEN("the count keeps rising and the window restarts from the newest failure")
+            {
+                REQUIRE(state.consecutive_failures == 4U);
+                REQUIRE(state.last_failure_at == tripped_at + std::chrono::seconds{10});
+            }
+        }
+
+        WHEN("quarantine or a tripped circuit is set, however old the last failure is")
+        {
+            auto quarantined = state;
+            quarantined.quarantined = true;
+            auto open_circuit = state;
+            open_circuit.circuit_open = true;
+            auto const much_later = tripped_at + window * 100;
+
+            THEN("time never lifts them")
+            {
+                REQUIRE_FALSE(merovingian::federation::remote_trust_policy(quarantined, much_later).accepted);
+                REQUIRE_FALSE(merovingian::federation::remote_trust_policy(open_circuit, much_later).accepted);
             }
         }
     }

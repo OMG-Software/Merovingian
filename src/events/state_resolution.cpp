@@ -15,6 +15,7 @@
 #include <deque>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -906,55 +907,71 @@ auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResu
 
 auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>
 {
-    auto unconflicted = StateMap{};
-    auto conflicted = StateMap{};
-    auto counts = std::unordered_map<StateKey, int, StateKeyHash>{};
-    counts.reserve(groups.size() * 8U);
-
-    for (auto const& group : groups)
+    // Spec (rooms/v10.md — Definitions, "Unconflicted state map and
+    // conflicted state set"): "If a given key K is present in every Si with
+    // the same value V in each state map, then the pair (K, V) belongs to the
+    // unconflicted state map. Otherwise, V belongs to the conflicted state
+    // set." A key is therefore unconflicted only when EVERY group holds it
+    // AND every group holds the same single event. The decision is taken per
+    // key from the complete tally below, never incrementally while walking
+    // the groups: an incremental decision lets a later group that repeats an
+    // earlier value re-admit a key that another group already disputed.
+    struct KeyTally final
     {
-        for (auto const& event : group.state)
+        StateEventReference first_event{};
+        std::unordered_set<std::string> event_ids{};
+        std::size_t groups_containing{0};
+        std::size_t last_group_counted{0};
+    };
+
+    auto tallies = std::unordered_map<StateKey, KeyTally, StateKeyHash>{};
+    tallies.reserve(groups.size() * 8U);
+
+    for (std::size_t group_index = 0; group_index < groups.size(); ++group_index)
+    {
+        for (auto const& event : groups[group_index].state)
         {
-            counts[event.key]++;
-            if (counts.size() > max_conflicted_state_keys)
+            auto [it, inserted] = tallies.try_emplace(event.key);
+            auto& tally = it->second;
+            if (tallies.size() > max_conflicted_state_keys)
             {
                 // Fail fast: too many distinct state keys to resolve safely.
                 return {};
             }
+            if (inserted)
+            {
+                tally.first_event = event;
+            }
+            // A group counts once per key however many entries it holds for
+            // it (a group holding two different events for one key is itself
+            // a disagreement and shows up as two distinct event ids).
+            if (inserted || tally.last_group_counted != group_index)
+            {
+                ++tally.groups_containing;
+                tally.last_group_counted = group_index;
+            }
+            tally.event_ids.insert(event.event_id);
         }
     }
 
-    auto total_groups = groups.size();
-
-    for (auto const& group : groups)
+    auto unconflicted = StateMap{};
+    auto conflicted = StateMap{};
+    for (auto& [key, tally] : tallies)
     {
-        for (auto const& event : group.state)
+        if (tally.groups_containing == groups.size() && tally.event_ids.size() == 1U)
         {
-            auto const count = counts[event.key];
-
-            if (static_cast<std::size_t>(count) == total_groups)
-            {
-                auto const it = unconflicted.find(event.key);
-                if (it == unconflicted.end())
-                {
-                    unconflicted[event.key] = event;
-                }
-                else if (it->second.event_id != event.event_id)
-                {
-                    auto moved = std::move(unconflicted.extract(event.key).mapped());
-                    unconflicted.erase(event.key);
-                    conflicted[event.key] = moved;
-                    conflicted[event.key] = event;
-                }
-            }
-            else
-            {
-                conflicted[event.key] = event;
-            }
+            unconflicted.emplace(key, std::move(tally.first_event));
+        }
+        else
+        {
+            // `conflicted` is a key index: one representative event per
+            // conflicted key. The full conflicted set (every distinct value
+            // of each key) is gathered from the groups by the caller.
+            conflicted.emplace(key, std::move(tally.first_event));
         }
     }
 
-    return {unconflicted, conflicted};
+    return {std::move(unconflicted), std::move(conflicted)};
 }
 
 auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
@@ -980,23 +997,120 @@ auto reverse_topological_power_sort(std::vector<StateEventReference> const& conf
         power_by_id.emplace(event.event_id, *power);
     }
 
-    auto sorted = conflicted;
-    std::stable_sort(sorted.begin(), sorted.end(),
-                     [&power_by_id](StateEventReference const& a, StateEventReference const& b) noexcept -> bool {
-                         auto const pa = power_by_id.at(a.event_id);
-                         auto const pb = power_by_id.at(b.event_id);
-                         if (pa != pb)
-                         {
-                             return pa > pb;
-                         }
-                         if (a.origin_server_ts != b.origin_server_ts)
-                         {
-                             return a.origin_server_ts < b.origin_server_ts;
-                         }
-                         // Spec (rooms/v10 — Reverse topological power ordering, rule 3):
-                         // final tie-break is the lexicographically smaller event_id.
-                         return a.event_id < b.event_id;
-                     });
+    // Spec (rooms/v10.md — Definitions, "Reverse topological power ordering"):
+    // "the lexicographically smallest topological ordering based on the DAG
+    // formed by auth events ... ordered from earliest event to latest ...
+    // found by sorting the events using Kahn's algorithm for topological
+    // sorting, and at each step selecting, among all the candidate vertices,
+    // the smallest vertex using the above comparison relation."
+    // The DAG is the auth_events graph restricted to `conflicted`: an edge
+    // runs from auth event A to event E when A is in E's auth_events and both
+    // are in the set, so an auth event is always emitted before any event
+    // that cites it, whatever the two senders' power levels.
+    auto const count = conflicted.size();
+    auto index_by_id = std::unordered_map<std::string, std::size_t>{};
+    index_by_id.reserve(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        if (!index_by_id.emplace(conflicted[i].event_id, i).second)
+        {
+            // Two entries with one event id cannot be ordered
+            // deterministically and dropping either would be silent
+            // corruption: fail closed.
+            log_diagnostic("reverse_topological_power_sort.rejected",
+                           {
+                               {"reason", "duplicate event id in the set to be ordered", false}
+            });
+            return std::nullopt;
+        }
+    }
+
+    auto dependants = std::vector<std::vector<std::size_t>>(count);
+    auto unmet_auth_events = std::vector<std::size_t>(count, 0U);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        auto const* obj = value_is_object(conflicted[i].event_json);
+        auto const* auth = obj != nullptr ? array_member(*obj, "auth_events") : nullptr;
+        if (auth == nullptr)
+        {
+            continue;
+        }
+        for (auto const& entry : *auth)
+        {
+            auto const* auth_id = auth_entry_event_id(entry);
+            if (auth_id == nullptr)
+            {
+                continue;
+            }
+            auto const found = index_by_id.find(*auth_id);
+            if (found == index_by_id.end())
+            {
+                continue;
+            }
+            // A repeated entry adds the edge twice; both the increment and
+            // the decrement below run once per occurrence, so it balances.
+            dependants[found->second].push_back(i);
+            ++unmet_auth_events[i];
+        }
+    }
+
+    // x < y under the spec's comparison relation. Event ids are unique here,
+    // so this is a strict total order and the result is deterministic
+    // whatever order `conflicted` arrives in.
+    auto const precedes = [&conflicted, &power_by_id](std::size_t x, std::size_t y) -> bool {
+        auto const& a = conflicted[x];
+        auto const& b = conflicted[y];
+        auto const pa = power_by_id.at(a.event_id);
+        auto const pb = power_by_id.at(b.event_id);
+        if (pa != pb)
+        {
+            return pa > pb;
+        }
+        if (a.origin_server_ts != b.origin_server_ts)
+        {
+            return a.origin_server_ts < b.origin_server_ts;
+        }
+        // Rule 3: final tie-break is the lexicographically smaller event_id.
+        return a.event_id < b.event_id;
+    };
+
+    auto ready = std::set<std::size_t, decltype(precedes)>{precedes};
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        if (unmet_auth_events[i] == 0U)
+        {
+            ready.insert(i);
+        }
+    }
+
+    auto sorted = std::vector<StateEventReference>{};
+    sorted.reserve(count);
+    while (!ready.empty())
+    {
+        auto const next = *ready.begin();
+        ready.erase(ready.begin());
+        sorted.push_back(conflicted[next]);
+        for (auto const dependant : dependants[next])
+        {
+            if (--unmet_auth_events[dependant] == 0U)
+            {
+                ready.insert(dependant);
+            }
+        }
+    }
+
+    if (sorted.size() != count)
+    {
+        // Events remain whose auth_events never became satisfiable: the
+        // auth graph has a cycle, which no valid room history can contain
+        // (an event's id is a hash over its auth_events). Fail closed rather
+        // than emit a partial ordering.
+        log_diagnostic("reverse_topological_power_sort.rejected",
+                       {
+                           {"reason", "cycle in the auth_events graph", false}
+        });
+        return std::nullopt;
+    }
     return sorted;
 }
 

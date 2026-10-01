@@ -620,6 +620,12 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"server.http.max_connections_per_ip", "per-IP connection cap must be 1..65535"});
     }
+    // Main request pool size (HTTP-1, ADR-0077). Four is the floor at which the
+    // per-client worker share (pool / 4) is one; 256 bounds the thread count.
+    if (http_transport.request_threads < 4U || http_transport.request_threads > 256U)
+    {
+        findings.push_back({"server.http.request_threads", "main request pool size must be 4..256 threads"});
+    }
     if (http_transport.ipv6_client_prefix_length == 0U || http_transport.ipv6_client_prefix_length > 128U)
     {
         findings.push_back({"server.http.ipv6_client_prefix_length", "IPv6 client prefix length must be 1..128"});

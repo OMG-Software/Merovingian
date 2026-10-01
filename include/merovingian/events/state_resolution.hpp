@@ -112,6 +112,14 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
     -> StateResolutionResult;
 [[nodiscard]] auto state_resolution_summary(StateResolutionResult const& result) -> std::string;
 
+// Splits the state groups into {unconflicted, conflicted}. Spec
+// (rooms/v10.md — Definitions): a key is unconflicted only if it is present in
+// EVERY group with the same single event; otherwise every value of that key
+// belongs to the conflicted set and the key never appears in `unconflicted`,
+// whatever the number or order of groups. `conflicted` is a key index (one
+// representative event per conflicted key) — the caller gathers every distinct
+// value from the groups. Returns two empty maps when the number of distinct
+// keys exceeds `max_conflicted_state_keys`.
 [[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>;
 // Each candidate's sender power is read from the m.room.power_levels (and,
 // for v12, m.room.create) event in THAT CANDIDATE'S OWN auth_events — never
@@ -129,6 +137,11 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
 // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions, "Reverse
 // topological power ordering", rule 1 ("looking at their respective
 // auth_events"); "Values in m.room.power_levels events must be integers".
+// The order is Kahn's algorithm over the auth_events DAG restricted to
+// `conflicted` (an event follows every event it cites that is also in the
+// set), choosing at each step the smallest ready event: sender power
+// descending, then origin_server_ts ascending, then event_id ascending. Also
+// returns nullopt for a duplicate event id or a cycle in the auth graph.
 [[nodiscard]] auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
                                                   EventJsonIndex const& known_events, EventLookupFn const& event_lookup,
                                                   rooms::RoomVersionPolicy const& policy)

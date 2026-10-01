@@ -697,6 +697,81 @@ SCENARIO("Key-value config parser applies the per-client connection limits", "[c
     }
 }
 
+SCENARIO("Key-value config parser applies the main request pool size", "[config][parser][http-1]")
+{
+    GIVEN("no request-thread key")
+    {
+        auto const result = merovingian::config::parse_key_value_config(std::string{});
+
+        THEN("the main request pool has sixteen threads")
+        {
+            REQUIRE(result.config.server().http.request_threads == 16U);
+        }
+    }
+
+    GIVEN("config input setting the pool size to each end of its range")
+    {
+        WHEN("the config is parsed")
+        {
+            auto const smallest = merovingian::config::parse_key_value_config("server.http.request_threads=4\n");
+            auto const largest = merovingian::config::parse_key_value_config("server.http.request_threads=256\n");
+
+            THEN("the values are applied and the config is valid")
+            {
+                REQUIRE(smallest.findings.empty());
+                REQUIRE(smallest.config.server().http.request_threads == 4U);
+                REQUIRE(merovingian::config::is_valid(smallest.config));
+                REQUIRE(largest.findings.empty());
+                REQUIRE(largest.config.server().http.request_threads == 256U);
+                REQUIRE(merovingian::config::is_valid(largest.config));
+            }
+        }
+    }
+
+    GIVEN("out-of-range or malformed values")
+    {
+        auto const inputs = std::vector<std::string>{
+            "server.http.request_threads=0\n",   "server.http.request_threads=3\n",
+            "server.http.request_threads=257\n", "server.http.request_threads=-8\n",
+            "server.http.request_threads=16x\n", "server.http.request_threads=99999999999999999999\n",
+        };
+
+        WHEN("each is parsed")
+        {
+            THEN("each is rejected with a finding and the default is kept")
+            {
+                for (auto const& input : inputs)
+                {
+                    INFO(input);
+                    auto const result = merovingian::config::parse_key_value_config(input);
+                    REQUIRE(std::ranges::any_of(result.findings, [](auto const& finding) {
+                        return finding.field == "server.http.request_threads";
+                    }));
+                    REQUIRE(result.config.server().http.request_threads == 16U);
+                }
+            }
+        }
+    }
+
+    GIVEN("a Config built in code with a pool size outside 4..256")
+    {
+        auto config = merovingian::config::Config{};
+        config.server().http.request_threads = 2U;
+
+        WHEN("it is validated")
+        {
+            auto const findings = merovingian::config::validate(config);
+
+            THEN("validation names the key")
+            {
+                REQUIRE(std::ranges::any_of(findings, [](auto const& finding) {
+                    return finding.field == "server.http.request_threads";
+                }));
+            }
+        }
+    }
+}
+
 SCENARIO("Key-value config parser applies the HTTP keep-alive transport policy", "[config][parser][keep-alive]")
 {
     GIVEN("config input overriding the keep-alive transport keys")

@@ -114,6 +114,8 @@ shell = find_program('sh')
       'unit/test_auth_oidc_discovery.cpp',
       'unit/test_auth_session.cpp',
       'unit/test_audit_filter.cpp',
+      'unit/test_audit_flood.cpp',
+      'unit/test_audit_rate_gate.cpp',
       'unit/test_canonicaljson_limits.cpp',
       'unit/test_client_server.cpp',
       'unit/test_config_defaults.cpp',
@@ -129,6 +131,7 @@ shell = find_program('sh')
       'unit/test_config_reload_policy.cpp',
       'unit/test_crypto.cpp',
       'unit/test_database_backend_config.cpp',
+      'unit/test_database_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_state_bookkeeping.cpp',
@@ -150,6 +153,7 @@ shell = find_program('sh')
       'unit/test_otk_signature_validation.cpp',
       'unit/test_outbound_dispatch.cpp',
       'unit/test_federation_security.cpp',
+      'unit/test_federation_edu_idempotence.cpp',
       'unit/test_federation_server_acl.cpp',
       'unit/test_federation_tls_origin.cpp',
       'unit/test_federation_transactions.cpp',
@@ -161,10 +165,14 @@ shell = find_program('sh')
       'unit/test_elf_probe.cpp',
       'unit/test_seccomp_hardening.cpp',
       'unit/test_worker_landlock.cpp',
+      'unit/test_worker_hardening_threads.cpp',
+      'unit/test_signal_hardening.cpp',
+      'unit/test_logger_writers.cpp',
       'unit/test_hardening_self_check.cpp',
       'unit/test_homeserver_vertical_slice.cpp',
       'unit/test_http_connection_guard.cpp',
       'unit/test_http_connection_limiter.cpp',
+      'unit/test_http_in_flight_budget.cpp',
       'unit/test_http_keep_alive.cpp',
       'unit/test_http_rate_limit.cpp',
       'unit/test_http_rate_limit_tiers.cpp',
@@ -210,9 +218,13 @@ shell = find_program('sh')
       'unit/test_device_list_delta.cpp',
       'unit/test_sync_filter.cpp',
       'unit/test_sync_handler.cpp',
+      'unit/test_sync_history_visibility.cpp',
       'unit/test_sync_notifier.cpp',
       'unit/test_sync_pool_liveness.cpp',
+      'unit/test_sync_receipt_visibility.cpp',
+      'unit/test_sync_room_access.cpp',
       'unit/test_tcp_acceptor.cpp',
+      'unit/test_net_connection_parker.cpp',
       'unit/test_thread_pool.cpp',
       'unit/test_trust_safety_policy.cpp',
       'unit/test_trust_safety_ignore_list.cpp',
@@ -221,6 +233,7 @@ shell = find_program('sh')
       'unit/test_homeserver_auth_service.cpp',
       'unit/test_homeserver_room_service.cpp',
       'unit/test_homeserver_media_service.cpp',
+      'unit/test_client_outbound_proxy.cpp',
       'unit/test_federation_server_name.cpp',
       'unit/test_event_signer.cpp',
       'unit/test_ipc_framing.cpp',
@@ -274,6 +287,7 @@ shell = find_program('sh')
       'conformance/test_admin_safety_policy_rules_conformance.cpp',
       'conformance/test_admin_safety_review_conformance.cpp',
       'conformance/test_outbound_delivery_conformance.cpp',
+      'conformance/test_history_visibility_conformance.cpp',
       'conformance/test_identifier_grammar.cpp',
       'conformance/test_ignoring_users_conformance.cpp',
       'conformance/test_key_publication_conformance.cpp',
@@ -327,14 +341,17 @@ shell = find_program('sh')
       'integration/test_main.cpp',
       'integration/test_appservice_thirdparty_flow.cpp',
       'integration/test_appservice_query_hooks_flow.cpp',
+      'integration/test_client_outbound_proxy_flow.cpp',
       'integration/test_client_server_flow.cpp',
       'integration/test_federation_cross_signing_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',
       'integration/test_federation_server_acl_flow.cpp',
       'integration/test_federation_worker_flow.cpp',
+      'integration/test_receipt_federation_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
+      'integration/test_http_worker_fairness_flow.cpp',
       'integration/test_join_room_flow.cpp',
       'integration/test_identity_service_flow.cpp',
       'integration/test_media_repository_security.cpp',
@@ -361,10 +378,10 @@ shell = find_program('sh')
     cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
   )
 
-#Integration tests spawn real dependencies(PostgreSQL, SQLite, thumbnail
-#worker) and can be slow under sanitizers; give them the same headroom as
-#the unit and conformance suites.
-  test('integration-tests', integration_tests, timeout: 600)
+# Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
+# worker) and can be slow under sanitizers and on emulated BSD runners;
+# give them the same headroom as the load-test suite.
+  test('integration-tests', integration_tests, timeout: 900)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(

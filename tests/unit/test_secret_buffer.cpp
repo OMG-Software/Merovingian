@@ -180,18 +180,20 @@ SCENARIO("SecretBuffer span constructor owns an independent copy of the source b
     }
 }
 
-// #317: OutboundCall::secret_key is now a non-owning span that borrows from an
-// owner (the runtime SecretBuffer for synchronous calls, DispatchWorkerConfig for
-// async dispatch). build_outbound_request signs synchronously through that borrowed
-// span and produces a real X-Matrix signature — proving the signing path works
-// without ever materialising the key into an unpinned std::string.
-SCENARIO("OutboundCall borrows the signing key as a span and signs without a std::string copy",
+// #317/#499: OutboundCall::secret_key is now an owned core::SecretBuffer.
+// Callers copy the runtime signing key while they hold runtime.mutex and move
+// it into the call, so the network path can release the mutex without dangling
+// on the owner's lifetime. build_outbound_request signs synchronously through
+// SecretBuffer::bytes() and produces a real X-Matrix signature — proving the
+// signing path works without ever materialising the key into an unpinned
+// std::string.
+SCENARIO("OutboundCall owns the signing key and signs without a std::string copy",
          "[federation][outbound][secret][security]")
 {
-    GIVEN("a SecretBuffer owning a 64-byte Ed25519 secret key and an OutboundCall borrowing it")
+    GIVEN("a SecretBuffer owning a 64-byte Ed25519 secret key and an OutboundCall owning it")
     {
         // A 64-byte key is what make_federation_signature requires; any nonzero
-        // bytes suffice to prove the signing path runs against the borrowed span.
+        // bytes suffice to prove the signing path runs against the owned copy.
         auto key_owner = merovingian::core::SecretBuffer{64U};
         std::ranges::fill(key_owner.bytes(), std::uint8_t{0x42U});
 
@@ -202,10 +204,10 @@ SCENARIO("OutboundCall borrows the signing key as a span and signs without a std
         call.resolved_port = 8448U;
         call.pinned_addresses = {"203.0.113.10"};
         call.key_id = "ed25519:auto";
-        // Borrow, do not copy — the call holds only a span into key_owner.
-        call.secret_key = key_owner.bytes();
+        // Copy into the call so it owns the key independently of key_owner.
+        call.secret_key = merovingian::core::SecretBuffer{key_owner.bytes()};
 
-        WHEN("the outbound request is built from the borrowed span")
+        WHEN("the outbound request is built from the owned SecretBuffer")
         {
             auto const request = merovingian::federation::build_outbound_request(call);
 

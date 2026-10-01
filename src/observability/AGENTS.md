@@ -7,7 +7,25 @@ Structured logging and audit trail for the server.
 | File | Responsibility |
 |---|---|
 | `observability.cpp` | Audit event types and category enum, admin route matching (`admin_routes`/`match_admin_route`), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`) |
-| `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file |
+| `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
+
+## Writer threads (ADR-0082)
+
+`SingleLog` starts **no thread** in its constructor. Until `start_writers()` is called every
+line is written synchronously on the calling thread (stdout under a mutex, and the log file
+when one is open), so a message logged early is never lost and cannot deadlock. After
+`start_writers()` lines go through the bounded queues and the two writer threads, as before.
+
+- A process that hardens itself (`merovingian-fed-worker`, `merovingian-server`) calls
+  `SingleLog::instance().start_writers()` only **after** Landlock, seccomp and the runtime
+  controls are applied. A thread that exists earlier escapes the Landlock ruleset (see
+  `src/platform/AGENTS.md`, rule 6).
+- A process that never calls it (`--check-config`, `--dry-run`, `merovingian-db-migrate`, unit
+  tests) still logs correctly, with no logger threads.
+- `start_writers()` returns `false` and leaves the logger synchronous if a thread cannot be
+  created; callers log a warning and carry on.
+- Do not move the `start_writers()` call earlier, and do not start a thread from anywhere in the
+  logger's constructor or in a `static` initialiser.
 
 ## Log level policy
 
@@ -49,6 +67,15 @@ durability distinction:
   or a purpose-built one-way summary such as `auth::redacted_token_for_log` (`src/auth/token.cpp`),
   which buckets token length into coarse size classes instead of disclosing length or bytes.
 - Log the `user_id` and `device_id` (not the token) for authenticated request traces.
+- **An audit event that an unauthenticated client can trigger on every request must not write one
+  durable row per request.** `access_token.rejected`, `rate_limit.exceeded` and `request.rejected`
+  pass through `AuditRateGate` (10 rows per kind per 60 s, the rest counted and reported as
+  `suppressed=<n>` on the next row). A new per-request rejection audit event of that kind must be
+  added to `audit_event_is_rate_capped` (ADR-0080). Never gate authenticated or administrative
+  events.
+- Client-supplied text in an audit `actor`, `target` or `reason` is cut to 255 bytes and
+  sanitised (`database::bounded_utf8`) by `append_local_audit` / `append_audit_event`; do not
+  write around those two functions.
 - Every new log call added to security-sensitive paths must be reviewed in `docs/observability-audit.md`.
 
 ## Key doc

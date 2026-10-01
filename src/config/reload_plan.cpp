@@ -21,8 +21,8 @@ namespace
     // Emit one change per added, removed, or altered entry of a string-keyed
     // map-valued config block (client_rate_limits.per_*, log_modules.*).
     template <typename MapType>
-    auto diff_keyed_map(ReloadPlan& plan, std::string const& prefix, MapType const& current, MapType const& next)
-        -> void
+    auto diff_keyed_map(ReloadPlan& plan, std::string const& prefix, MapType const& current,
+                        MapType const& next) -> void
     {
         for (auto const& [key, value] : current)
         {
@@ -132,6 +132,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current_http.ipv6_client_prefix_length != next_http.ipv6_client_prefix_length)
     {
         add_change(plan, "server.http.ipv6_client_prefix_length");
+    }
+    if (current_http.request_threads != next_http.request_threads)
+    {
+        add_change(plan, "server.http.request_threads");
     }
 
     if (current.listeners().client.bind != next.listeners().client.bind)

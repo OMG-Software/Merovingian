@@ -79,6 +79,14 @@ class CachedServerDiscovery;
 [[nodiscard]] auto find_cached_remote_key(database::PersistentStore const& store, std::string_view server_name,
                                           std::string_view key_id) -> std::optional<FederationKeyRecord>;
 
+// FED-1 (ADR-0083): returns this server's own signing key `key_id` for
+// `own_server_name`, read only from rows that hold a secret — the keys this
+// server generated, current and retired. A row without a secret under our own
+// name is a copy obtained from elsewhere and is never returned. Never touches
+// the network.
+[[nodiscard]] auto find_own_server_signing_key(database::PersistentStore const& store, std::string_view own_server_name,
+                                               std::string_view key_id) -> std::optional<FederationKeyRecord>;
+
 // Loads the first cached key for a server (any key_id). Used at request time
 // when only the server_name is known and the request key_id can then be
 // matched against the cached set.
@@ -93,15 +101,23 @@ using RemoteKeyClock = std::function<std::uint64_t()>;
 // for `FederationRuntimeState::remote_key_resolver`. Lookups hit the
 // persistent cache first; misses or near-expiry entries trigger an outbound
 // fetch which is verified and stored before being returned.
+//
+// `own_server_name` is this server's name (FED-1, ADR-0083). A lookup for it
+// never goes to the network and never writes the cache: it is answered only
+// from this server's own secret-holding signing-key rows (see
+// find_own_server_signing_key), and fails when the key ID is not one of them.
+// Empty means no own name is known (tests of remote behaviour only).
 [[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                                        ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
-                                                       RemoteKeyClock now_ms) -> RemoteKeyResolver;
+                                                       RemoteKeyClock now_ms,
+                                                       std::string_view own_server_name = {}) -> RemoteKeyResolver;
 
 // As above, but both the resolver's own discovery lookup and the fetch's
 // internal lookup go through a TTL-bounded `CachedServerDiscovery`, so cache
 // hits pay no DNS cascade and a miss pays it once for both.
 [[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                                        CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
-                                                       RemoteKeyClock now_ms) -> RemoteKeyResolver;
+                                                       RemoteKeyClock now_ms,
+                                                       std::string_view own_server_name = {}) -> RemoteKeyResolver;
 
 } // namespace merovingian::federation

@@ -3,15 +3,16 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -120,18 +121,49 @@ struct SendJoinStateSplit final
 // federation proxy (worker thread pool) if available, else direct outbound client.
 // Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
 // room_id is used only for worker shard routing; pass {} for non-room requests.
-// `secret_key` is the raw 64-byte Ed25519 secret key as a non-owning span —
-// callers pass runtime.database.signing_secret_key.bytes() directly so the key
-// is never copied into an unpinned std::string. The runtime outlives the call.
+// `secret_key` is an owned 64-byte Ed25519 secret key in a mlocked
+// core::SecretBuffer. Callers copy it from runtime.database.signing_secret_key
+// while holding runtime.mutex and std::move it in; the call may release the
+// mutex during the network round trip and must not dangle on the runtime buffer.
 // `max_response_bytes` overrides the outbound response body cap (0 = use the
 // OutboundCall default of 16 MiB); send_join passes
 // runtime.federation.config.join_response_max_bytes since a large room's
 // full state routinely exceeds the default.
 [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
-                                              std::string_view key_id, std::span<std::uint8_t const> secret_key,
+                                              std::string_view key_id, core::SecretBuffer secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds,
                                               std::uint64_t max_response_bytes = 0U) -> std::pair<bool, std::string>;
+// perform_sync_outbound_call for calls a client can trigger without
+// authentication (publicRooms?server=, a remote alias lookup): `deadline_seconds`
+// is a total wall-clock budget for server discovery plus the request, not a
+// per-step timeout, and the federation-worker round trip may exceed it by at
+// most runtime.client_outbound_proxy_policy.worker_margin_seconds instead of the
+// usual 10 s. A budget already used up is reported as "deadline exceeded" without
+// touching the network. Callers hold a client-outbound budget slot around it
+// (ADR-0079, `admit_client_outbound_proxy`).
+[[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+                                                 federation::OutboundTransaction const& transaction,
+                                                 std::string_view key_id, core::SecretBuffer secret_key,
+                                                 std::string_view diagnostic_event, std::uint32_t deadline_seconds)
+    -> std::pair<bool, std::string>;
+
+// The limits of a bounded call: one wall-clock deadline for discovery plus the
+// request, and the margin the federation-worker round trip may add to it.
+struct BoundedOutboundLimits final
+{
+    OutboundDeadline deadline;
+    std::chrono::seconds worker_margin;
+};
+
+// The shared implementation of perform_sync_outbound_call (bounded == nullopt)
+// and perform_bounded_outbound_call. Prefer those two.
+[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
+                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
+                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+                                         std::optional<BoundedOutboundLimits> const& bounded)
+    -> std::pair<bool, std::string>;
 
 // ADR-0064 phase B1: joined_members is what callers used before (the user
 // IDs found with membership="join" among the ingested state entries);
@@ -144,30 +176,53 @@ struct SendJoinStateIngestResult final
     std::vector<database::PersistentStateGroupStateEntry> state_entries{};
 };
 
-// Ingests the `state` array from a send_join response. Every event is stored
-// in the persistent event graph, with status "outlier" (ADR-0064): these
-// events are not (yet) reachable by walking prev_events from anything we
-// hold, so they get no state group or forward extremity of their own — see
-// join_room, which builds one snapshot state group from the returned
-// state_entries instead. State events — identified by the PRESENCE of
-// the "state_key" field in the raw JSON, even when its value is "" — are also
-// written to the state table. This is the correct discriminator: the Matrix
-// spec defines any event with a "state_key" field as a state event, regardless
-// of whether that value is empty.
-[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult;
+// Ingests the `state` array from a send_join response for `room_id`, the room
+// being joined. Every event is stored in the persistent event graph, with
+// status "outlier" (ADR-0064): these events are not (yet) reachable by walking
+// prev_events from anything we hold, so they get no state group or forward
+// extremity of their own — see join_room, which builds one snapshot state
+// group from the returned state_entries instead. State events — identified by
+// the PRESENCE of the "state_key" field in the raw JSON, even when its value
+// is "" — are also written to the state table. This is the correct
+// discriminator: the Matrix spec defines any event with a "state_key" field as
+// a state event, regardless of whether that value is empty.
+//
+// FED-1 (ADR-0083): an entry that does not belong to `room_id` (see
+// filter_send_join_events_for_room) is skipped — never stored, never written
+// to current_state, never counted as a member. join_room filters the arrays
+// before verification as well; this is the last line, at the writer.
+[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, std::string_view room_id,
+                                          canonicaljson::Array const& state_arr, rooms::RoomVersionPolicy const& policy)
+    -> SendJoinStateIngestResult;
+// FED-1 (ADR-0083): returns the entries of a send_join response's `state` or
+// `auth_chain` array that belong to `room_id`, the room being joined, dropping
+// every other entry. An event belongs to the room when its `room_id` equals
+// `room_id`. Under a room version whose m.room.create event defines the room ID
+// (v12, rooms/v12.md), the create event has no `room_id`: it belongs when
+// "!" + its reference-hash event ID (sigil swapped) equals `room_id`, and a
+// create event that carries a `room_id` is dropped (v12 auth rule 1.2 rejects
+// it). An entry with no determinable room is dropped.
+[[nodiscard]] auto filter_send_join_events_for_room(canonicaljson::Array const& events, std::string_view room_id,
+                                                    rooms::RoomVersionPolicy const& policy) -> canonicaljson::Array;
 // Filters a send_join response's `state` or `auth_chain` array down to the
 // events whose Ed25519 signature verifies against their sender domain's
-// published signing key. A large room's state array carries one m.room.member
-// per member — thousands of distinct sender home servers for a large room —
-// so distinct (sender_domain, key_id) pairs are resolved via
+// signing key. A large room's state array carries one m.room.member per
+// member — thousands of distinct sender home servers for a large room — so
+// distinct (sender_domain, key_id) pairs are resolved via
 // runtime.federation.remote_key_resolver with concurrent fan-out capped at
 // `security.federation.join_state_key_parallelism` (default 100) rather than
-// serially. Events whose sender_domain equals `our_server` are kept without a
-// resolver round trip (self-signed, already trusted — we hold that key).
-// Fail-closed (src/federation/AGENTS.md rule 2): an event whose sender-domain
-// key cannot be resolved, or whose signature does not verify, is silently
-// dropped from the returned array rather than persisted or failing the join.
+// serially.
+//
+// An event whose sender domain is `our_server` is verified like any other
+// (FED-1, ADR-0083), but against this server's OWN signing keys — the current
+// key and every retired key the server still holds, read from the persisted
+// server_signing_keys rows it generated — never fetched over the network. An
+// own-domain event signed under a key ID we do not hold is dropped.
+// Fail-closed (src/federation/AGENTS.md rule 2): an event whose key cannot be
+// found, or whose signature does not verify, is silently dropped from the
+// returned array rather than persisted or failing the join. Safe to call with
+// runtime.mutex released: the only runtime state read is the signing-key
+// snapshot, which takes its own lock.
 [[nodiscard]] auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
                                                     rooms::RoomVersionPolicy const& policy, std::string_view our_server)
     -> canonicaljson::Array;

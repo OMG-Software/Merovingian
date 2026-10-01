@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
+#include "merovingian/crypto/refusing_ed25519_provider.hpp"
 #include "merovingian/crypto/runtime_ed25519_provider.hpp"
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/database/postgresql_store.hpp"
@@ -53,8 +54,8 @@ namespace
     }
 
     [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
-                                   std::string help, std::vector<observability::MetricLabel> labels = {})
-        -> observability::MetricSample
+                                   std::string help,
+                                   std::vector<observability::MetricLabel> labels = {}) -> observability::MetricSample
     {
         return {std::move(name), value, true, type, std::move(help), std::move(labels)};
     }
@@ -81,7 +82,8 @@ namespace
                         "Number of persisted rooms currently known to the runtime."),
             make_metric("events_total", static_cast<std::int64_t>(store.events.size()),
                         observability::MetricType::gauge, "Number of persisted events currently known to the runtime."),
-            make_metric("audit_events_appended_total", static_cast<std::int64_t>(store.audit_log.size()),
+            make_metric("audit_events_appended_total",
+                        static_cast<std::int64_t>(store.audit_log.size() + store.audit_log_evicted),
                         observability::MetricType::counter,
                         "Total number of durable audit events appended since the current store was created."),
             make_metric("admin_actions_total", static_cast<std::int64_t>(store.admin_actions.size()),
@@ -153,8 +155,8 @@ namespace
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -166,8 +168,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
@@ -260,9 +262,9 @@ namespace
 // use by rotate_server_signing_key.
 auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 {
-    // The federation worker signs over IPC and holds no signing secret of its own.
-    // Rebuilding from local secrets there would swap the IPC provider for an empty
-    // one and silently disable every outbound signature.
+    // The federation worker never signs (ADR-0078) and holds no signing secret of its
+    // own. Rebuilding from local secrets there would swap the refusing provider for
+    // one built from whatever secrets the snapshot happens to contain.
     if (runtime.crypto_provider_overridden)
     {
         return;
@@ -394,6 +396,8 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
+    , client_outbound_budget(std::move(other.client_outbound_budget))
+    , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
 {
@@ -436,13 +440,15 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     typing_users = std::move(other.typing_users);
     receipts = std::move(other.receipts);
     room_typing_stream_id = std::move(other.room_typing_stream_id);
+    client_outbound_budget = std::move(other.client_outbound_budget);
+    client_outbound_proxy_policy = other.client_outbound_proxy_policy;
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
     return *this;
 }
 
-[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
-    -> std::vector<std::string>
+[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt,
+                                                std::string_view room_id) -> std::vector<std::string>
 {
     auto users = std::vector<std::string>{};
     for (auto const& entry : rt.typing_users)
@@ -667,6 +673,9 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
 
     auto runtime = HomeserverRuntime{};
     runtime.config = config;
+    // ADR-0079 caps are a fraction of the main request pool, which is now
+    // configured (server.http.request_threads, ADR-0077).
+    runtime.client_outbound_proxy_policy = client_outbound_proxy_policy_for_pool(config.server().http.request_threads);
     runtime.listeners = net::make_runtime_listeners(config);
     if (runtime.listeners.empty())
     {
@@ -723,16 +732,17 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
                    observability::LogEventSeverity::info);
 
     // Wire the signing provider. The main process loads the persisted signing secret;
-    // the federation worker receives an IPC-backed override so the secret never enters
-    // the child process. The provider must be ready before publish_server_signing_keys
-    // or any federation handler runs.
-    if (opts.signing_override != nullptr)
+    // the federation worker never signs (ADR-0078), so it gets a provider that refuses
+    // every request and no secret ever enters the child process. The provider must be
+    // ready before publish_server_signing_keys or any federation handler runs.
+    if (opts.signing_disabled)
     {
-        runtime.crypto_provider = opts.signing_override;
+        runtime.crypto_provider_owned = std::make_unique<crypto::RefusingEd25519Provider>();
+        runtime.crypto_provider = runtime.crypto_provider_owned.get();
         runtime.crypto_provider_overridden = true;
-        log_diagnostic("start.crypto_provider_override",
+        log_diagnostic("start.crypto_provider_refusing",
                        {
-                           {"reason", "IPC-backed signing provider", false}
+                           {"reason", "signing disabled in this process", false}
         },
                        observability::LogEventSeverity::info);
     }
@@ -880,8 +890,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // very first request, even if make_join or another outbound operation arrives
     // concurrently on a different connection and holds the runtime mutex.
     // The federation worker does not serve /_matrix/key/v2/server and has no local
-    // signing secret, so skip the pre-warm when running with an external provider.
-    if (opts.signing_override == nullptr)
+    // signing secret, so skip the pre-warm when signing is disabled.
+    if (!opts.signing_disabled)
     {
         auto const key_warm = publish_server_signing_keys(runtime);
         if (!key_warm.ok)
@@ -952,10 +962,17 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
 {
     // Filter the audit log by the optional `category` and `event_type`
     // parameters. The result line is prefixed with the count of *all*
-    // audit rows so the operator can see how many rows the filter
+    // retained audit rows so the operator can see how many rows the filter
     // excluded; the per-entry lines only include the matching rows.
+    // AUTH-1: the retained rows are the most recent `max_in_memory_audit_events`.
+    // `evicted=<n>` appears once older rows have left that window; they remain in
+    // the audit_log table.
     auto const& log = runtime.database.persistent_store.audit_log;
     auto summary = std::string{"audit events="} + std::to_string(log.size());
+    if (runtime.database.persistent_store.audit_log_evicted != 0U)
+    {
+        summary += " evicted=" + std::to_string(runtime.database.persistent_store.audit_log_evicted);
+    }
     if (category.has_value())
     {
         summary += " filter_category=" + std::string{observability::audit_category_name(*category)};
@@ -980,8 +997,8 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
     return summary;
 }
 
-auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
-    -> std::optional<database::PersistentPolicyRule>
+auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope,
+                      std::string_view entity) -> std::optional<database::PersistentPolicyRule>
 {
     auto const& rules = runtime.database.persistent_store.policy_rules;
     auto const exact = std::ranges::find_if(rules, [scope, entity](database::PersistentPolicyRule const& rule) {

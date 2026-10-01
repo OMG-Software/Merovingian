@@ -4,6 +4,7 @@
 
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 
 #include <cstdint>
@@ -48,6 +49,19 @@ namespace merovingian::sync
                                        std::unordered_set<std::string> const& lazy_members_already_sent = {},
                                        std::unordered_set<std::string> const& ignored_senders = {})
     -> SlidingSyncRoomResponse;
+
+// As above, with the request's shared `visibility` filter (CSAZ-3). A sliding sync request
+// serves many rooms for one user, so the caller builds ONE HistoryVisibility for the whole
+// request and passes it to every room: its indexes over the store are built once, not per room.
+// The timeline only ever contains events `visibility` lets the user see. The overload above
+// builds a filter of its own for a single room.
+[[nodiscard]] auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id,
+                                       std::string_view user, SlidingSyncRoomSubscription const& sub,
+                                       std::uint64_t room_since_event_ordering, bool is_initial,
+                                       database::PersistentStore const& store,
+                                       std::unordered_set<std::string> const& lazy_members_already_sent,
+                                       std::unordered_set<std::string> const& ignored_senders,
+                                       HistoryVisibility& visibility) -> SlidingSyncRoomResponse;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
 // room-config combination: when a room matches both a list and a

@@ -26,9 +26,13 @@ implementing custom cryptographic primitives.
   the active key into `old_verify_keys` and activates a freshly generated key.
 - Centralised runtime signing provider (`HomeserverRuntime::crypto_provider`)
   so every server signing path uses one provider instance.
-- Sign-back IPC channel for the out-of-process federation worker: the worker
-  delegates Ed25519 signing to the main process over the encrypted IPC channel
-  via `IpcEd25519Provider`; the private key never enters the worker address space.
+- The out-of-process federation worker never signs ([ADR-0078](adr/0078-the-federation-worker-never-signs.md),
+  which supersedes the signing-oracle part of ADR-0015): its runtime starts with
+  `RuntimeStartOptions::signing_disabled`, which installs
+  `crypto::RefusingEd25519Provider` (every `sign` and `verify` fails closed), and
+  main refuses any `sign_request` frame with an error and no signature. There is
+  no sign-back IPC channel; the private key never enters the worker address space
+  and the worker cannot ask main to use it.
 - Master-key-authenticated IPC key exchange (#318, key handoff redesigned 0.12.13
   finding N1 / [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)):
   a 32-byte IPC auth key (the same material used for at-rest signing-secret
@@ -57,13 +61,15 @@ implementing custom cryptographic primitives.
   homeserver credentials. The outbound `Authorization` header that does cross IPC
   is our own request-bound X-Matrix signature (not a reusable peer credential);
   the signing secret itself never enters the worker (#317).
-- The outbound signing path keeps the server signing secret in a `core::SecretBuffer`
-  or a borrowing `std::span<std::uint8_t const>`, never a `std::string`. `make_federation_signature`,
-  `OutboundCall::secret_key`, `DispatchWorkerConfig::secret_key`, and `perform_sync_outbound_call`
-  accept a span; production call sites pass `signing_secret_key.bytes()` directly, and
-  `DispatchWorkerConfig::secret_key` owns an mlocked `SecretBuffer` copy constructed from
-  that span. This removes the `std::string{reinterpret_cast<…>(…bytes().data()…)}` copies that
-  left the key unpinned and unzeroised on the heap.
+- The outbound signing path keeps the server signing secret in a `core::SecretBuffer`,
+  never a `std::string`. `make_federation_signature` takes a `std::span<std::uint8_t const>`
+  from `SecretBuffer::bytes()` so the signing primitive still sees a span, but
+  `OutboundCall::secret_key`, `DispatchWorkerConfig::secret_key`, and
+  `perform_sync_outbound_call` now own an mlocked `SecretBuffer` copy made while the
+  caller holds `runtime.mutex`. This removes the `std::string{reinterpret_cast<…>(…bytes().data()…)}`
+  copies that left the key unpinned and unzeroised on the heap, and prevents a
+  dangling span if the runtime key is rotated during the network round trip
+  (ADR-0086).
 - Validation for Ed25519 public-key shape, signature shape, and key IDs.
 - Bounded random request-size validation.
 - Event-signing integration tests using deterministic provider doubles.
@@ -242,14 +248,19 @@ The encrypted channel between `merovingian-server` and `merovingian-fed-worker`
   before decrypting.
 - **Isolation**: client access tokens are stripped from every forwarded request.
   The Matrix signing key is never transmitted over the IPC channel. The worker
-  does not load the signing secret from the database; instead it sends
-  `sign_request` frames and the main process signs with the in-memory production
-  provider, returning only the unpadded base64 signature.
+  does not load the signing secret from the database and does not ask main to
+  sign: there is no `sign_request` frame (ADR-0078). Main answers one, should a
+  compromised worker send it, with an error and no signature, inline and without
+  taking the runtime lock. Outbound requests are signed in main and cross the
+  channel already signed.
 
 The IPC channel is tested by `tests/unit/test_ipc_framing.cpp` covering:
 concurrent key exchange, request/response pairing, notification delivery,
-timeout behaviour when no reply arrives, and the `IpcEd25519Provider` sign-back
-round-trip.
+timeout behaviour when no reply arrives. That the worker's provider refuses to
+sign is covered by `tests/unit/test_crypto.cpp` and
+`tests/unit/test_server_signing_key_lifecycle.cpp` (tag `[worker_signing_refused]`),
+and that main refuses a `sign_request` without signing or taking the runtime lock
+by `tests/integration/test_federation_worker_flow.cpp` (same tag).
 
 ## Deliberately not included
 

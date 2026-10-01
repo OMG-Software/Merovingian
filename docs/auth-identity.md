@@ -193,7 +193,9 @@ production-gated.
   by `since_sync_stream_id` — through `sync::collect_device_list_delta()`, which reports each
   subject user once however many change rows the range covers, since both fields name users
   rather than change events — and `broadcast_device_list_updates()` emits `m.device_list_update`
-  EDUs on cross-signing/key changes. Per-algorithm `device_one_time_keys_count` is wired into
+  EDUs on cross-signing/key changes. Inbound `m.device_list_update` and `m.signing_key_update`
+  EDUs record a change only for local users who share a joined room with the subject, one row
+  per (observer, subject), written as one batch (audit FED-7). Per-algorithm `device_one_time_keys_count` is wired into
   `/sync` as well. A `device_lists.changed` self-notification is recorded at two trigger points
   so a user's own devices discover each other without relying on room co-membership: on
   `POST /_matrix/client/v3/keys/upload` (key upload) and on `POST /_matrix/client/v3/login`

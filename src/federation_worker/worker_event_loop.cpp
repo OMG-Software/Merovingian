@@ -19,7 +19,6 @@
 #include "merovingian/http/request.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
-#include "merovingian/ipc/ipc_ed25519_provider.hpp"
 #include "merovingian/net/thread_pool.hpp"
 #include "merovingian/observability/logger.hpp"
 
@@ -496,20 +495,31 @@ namespace
         return result;
     }
 
-    // Serialize an event_id for the event_query_ingest IPC call to main.
-    auto serialize_event_query_ingest(std::string_view event_id) -> std::string
+    // Serialize an event_id and the X-Matrix-verified origin of the requesting
+    // server for the event_query_ingest IPC call to main. Main, not the worker,
+    // resolves the event's room and decides whether that origin may read it
+    // (FED-2).
+    auto serialize_event_query_ingest(std::string_view event_id, std::string_view origin) -> std::string
     {
         auto result = std::string{R"({"type":"event_query_ingest","event_id":)"};
-        result.reserve(64U + event_id.size());
+        result.reserve(96U + event_id.size() + origin.size());
         result += ipc::ipc_json_str(event_id);
+        result += R"(,"origin":)";
+        result += ipc::ipc_json_str(origin);
         result += '}';
         return result;
     }
 
     // Deserialize an `event_query_ingest_result` JSON frame from main.
-    auto deserialize_event_query_ingest_result(std::string_view json) -> std::string
+    auto deserialize_event_query_ingest_result(std::string_view json) -> federation::RoomReadResult
     {
-        return ipc::ipc_json_get_str(json, "response_body");
+        auto result = federation::RoomReadResult{};
+        result.status = federation::room_read_status_from_name(ipc::ipc_json_get_str(json, "status"));
+        if (result.status == federation::RoomReadStatus::ok)
+        {
+            result.body = ipc::ipc_json_get_str(json, "response_body");
+        }
+        return result;
     }
 
 } // namespace
@@ -553,7 +563,7 @@ auto WorkerEventLoop::run() -> void
     // the future — can open the file this process must never touch. Every
     // consumer of security.secrets.master_key_file that is actually reachable
     // from start_runtime() in a worker either is skipped outright (signing
-    // override bypasses key generation/decryption) or degrades safely to "no
+    // disabled bypasses key generation/decryption) or degrades safely to "no
     // master key configured" on an empty path; see docs/threat-model.md,
     // "Worker trust boundary".
     federation_worker::clear_master_key_file(config_);
@@ -582,8 +592,7 @@ auto WorkerEventLoop::run() -> void
     }
 
     // Create the IPC channel first; the blocking key exchange completes here
-    // before any runtime signing operation can be requested. The worker is the
-    // client side of the exchange. max_frame_bytes must match what
+    // before the runtime starts. The worker is the client side of the exchange. max_frame_bytes must match what
     // WorkerPool derives for the supervisor side of this same channel (see
     // ipc::frame_bytes_for_response_cap) — both sides parse the same
     // --config file independently rather than negotiating it over IPC.
@@ -594,17 +603,16 @@ auto WorkerEventLoop::run() -> void
                                                      max_frame_bytes);
     auto* channel_ptr = channel.get();
 
-    // Delegate all Ed25519 signing to the main process so the Matrix signing
-    // secret never enters this child address space.
-    auto ipc_provider = ipc::IpcEd25519Provider{channel_ptr};
-
     // Start a full HomeserverRuntime using the same config as main. The worker
     // has its own DB connection for remote key resolution and room-version
     // lookups. It does NOT write events — accepted PDUs are sent to main via
     // pdu_ingest IPC and main commits them with the authoritative counter.
     auto started = homeserver::start_runtime(homeserver::RuntimeStartOptions{
         .config = config_,
-        .signing_override = &ipc_provider,
+        // ADR-0078: the worker never signs and never asks main to sign for it.
+        // start_runtime installs a provider that refuses every request, so a
+        // compromised worker has no signing capability to abuse.
+        .signing_disabled = true,
         // Applied unconditionally, independent of which database credential
         // this worker connects with: the worker never needs
         // server_signing_keys and the other tables table_load_profile_includes
@@ -797,8 +805,9 @@ auto WorkerEventLoop::run() -> void
     // to land on, rather than trying to fix shard selection for an ID space
     // with no room ID to key off. See docs/architecture.md, "Federation
     // worker user/device/profile/event query relay".
-    runtime.federation.event_query_provider = [channel_ptr](std::string_view event_id) -> std::string {
-        auto const json_body = serialize_event_query_ingest(event_id);
+    runtime.federation.event_query_provider = [channel_ptr](std::string_view event_id,
+                                                            std::string_view origin) -> federation::RoomReadResult {
+        auto const json_body = serialize_event_query_ingest(event_id, origin);
         auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
         if (!reply.has_value())
         {

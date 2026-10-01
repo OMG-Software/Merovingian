@@ -174,8 +174,26 @@ identical to an existing one. See
 `src/net/shutdown_signal.cpp` installs a self-pipe and SIGINT/SIGTERM handlers.
 The handler does only signal-safe work: it writes one byte to the pipe and sets
 an atomic flag. The main thread unblocks `poll()` and initiates clean shutdown.
-`SIGPIPE` is ignored so a worker that dies mid-request cannot terminate the
-parent.
+`SIGPIPE` is ignored process-wide so a peer that vanishes mid-write cannot
+terminate the process (HTTP-5, security-audit-report-2026-09-29.md). Before the HTTP-5 fix
+this was only true after the first thumbnail was generated, because the sole
+`SIG_IGN` sat in `src/media/thumbnailer.cpp`. OpenSSL's socket BIO writes with
+plain `write()` and no `MSG_NOSIGNAL`, so a TLS client that completed the
+handshake, sent a partial request head and reset the connection made the
+server's 408 write raise SIGPIPE, and the default disposition killed the
+homeserver. The plain-HTTP and IPC paths use `MSG_NOSIGNAL` and were never
+affected. Every executable (`merovingian-server`, `merovingian-fed-worker`,
+`merovingian-thumbnail-worker`, `merovingian-db-migrate`) now calls
+`platform::ignore_sigpipe()` (`sigaction(SIGPIPE, SIG_IGN)`,
+`src/platform/signal_hardening.cpp`) first thing in `main()`, before any thread
+starts and before any seccomp filter exists. A failure is fatal: the server and
+`db-migrate` exit with `bootstrap::ExitCode::runtime_start_error` (80), the two
+workers exit 1. The lazy `::signal(SIGPIPE, SIG_IGN)` in the thumbnailer is
+kept as a second line of defence for the unit and integration tests, which call
+the thumbnailer without going through any `main()` of ours.
+`tests/unit/test_signal_hardening.cpp` forks a child that resets SIGPIPE to
+`SIG_DFL` (so it never inherits a harness `SIG_IGN`), and proves both that the
+child is killed without the call and that it survives with it.
 
 ### Out-of-process thumbnail worker sandbox
 
@@ -343,10 +361,10 @@ separate process on the same host:
   (`origin`/`key_id`/`sig_verified`); the raw peer `access_token` and
   `Authorization`/`X-Matrix` headers are stripped from the `fed_request` frame and
   never cross IPC, so a compromised worker cannot harvest or replay peer
-  homeserver credentials. The Ed25519 signing key is never forwarded either —
-  the worker delegates signing to the main process over the same channel via
-  `IpcEd25519Provider`, so the private key never enters the worker address space
-  (#317). (The outbound `Authorization` header that does cross IPC is our own
+  homeserver credentials. The Ed25519 signing key is never forwarded either, and
+  the worker cannot ask main to sign: there is no `sign_request` frame and the
+  worker's provider refuses every request (#317, ADR-0078), so a compromised
+  worker has neither the key nor a signing oracle. (The outbound `Authorization` header that does cross IPC is our own
   request-bound X-Matrix signature, not a reusable peer credential.)
 * **No filesystem socket path**: the transport is an `AF_UNIX` socket pair
   with no pathname in the filesystem namespace, so there is no socket file
@@ -387,6 +405,45 @@ separate process on the same host:
   unbounded handler pool. The cap is per channel, not global, so one slow or
   abusive worker cannot starve others and a crashed channel's count is released
   with the channel.
+* **No thread exists before hardening; seccomp is installed with `TSYNC`
+  (ISO-1, [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)):**
+  seccomp filters and Landlock rulesets attach to the calling thread only, so
+  a thread that already exists when they are installed keeps whatever it had.
+  Before this fix the logger's constructor started two writer threads, the
+  worker's first `LOG_INFO` constructed the logger before Landlock and the
+  worker filter were applied, and those two threads were left with only the
+  filter inherited from main, which allows `execve`, `open`, `socket` and
+  `connect`. A compromised worker thread could aim a signal handler at one of
+  them (`rt_sigaction` and `tgkill` are allowed) and run unconfined, reading the
+  master key or `exec`ing a shell. Three controls now close this:
+  * **Ordering.** `observability::SingleLog` starts no thread in its
+    constructor. Until `start_writers()` is called it writes each line
+    synchronously under a mutex (stdout, and the log file when one is open), so
+    an early message is neither lost nor able to deadlock. The worker and the
+    server call `start_writers()` only after their hardening is applied. The
+    server's request pools and its connection dispatcher thread (ADR-0077)
+    are likewise created in `serve_until_shutdown`, after the hardening
+    self-check has passed.
+    Because Landlock has no thread-sync flag on older kernels, this ordering is
+    the only thing that confines a thread against Landlock.
+  * **`SECCOMP_FILTER_FLAG_TSYNC`.** Every seccomp filter (main, worker and
+    decoder profiles) is installed with the `seccomp(2)` syscall and
+    `SECCOMP_FILTER_FLAG_TSYNC`, so any thread that already exists is confined
+    in the same call. A failure, including `TSYNC` reporting a thread it could
+    not synchronise, is fatal; there is no fallback to a per-thread install.
+  * **Self-check reads every task.** `platform::probe_seccomp_status()` reads
+    `/proc/self/task/<tid>/status` for every task and reports
+    `Seccomp: 2` and `NoNewPrivs: 1` only if all of them have both. Reading
+    `/proc/self/status` alone reports the thread-group leader and cannot see an
+    unconfined sibling. A task that cannot be read or parsed counts as
+    unconfined.
+  `tests/unit/test_worker_hardening_threads.cpp` covers both properties in a
+  forked child against the real kernel: a thread created before hardening is
+  killed on `execve` and every task reports the confined state, and a logger
+  that logged before hardening has created no thread, so the writers it starts
+  afterwards inherit Landlock and seccomp and cannot open the master key path.
+  A kernel without seccomp or Landlock makes those scenarios SKIP with a
+  message rather than pass.
 * **Worker-specific seccomp + runtime hardening** (#319): the worker applies
   `PR_SET_NO_NEW_PRIVS`, drops capabilities, sets resource limits, and installs
   a stricter seccomp-bpf filter (on top of the inherited server filter) that
@@ -434,13 +491,14 @@ Linux receives the richest set of in-process controls.
 
 | Defence | Implementation | Notes |
 | --- | --- | --- |
-| seccomp-bpf syscall allowlist | `src/platform/seccomp_hardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker. |
+| seccomp-bpf syscall allowlist | `src/platform/seccomp_hardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker, always with `SECCOMP_FILTER_FLAG_TSYNC` so every existing thread is covered (ADR-0082). |
 | Architecture guard | `src/platform/seccomp_hardening.cpp` | Filter starts with an `AUDIT_ARCH_X86_64` or `AUDIT_ARCH_AARCH64` guard and fails closed on unsupported architectures. |
 | Fail-closed default | `src/platform/seccomp_hardening.cpp` | Unlisted syscalls return `SECCOMP_RET_KILL_PROCESS`. |
 | No new privileges | `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` | Applied by `apply_seccomp_filter()` and `apply_runtime_hardening_controls()`. |
 | Capability bounding set drop | `apply_linux_capability_bounding_set()` | Calls `prctl(PR_CAPBSET_DROP, cap, ...)` for every capability. |
 | Core dump policy | `apply_linux_core_dump_policy()` | `setrlimit(RLIMIT_CORE, {0, 0})` and `prctl(PR_SET_DUMPABLE, 0)`. |
-| Self-check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
+| Self-check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2` and `NoNewPrivs: 1` for every task under `/proc/self/task`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
+| Ignored SIGPIPE | `src/platform/signal_hardening.cpp` | `platform::ignore_sigpipe()` is the first call in every executable's `main()`. |
 | systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, etc. |
 
 The seccomp-bpf filter is deliberately narrow: it allows only the syscalls the

@@ -145,6 +145,21 @@ auto TlsConnection::fd() const noexcept -> int
     return m_fd;
 }
 
+auto TlsConnection::has_pending_input() const noexcept -> bool
+{
+    if (m_connection == nullptr)
+    {
+        return false;
+    }
+    // OpenBSD's LibreSSL does not provide SSL_has_pending; SSL_pending is sufficient
+    // to detect buffered application data on all supported TLS stacks.
+#if defined(LIBRESSL_VERSION_NUMBER)
+    return SSL_pending(m_connection) > 0;
+#else
+    return SSL_pending(m_connection) > 0 || SSL_has_pending(m_connection) == 1;
+#endif
+}
+
 // M-07: the socket is non-blocking for the connection's whole life, so an
 // incomplete TLS record surfaces as SSL_ERROR_WANT_READ rather than blocking
 // inside OpenSSL. Both I/O paths therefore pump the same wait loop: retry the

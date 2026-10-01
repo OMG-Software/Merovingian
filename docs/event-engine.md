@@ -66,6 +66,22 @@ Implemented now:
   and the new direction) and 9.6/9.7 (the same two-sided bound per entry of
   `events` and `notifications`). The gap allowed a moderator to set
   `users_default` above their own level and take the room.
+- **rule 8 (v3-v5, v12) / rule 7 (v6-v11) covers `m.room.power_levels`.** "If
+  the event type's *required power level* is greater than the `sender`'s power
+  level, reject" runs for power_levels events before the rule-9 bounds, with the
+  `events["m.room.power_levels"]` entry as the required level and `state_default`
+  as the fallback. Before this fix the power_levels branch compared only against
+  `state_default`, so a level-50 moderator could rewrite a room whose
+  `events["m.room.power_levels"]` was 100 (the createRoom default), and
+  conformant peers rejected the event. The `events` value is read with the room
+  version's rules (string-encoded before v10).
+- **A negative `users` entry is the user's level.** The `users` lookup returns
+  `std::optional<int64_t>` and `users_default` applies only when the user is
+  absent from `users`. Before this fix a `-1` sentinel meant "absent", so a user
+  explicitly muted at a negative level was given `users_default` and could send
+  and kick again. Every consumer (send, kick, ban, invite, redaction targets,
+  power-level target rules 9.8/9.9, the state-resolution power ordering and the
+  push sender level) goes through this lookup.
 - **one deliberate deviation, stricter than the spec.** Rule 9.4 says a
   `m.room.power_levels` event is allowed outright when the room has no previous
   one. This server instead still requires the default `state_default` (50) in
@@ -407,6 +423,44 @@ stating explicitly, because all three were defects (the first two until
   power-levels ancestor (it never computes a power *level* at all, only a
   mainline *position*), never a shared map.
 
+Two further defects in this area (security audit 2026-09-29, EVT-3 and EVT-4)
+were fixed after 0.12.14:
+
+- **The unconflicted/conflicted partition is decided per key from a complete
+  tally.** Spec (rooms/v10.md — Definitions): a key is in the unconflicted
+  state map only if it is "present in every Si with the same value V";
+  otherwise all its values are conflicted. `partition_conflicted_state`
+  previously decided incrementally while walking the groups, so with three or
+  more groups (`A, B, A`, `A, B, B`, `A, B, C`) a later group could re-admit a
+  key an earlier group had already moved to the conflicted side. The key then
+  sat in both maps, and Algorithm step 5 ("replace any event with the event
+  with the same key from the unconflicted state map") overwrote the resolved
+  value with whichever group came last — resolution depended on `prev_events`
+  order and a ban in one fork could be dropped. The function now tallies, per
+  key, the number of groups holding it and the set of distinct event ids; a key
+  is unconflicted only when every group holds it with exactly one event id.
+  Step 5 itself was correct and is unchanged; v2.1 (room v12) uses the same
+  partition and the same step 5 (only the iterative auth checks' starting map
+  differs).
+- **The reverse topological power ordering is Kahn's algorithm, not a plain
+  sort.** Spec: "the lexicographically smallest topological ordering based on
+  the DAG formed by auth events ... ordered from earliest event to latest ...
+  found by sorting the events using Kahn's algorithm ... at each step
+  selecting, among all the candidate vertices, the smallest vertex". A
+  power-descending `stable_sort` ignored `auth_events` edges between candidates,
+  so an admin's ban that cites a moderator's kick (the kick is the target's
+  membership, hence an auth event of the ban) was applied first and the kick
+  then overwrote it. `reverse_topological_power_sort` now builds the
+  `auth_events` DAG restricted to the set being ordered (edge from an auth event
+  to each event that cites it), and repeatedly emits the smallest ready event
+  (sender power descending, `origin_server_ts` ascending, event id ascending).
+  The comparison is a strict total order over unique event ids, so the result
+  does not depend on input order. A cycle in the auth graph, or a duplicate
+  event id in the input, returns `nullopt` (fail closed) instead of looping or
+  dropping events. `mainline_order` is a plain sort on (mainline position,
+  `origin_server_ts`, event id) by the spec's definition, and the iterative auth
+  checks apply their input in the order given, so neither shared the defect.
+
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
 
@@ -452,6 +506,16 @@ branch) extended this same bookkeeping to every local event-creation path
 now calls) and to federated-join state seeding
 (`homeserver::record_event_state_with_parent`) — see that doc section for
 the full list of call sites.
+
+Federated-join seeding only ever takes events for the room being joined
+(FED-1, ADR-0083): `filter_send_join_events_for_room` drops every `state`
+and `auth_chain` entry of the `send_join` response whose `room_id` — for a
+v12 `m.room.create`, whose derived room ID — is not the joined room, before
+signature checks, and `ingest_send_join_state` repeats the check before it
+writes. Every remaining event passes a signature check, including one whose
+sender is on our own server (verified against this server's own current and
+retired keys). Auth-chain events are stored as outliers with no
+`current_state` row.
 
 ### Phase B2: the receipt-order auth checks themselves (ADR-0064)
 
@@ -653,7 +717,14 @@ ancestor with the greatest `(depth, event_id)` wins. This is the deterministic
 linearisation that v2 state resolution produces for a conflict-free DAG, so
 superseded historical state values are recovered without a stored state group.
 When `event_id` is absent the handler rejects the request with
-`400 M_MISSING_PARAM`; an unknown `event_id` falls back to the current state.
+`400 M_MISSING_PARAM`; an `event_id` that is unknown, or that belongs to another
+room, answers `404 M_NOT_FOUND` (there is no fallback to the current state, 0.12.15).
+Both endpoints, like `/event`, `/backfill` and `/get_missing_events`, answer
+`403 M_FORBIDDEN` to a server with no joined user in the room unless the room is
+`world_readable` (`federation::origin_may_read_room`). `/get_missing_events` walks
+`prev_events` breadth-first from `latest_events`, never returning or crossing
+`earliest_events` or the latest events themselves, skipping events below `min_depth`,
+and returns at most 20 events (default 10), oldest first.
 
 The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint reuses this
 same backward DAG walk (`federation::resolve_state_event_ids_at()`, 0.11.11)

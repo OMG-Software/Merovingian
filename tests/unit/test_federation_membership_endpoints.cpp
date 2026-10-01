@@ -439,11 +439,14 @@ SCENARIO("Inbound invite handler accepts a v2 invite through the path parser",
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
+        // The {eventId} in the URL must be the event's own reference-hash ID
+        // (audit FED-5), so it is derived from the signed event below.
+        auto expected_event_id = std::make_shared<std::string>();
         auto handler_seen = std::make_shared<bool>(false);
-        runtime.invite_handler = [handler_seen](merovingian::federation::InviteRequest const& req) {
+        runtime.invite_handler = [handler_seen, expected_event_id](merovingian::federation::InviteRequest const& req) {
             *handler_seen = true;
             REQUIRE(req.room_id == "!room:example.org");
-            REQUIRE(req.event_id == "$event:remote.example.org");
+            REQUIRE(req.event_id == *expected_event_id);
             REQUIRE(req.room_version == "10");
             auto result = merovingian::federation::InviteAcceptResult{};
             result.accepted = true;
@@ -464,6 +467,8 @@ SCENARIO("Inbound invite handler accepts a v2 invite through the path parser",
         auto const invite_event_json = merovingian::federation::test::make_signed_event_json(
             invite_event_unsigned_json, origin, key_id, token, "10");
         REQUIRE_FALSE(invite_event_json.empty());
+        *expected_event_id = merovingian::federation::test::reference_hash_event_id(invite_event_json, "10");
+        REQUIRE_FALSE(expected_event_id->empty());
 
         auto const body =
             std::string{R"({"room_version":"10","event":)"} + invite_event_json + R"(,"invite_room_state":[]})";
@@ -472,7 +477,7 @@ SCENARIO("Inbound invite handler accepts a v2 invite through the path parser",
         {
             auto const request =
                 signed_put_request(origin, key_id, token,
-                                   "/_matrix/federation/v2/invite/!room:example.org/$event:remote.example.org", body);
+                                   "/_matrix/federation/v2/invite/!room:example.org/" + *expected_event_id, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the handler is invoked with the parsed room_id and event_id")

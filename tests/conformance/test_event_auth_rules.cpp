@@ -3005,12 +3005,16 @@ namespace
     return auth_events;
 }
 
-// Prior state used by the rule-9 scenarios: @alice at 50, everything else at the
-// createRoom defaults, and m.room.power_levels itself gated at 100.
+// Prior state used by the rule-9 scenarios: @alice at 50 and everything else at
+// the createRoom defaults, except that m.room.power_levels itself is gated at 50
+// rather than the createRoom default of 100. Rule 8 ("the event type's required
+// power level") runs before rule 9, so a moderator below the m.room.power_levels
+// entry is rejected there and never reaches the rule-9 bounds these scenarios
+// probe (EVT-2). Gating at 50 lets @alice reach them.
 constexpr auto k_moderator_prior_power_levels =
     std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
                      "\"state_default\":50,\"events_default\":0,"
-                     "\"events\":{\"m.room.power_levels\":100},"
+                     "\"events\":{\"m.room.power_levels\":50},"
                      "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}"};
 
 } // namespace
@@ -3030,7 +3034,7 @@ SCENARIO("Auth rules reject a power_levels event raising users_default above the
         auto const pl_json = make_power_levels_event_raw(
             "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":100,"
                                   "\"state_default\":50,\"events_default\":0,"
-                                  "\"events\":{\"m.room.power_levels\":100},"
+                                  "\"events\":{\"m.room.power_levels\":50},"
                                   "\"users\":{\"@admin:example.org\":100}}");
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -3095,7 +3099,7 @@ SCENARIO("Auth rules allow a power_levels change where both old and new scalar v
         auto const pl_json = make_power_levels_event_raw(
             "@alice:example.org", "{\"ban\":50,\"kick\":25,\"redact\":50,\"invite\":0,\"users_default\":0,"
                                   "\"state_default\":50,\"events_default\":0,"
-                                  "\"events\":{\"m.room.power_levels\":100},"
+                                  "\"events\":{\"m.room.power_levels\":50},"
                                   "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -3123,18 +3127,22 @@ SCENARIO("Auth rules allow a power_levels change where both old and new scalar v
 SCENARIO("Auth rules reject lowering an events entry that currently sits above the sender's power",
          "[events][auth][power-levels][rule9][conformance]")
 {
-    GIVEN("a moderator at power 50 lowering the m.room.power_levels events entry from 100 to 0")
+    GIVEN("a moderator at power 50 lowering the m.room.name events entry from 100 to 0")
     {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":0,\"state_default\":50,\"events_default\":0,"
+                                            "\"events\":{\"m.room.power_levels\":50,\"m.room.name\":100},"
+                                            "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}"};
         auto const pl_json = make_power_levels_event_raw(
             "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
                                   "\"state_default\":50,\"events_default\":0,"
-                                  "\"events\":{\"m.room.power_levels\":0},"
+                                  "\"events\":{\"m.room.power_levels\":50,\"m.room.name\":0},"
                                   "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("11");
         REQUIRE(policy != nullptr);
-        auto const auth_events = moderator_auth_events(k_moderator_prior_power_levels);
+        auto const auth_events = moderator_auth_events(prior);
 
         WHEN("the power_levels event is authorized")
         {
@@ -3160,7 +3168,7 @@ SCENARIO("Auth rules reject adding an events entry above the sender's power",
         auto const pl_json = make_power_levels_event_raw(
             "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
                                   "\"state_default\":50,\"events_default\":0,"
-                                  "\"events\":{\"m.room.power_levels\":100,\"m.room.name\":100},"
+                                  "\"events\":{\"m.room.power_levels\":50,\"m.room.name\":100},"
                                   "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -3190,7 +3198,7 @@ SCENARIO("Auth rules reject adding a notifications entry above the sender's powe
         auto const pl_json = make_power_levels_event_raw(
             "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
                                   "\"state_default\":50,\"events_default\":0,"
-                                  "\"events\":{\"m.room.power_levels\":100},"
+                                  "\"events\":{\"m.room.power_levels\":50},"
                                   "\"notifications\":{\"room\":100},"
                                   "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
@@ -3589,6 +3597,318 @@ SCENARIO("Auth rules reject a users key containing whitespace or control charact
             THEN("the event is rejected — that is not a valid user ID")
             {
                 REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Authorization rule 8 (v3-v5, v12) / rule 7 (v6-v11) — the event type's
+// required power level applies to m.room.power_levels too (EVT-2)
+//
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md, "Authorization rules", rule 8:
+// "If the event type's required power level is greater than the sender's power
+// level, reject." The required level is the events[type] entry if listed, else
+// state_default. m.room.power_levels is not exempt: rule 8 comes before the
+// power_levels-specific rule 9, and rule 9 only adds bounds on top of it.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// A default-shaped room: @admin at 100, @alice at 50, m.room.power_levels gated at
+// 100 by the events map, state_default 50.
+constexpr auto k_default_room_power_levels =
+    std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                     "\"state_default\":50,\"events_default\":0,"
+                     "\"events\":{\"m.room.power_levels\":100},"
+                     "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}"};
+
+// The same room's state, with `member` joined and able to send.
+[[nodiscard]] auto joined_member_auth_events(std::string_view prior_power_levels_content,
+                                             std::string_view member) -> merovingian::events::AuthEventMap
+{
+    auto auth_events = merovingian::events::AuthEventMap{};
+    // Neither @admin nor @alice is the room creator: under MSC4289 (v12) a creator
+    // holds infinite power and would satisfy every level probed here.
+    auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@creator:example.org")).value;
+    auth_events.power_levels = merovingian::canonicaljson::parse_lossless(
+                                   make_power_levels_event_raw("@admin:example.org", prior_power_levels_content))
+                                   .value;
+    auth_events.sender_member =
+        merovingian::canonicaljson::parse_lossless(make_member_event(member, member, "join")).value;
+    return auth_events;
+}
+
+// A power_levels change that touches only users_default (0 -> 10). Rule 9.5 is
+// satisfied for any sender at 10 or above, so only rule 8 can reject it.
+constexpr auto k_users_default_change_content =
+    std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":10,"
+                     "\"state_default\":50,\"events_default\":0,"
+                     "\"events\":{\"m.room.power_levels\":100},"
+                     "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}"};
+
+} // namespace
+
+SCENARIO("Auth rules hold a power_levels event to the events entry for m.room.power_levels",
+         "[events][auth][power-levels][rule8][conformance]")
+{
+    GIVEN("events[\"m.room.power_levels\"] is 100, state_default is 50, and the sender is at power 50")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            make_power_levels_event_raw("@alice:example.org", k_users_default_change_content));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = joined_member_auth_events(k_default_room_power_levels, "@alice:example.org");
+
+        WHEN("the sender changes users_default within the bounds of rule 9")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — the sender does not meet the required level for m.room.power_levels")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+
+    GIVEN("the same room and the same change, sent by a sender at power 100")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            make_power_levels_event_raw("@admin:example.org", k_users_default_change_content));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = joined_member_auth_events(k_default_room_power_levels, "@admin:example.org");
+
+        WHEN("the sender changes users_default")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// The rule is numbered 7 from room v6 to v11 and 8 elsewhere; its text is the
+// same in every supported version, so the behaviour must hold in all of them.
+SCENARIO("Auth rules apply the m.room.power_levels required level in every supported room version",
+         "[events][auth][power-levels][rule8][conformance]")
+{
+    for (auto const* version : {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+    {
+        GIVEN("a room version " + std::string{version} +
+              " room where events[\"m.room.power_levels\"] is 100 and the sender is at power 50")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event_raw("@alice:example.org", k_users_default_change_content));
+            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            auto const* policy = merovingian::rooms::find_room_version_policy(version);
+            REQUIRE(policy != nullptr);
+            auto const auth_events = joined_member_auth_events(k_default_room_power_levels, "@alice:example.org");
+
+            WHEN("the sender changes users_default")
+            {
+                auto const decision =
+                    merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+                THEN("the event is rejected")
+                {
+                    REQUIRE_FALSE(decision.allowed);
+                }
+            }
+        }
+    }
+}
+
+// Room versions 3-9 accept a power level encoded as a string, including inside
+// the events map (rooms/v9.md). The required level must be honoured, not read as
+// absent and replaced by state_default.
+SCENARIO("Auth rules read a string-encoded m.room.power_levels events entry before room version 10",
+         "[events][auth][power-levels][rule8][conformance]")
+{
+    GIVEN("a v9 room whose events[\"m.room.power_levels\"] is the string \"100\" and a sender at power 50")
+    {
+        auto const prior =
+            std::string_view{"{\"ban\":\"50\",\"kick\":\"50\",\"redact\":\"50\",\"invite\":\"0\","
+                             "\"users_default\":\"0\",\"state_default\":\"50\","
+                             "\"events_default\":\"0\","
+                             "\"events\":{\"m.room.power_levels\":\"100\"},"
+                             "\"users\":{\"@admin:example.org\":\"100\",\"@alice:example.org\":\"50\"}}"};
+        auto const content = std::string_view{"{\"ban\":\"50\",\"kick\":\"50\",\"redact\":\"50\",\"invite\":\"0\","
+                                              "\"users_default\":\"10\",\"state_default\":\"50\","
+                                              "\"events_default\":\"0\","
+                                              "\"events\":{\"m.room.power_levels\":\"100\"},"
+                                              "\"users\":{\"@admin:example.org\":\"100\","
+                                              "\"@alice:example.org\":\"50\"}}"};
+        auto const parsed =
+            merovingian::canonicaljson::parse_lossless(make_power_levels_event_raw("@alice:example.org", content));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("9");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = joined_member_auth_events(prior, "@alice:example.org");
+
+        WHEN("the sender changes users_default")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A user's explicit negative power level is their level (EVT-6)
+//
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md, m.room.power_levels: "If a
+// user_id is in the users list, then that user_id has the associated power
+// level"; users_default applies only to users "not mentioned in the users key".
+// Levels range over [-(2**53)+1, (2**53)-1], so a negative level is a valid
+// explicit value, not an absent one.
+// ---------------------------------------------------------------------------
+
+SCENARIO("Auth rules deny a message from a user whose explicit level is below events_default",
+         "[events][auth][power-levels][negative-level][conformance]")
+{
+    GIVEN("users{\"@u\":-1} and events_default 0")
+    {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":0,\"state_default\":50,\"events_default\":0,"
+                                            "\"users\":{\"@u:example.org\":-1}}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(make_message_event("@u:example.org"));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = joined_member_auth_events(prior, "@u:example.org");
+
+        WHEN("@u sends a message")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the message is denied")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+
+    GIVEN("users{\"@u\":-1} and a users_default high enough to send")
+    {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":50,\"state_default\":50,\"events_default\":0,"
+                                            "\"users\":{\"@u:example.org\":-1}}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(make_message_event("@u:example.org"));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = joined_member_auth_events(prior, "@u:example.org");
+
+        WHEN("@u sends a message")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the message is still denied — the muted user is not promoted to users_default")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules deny a kick from a user whose explicit negative level is below users_default",
+         "[events][auth][power-levels][negative-level][conformance]")
+{
+    GIVEN("users{\"@u\":-5}, users_default 50 and kick 50")
+    {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":50,\"state_default\":50,\"events_default\":0,"
+                                            "\"users\":{\"@u:example.org\":-5}}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            make_member_event("@u:example.org", "@bob:example.org", "leave"));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+        REQUIRE(policy != nullptr);
+        auto auth_events = joined_member_auth_events(prior, "@u:example.org");
+        auth_events.target_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@bob:example.org", "@bob:example.org", "join"))
+                                        .value;
+
+        WHEN("@u tries to kick @bob")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the kick is denied")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules rank a kick target by its explicit negative level, not users_default",
+         "[events][auth][power-levels][negative-level][conformance]")
+{
+    GIVEN("@alice at 50, users_default 100 and @bob explicitly at -5")
+    {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":100,\"state_default\":50,\"events_default\":0,"
+                                            "\"users\":{\"@alice:example.org\":50,\"@bob:example.org\":-5}}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            make_member_event("@alice:example.org", "@bob:example.org", "leave"));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+        REQUIRE(policy != nullptr);
+        auto auth_events = joined_member_auth_events(prior, "@alice:example.org");
+        auth_events.target_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@bob:example.org", "@bob:example.org", "join"))
+                                        .value;
+
+        WHEN("@alice kicks @bob")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the kick is allowed — @bob's level is -5, below @alice's 50")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("A user's power level is their explicit users entry even when negative",
+         "[events][auth][power-levels][negative-level][conformance]")
+{
+    GIVEN("a power_levels event with users_default 50 and users{\"@u\":-1, \"@z\":0}")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(make_power_levels_event_raw(
+            "@admin:example.org", "{\"users_default\":50,\"users\":{\"@u:example.org\":-1,\"@z:example.org\":0}}"));
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the levels of a negative, a zero and an unlisted user are read")
+        {
+            auto const negative = merovingian::events::extract_user_power_level(parsed.value, "@u:example.org");
+            auto const zero = merovingian::events::extract_user_power_level(parsed.value, "@z:example.org");
+            auto const unlisted = merovingian::events::extract_user_power_level(parsed.value, "@other:example.org");
+
+            THEN("the listed users keep their explicit levels and only the unlisted user gets users_default")
+            {
+                REQUIRE(negative == -1);
+                REQUIRE(zero == 0);
+                REQUIRE(unlisted == 50);
             }
         }
     }

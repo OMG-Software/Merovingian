@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -286,7 +288,33 @@ auto federation_remote_rate_limit() noexcept -> http::RateLimitPolicy
     return {120U, 60U};
 }
 
-auto remote_trust_policy(RemoteTrustState state) -> RemoteTrustDecision
+namespace
+{
+
+    [[nodiscard]] auto backoff_has_decayed(RemoteTrustState const& state,
+                                           std::chrono::steady_clock::time_point now) noexcept -> bool
+    {
+        // An unset timestamp cannot be aged, so it never decays.
+        return state.last_failure_at != std::chrono::steady_clock::time_point{} &&
+               now - state.last_failure_at >= remote_backoff_decay_window;
+    }
+
+} // namespace
+
+auto record_remote_trust_failure(RemoteTrustState& state, std::chrono::steady_clock::time_point now) noexcept -> void
+{
+    if (backoff_has_decayed(state, now))
+    {
+        state.consecutive_failures = 0U;
+    }
+    if (state.consecutive_failures < std::numeric_limits<std::uint32_t>::max())
+    {
+        ++state.consecutive_failures;
+    }
+    state.last_failure_at = now;
+}
+
+auto remote_trust_policy(RemoteTrustState state, std::chrono::steady_clock::time_point now) -> RemoteTrustDecision
 {
     if (state.quarantined)
     {
@@ -310,7 +338,7 @@ auto remote_trust_policy(RemoteTrustState state) -> RemoteTrustDecision
         });
         return {false, true, "remote reputation is too low"};
     }
-    if (state.consecutive_failures >= 3U)
+    if (state.consecutive_failures >= 3U && !backoff_has_decayed(state, now))
     {
         log_diagnostic("trust.rejected",
                        {

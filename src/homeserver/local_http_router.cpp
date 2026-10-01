@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -14,6 +15,7 @@
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -23,6 +25,7 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -421,7 +424,14 @@ namespace
 
     [[nodiscard]] auto response_from_media_operation(OperationResult const& result) -> LocalHttpResponse
     {
-        return response(result.status, result.ok ? result.value : result.reason);
+        auto out = response(result.status, result.ok ? result.value : result.reason);
+        if (result.retry_after_ms > 0U)
+        {
+            // A throttled result (the client-outbound budget, ADR-0079) carries its
+            // delay across the internal boundary as the standard header, in seconds.
+            out.headers.emplace_back("Retry-After", std::to_string((result.retry_after_ms + 999U) / 1000U));
+        }
+        return out;
     }
 
     // Extracts `access_token` from a request target's query string
@@ -717,12 +727,71 @@ namespace
         }
     }
 
+    // `content.third_party_invite.signed.token` of an m.room.member event, or
+    // empty. The auth rules need the matching m.room.third_party_invite event.
+    [[nodiscard]] auto member_event_third_party_token(canonicaljson::Value const& event) -> std::string
+    {
+        auto const* event_obj = std::get_if<canonicaljson::Object>(&event.storage());
+        auto const* content = event_obj == nullptr ? nullptr : object_member_as_object(*event_obj, "content");
+        auto const* third_party_invite =
+            content == nullptr ? nullptr : object_member_as_object(*content, "third_party_invite");
+        auto const* signed_obj =
+            third_party_invite == nullptr ? nullptr : object_member_as_object(*third_party_invite, "signed");
+        auto const* token = signed_obj == nullptr ? nullptr : string_member(*signed_obj, "token");
+        return token == nullptr ? std::string{} : *token;
+    }
+
+    // Outcome of authorising an inbound /invite against a room this server holds.
+    struct InviteAuthOutcome final
+    {
+        bool allowed{true};
+        std::uint16_t status{200U};
+        std::string body{};
+    };
+
+    // Audit FED-5. Spec: SS API v1.19 "Inviting to a room" and "Authorisation
+    // rules" (m.room.member, membership "invite"): the sender must be joined
+    // and hold invite power, and "If the target user is banned, reject". An
+    // invite for a room whose current state we hold is authorised against that
+    // state; a room we do not hold (an invite to a remote room) cannot be
+    // checked here and is left to the caller's stripped-state handling.
+    [[nodiscard]] auto authorize_invite_against_local_room(HomeserverRuntime const& runtime, std::string_view room_id,
+                                                           std::string_view room_version,
+                                                           canonicaljson::Value const& event, std::string_view sender,
+                                                           std::string_view target_user) -> InviteAuthOutcome
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const forbidden = [](std::string_view reason) {
+            return InviteAuthOutcome{false, 403U, matrix_error("M_FORBIDDEN", reason)};
+        };
+        auto const stored_version = room_version_from_store(store, room_id);
+        if (!room_version.empty() && room_version != stored_version)
+        {
+            return InviteAuthOutcome{false, 400U,
+                                     matrix_error("M_INVALID_PARAM", "invite room_version does not match the room")};
+        }
+        auto const* policy = rooms::find_room_version_policy(stored_version);
+        if (policy == nullptr)
+        {
+            return forbidden("invite refused: room version is not supported");
+        }
+        auto auth_map = build_pdu_auth_event_map(store, room_id, sender, target_user, "m.room.member",
+                                                 member_event_third_party_token(event));
+        fill_create_from_room_state(auth_map, store, room_id);
+        auto const decision = events::authorize_event_against_auth_events(event, *policy, auth_map);
+        if (!decision.allowed)
+        {
+            return forbidden("invite refused by the room's authorization rules: " + decision.reason);
+        }
+        return {};
+    }
+
     [[nodiscard]] auto sign_invite_event(HomeserverRuntime& runtime, canonicaljson::Value const& event_value,
                                          std::string_view room_version) -> std::optional<std::string>
     {
         // Use the active key record without loading the signing secret. In the main
-        // process the secret is held by runtime.crypto_provider; in the federation
-        // worker it is held by the main process and reached via IPC.
+        // process the secret is held by runtime.crypto_provider. The federation worker
+        // never signs (ADR-0078): its invite_handler relays to main, which signs.
         auto key = find_active_server_signing_key(runtime);
         if (!key.has_value() || runtime.crypto_provider == nullptr)
         {
@@ -981,6 +1050,30 @@ namespace
         return params;
     }
 
+    // What a remote media download or thumbnail needs to know about its request
+    // beyond the media it names: which client to count it against
+    // (rate_limit_client_key, so trusted_proxies applies) and whether the caller
+    // set allow_remote=false. Only a literal `false` opts out, matching the
+    // spec's boolean; anything else leaves the default (true).
+    [[nodiscard]] auto remote_media_context(LocalHttpRequest const& request, HomeserverRuntime const& runtime)
+        -> RemoteMediaRequestContext
+    {
+        auto context = RemoteMediaRequestContext{};
+        context.client_key = rate_limit_client_key(request, runtime.config.server());
+        auto const query_start = request.target.find('?');
+        if (query_start != std::string::npos)
+        {
+            for (auto const& kv : parse_audit_query_string(std::string_view{request.target}.substr(query_start + 1U)))
+            {
+                if (kv.first == "allow_remote" && kv.second == "false")
+                {
+                    context.allow_remote = false;
+                }
+            }
+        }
+        return context;
+    }
+
     [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
         -> canonicaljson::Object const*
     {
@@ -1044,14 +1137,93 @@ namespace
     // diverge on a store-layer rejection (e.g. an empty sender/device id) or
     // a backend write failure — callers must not treat targeted > 0 as proof
     // that the key share reached the recipient's queue (#464).
+    //
+    // The remaining fields say why an EDU (or part of it) was dropped without
+    // an attempt (audit FED-3): they are policy drops, not store failures.
     struct DirectToDeviceEnqueueResult final
     {
         std::size_t targeted{0U};
         std::size_t stored{0U};
+        // The EDU `sender` is not a user of the sending origin: whole EDU dropped.
+        bool sender_not_on_origin{false};
+        // message_id absent, not a string, empty or over 32 codepoints: whole EDU dropped.
+        bool invalid_message_id{false};
+        // (origin, message_id) was already seen inside the replay window: whole EDU dropped.
+        bool replay{false};
+        // Target entries skipped because the user is not a local, active account.
+        std::size_t skipped_non_local{0U};
+        // True when the per-EDU delivery cap was reached and the rest dropped.
+        bool truncated{false};
     };
 
-    auto enqueue_direct_to_device_messages(HomeserverRuntime& runtime, std::string_view content_json)
-        -> DirectToDeviceEnqueueResult
+    [[nodiscard]] auto is_active_local_user(HomeserverRuntime const& runtime, std::string_view user_id) -> bool
+    {
+        if (server_name_from_user_id(user_id) != runtime.config.server().server_name)
+        {
+            return false;
+        }
+        return std::ranges::any_of(runtime.database.persistent_store.users,
+                                   [user_id](database::PersistentUser const& user) {
+                                       return user.user_id == user_id && !user.deactivated;
+                                   });
+    }
+
+    // Active local users who are joined to at least one room that `subject` is
+    // also joined to, according to the current membership rows, sorted and
+    // unique. Empty when the subject shares no room with any local user.
+    [[nodiscard]] auto local_users_sharing_a_joined_room_with(HomeserverRuntime const& runtime,
+                                                              std::string_view subject) -> std::vector<std::string>
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto const subject_rooms = [&] {
+            auto rooms = std::unordered_set<std::string_view>{};
+            for (auto const& membership : store.memberships)
+            {
+                if (membership.user_id == subject && membership.membership == "join")
+                {
+                    rooms.insert(membership.room_id);
+                }
+            }
+            return rooms;
+        }();
+        auto observers = std::vector<std::string>{};
+        if (subject_rooms.empty())
+        {
+            return observers;
+        }
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.membership == "join" && membership.user_id != subject &&
+                subject_rooms.contains(membership.room_id) &&
+                server_name_from_user_id(membership.user_id) == runtime.config.server().server_name)
+            {
+                observers.push_back(membership.user_id);
+            }
+        }
+        // De-duplicate first: the account check below scans the user table.
+        std::ranges::sort(observers);
+        auto const duplicates = std::ranges::unique(observers);
+        observers.erase(duplicates.begin(), duplicates.end());
+        std::erase_if(observers, [&runtime](std::string const& user_id) {
+            return !is_active_local_user(runtime, user_id);
+        });
+        return observers;
+    }
+
+    // Queues the messages of an inbound m.direct_to_device EDU for local
+    // devices.
+    //
+    // Spec: SS API v1.19, "Send-to-device messaging". The sending server
+    // asserts `sender`, so it must be a user of that server; `message_id` is
+    // "used for idempotence"; the target user IDs are named by the sender and
+    // only ours may be delivered to (audit FED-3).
+    //
+    // The replay window lives in memory only (federation::EduIdempotenceWindow):
+    // a restart forgets it, so a replay straddling a restart is delivered again.
+    // Persisting it would need a migration and is not required for a
+    // best-effort EDU.
+    auto enqueue_direct_to_device_messages(HomeserverRuntime& runtime, std::string_view origin,
+                                           std::string_view content_json) -> DirectToDeviceEnqueueResult
     {
         auto result = DirectToDeviceEnqueueResult{};
         auto const parsed = canonicaljson::parse_lossless(std::string{content_json});
@@ -1071,6 +1243,23 @@ namespace
         {
             return result;
         }
+        if (!user_belongs_to_origin(*sender, origin))
+        {
+            result.sender_not_on_origin = true;
+            return result;
+        }
+        auto const* message_id = object_member_as_string(*root, "message_id");
+        if (message_id == nullptr || !federation::direct_to_device_message_id_is_valid(*message_id))
+        {
+            result.invalid_message_id = true;
+            return result;
+        }
+        if (!runtime.inbound_to_device_window.first_sighting(origin, *message_id,
+                                                             federation::EduIdempotenceWindow::Clock::now()))
+        {
+            result.replay = true;
+            return result;
+        }
 
         for (auto const& user_entry : *messages)
         {
@@ -1079,11 +1268,21 @@ namespace
             {
                 continue;
             }
+            if (!is_active_local_user(runtime, user_entry.key))
+            {
+                ++result.skipped_non_local;
+                continue;
+            }
             for (auto const& device_entry : *device_map)
             {
                 if (device_entry.value == nullptr)
                 {
                     continue;
+                }
+                if (result.targeted >= max_inbound_direct_to_device_deliveries)
+                {
+                    result.truncated = true;
+                    return result;
                 }
                 auto const serialized = canonicaljson::serialize_canonical(*device_entry.value);
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
@@ -1310,6 +1509,15 @@ namespace
                     }
                     for (auto const& receipt_type_member : *receipt_types)
                     {
+                        // Spec (S-S API, m.receipt): "only a single <receipt_type> should be
+                        // used: m.read. m.read.private MUST NOT appear in this federated
+                        // m.receipt EDU." Any other type from a peer is dropped, not stored, so
+                        // a remote server can neither plant a private or fully-read receipt nor
+                        // grow the receipt table with invented types (CSAZ-4).
+                        if (receipt_type_member.key != "m.read")
+                        {
+                            continue;
+                        }
                         auto const* users = std::get_if<canonicaljson::Object>(&receipt_type_member.value->storage());
                         if (users == nullptr)
                         {
@@ -1436,7 +1644,41 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::direct_to_device: {
-                auto const enqueue_result = enqueue_direct_to_device_messages(*rt, envelope.content_json);
+                auto const enqueue_result =
+                    enqueue_direct_to_device_messages(*rt, envelope.origin, envelope.content_json);
+                if (enqueue_result.sender_not_on_origin || enqueue_result.invalid_message_id)
+                {
+                    // Whole EDU dropped; the transaction itself still succeeds
+                    // (EDUs are best-effort).
+                    log_diagnostic(
+                        "federation.edu.direct_to_device.dropped",
+                        {
+                            {"origin", envelope.origin,                                                           false},
+                            {"reason",
+                             enqueue_result.sender_not_on_origin ? "sender_not_on_origin" : "invalid_message_id",
+                             false                                                                                     },
+                    },
+                        observability::LogEventSeverity::warning);
+                    return {federation::EduDispositionStatus::rejected_invalid,
+                            enqueue_result.sender_not_on_origin
+                                ? "direct_to_device sender must belong to the sending origin"
+                                : "direct_to_device message_id must be 1 to 32 codepoints"};
+                }
+                if (enqueue_result.replay)
+                {
+                    // Idempotent: the first delivery already happened.
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                if (enqueue_result.truncated || enqueue_result.skipped_non_local != 0U)
+                {
+                    log_diagnostic("federation.edu.direct_to_device.partial",
+                                   {
+                                       {"origin",            envelope.origin,                                  false},
+                                       {"skipped_non_local", std::to_string(enqueue_result.skipped_non_local), false},
+                                       {"truncated",         enqueue_result.truncated ? "true" : "false",      false},
+                    },
+                                   observability::LogEventSeverity::warning);
+                }
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
@@ -1487,15 +1729,26 @@ namespace
                 }
                 if (!user_id->empty())
                 {
-                    // Record for all local users who may need to re-fetch keys
-                    for (auto const& user : rt->database.persistent_store.users)
+                    // Audit FED-7. Only a local user who shares a joined room
+                    // with the subject has any reason to re-fetch their keys.
+                    // Recording a row for every local user let one peer write
+                    // (local users) rows per EDU. All rows for this EDU go to
+                    // the store as one batch: one stream position, one commit.
+                    // A repeat replaces the pair's earlier row, so the table is
+                    // bounded by observers x subjects that share a room.
+                    auto changes = std::vector<database::PersistentDeviceListChange>{};
+                    for (auto& observer : local_users_sharing_a_joined_room_with(*rt, *user_id))
                     {
                         auto change = database::PersistentDeviceListChange{};
-                        change.observer_user_id = user.user_id;
+                        change.observer_user_id = std::move(observer);
                         change.subject_user_id = *user_id;
                         change.change_type = "changed";
+                        changes.push_back(std::move(change));
+                    }
+                    if (!changes.empty())
+                    {
                         std::ignore =
-                            database::record_device_list_change(rt->database.persistent_store, std::move(change));
+                            database::record_device_list_changes(rt->database.persistent_store, std::move(changes));
                     }
                 }
                 if (rt->sync_notifier != nullptr)
@@ -2087,6 +2340,33 @@ namespace
             {
                 return {false, 400U, "invite event sender is not on the origin server", {}};
             }
+            // Audit FED-5: a room whose current state we hold (we have its
+            // create event) is authorised against that state before we sign
+            // anything. This is what refuses an invite for a banned target.
+            auto const room_known_locally = !std::holds_alternative<std::nullptr_t>(
+                create_event_json_for_room(rt->database.persistent_store, invite.room_id).storage());
+            if (room_known_locally)
+            {
+                auto const auth = authorize_invite_against_local_room(*rt, invite.room_id, invite.room_version,
+                                                                      parsed.value, *sender, *target_user);
+                if (!auth.allowed)
+                {
+                    return {false, auth.status, auth.body, {}};
+                }
+            }
+            // Never replace a ban with an invite, whatever the room state says:
+            // only an explicit unban (a leave) lifts a ban. Belt and braces for
+            // rooms we do not hold state for, where the check above cannot run.
+            {
+                auto const& mems = rt->database.persistent_store.memberships;
+                auto const banned = std::ranges::any_of(mems, [&](database::PersistentMembership const& m) {
+                    return m.room_id == invite.room_id && m.user_id == *target_user && m.membership == "ban";
+                });
+                if (banned)
+                {
+                    return {false, 403U, matrix_error("M_FORBIDDEN", "the invited user is banned from the room"), {}};
+                }
+            }
             auto signed_event = sign_invite_event(*rt, parsed.value, invite.room_version);
             if (!signed_event.has_value())
             {
@@ -2120,11 +2400,20 @@ namespace
             {
                 return {false, 500U, "invite metadata persistence failed", {}};
             }
-            // Store the invite event in the persistent event graph so it is
-            // reachable during auth-chain BFS walks on subsequent send_join
-            // calls for this user. Without this, make_join cannot include it
-            // in auth_events and send_join cannot return it in the auth_chain.
+            // For a room whose state we hold, stop here (audit FED-5). Spec: "if
+            // the remote homeserver is already in the room, it will receive the
+            // invite event twice; once through this endpoint, and again through
+            // a federation transaction". The transaction path does the full
+            // PDU checks and is what updates room state, and storing the event
+            // here would make that later copy fail to persist (the store refuses
+            // an event ID it already holds; ADR-0085). The membership row and invite metadata above
+            // are all the invitee needs in order to see the invite.
+            if (!room_known_locally)
             {
+                // Store the invite event in the persistent event graph so it is
+                // reachable during auth-chain BFS walks on subsequent send_join
+                // calls for this user. Without this, make_join cannot include it
+                // in auth_events and send_join cannot return it in the auth_chain.
                 auto invite_pdu = database::PersistentEvent{};
                 invite_pdu.event_id = invite.event_id;
                 invite_pdu.room_id = invite.room_id;
@@ -2181,9 +2470,9 @@ namespace
 
         runtime.federation.backfill_provider =
             [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
-            auto const& store = rt->database.persistent_store;
-            auto pdus = federation::build_backfill_pdus(store, req.room_id, req.event_ids, req.limit);
-            return {true, 200U, {}, std::move(pdus)};
+            // FED-2: refuses (403) a server with no joined user in the room unless
+            // the room is world readable.
+            return federation::build_backfill_response(rt->database.persistent_store, req);
         };
 
         runtime.federation.profile_query_provider = [rt](std::string_view user_id) -> federation::FederationProfile {
@@ -2211,24 +2500,30 @@ namespace
             return federation::build_user_devices_response(rt->database.persistent_store, user_id);
         };
 
-        runtime.federation.event_query_provider = [rt](std::string_view event_id) -> std::string {
+        // FED-2: every room-scoped read below takes the X-Matrix-authenticated
+        // origin and answers 403 unless that server has a joined user in the room
+        // (or the room is world readable). They run against whichever process's
+        // store serves the request: the federation worker's room snapshot for
+        // state/state_ids/backfill/get_missing_events, main's for /event.
+        runtime.federation.event_query_provider = [rt](std::string_view event_id,
+                                                       std::string_view origin) -> federation::RoomReadResult {
             return federation::build_event_response(rt->database.persistent_store, event_id,
-                                                    rt->config.server().server_name);
+                                                    rt->config.server().server_name, origin);
         };
 
-        runtime.federation.state_query_provider = [rt](std::string_view room_id,
-                                                       std::string_view event_id) -> std::string {
-            return federation::build_state_response(rt->database.persistent_store, room_id, event_id);
+        runtime.federation.state_query_provider = [rt](std::string_view room_id, std::string_view event_id,
+                                                       std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_state_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
-        runtime.federation.state_ids_query_provider = [rt](std::string_view room_id,
-                                                           std::string_view event_id) -> std::string {
-            return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id);
+        runtime.federation.state_ids_query_provider = [rt](std::string_view room_id, std::string_view event_id,
+                                                           std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id, origin);
         };
 
-        runtime.federation.missing_events_query_provider = [rt](std::string_view room_id,
-                                                                std::string_view body) -> std::string {
-            return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
+        runtime.federation.missing_events_query_provider = [rt](std::string_view room_id, std::string_view body,
+                                                                std::string_view origin) -> federation::RoomReadResult {
+            return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin);
         };
 
         runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id,
@@ -2287,12 +2582,14 @@ namespace
             if (cached != nullptr)
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
-                    runtime.database.persistent_store, *outbound, *cached, timeout, key_clock);
+                    runtime.database.persistent_store, *outbound, *cached, timeout, key_clock,
+                    runtime.config.server().server_name);
             }
             else
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
-                    runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock);
+                    runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock,
+                    runtime.config.server().server_name);
             }
             auto key = ensure_runtime_server_signing_key(runtime);
             auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
@@ -2471,14 +2768,14 @@ namespace
     }
 
     [[nodiscard]] auto signing_material_for_backfill(HomeserverRuntime& runtime)
-        -> std::pair<std::string, std::span<std::uint8_t const>>
+        -> std::pair<std::string, core::SecretBuffer>
     {
         auto const signing_key = find_active_server_signing_key(runtime);
         if (!signing_key.has_value())
         {
             return {};
         }
-        return {signing_key->key_id, runtime.database.signing_secret_key.bytes()};
+        return {signing_key->key_id, core::SecretBuffer{runtime.database.signing_secret_key.bytes()}};
     }
 
     // Fetch a list of event JSON bodies from the origin via
@@ -2489,8 +2786,8 @@ namespace
                                                 std::vector<std::string> const& earliest_events, std::size_t limit)
         -> std::optional<std::vector<std::string>>
     {
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             LOG_WARNING("Backfill signing key unavailable; cannot fetch missing events");
             return std::nullopt;
@@ -2523,7 +2820,7 @@ namespace
             std::string{origin}, "POST", "/_matrix/federation/v1/get_missing_events/" + std::string{room_id},
             runtime.config.server().server_name, serialized.output);
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.get_missing_events_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.get_missing_events_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
@@ -2673,8 +2970,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -2682,7 +2979,7 @@ namespace
             std::string{origin}, "GET", "/_matrix/federation/v1/event/" + core::percent_encode_path_component(event_id),
             runtime.config.server().server_name, "");
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.event_fetch_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_fetch_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
@@ -2703,8 +3000,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -2712,7 +3009,7 @@ namespace
             std::string{origin}, "GET", "/_matrix/federation/v1/event/" + core::percent_encode_path_component(event_id),
             runtime.config.server().server_name, "");
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.snapshot_event_fetch_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.snapshot_event_fetch_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
@@ -2762,8 +3059,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -2772,9 +3069,9 @@ namespace
                           "?event_id=" + core::percent_encode_path_component(event_id);
         auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
                                                         runtime.config.server().server_name, "");
-        auto const [ok, body] =
-            perform_sync_outbound_call(runtime, room_id, tx, key_id, secret_key, "federation.backfill.state_ids_failed",
-                                       runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.state_ids_failed",
+            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
             return std::nullopt;
@@ -2812,8 +3109,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
-        if (secret_key.empty())
+        auto [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.bytes().empty())
         {
             return std::nullopt;
         }
@@ -2823,7 +3120,7 @@ namespace
         auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
                                                         runtime.config.server().server_name, "");
         auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, secret_key, "federation.backfill.event_auth_failed",
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_auth_failed",
             runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
         if (!ok)
         {
@@ -4267,7 +4564,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1], true);
+        auto const result =
+            download_local_media(runtime, (*parts)[0], (*parts)[1], true, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
@@ -4279,8 +4577,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const params = parse_thumbnail_params(request.target);
-        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
-                                                           params.height, params.method, true);
+        auto const result =
+            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height,
+                                           params.method, true, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
@@ -4292,8 +4591,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const params = parse_thumbnail_params(request.target);
-        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
-                                                           params.height, params.method, false);
+        auto const result =
+            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height,
+                                           params.method, false, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
@@ -4304,7 +4604,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1], false);
+        auto const result =
+            download_local_media(runtime, (*parts)[0], (*parts)[1], false, remote_media_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};

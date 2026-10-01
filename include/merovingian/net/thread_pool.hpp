@@ -63,6 +63,9 @@ public:
     // Query whether the pool is still accepting work.
     [[nodiscard]] auto running() const -> bool;
 
+    // The number of worker threads the pool was built with.
+    [[nodiscard]] auto worker_count() const noexcept -> std::size_t;
+
 private:
     auto worker_loop() -> void;
 
@@ -73,6 +76,7 @@ private:
     std::size_t max_queue_depth_{0U};
     std::function<void()> on_thread_start_{};
     std::vector<std::thread> workers_{};
+    std::size_t worker_count_{0U};
 };
 
 } // namespace merovingian::net

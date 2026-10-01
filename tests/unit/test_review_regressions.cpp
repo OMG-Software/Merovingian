@@ -541,6 +541,54 @@ SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id 
     }
 }
 
+// Spec (S-S API, m.receipt): "only a single <receipt_type> should be used: m.read.
+// m.read.private MUST NOT appear in this federated m.receipt EDU." A peer that sends other
+// receipt types anyway must not get them stored, because the client-server surface would
+// otherwise have to be trusted to withhold them (CSAZ-4).
+SCENARIO("Inbound receipt EDUs keep only m.read receipts", "[homeserver][federation][edu][receipt][security][csaz-4]")
+{
+    GIVEN("a started client-server runtime with a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "receipt-types-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@local:example.org", "join", 1U});
+
+        auto const content =
+            R"({"!room:example.org":{)"
+            R"("m.read":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":42}}},)"
+            R"("m.read.private":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":43}}},)"
+            R"("m.fully_read":{"@alice:remote.example.org":{"event_ids":["$e:remote.example.org"],"data":{"ts":44}}}}})";
+        auto const transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.receipt", content);
+        REQUIRE(transaction.has_value());
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-receipt-types-1"};
+
+        WHEN("the EDU carrying m.read, m.read.private and m.fully_read is delivered")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"PUT", target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "PUT", target, *transaction),
+                                     *transaction});
+
+            THEN("only the m.read receipt is stored")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime.homeserver.receipts.size() == 1U);
+                REQUIRE(runtime.homeserver.receipts.front().receipt_type == "m.read");
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound presence and device-list EDUs reject user IDs from a different origin",
          "[homeserver][federation][edu][origin-check][review][regression]")
 {
@@ -782,6 +830,8 @@ SCENARIO("Persistent store records insert statements only for accepted user and 
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("duplicate users and devices are stored")
         {
@@ -802,9 +852,9 @@ SCENARIO("Persistent store records insert statements only for accepted user and 
                 REQUIRE_FALSE(duplicate_device);
                 REQUIRE(store.users.size() == 1U);
                 REQUIRE(store.devices.size() == 1U);
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements[0].name == "insert_user");
-                REQUIRE(store.prepared_statements[1].name == "insert_device");
+                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements[0].name == "insert_user");
+                REQUIRE(store.captured_statements[1].name == "insert_device");
             }
         }
     }
@@ -817,6 +867,8 @@ SCENARIO("Persistent store rejects duplicate token hashes before recording inser
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("the same token hash is stored twice")
         {
@@ -830,8 +882,8 @@ SCENARIO("Persistent store rejects duplicate token hashes before recording inser
                 REQUIRE(first);
                 REQUIRE_FALSE(duplicate);
                 REQUIRE(store.access_tokens.size() == 1U);
-                REQUIRE(store.prepared_statements.size() == 1U);
-                REQUIRE(store.prepared_statements.front().name == "insert_access_token");
+                REQUIRE(store.captured_statements.size() == 1U);
+                REQUIRE(store.captured_statements.front().name == "insert_access_token");
             }
         }
     }
@@ -845,6 +897,8 @@ SCENARIO("Persistent store commits login device and token rows atomically",
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("a login transaction is attempted with an invalid token hash")
         {
@@ -857,7 +911,7 @@ SCENARIO("Persistent store commits login device and token rows atomically",
                 REQUIRE_FALSE(rejected);
                 REQUIRE(store.devices.empty());
                 REQUIRE(store.access_tokens.empty());
-                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(store.captured_statements.empty());
             }
         }
 
@@ -872,9 +926,9 @@ SCENARIO("Persistent store commits login device and token rows atomically",
                 REQUIRE(stored);
                 REQUIRE(store.devices.size() == 1U);
                 REQUIRE(store.access_tokens.size() == 1U);
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements[0].name == "insert_device");
-                REQUIRE(store.prepared_statements[1].name == "insert_access_token");
+                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements[0].name == "insert_device");
+                REQUIRE(store.captured_statements[1].name == "insert_access_token");
             }
         }
     }
@@ -888,6 +942,8 @@ SCENARIO("Persistent store commits room and state-event rows atomically",
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("a room and state event are stored through transaction helpers")
         {
@@ -910,7 +966,7 @@ SCENARIO("Persistent store commits room and state-event rows atomically",
                 REQUIRE(store.state.size() == 1U);
                 REQUIRE(store.state_transitions.size() == 1U);
                 // State-event storage now records both current_state and state_transitions.
-                REQUIRE(store.prepared_statements.size() == 5U);
+                REQUIRE(store.captured_statements.size() == 5U);
             }
         }
     }
@@ -926,6 +982,8 @@ SCENARIO("SQLite persistent transactions roll back failed statement groups",
         auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
         auto const statements = std::vector<merovingian::database::PreparedStatement>{
             {"insert_room",
              "INSERT INTO rooms VALUES ($1, $2)", {{"!room1:example.org", false}, {"@alice:example.org", false}}},
@@ -945,7 +1003,7 @@ SCENARIO("SQLite persistent transactions roll back failed statement groups",
                 // `restore_sync_stream_id()` may have persisted the sync-stream watermark
                 // on startup; any such housekeeping statement is unrelated to this transaction.
                 auto const transaction_statements = std::ranges::count_if(
-                    store.prepared_statements, [](merovingian::database::PreparedStatement const& statement) {
+                    store.captured_statements, [](merovingian::database::PreparedStatement const& statement) {
                         return statement.name != "upsert_sync_stream_watermark";
                     });
                 REQUIRE(transaction_statements == 0U);
@@ -993,6 +1051,8 @@ SCENARIO("Persistent store matches state event JSON with whitespace and upserts 
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
         auto const first_event =
             merovingian::database::store_event(store, {"$event1:example.org", "!room:example.org", "@alice:example.org",
                                                        R"({ "type" : "m.room.topic" , "state_key" : "" })"});
@@ -1024,7 +1084,7 @@ SCENARIO("Persistent store matches state event JSON with whitespace and upserts 
                 // resolution can make an event current again after it was
                 // previously superseded, which a bare INSERT would reject as
                 // a duplicate row on the second occurrence.
-                REQUIRE(store.prepared_statements.back().name == "upsert_state_transition");
+                REQUIRE(store.captured_statements.back().name == "upsert_state_transition");
             }
         }
     }

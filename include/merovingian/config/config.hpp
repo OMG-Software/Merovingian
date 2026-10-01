@@ -47,18 +47,27 @@ struct CorsConfig final
 //                             (no next request) before the server closes it.
 //                             Range 1..300; restart required.
 //   keep_alive_max_connections — process-wide cap on connections parked idle
-//                             waiting for a next request. Each parked
-//                             connection occupies a main-pool worker thread,
-//                             so the cap bounds how many workers a client can
-//                             tie up. Range 1..4096; restart required.
+//                             waiting for a next request. A parked connection
+//                             is held by the connection dispatcher, not by a
+//                             worker thread (ADR-0077), so the cap bounds open
+//                             descriptors and memory and need not relate to
+//                             request_threads. Range 1..4096; restart required.
 //   max_connections_per_ip  — open connections one client key may hold on
 //                             the client and federation listeners, decided at
 //                             accept time (ADR-0072). Addresses listed in
 //                             server.trusted_proxies are exempt. Range
 //                             1..65535; restart required.
 //   ipv6_client_prefix_length — prefix length IPv6 clients are grouped by for
-//                             per-client limits (the connection cap and the
-//                             rate limiter). Range 1..128; restart required.
+//                             per-client limits (the connection cap, the
+//                             per-client worker share and the rate limiter).
+//                             Range 1..128; restart required.
+//   request_threads         — threads in the main request pool that serves
+//                             every listener (ADR-0077). One client address
+//                             may hold at most max(1, request_threads / 4) of
+//                             them at once, and client-triggered outbound
+//                             proxying at most request_threads / 2 in total
+//                             (ADR-0079). Range 4..256; default 16; restart
+//                             required.
 struct HttpTransportConfig final
 {
     bool keep_alive{true};
@@ -66,6 +75,7 @@ struct HttpTransportConfig final
     std::uint32_t keep_alive_max_connections{8U};
     std::uint32_t max_connections_per_ip{64U};
     std::uint8_t ipv6_client_prefix_length{64U};
+    std::uint32_t request_threads{16U};
 };
 
 struct TurnServerConfig final

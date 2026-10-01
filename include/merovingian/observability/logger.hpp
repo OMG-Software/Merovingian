@@ -21,6 +21,7 @@
 #include <shared_mutex>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
@@ -175,11 +176,22 @@ private:
 class SingleLog final
 {
 public:
+    // The process-wide logger. Constructing it starts NO thread (ISO-1,
+    // ADR-0082): until start_writers() is called every line is written
+    // synchronously on the calling thread. A process that hardens itself
+    // (Landlock, seccomp) must call start_writers() only after that, because a
+    // thread that exists before the ruleset and filter are installed escapes
+    // the Landlock ruleset.
     static auto instance() -> SingleLog&
     {
         static SingleLog logger;
         return logger;
     }
+
+    // Constructs an independent logger with no writer threads. The process uses
+    // instance(); direct construction exists so tests can observe a logger that
+    // has genuinely never started.
+    SingleLog() = default;
 
     SingleLog(SingleLog const&) = delete;
     auto operator=(SingleLog const&) -> SingleLog& = delete;
@@ -188,26 +200,7 @@ public:
 
     ~SingleLog()
     {
-        {
-            auto lock = std::lock_guard<std::mutex>{m_console_queue_lock};
-            m_console_exit = true;
-        }
-        m_console_cv.notify_all();
-
-        {
-            auto lock = std::lock_guard<std::mutex>{m_file_queue_lock};
-            m_file_exit = true;
-        }
-        m_file_cv.notify_all();
-
-        if (m_console_writer.joinable())
-        {
-            m_console_writer.join();
-        }
-        if (m_file_writer.joinable())
-        {
-            m_file_writer.join();
-        }
+        stop_writers();
 
         auto lock = std::lock_guard<std::mutex>{m_file_lock};
         if (m_file_out.is_open())
@@ -215,6 +208,37 @@ public:
             m_file_out << "\n\n";
             m_file_out.close();
         }
+    }
+
+    // Starts the console and file writer threads. Until this succeeds every log
+    // call writes synchronously, so nothing logged earlier is lost and nothing
+    // can deadlock waiting for a writer that does not exist. Idempotent. Returns
+    // false, leaving the logger synchronous, when a thread cannot be created
+    // (for example under a seccomp filter that forbids clone).
+    [[nodiscard]] auto start_writers() -> bool
+    {
+        auto lock = std::lock_guard<std::mutex>{m_start_lock};
+        if (m_writers_started.load(std::memory_order_acquire))
+        {
+            return true;
+        }
+        try
+        {
+            m_console_writer = std::thread{&SingleLog::console_writer, this};
+            m_file_writer = std::thread{&SingleLog::file_writer, this};
+        }
+        catch (std::system_error const&)
+        {
+            stop_writers();
+            return false;
+        }
+        m_writers_started.store(true, std::memory_order_release);
+        return true;
+    }
+
+    [[nodiscard]] auto writers_started() const noexcept -> bool
+    {
+        return m_writers_started.load(std::memory_order_acquire);
     }
 
     auto set_console_log_level(LogLevel level) noexcept -> void
@@ -331,10 +355,40 @@ private:
         bool flush{false};
     };
 
-    SingleLog()
-        : m_console_writer{&SingleLog::console_writer, this}
-        , m_file_writer{&SingleLog::file_writer, this}
+    // Signals both writers to drain their queues and exit, then joins whichever
+    // exist. Also resets the exit flags so a later start_writers() can succeed.
+    auto stop_writers() noexcept -> void
     {
+        {
+            auto lock = std::lock_guard<std::mutex>{m_console_queue_lock};
+            m_console_exit = true;
+        }
+        m_console_cv.notify_all();
+
+        {
+            auto lock = std::lock_guard<std::mutex>{m_file_queue_lock};
+            m_file_exit = true;
+        }
+        m_file_cv.notify_all();
+
+        if (m_console_writer.joinable())
+        {
+            m_console_writer.join();
+        }
+        if (m_file_writer.joinable())
+        {
+            m_file_writer.join();
+        }
+        m_writers_started.store(false, std::memory_order_release);
+
+        {
+            auto lock = std::lock_guard<std::mutex>{m_console_queue_lock};
+            m_console_exit = false;
+        }
+        {
+            auto lock = std::lock_guard<std::mutex>{m_file_queue_lock};
+            m_file_exit = false;
+        }
     }
 
     static auto current_date_time() -> std::string
@@ -387,18 +441,68 @@ private:
         // std::string instead of a StructuredLogField.
         auto const redacted = redact_log_message(line);
         auto const flush = level >= LogLevel::notice;
+        // CRITICAL logs precede process exit (hardening refusal, fatal startup
+        // errors). After ADR-0082 writer threads start before the final
+        // hardening self-check, so a queued CRITICAL message could be lost if
+        // the main thread exits before the writer flushes. Write CRITICAL
+        // synchronously on the calling thread, exactly as if writers had not
+        // started.
+        auto const is_critical = level >= LogLevel::critical;
         if (m_console_log_level.load() <= level)
         {
-            console_log(redacted, flush);
+            if (is_critical)
+            {
+                console_log_sync(redacted);
+            }
+            else
+            {
+                console_log(redacted, flush);
+            }
         }
         if (m_file_log_level.load() <= level)
         {
-            file_log(redacted, flush);
+            if (is_critical)
+            {
+                file_log_sync(redacted);
+            }
+            else
+            {
+                file_log(redacted, flush);
+            }
+        }
+    }
+
+    // Synchronous console output used by CRITICAL logs so a fatal message is
+    // never trapped in the bounded queue when the process is about to exit.
+    auto console_log_sync(std::string const& message) -> void
+    {
+        auto lock = std::lock_guard<std::mutex>{m_console_out_lock};
+        std::cout << message;
+        std::cout.flush();
+    }
+
+    // Synchronous file output used by CRITICAL logs so a fatal message is
+    // never trapped in the bounded queue when the process is about to exit.
+    auto file_log_sync(std::string const& message) -> void
+    {
+        auto lock = std::lock_guard<std::mutex>{m_file_lock};
+        if (m_file_out.is_open())
+        {
+            m_file_out << message;
+            m_file_out.flush();
         }
     }
 
     auto console_log(std::string const& message, bool flush) -> void
     {
+        if (!m_writers_started.load(std::memory_order_acquire))
+        {
+            // No writer thread yet (or ever): write on the calling thread.
+            auto lock = std::lock_guard<std::mutex>{m_console_out_lock};
+            std::cout << message;
+            std::cout.flush();
+            return;
+        }
         auto warn = false;
         {
             auto lock = std::lock_guard<std::mutex>{m_console_queue_lock};
@@ -423,6 +527,16 @@ private:
 
     auto file_log(std::string const& message, bool flush) -> void
     {
+        if (!m_writers_started.load(std::memory_order_acquire))
+        {
+            auto lock = std::lock_guard<std::mutex>{m_file_lock};
+            if (m_file_out.is_open())
+            {
+                m_file_out << message;
+                m_file_out.flush();
+            }
+            return;
+        }
         auto warn = false;
         {
             auto lock = std::lock_guard<std::mutex>{m_file_queue_lock};
@@ -491,7 +605,10 @@ private:
 
             if (flush_without_entry)
             {
-                std::cout.flush();
+                {
+                    auto lock = std::lock_guard<std::mutex>{m_console_out_lock};
+                    std::cout.flush();
+                }
                 flush_policy.mark_flushed();
                 if (exit_without_entry)
                 {
@@ -505,6 +622,7 @@ private:
                 break;
             }
 
+            auto lock = std::lock_guard<std::mutex>{m_console_out_lock};
             std::cout << entry.message;
             if (flush_policy.observe_message(entry.flush, LowSeverityFlushPolicy::Clock::now()))
             {
@@ -609,6 +727,11 @@ private:
     std::mutex m_console_queue_lock{};
     std::mutex m_file_queue_lock{};
     std::mutex m_file_lock{};
+    // Serialises writes to std::cout between the synchronous pre-start path and
+    // the console writer thread, so lines never interleave across the switch.
+    std::mutex m_console_out_lock{};
+    std::mutex m_start_lock{};
+    std::atomic<bool> m_writers_started{false};
     std::condition_variable m_console_cv{};
     std::condition_variable m_file_cv{};
 

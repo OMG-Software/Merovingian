@@ -14,9 +14,12 @@ Implemented now:
 - method token validation
 - request target validation
 - bounded HTTP/1.1 request-head parsing
-- bounded HTTP/1.1 request-body reads: a total deadline scaled to the
-  declared `Content-Length` at a 16 KiB/s floor, on top of the existing
-  per-chunk poll timeout (see "Slowloris policy" below)
+- bounded HTTP/1.1 request-body reads: a continuous minimum body rate
+  (16 KiB/s after a 10 s grace), on top of the per-read poll timeout (see
+  "Slowloris policy" below)
+- a connection dispatcher that holds every connection not being served, so
+  no worker thread waits on an idle or unreadable connection, with a
+  per-client worker share (see "Connection dispatcher" below, ADR-0077)
 - structured request error codes
 - content-length validation
 - transfer-encoding rejection until streaming support exists
@@ -71,8 +74,9 @@ Implemented now:
 - `X-Content-Type-Options: nosniff` on every response
 - HTTP/1.1 persistent connections (keep-alive, RFC 9112 §9.3): sequential
   request rounds over one connection, per-request framing with exact
-  Content-Length body draining, an operator-tunable idle window, and a
-  process-wide parked-connection cap — see "HTTP keep-alive" below
+  Content-Length body draining, an operator-tunable idle window, a
+  process-wide parked-connection cap, and per-connection request and lifetime
+  caps — see "HTTP keep-alive" below
 
 Not implemented yet:
 
@@ -86,13 +90,77 @@ Not implemented yet:
   pipelined bytes are buffered and answered strictly in order, one response
   at a time, so request boundaries are never lost
 
+## Connection dispatcher (ADR-0077)
+
+A worker thread of the main request pool (`server.http.request_threads`,
+default 16) is only ever given a connection that has something to read. Until
+the 2026-09-29 audit (HTTP-1) a worker stayed with its connection through the
+wait for the first byte, the wait between keep-alive requests, and every
+partial read; the pool was a hard-coded 8 threads, so eight sockets from one
+client — kept alive with one request every idle − 1 seconds, or trickling
+bodies, or simply connecting and saying nothing — stalled every listener.
+
+`homeserver::HttpConnectionDispatcher` (in `http_server.cpp`, over the generic
+`net::ConnectionParker`) now owns every connection while it is not being
+served: a new connection until its first byte, a TLS connection until its
+ClientHello and again after the handshake until its first request byte, and a
+kept-alive connection between requests. It holds them all on **one** thread in
+one `poll(2)` set and submits a connection to the pool only once it is readable
+(or already has input buffered above the socket: pipelined bytes, or TLS
+records OpenSSL has decrypted — `TlsConnection::has_pending_input`). The
+dispatcher enforces the waits itself and closes a connection that is not
+readable in time:
+
+| Wait | Bound |
+|---|---|
+| New connection (and after a TLS handshake) until its first byte | 5 s |
+| Kept-alive connection until its next request | `server.http.keep_alive_idle_seconds` (15 s) |
+
+Dispatch is bounded twice:
+
+- at most `request_threads` connections are out of the dispatcher at once, so
+  the pool's queue never holds more than one item per worker;
+- at most `max(1, request_threads / 4)` of them may come from one client
+  address (the TCP peer, keyed by `http::client_address_key` exactly as the
+  per-IP connection cap keys it). A readable connection whose client is at its
+  share stays in the dispatcher, out of the poll set so it cannot spin, and is
+  dispatched (oldest first) as soon as one of that client's workers returns.
+  Connections from a `server.trusted_proxies` address are exempt from this
+  share — a reverse proxy carries many clients over one address, and must
+  enforce per-client fairness itself — but not from the global bound.
+
+Ownership: a connection is an `HttpConnection` behind a `std::unique_ptr`,
+owned by exactly one of the dispatcher, one pool task or one sync-pool task.
+Destroying it closes the socket and releases its per-IP slot and any parking
+reservation, on every path. Threads and locks: the dispatcher thread, the pool
+workers, the sync pool and the accept threads share only the parker's internal
+mutex, a leaf lock never held while polling, closing a connection, or calling
+back into the pool; the parking budgets are atomics. A released worker share
+wakes the dispatcher through a non-blocking, close-on-exec self-pipe.
+
+Shutdown: `src/main.cpp` joins the accept threads, then
+`HttpConnectionDispatcher::request_stop()` closes every parked connection and
+joins the dispatcher thread (bounded: the thread is woken at once and does no
+I/O but `close`), then the pools drain. A worker that finishes a kept-alive
+round after that closes its connection instead of re-parking it. The
+dispatcher's thread starts in `start()`, after process hardening (ADR-0082).
+
+The TLS handshake still runs on a worker, once the ClientHello bytes are
+readable; it is bounded by the 15 s handshake timeout and counts against the
+client's worker share.
+
+Connections accepted but not yet sent their first request are capped at
+`listeners.max_queued_connections` (default 1024; `0` disables the cap), which
+used to bound the pool's queue: beyond it a new connection is closed at once.
+
 ## HTTP keep-alive
 
 Matrix v1.19 is served over HTTP/1.1, where persistent connections are the
-default. Merovingian serves each connection as a sequential loop of request
-rounds (`serve_connection` in `src/homeserver/http_server.cpp`): read one
-request head, drain exactly its Content-Length bytes, route, write one
-response, then either close or park the connection for the next request.
+default. Merovingian serves each connection as a sequence of request rounds
+(`serve_request_round` in `src/homeserver/http_server.cpp`), each on whichever
+worker the dispatcher hands the connection to: read one request head, drain
+exactly its Content-Length bytes, route, write one response, then either close
+or hand the connection back to the dispatcher for the next request.
 
 Framing decisions (RFC 9112 §9.3, implemented in
 `merovingian::http::connection_preference_for_response`):
@@ -104,39 +172,31 @@ Framing decisions (RFC 9112 §9.3, implemented in
   `keep-alive` token keeps the connection open.
 - Kept-alive responses carry `Connection: keep-alive` and the advisory
   `Keep-Alive: timeout=N` hint matching the configured idle window. The hint
-  is not a promise: the server may still close early (parked-connection cap
-  reached, shutdown) and the client must retry on a new connection.
+  is not a promise: the server may still close early (shutdown) and the
+  client must retry on a new connection.
+- HTTP-8: the response to a connection's 1 000th request, or to any request
+  once the connection is an hour old, carries `Connection: close`, and the
+  connection is closed after it. Neither is configurable.
+- A response is kept alive only if a slot in the process-wide parked budget
+  (`server.http.keep_alive_max_connections`) can be reserved for it; the
+  reservation is taken when the response is framed and held until the
+  connection is next dispatched, so the `keep-alive` header is never
+  contradicted by a full budget afterwards. A parked connection holds no
+  worker, so the cap bounds open descriptors and memory; it need not relate
+  to the pool size.
 
-Connection lifecycle:
-
-1. **First request** — served immediately after accept; no parking, so no
-   worker thread is held without work.
-2. **Idle park** — before waiting for a subsequent request the connection
-   acquires one process-wide parked slot (CAS counter,
-   `parked_keep_alive_connections`). Beyond `server.http.keep_alive_max_connections`
-   the server closes after the current response instead of parking. The park
-   is bounded by `server.http.keep_alive_idle_seconds`, polled in one-second
-   slices so pool shutdown stays bounded to one slice regardless of the
-   configured window.
-3. **Next request** — when bytes arrive, the slot is released and the full
-   per-request machinery (slowloris head deadline and inter-byte caps, body
-   size caps, rate limits) applies to that request exactly as for a fresh
-   connection. Bytes read past a request's body (pipelined follow-up
-   requests) are carried into the next round, so request boundaries are
-   never lost.
-
-Slowloris composition: the phase-aware `connection_should_close` guard
-(`include/merovingian/http/connection_guard.hpp`) distinguishes
-`awaiting_request` (parked, bounded only by the idle window — a quiet
-connection is not a slow client) from `reading_request` (the slowloris
-rate policy applies in full). Mid-request slow clients are killed exactly as
-before; idle kept-alive connections are not.
+The next request on a kept-alive connection is subject to the full
+per-request machinery (head deadline and inter-byte caps, body rate and size
+caps, rate limits) exactly as on a fresh connection. Bytes read past a
+request's body (pipelined follow-up requests) are carried into the next round,
+so request boundaries are never lost.
 
 Sync-pool interaction: a `/sync` long-poll round is handed to the dedicated
-sync pool as before. When the long-poll response has been written and the
-client asked for keep-alive, the sync task submits the connection back to the
-main pool for its next round, preserving the pool separation (long-poll
-threads never serve ordinary request rounds).
+sync pool as before, and the main-pool worker (and the client's worker share)
+is released at once. When the long-poll response has been written and the
+connection is kept alive, the sync task hands the connection back to the
+dispatcher, preserving the pool separation (long-poll threads never serve
+ordinary request rounds).
 
 Configuration (`server.http.*`, restart required — read when listeners start):
 
@@ -144,9 +204,10 @@ Configuration (`server.http.*`, restart required — read when listeners start):
 |---|---|---|
 | `server.http.keep_alive` | `true` | Enable persistent connections. `false` restores one-request-per-connection. |
 | `server.http.keep_alive_idle_seconds` | `15` | Idle window per parked connection, 1..300. |
-| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a request, 1..4096. Each parked connection occupies a main-pool worker thread. |
+| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. A parked connection is held by the dispatcher, not a worker. |
 | `server.http.max_connections_per_ip` | `64` | Open connections one client key may hold, 1..65535 (see below). |
 | `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by, 1..128. |
+| `server.http.request_threads` | `16` | Threads in the main request pool, 4..256. One client address may hold at most a quarter of them; client-triggered outbound proxying at most half (ADR-0079). |
 
 ### Per-client connection cap (ADR-0072)
 
@@ -154,6 +215,9 @@ Connection admission used to be bounded only by the global queue depth and
 the global parked keep-alive cap, so one host could open connections just
 under the slow-request thresholds, fill the global budget and lock everyone
 else out; the per-IP rate limiter only runs once a request has been parsed.
+This cap bounds how many *connections* one client key may hold; it never
+bounded how many *workers* (it was eight times the old pool). The per-client
+worker share of the dispatcher (above) does that.
 
 Both accept loops (`serve_http` and `serve_tls_http`, which serve the client
 and federation listeners) now call `admit_connection` straight after
@@ -165,19 +229,18 @@ fewer than `server.http.max_connections_per_ip` connections. A refused socket
 is closed before a byte is read or a TLS handshake starts, and a
 `connection.per_ip_cap_reached` diagnostic is logged (without the address).
 
-The admitted connection's `ConnectionLimiter::Slot` is RAII. It travels with
-the fd in `ConnectionContext` and in every pool task that takes the fd over
-(the sync-pool long-poll and the keep-alive continuation), as a shared pointer
-only because those tasks are copyable `std::function`s; the slot is released
-when the last task holding the connection finishes, on every path.
+The admitted connection's `ConnectionLimiter::Slot` is RAII and belongs to
+the `HttpConnection`, so it travels with the connection wherever it goes (the
+dispatcher, a pool task, the sync-pool long-poll) and is released when the
+connection is closed, on every path.
 
 Addresses listed in `server.trusted_proxies` are exempt: a reverse proxy
 carries many clients over its own address, and per-client limiting there is
 the proxy's job.
 
 Direct `serve_one_http_connection` callers (tests, one-off embeds) keep the
-historical one-request-per-call contract: with no owning pool the policy
-disables parking and the round is answered with `Connection: close`.
+historical one-request-per-call contract: with no dispatcher the policy
+disables keep-alive and the round is answered with `Connection: close`.
 
 ## Response-header safety
 
@@ -412,21 +475,37 @@ The slowloris guard tracks bytes received versus elapsed time using:
 
 The request-head read applies the equivalent deadlines inline (`request_head_deadline`, inter-byte cap, per-`recv` poll timeout in `http_server.cpp`); a request head that dribbles bytes is dropped with a 408 once any bound is exceeded.
 
-Request-**body** reads carry the same shape of protection, added in 0.12.7.
-Before that fix, a body read enforced only a fresh 15-second poll per
-4096-byte chunk with no overall deadline and no inter-byte cap, so a client
-dribbling a declared `Content-Length` could hold a worker thread for roughly
-`(bytes / chunk) x 15s` — a 1 MiB body could park a thread for 65 minutes
-without ever timing out. The body now carries both an inter-byte cap and a
-total deadline, with the deadline scaled by the declared length at a
-**16 KiB/s floor** so large, honestly-paced media uploads are unaffected
-while a dribbled 1 MiB body is cut at roughly 94 seconds.
+Request-**body** reads are bounded by a continuous **minimum body rate**
+(2026-09-29 audit HTTP-1, ADR-0077): once a grace of 10 s has passed since the
+body read started, the bytes received so far (including any that arrived with
+the head) must be at least 16 KiB/s × (elapsed − 10 s). The moment the count
+falls behind that line the read ends, the server answers 408 and closes. An
+honest upload at or above 16 KiB/s never trips it, whatever its size; a client
+that stalls is cut off about 10 s into the body. The size caps (the 1 MiB
+transport cap, or `security.media.max_upload_size` for an authenticated
+upload) still bound the body absolutely.
+
+History: before 0.12.7 a body read had only a fresh 15-second poll per
+4096-byte chunk, so a dribbled 1 MiB body could park a thread for 65 minutes.
+0.12.7 added a 5 s inter-byte cap and a total deadline of 30 s plus the
+declared length at 16 KiB/s. That still let one byte every 4.9 s hold a worker
+for about 94 s per POST and for most of an hour on an upload declaring the
+50 MiB maximum, which is why the rule is now continuous.
+
+A media upload declaring more than the 1 MiB transport cap is read under the
+larger `max_upload_size` cap only when its request head carries an access token
+that authenticates (`homeserver::media_upload_authentication_refusal`: a live
+session, or an application service's `as_token`). Otherwise the server answers
+401 `M_MISSING_TOKEN` or `M_UNKNOWN_TOKEN` (with `soft_logout` for an expired
+token, and CORS headers) from the head alone and closes the connection without
+reading the body (HTTP-1, HTTP-6).
 
 **Every cap must bound the poll that waits on it.** The caps above are
 evaluated between reads, so a `recv` allowed to outlast one makes that cap
 unenforceable. `recv_with_timeout` therefore takes a poll budget, and both the
-head and body loops pass the smallest of the per-read timeout, the overall
-deadline, and the remaining inter-byte allowance; budget expiry is reported
+head loop passes the smallest of the per-read timeout, the overall deadline
+and the remaining inter-byte allowance, and the body loop the smaller of the
+per-read timeout and the moment the body rate rule would trip; budget expiry is reported
 distinctly from a peer close so the loop re-checks and the cap that actually
 expired ends the request and is the one logged. This was not a hypothetical:
 until 0.12.7 the poll was a fixed 15 seconds while the inter-byte cap was 5, so
@@ -442,16 +521,17 @@ makes the socket readable, so `poll` returns immediately, the TLS read is
 entered, and — on a socket restored to blocking mode after the handshake —
 the call can block in the kernel indefinitely, past every deadline the
 request-head and request-body logic believe they are enforcing. This is why
-the request-body deadline above shipped together with the change described
+the request-body deadline (since replaced by the body rate rule) shipped together with the change described
 in "TLS listener boundary" below: fixing one without the other leaves the
 fixed one meaningless on TLS listeners. See
 [ADR-0054](adr/0054-tls-sockets-stay-non-blocking-for-the-life-of-the-connection.md).
 
-Keep-alive parking composes with the guard phase-aware
-(`connection_should_close`): a connection `awaiting_request` (parked, no
-bytes in flight) is bounded only by the keep-alive idle window, never by the
-slowloris rate — a quiet connection is not a slow client. A connection
-`reading_request` is subject to the full slowloris policy.
+A connection waiting for its first byte or its next keep-alive request is
+held by the dispatcher (ADR-0077), bounded only by the first-byte timeout or
+the keep-alive idle window — a quiet connection is not a slow client, and it
+costs no worker. The phase-aware `http::connection_should_close` expresses the
+same composition as a policy function. Once bytes arrive, the head and body
+bounds above apply in full.
 
 ## Rate-limit policy
 
@@ -638,8 +718,8 @@ per-IP limiting on `/login`, `/register`, and every other endpoint entirely.
 ## Sync long-poll thread pool
 
 `/sync` long-polls are dispatched to a dedicated `sync_pool` (32 threads),
-separate from the main request pool (8 threads) that serves every other
-client-server and federation request. This split exists because a burst of
+separate from the main request pool (`server.http.request_threads`, default
+16) that serves every other client-server and federation request. This split exists because a burst of
 long-polling clients on the main pool could previously exhaust it entirely,
 starving federation and other short-lived requests. See
 [`docs/architecture.md`](architecture.md) "Runtime model" for the full pool
@@ -670,13 +750,75 @@ Rules for anything added to these paths:
 
 - Only the network call goes inside the unlock scope. Reads and mutations of
   runtime state stay outside it, before or after.
-- Request signing stays under the lock: `OutboundCall::secret_key` borrows a
-  span into the runtime's `SecretBuffer`, which the lock protects.
+- The signing secret is copied into an owned `core::SecretBuffer` before the
+  scope opens and moved into `OutboundCall::secret_key`; the call owns the key
+  and can sign after the mutex is released (ADR-0086).
 - The scope is a no-op when no guard is published and none is passed in (the
   federation worker, a test calling a service function directly).
 - It releases **every** recursion level the calling thread holds, not only the
   guard it was handed, and restores exactly that many on exit. See "One release
   primitive" below for why that matters.
+
+## Client-triggered outbound proxying (ADR-0079)
+
+Releasing the runtime mutex during a network call frees the mutex, not the
+thread: the request still occupies one of the main-pool threads until the peer
+answers or the call times out. Several client requests make this server call
+another one before they can answer, and the spec lets clients make them without
+authentication, so a peer that accepts a connection and never answers could pin
+the whole pool (audit findings HTTP-2 and OUT-7). Every one of them therefore
+runs under a small in-flight budget and a short total deadline.
+
+The paths under the budget:
+
+| Request | Outbound call |
+|---|---|
+| `GET /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET /publicRooms` |
+| `POST /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET` or `POST /publicRooms` |
+| `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
+| `GET /_matrix/media/v3/download` and `/thumbnail` for remote media | discovery, federation media, legacy fallback, redirect follow |
+| `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media | as above |
+
+Rules:
+
+- **Budget.** `http::InFlightBudget` (RAII `Slot`, thread-safe, never waits),
+  held by `HomeserverRuntime::client_outbound_budget`. Global cap half of the
+  main request pool (`server.http.request_threads / 2`, so 8 by default; the
+  other half of the pool always serves requests that never leave this
+  server); per-client cap 1, keyed by
+  `rate_limit_client_key` (the same key the rate limiter uses, so
+  `trusted_proxies` and the IPv6 prefix grouping apply). Authenticated callers
+  count too. Local `publicRooms`, local aliases and local media never take a slot.
+- **Refusal.** Over either cap the answer is `429 M_LIMIT_EXCEEDED` with
+  `retry_after_ms` 1000 and a `Retry-After: 1` header, immediately, before any
+  discovery or outbound call. Nothing queues.
+- **Deadline.** 10 s for directory lookups, 30 s for remote media, in total:
+  server discovery and the request(s) that follow draw from one
+  `OutboundDeadline`. Never longer than the operator's
+  `security.federation.remote_timeout` when that is set. The federation-worker
+  round trip for these calls may exceed the deadline by at most 2 s
+  (`ClientOutboundProxyPolicy::worker_margin_seconds`), where other worker
+  calls allow 10 s. A deadline that runs out during discovery or between the
+  federation request and the legacy fallback ends the call as `502`.
+- **Lock.** The slot is taken while the runtime lock is held and before it is
+  released for the call (`RuntimeLockRelease`); it is dropped on every exit path
+  by its destructor.
+- **Constants, not configuration.** The caps and deadlines live in
+  `ClientOutboundProxyPolicy` (`include/merovingian/homeserver/client_outbound_proxy.hpp`),
+  derived from the main request pool size (`client_outbound_proxy_policy_for_pool`,
+  applied by `start_runtime` from `server.http.request_threads`, ADR-0077). A
+  separate configuration key would let an operator raise the caps above the
+  pool size, which is the defect. Tests lower the deadline through
+  `runtime.client_outbound_proxy_policy`.
+- **Not covered.** Outbound calls to operator-configured destinations that an
+  unauthenticated client can still trigger (appservice `query_user` and
+  `query_room_alias`, the identity-server `requestToken` routes, the
+  trust-safety policy server) are not under this budget: the destination is
+  chosen by the operator, not the caller. They still hold a thread for the round
+  trip.
+
+The alternative of a separate thread pool or an asynchronous proxy path was
+considered and rejected for now; see ADR-0079.
 
 ### `resolve_policy_server_hook` (0.12.1)
 

@@ -439,6 +439,75 @@ namespace
         FederationRuntimeState& m_runtime;
     };
 
+    // Failed X-Matrix signatures are charged to the SOURCE ADDRESS, never to the
+    // origin the request claims (FED-4, ADR-0081): until the signature verifies,
+    // the claimed origin is whatever the sender wrote, so a per-origin penalty
+    // hands every unauthenticated sender a switch that refuses a real peer. The
+    // container is pre-authentication and therefore capped, like the
+    // key-resolution buckets above.
+    constexpr auto kMaxBadSignatureBuckets = std::size_t{4'096U};
+
+    // An empty source (tests, and paths that never reach the network) shares one
+    // bucket rather than bypassing the bound, as for key resolution.
+    [[nodiscard]] auto bad_signature_source_key(std::string_view source) noexcept -> std::string_view
+    {
+        return source.empty() ? std::string_view{"<unknown>"} : source;
+    }
+
+    // True when this address has already spent its failed-signature budget for
+    // the current window. Read-only: charging happens in charge_bad_signature.
+    [[nodiscard]] auto bad_signature_budget_exhausted(FederationRuntimeState& runtime, std::string_view source) -> bool
+    {
+        auto const& policy = runtime.config.bad_signature_per_ip_rate;
+        if (!http::rate_limit_policy_is_valid(policy))
+        {
+            // Fail closed: an unresolvable policy must never mean "no limit".
+            return true;
+        }
+        auto const now = std::chrono::steady_clock::now();
+        auto const key = bad_signature_source_key(source);
+        auto guard = federation_guard(runtime);
+        auto const iterator =
+            std::ranges::find_if(runtime.bad_signature_buckets, [key](BadSignatureBucket const& bucket) {
+                return bucket.source == key;
+            });
+        if (iterator == runtime.bad_signature_buckets.end() ||
+            now - iterator->window_start >= std::chrono::seconds{policy.window_seconds})
+        {
+            return false;
+        }
+        return iterator->failures_seen >= policy.max_requests;
+    }
+
+    auto charge_bad_signature(FederationRuntimeState& runtime, std::string_view source) -> void
+    {
+        auto const& policy = runtime.config.bad_signature_per_ip_rate;
+        auto const now = std::chrono::steady_clock::now();
+        auto const key = bad_signature_source_key(source);
+        auto guard = federation_guard(runtime);
+        auto iterator = std::ranges::find_if(runtime.bad_signature_buckets, [key](BadSignatureBucket const& bucket) {
+            return bucket.source == key;
+        });
+        if (iterator == runtime.bad_signature_buckets.end())
+        {
+            if (runtime.bad_signature_buckets.size() >= kMaxBadSignatureBuckets)
+            {
+                runtime.bad_signature_buckets.pop_front();
+            }
+            runtime.bad_signature_buckets.push_back(BadSignatureBucket{std::string{key}, 0U, now});
+            iterator = std::prev(runtime.bad_signature_buckets.end());
+        }
+        if (now - iterator->window_start >= std::chrono::seconds{policy.window_seconds})
+        {
+            iterator->failures_seen = 0U;
+            iterator->window_start = now;
+        }
+        if (iterator->failures_seen < std::numeric_limits<std::uint32_t>::max())
+        {
+            ++iterator->failures_seen;
+        }
+    }
+
     [[nodiscard]] auto prepare_weighted_bucket(std::uint32_t count, std::chrono::steady_clock::time_point window_start,
                                                http::RateLimitPolicy policy, std::uint32_t weight,
                                                std::chrono::steady_clock::time_point now, std::string reason)
@@ -1167,6 +1236,17 @@ namespace
                 return {400U, serialize_response_object(std::move(err))};
             }
             auto const event_id = events::make_reference_hash_event_id(parsed_event.value, *room_version);
+            // Audit FED-5: the {eventId} in the URL is what the invite is filed
+            // under (invite metadata, the stored event), so it must be the ID
+            // the signed event really hashes to. The federation worker relay
+            // already checks this on its own path (ADR-0071); this is the same
+            // check for a request handled directly.
+            if (event_id.event_id.empty() || event_id.event_id != invite_request->event_id)
+            {
+                audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
+                                 "event-id-mismatch");
+                return {400U, homeserver::matrix_error("M_INVALID_PARAM", "invite event ID does not match the event")};
+            }
             auto pdu = FederationPdu{};
             pdu.event_id = event_id.event_id;
             pdu.room_id = event_envelope.event.room_id;
@@ -1259,6 +1339,9 @@ namespace
         {
             return {400U, "backfill query is malformed"};
         }
+        // FED-2: the provider decides whether this server may read the room, from
+        // the authenticated origin and never from anything in the request.
+        parsed->origin = request.origin;
         auto const result = runtime.backfill_provider(*parsed);
         if (!result.accepted)
         {
@@ -1449,6 +1532,30 @@ namespace
         return core::percent_decode(path.substr(prefix.size()));
     }
 
+    // Maps a room-scoped read provider's outcome to the HTTP response. `forbidden`
+    // is FED-2: the origin has no joined user in the room and the room is not
+    // world readable; it carries no room data.
+    [[nodiscard]] auto room_read_response(RoomReadResult result, std::string_view not_found_message,
+                                          std::string_view malformed_message) -> FederationResponse
+    {
+        switch (result.status)
+        {
+        case RoomReadStatus::ok:
+            if (!result.body.empty())
+            {
+                return {200U, std::move(result.body)};
+            }
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", std::string{not_found_message})};
+        case RoomReadStatus::forbidden:
+            return {403U, homeserver::matrix_error("M_FORBIDDEN", "The requesting server is not in the room")};
+        case RoomReadStatus::malformed:
+            return {400U, homeserver::matrix_error("M_BAD_JSON", std::string{malformed_message})};
+        case RoomReadStatus::not_found:
+            break;
+        }
+        return {404U, homeserver::matrix_error("M_NOT_FOUND", std::string{not_found_message})};
+    }
+
     [[nodiscard]] auto handle_query_event(FederationRuntimeState& runtime, SignedFederationRequest const& request)
         -> FederationResponse
     {
@@ -1461,12 +1568,8 @@ namespace
         {
             return {400U, "event path is malformed"};
         }
-        auto body = runtime.event_query_provider(event_id);
-        if (body.empty())
-        {
-            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Event not found")};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.event_query_provider(event_id, request.origin), "Event not found",
+                                  "event request is malformed");
     }
 
     [[nodiscard]] auto handle_query_state(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -1488,12 +1591,8 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
         }
-        auto body = runtime.state_query_provider(room_id, event_id);
-        if (body.empty())
-        {
-            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.state_query_provider(room_id, event_id, request.origin),
+                                  "Room state not found", "state request is malformed");
     }
 
     [[nodiscard]] auto handle_query_state_ids(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -1515,12 +1614,8 @@ namespace
         {
             return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
         }
-        auto body = runtime.state_ids_query_provider(room_id, event_id);
-        if (body.empty())
-        {
-            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.state_ids_query_provider(room_id, event_id, request.origin),
+                                  "Room state not found", "state_ids request is malformed");
     }
 
     [[nodiscard]] auto handle_get_missing_events(FederationRuntimeState& runtime,
@@ -1535,12 +1630,8 @@ namespace
         {
             return {400U, "get_missing_events path is malformed"};
         }
-        auto body = runtime.missing_events_query_provider(room_id, request.body);
-        if (body.empty())
-        {
-            return {400U, "get_missing_events body is malformed"};
-        }
-        return {200U, std::move(body)};
+        return room_read_response(runtime.missing_events_query_provider(room_id, request.body, request.origin),
+                                  "Room not found", "get_missing_events body is malformed");
     }
 
     [[nodiscard]] auto handle_space_hierarchy(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -2297,25 +2388,45 @@ namespace
 
     // Block B: the X-Matrix request signature verify. Returns nullopt when the
     // signature is accepted, or the error FederationResponse on rejection (also
-    // increments consecutive_failures, logs, and audits). Skipped by the worker
-    // when the main process has already verified and set request.signature_verified.
+    // charges the failure to the source address, logs, and audits). Skipped by
+    // the worker when the main process has already verified and set
+    // request.signature_verified.
+    //
+    // FED-4 / ADR-0081: a failed signature is NEVER charged to the claimed
+    // origin's trust record -- the origin is unauthenticated at this point -- so
+    // it cannot be used to lock a real peer out. The bound is per source address
+    // (SignedFederationRequest::remote_addr, resolved through trusted_proxies by
+    // the main-process callers). The worker never reaches the failure branch: it
+    // only handles requests main already verified.
     [[nodiscard]] auto check_inbound_request_signature(FederationRuntimeState& runtime,
                                                        SignedFederationRequest const& request,
-                                                       FederationRemoteRuntime& remote)
+                                                       FederationRemoteRuntime const& remote)
         -> std::optional<FederationResponse>
     {
+        if (bad_signature_budget_exhausted(runtime, request.remote_addr))
+        {
+            auto constexpr reason = "too many failed signature checks from this address";
+            log_diagnostic("request.rate_limited",
+                           {
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", "429",                                                false},
+                               {"reason", reason,                                               false}
+            },
+                           observability::LogEventSeverity::warning);
+            audit_federation(runtime, "federation.rate_limited", request.origin, request.target, reason);
+            return FederationResponse{429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", reason)};
+        }
         auto const request_signature = verify_signed_federation_request(request, remote.signing_key);
         if (!request_signature.accepted)
         {
-            ++remote.trust.consecutive_failures;
-            persist_remote_trust(runtime, remote);
+            charge_bad_signature(runtime, request.remote_addr);
             log_diagnostic("request.rejected",
                            {
-                               {"origin",               request.origin,                                       false},
-                               {"target",               observability::sanitized_http_target(request.target), false},
-                               {"status",               std::to_string(request_signature.status),             false},
-                               {"reason",               request_signature.reason,                             false},
-                               {"consecutive_failures", std::to_string(remote.trust.consecutive_failures),    false}
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", std::to_string(request_signature.status),             false},
+                               {"reason", request_signature.reason,                             false}
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, request_signature.reason);
             return FederationResponse{request_signature.status, request_signature.reason};
@@ -2546,7 +2657,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto const transaction_id = transaction_id_from_send_target(request.target);
     if (!parsed_body.valid)
     {
-        ++remote.trust.consecutive_failures;
+        record_remote_trust_failure(remote.trust);
         persist_remote_trust(runtime, remote);
         log_diagnostic("transaction.rejected", {
                                                    {"origin",         request.origin,    false},
@@ -2560,7 +2671,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     if (parsed_body.origin != request.origin)
     {
         auto constexpr reason = "transaction origin does not match request origin";
-        ++remote.trust.consecutive_failures;
+        record_remote_trust_failure(remote.trust);
         persist_remote_trust(runtime, remote);
         log_diagnostic("transaction.rejected", {
                                                    {"origin",         request.origin, false},
@@ -2585,7 +2696,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                         runtime.config.max_transaction_pdus, runtime.config.max_transaction_edus);
     if (!transaction_decision.accepted)
     {
-        ++remote.trust.consecutive_failures;
+        record_remote_trust_failure(remote.trust);
         persist_remote_trust(runtime, remote);
         log_diagnostic("transaction.rejected", {
                                                    {"origin",         request.origin,                          false},
@@ -2801,7 +2912,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 }
                 else
                 {
-                    ++remote.trust.consecutive_failures;
+                    record_remote_trust_failure(remote.trust);
                     ++pdu_trust_failures;
                     auto const reason = std::string{"relayed PDU: could not resolve sender domain signing key"};
                     log_diagnostic("pdu.rejected", {
@@ -2820,7 +2931,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
         if (!pdu_decision.accepted)
         {
-            ++remote.trust.consecutive_failures;
+            record_remote_trust_failure(remote.trust);
             ++pdu_trust_failures;
             log_diagnostic("pdu.rejected", {
                                                {"origin",         request.origin,                      false},

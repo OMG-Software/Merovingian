@@ -5,7 +5,7 @@
 // |                                                                         |
 // |  These tests spawn the real merovingian-fed-worker binary over an       |
 // |  encrypted AF_UNIX socketpair and exercise room-based sharding, the     |
-// |  sign-back channel, and in-process fallback when the worker is down.    |
+// |  no-signing refusal, and in-process fallback when the worker is down.    |
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"
@@ -33,6 +33,7 @@
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -45,11 +46,13 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <sodium.h>
 #include <sys/socket.h>
@@ -1021,8 +1024,14 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
         WHEN("an edu_ingest request carrying an m.direct_to_device megolm room-key share is handled")
         {
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const target_user = std::string{"@local:example.com"};
+            auto const target_user = "@local:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
+            // to-device messages are only delivered to existing local users (FED-3).
+            {
+                auto persistent = merovingian::database::PersistentUser{};
+                persistent.user_id = target_user;
+                runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
             auto const content_json = std::string{R"({"sender":")"} + sender +
                                       R"(","type":"m.room_key","message_id":"m1","messages":{")" + target_user +
                                       R"(":{")" + target_device +
@@ -1107,8 +1116,14 @@ SCENARIO("handle_edu_ingest_request delivers a realistically-shaped Olm-encrypte
         WHEN("an edu_ingest request carrying an Olm-encrypted m.room.encrypted-wrapped room key is handled")
         {
             auto const sender = std::string{"@james:matrix.ping.me.uk"};
-            auto const target_user = std::string{"@james:pong.ping.me.uk"};
+            auto const target_user = "@james:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
+            // to-device messages are only delivered to existing local users (FED-3).
+            {
+                auto persistent = merovingian::database::PersistentUser{};
+                persistent.user_id = target_user;
+                runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
             auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
             // ~2KB placeholder ciphertext body — long enough to match a real
             // Olm-encrypted payload's size, not just its alphabet.
@@ -1203,8 +1218,14 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
              "encrypted channel")
         {
             auto const sender = std::string{"@james:matrix.ping.me.uk"};
-            auto const target_user = std::string{"@james:pong.ping.me.uk"};
+            auto const target_user = "@james:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
+            // to-device messages are only delivered to existing local users (FED-3).
+            {
+                auto persistent = merovingian::database::PersistentUser{};
+                persistent.user_id = target_user;
+                runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
             auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
             // ~2KB placeholder ciphertext body — long enough to match a real
             // Olm-encrypted payload's size, not just its alphabet.
@@ -1244,6 +1265,100 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
             }
         }
 
+        channels.server->stop();
+        channels.client->stop();
+    }
+}
+
+SCENARIO("Main refuses a sign_request frame from a worker without signing and without taking the runtime lock",
+         "[integration][federation-worker][ipc][security][worker_signing_refused]")
+{
+    // Security audit 2026-09-29, CRY-1 (ADR-0078). The federation worker is the
+    // process most exposed to hostile input and has no production need for a
+    // signature, so main no longer answers sign_request: a compromised worker
+    // must not be able to mint signatures as this server, and must not be able
+    // to park main's global runtime lock behind a signing call either.
+    GIVEN("a main runtime that holds a real signing key and a real IpcChannel pair standing in for the worker link")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-sign-refused");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "sign-refused-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // Precondition that gives the test its teeth: main really could sign.
+        REQUIRE(runtime.crypto_provider != nullptr);
+
+        auto channels = make_ipc_test_channel_pair();
+        // Mirrors WorkerPool's per-shard request handler, which consults
+        // refuse_forbidden_worker_request before any other frame type.
+        channels.server->set_request_handler([srv = channels.server.get()](std::uint64_t id, std::string json) {
+            auto const type = merovingian::ipc::ipc_json_get_str(json, "type");
+            if (!merovingian::homeserver::refuse_forbidden_worker_request(*srv, id, type))
+            {
+                srv->send_response(id, R"({"type":"unexpected_frame_handled"})");
+            }
+        });
+        channels.server->start();
+        channels.client->start();
+
+        // Hold main's global runtime lock on this thread for the whole WHEN
+        // block. The IPC dispatch thread is a different thread, so a handler
+        // that tried to take the lock would block until the request timeout and
+        // the reply below would never arrive. That makes "the lock is not
+        // taken" observable without any sleep-based synchronisation.
+        auto runtime_guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.mutex};
+
+        WHEN("the worker sends a sign_request for the active key carrying a serialised PDU")
+        {
+            auto const pdu =
+                std::string{R"({"type":"m.room.message","sender":"@victim:example.org","room_id":"!r:example.org",)"
+                            R"("content":{"body":"forged"},"origin_server_ts":1})"};
+            auto const request = std::string{R"({"type":"sign_request","key_id":"ed25519:any","canonical_json":)"} +
+                                 ipc_escape_json_string(pdu) + "}";
+            auto const reply = channels.client->send_request(request, std::chrono::seconds{10});
+
+            THEN("main answers with an error frame and no signature, while the runtime lock was held elsewhere")
+            {
+                REQUIRE(reply.has_value());
+                INFO("reply: " << *reply);
+                REQUIRE(merovingian::ipc::ipc_json_get_str(*reply, "type") == "error");
+                REQUIRE(merovingian::ipc::ipc_json_get_str(*reply, "reason").empty() == false);
+                REQUIRE(reply->find("\"signature\"") == std::string::npos);
+                REQUIRE(reply->find("sign_response") == std::string::npos);
+            }
+        }
+
+        WHEN("the worker sends a sign_request carrying arbitrary non-JSON bytes")
+        {
+            auto const request = std::string{
+                R"({"type":"sign_request","key_id":"ed25519:auto","canonical_json":"\u0000\u0001 not json"})"};
+            auto const reply = channels.client->send_request(request, std::chrono::seconds{10});
+
+            THEN("main still answers with an error frame and no signature")
+            {
+                REQUIRE(reply.has_value());
+                INFO("reply: " << *reply);
+                REQUIRE(merovingian::ipc::ipc_json_get_str(*reply, "type") == "error");
+                REQUIRE(reply->find("\"signature\"") == std::string::npos);
+            }
+        }
+
+        WHEN("the worker sends a frame type main does accept from workers")
+        {
+            auto const type = std::string{"edu_ingest"};
+            auto const refused = merovingian::homeserver::refuse_forbidden_worker_request(*channels.server, 1U, type);
+
+            THEN("the refusal helper leaves it alone so the normal handler can serve it")
+            {
+                REQUIRE_FALSE(refused);
+            }
+        }
+
+        runtime_guard.unlock();
         channels.server->stop();
         channels.client->stop();
     }
@@ -1885,23 +2000,178 @@ SCENARIO("handle_event_query_ingest_request reads an event from main's own store
 
         auto const event_id = std::string{"$eventquerytest:"} + config.server().server_name;
         auto const room_id = std::string{"!room:"} + config.server().server_name;
+        auto const member_id = std::string{"@member:member.example.org"};
         REQUIRE(merovingian::database::store_event(
             runtime.database.persistent_store,
             {event_id, room_id, std::string{"@sender:"} + config.server().server_name,
              R"({"type":"m.room.message","content":{"body":"event-query-relay-marker"}})"}));
+        // FED-2: a server may read an event only when it has a joined user in
+        // the event's room, so give the room one on member.example.org.
+        REQUIRE(merovingian::database::store_event(
+            runtime.database.persistent_store,
+            {"$member_join", room_id, member_id,
+             R"({"type":"m.room.member","state_key":"@member:member.example.org","content":{"membership":"join"}})"}));
+        REQUIRE(merovingian::database::store_state(runtime.database.persistent_store,
+                                                   {room_id, "m.room.member", member_id, "$member_join"}));
 
-        WHEN("an event_query_ingest request shaped like a real worker's is handled")
+        auto const relay = [&](std::string const& origin) {
+            auto const request_json = std::string{R"({"type":"event_query_ingest","event_id":)"} +
+                                      ipc_escape_json_string(event_id) + R"(,"origin":)" +
+                                      ipc_escape_json_string(origin) + "}";
+            return merovingian::homeserver::handle_event_query_ingest_request(runtime, request_json);
+        };
+
+        WHEN("an event_query_ingest request shaped like a real worker's is handled for a server in the room")
         {
-            auto const request_json =
-                std::string{R"({"type":"event_query_ingest","event_id":)"} + ipc_escape_json_string(event_id) + "}";
-
-            auto const response_json =
-                merovingian::homeserver::handle_event_query_ingest_request(runtime, request_json);
+            auto const response_json = relay("member.example.org");
 
             THEN("the response reflects main's own store rather than an empty worker-local snapshot")
             {
                 INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"ok")") != std::string::npos);
                 REQUIRE(response_json.find("event-query-relay-marker") != std::string::npos);
+            }
+        }
+
+        WHEN("the same request is made on behalf of a server with no user in the room")
+        {
+            auto const response_json = relay("stranger.example.net");
+
+            THEN("main answers forbidden and the frame carries no event body")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"forbidden")") != std::string::npos);
+                REQUIRE(response_json.find("event-query-relay-marker") == std::string::npos);
+            }
+        }
+
+        WHEN("the request frame carries no origin at all")
+        {
+            auto const request_json =
+                std::string{R"({"type":"event_query_ingest","event_id":)"} + ipc_escape_json_string(event_id) + "}";
+            auto const response_json =
+                merovingian::homeserver::handle_event_query_ingest_request(runtime, request_json);
+
+            THEN("it fails closed rather than reading unrestricted")
+            {
+                REQUIRE(response_json.find("event-query-relay-marker") == std::string::npos);
+                REQUIRE(response_json.find(R"("status":"forbidden")") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("The wired federation providers refuse a server outside the room and serve one inside it",
+         "[integration][federation-worker][query-relay][fed2][security]")
+{
+    // The providers wire_federation_callbacks installs are the ones both main and
+    // the federation worker (from its room snapshot) run, so this drives the
+    // production lambdas end to end for all five room-scoped reads.
+    GIVEN("a wired runtime holding a room with one joined user on member.example.org")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-fed2");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "fed2-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto& store = runtime.database.persistent_store;
+        auto const room_id = std::string{"!private:"} + config.server().server_name;
+        auto const member_id = std::string{"@member:member.example.org"};
+        REQUIRE(merovingian::database::store_event(
+            store, {"$create", room_id, member_id, R"({"type":"m.room.create","state_key":"","content":{}})", 1U, 1U}));
+        REQUIRE(merovingian::database::store_event(
+            store,
+            {"$join", room_id, member_id,
+             R"({"type":"m.room.member","state_key":"@member:member.example.org","content":{"membership":"join"}})", 2U,
+             2U, std::vector<std::string>{"$create"}}));
+        REQUIRE(merovingian::database::store_event(
+            store, {"$msg", room_id, member_id, R"({"type":"m.room.message","content":{"body":"secret-body"}})", 3U, 3U,
+                    std::vector<std::string>{"$join"}}));
+        REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.create", "", "$create"}));
+        REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.member", member_id, "$join"}));
+
+        auto const stranger = std::string{"stranger.example.net"};
+        auto const member = std::string{"member.example.org"};
+        auto& fed = runtime.federation;
+        REQUIRE(fed.event_query_provider);
+        REQUIRE(fed.state_query_provider);
+        REQUIRE(fed.state_ids_query_provider);
+        REQUIRE(fed.missing_events_query_provider);
+        REQUIRE(fed.backfill_provider);
+        auto const missing_body = std::string{R"({"latest_events":["$msg"],"earliest_events":[],"limit":10})"};
+        auto const backfill = [&](std::string const& origin) {
+            auto request = merovingian::federation::BackfillRequest{};
+            request.room_id = room_id;
+            request.event_ids = {"$msg"};
+            request.limit = 10U;
+            request.origin = origin;
+            return fed.backfill_provider(request);
+        };
+        using merovingian::federation::RoomReadStatus;
+
+        WHEN("a server with no user in the room calls each of the five reads")
+        {
+            auto const event = fed.event_query_provider("$msg", stranger);
+            auto const state = fed.state_query_provider(room_id, "$msg", stranger);
+            auto const state_ids = fed.state_ids_query_provider(room_id, "$msg", stranger);
+            auto const missing = fed.missing_events_query_provider(room_id, missing_body, stranger);
+            auto const backfilled = backfill(stranger);
+
+            THEN("each is refused and none returns room data")
+            {
+                REQUIRE(event.status == RoomReadStatus::forbidden);
+                REQUIRE(state.status == RoomReadStatus::forbidden);
+                REQUIRE(state_ids.status == RoomReadStatus::forbidden);
+                REQUIRE(missing.status == RoomReadStatus::forbidden);
+                REQUIRE_FALSE(backfilled.accepted);
+                REQUIRE(backfilled.status == 403U);
+                REQUIRE(event.body.empty());
+                REQUIRE(state.body.empty());
+                REQUIRE(state_ids.body.empty());
+                REQUIRE(missing.body.empty());
+                REQUIRE(backfilled.pdus_json.empty());
+            }
+        }
+
+        WHEN("the server with a joined user calls each of the five reads")
+        {
+            auto const event = fed.event_query_provider("$msg", member);
+            auto const state = fed.state_query_provider(room_id, "$msg", member);
+            auto const state_ids = fed.state_ids_query_provider(room_id, "$msg", member);
+            auto const missing = fed.missing_events_query_provider(room_id, missing_body, member);
+            auto const backfilled = backfill(member);
+
+            THEN("each succeeds")
+            {
+                REQUIRE(event.status == RoomReadStatus::ok);
+                REQUIRE(event.body.find("secret-body") != std::string::npos);
+                REQUIRE(state.status == RoomReadStatus::ok);
+                REQUIRE(state_ids.status == RoomReadStatus::ok);
+                REQUIRE(missing.status == RoomReadStatus::ok);
+                REQUIRE(backfilled.accepted);
+                REQUIRE_FALSE(backfilled.pdus_json.empty());
+            }
+        }
+
+        WHEN("the room is then made world readable")
+        {
+            REQUIRE(merovingian::database::store_event(
+                store,
+                {"$hv", room_id, member_id,
+                 R"({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"world_readable"}})",
+                 4U, 4U, std::vector<std::string>{"$msg"}}));
+            REQUIRE(merovingian::database::store_state(store, {room_id, "m.room.history_visibility", "", "$hv"}));
+
+            THEN("a server with no user in the room can read it")
+            {
+                REQUIRE(fed.event_query_provider("$msg", stranger).status == RoomReadStatus::ok);
+                REQUIRE(fed.state_ids_query_provider(room_id, "$msg", stranger).status == RoomReadStatus::ok);
             }
         }
     }

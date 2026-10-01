@@ -840,3 +840,80 @@ SCENARIO("make_persistent_remote_key_resolver via CachedServerDiscovery returns 
         }
     }
 }
+
+// --- FED-1 follow-up: the resolver never fetches our own server's keys --------
+// ADR-0083: this server verifies events naming its own domain against the
+// signing-key rows it generated (the ones holding a secret). The resolver is
+// also asked for a relayed PDU's sender domain, which may be our own name; a
+// fetch of /_matrix/key/v2/server for our own name goes through DNS and
+// .well-known that an attacker may influence, and caching its answer would
+// overwrite the rows our own signatures are checked against. For our own
+// server name the resolver answers only from our own secret-holding rows.
+SCENARIO("make_persistent_remote_key_resolver answers our own server name from our own keys, never the network",
+         "[federation][remote-key-cache][resolver][security][fed1]")
+{
+    GIVEN("a store holding our own key (stale, secret-holding) and a planted secretless row under our name")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto open_result = merovingian::database::open_persistent_store();
+        REQUIRE(open_result.ok);
+        auto own_public = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+        auto own_secret = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        crypto_sign_keypair(own_public.data(), own_secret.data());
+        auto const own_public_bytes = std::string{reinterpret_cast<char const*>(own_public.data()), own_public.size()};
+        // valid_until_ts 1000 is long past for the resolver clock below, so a
+        // remote key this old would be refetched.
+        REQUIRE(merovingian::database::store_server_signing_key(
+            open_result.store,
+            {"example.org", "ed25519:own", merovingian::events::matrix_base64_from_bytes(own_public_bytes), 1000U,
+             "encrypted-secret-placeholder"}));
+        auto planted_public = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+        auto planted_secret = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        crypto_sign_keypair(planted_public.data(), planted_secret.data());
+        REQUIRE(merovingian::database::store_server_signing_key(
+            open_result.store, {"example.org",
+                                "ed25519:planted",
+                                merovingian::events::matrix_base64_from_bytes(std::string_view{
+                                    reinterpret_cast<char const*>(planted_public.data()), planted_public.size()}),
+                                9'999'999'999'999ULL,
+                                {}}));
+
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/true, {"192.0.2.50"}, {}};
+        auto client = merovingian::http::OutboundClient{};
+        auto const clock = merovingian::federation::RemoteKeyClock{[]() -> std::uint64_t {
+            return 1'000'000'000'000U;
+        }};
+        auto resolver = merovingian::federation::make_persistent_remote_key_resolver(open_result.store, client, network,
+                                                                                     1U, clock, "example.org");
+
+        WHEN("the resolver is asked for our own current key ID")
+        {
+            auto const resolved = resolver("example.org", "ed25519:own");
+
+            THEN("it returns our own key without any discovery or fetch")
+            {
+                REQUIRE(resolved.has_value());
+                REQUIRE(resolved->signing_key.server_name == "example.org");
+                REQUIRE(resolved->signing_key.key_id == "ed25519:own");
+                REQUIRE(resolved->signing_key.public_key_bytes == own_public_bytes);
+                REQUIRE(network.lookup_calls == 0U);
+                REQUIRE(network.well_known_calls == 0U);
+            }
+        }
+
+        WHEN("the resolver is asked for our name under a key ID only a secretless row holds, or none at all")
+        {
+            auto const planted = resolver("example.org", "ed25519:planted");
+            auto const unknown = resolver("example.org", "ed25519:unknown");
+
+            THEN("neither resolves, and the network is never consulted")
+            {
+                REQUIRE_FALSE(planted.has_value());
+                REQUIRE_FALSE(unknown.has_value());
+                REQUIRE(network.lookup_calls == 0U);
+                REQUIRE(network.well_known_calls == 0U);
+            }
+        }
+    }
+}

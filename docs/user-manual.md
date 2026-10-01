@@ -395,30 +395,49 @@ forbids that combination. CORS is **not** hot-reloadable — a change to any
 
 #### HTTP transport — `server.http.*`
 
-Controls HTTP/1.1 persistent connections (keep-alive). Connections are served
-as sequential request rounds; each kept-alive connection is parked for at most
-`keep_alive_idle_seconds` while waiting for the client's next request, and
-each parked connection holds one request-pool worker thread, so
-`keep_alive_max_connections` caps the process-wide total.
+Controls the main request pool and HTTP/1.1 persistent connections
+(keep-alive). A worker thread of the request pool is only ever given a
+connection that has a request to read: new connections before their first
+byte, and kept-alive connections between requests, are held by one connection
+dispatcher thread, which closes a new connection that sends nothing within
+5 seconds and a kept-alive one that stays idle for `keep_alive_idle_seconds`.
+One client address may hold at most a quarter of the workers at once
+(`request_threads / 4`, at least one); its further requests wait until one of
+its own requests finishes, while other clients are served.
 
 | Key | Default | When to change |
 |---|---|---|
+| `server.http.request_threads` | `16` | Threads in the main request pool that serves every listener, 4..256. Raise for a busy server with many cores; each client address may use a quarter of them, and remote directory and media proxying at most half. |
 | `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
-| `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to free worker threads sooner. |
-| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. Raise only alongside a larger request pool. |
+| `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to close idle connections sooner. |
+| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. A parked connection holds no worker thread, so this bounds open descriptors and memory and need not match `request_threads`; raise it to let more clients re-use their connections. |
 | `server.http.max_connections_per_ip` | `64` | Open connections one client may hold on the client and federation listeners, 1..65535. A further connection is closed at accept time, before a byte is read or a TLS handshake starts. Raise if many users share one NAT address. |
-| `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by for the connection cap and the per-IP rate limiter, 1..128. `128` counts each address separately; a shorter prefix groups a whole allocation. |
+| `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by for the connection cap, the per-client worker share and the per-IP rate limiter, 1..128. `128` counts each address separately; a shorter prefix groups a whole allocation. |
 
-The parser rejects idle windows outside 1..300 seconds, parked-connection caps
-outside 1..4096, per-IP caps outside 1..65535 and prefix lengths outside
-1..128. These keys are read when the listeners start and are **not**
-hot-reloadable — a change to any `server.http.*` key requires a restart.
+The parser rejects pool sizes outside 4..256, idle windows outside 1..300
+seconds, parked-connection caps outside 1..4096, per-IP caps outside 1..65535
+and prefix lengths outside 1..128. These keys are read when the listeners start
+and are **not** hot-reloadable — a change to any `server.http.*` key requires a
+restart.
+
+Fixed limits that are not configurable:
+
+- a request head must arrive within 30 seconds, with no gap over 5 seconds;
+- a request body may start slowly, but from 10 seconds into the body it must
+  have arrived at an average of at least 16 KiB/s, or the server answers
+  `408` and closes the connection;
+- a media upload larger than 1 MiB is read only if its request carries a
+  valid access token; otherwise the server answers `401`
+  (`M_MISSING_TOKEN` / `M_UNKNOWN_TOKEN`) without reading the body and closes
+  the connection;
+- a connection is closed (`Connection: close` on the response) after 1 000
+  requests or one hour, and clients open a new one.
 
 **Behind a reverse proxy**, every client arrives from the proxy's address, so
 addresses listed in `server.trusted_proxies` are exempt from the per-IP
-connection cap. Limit connections per client at the proxy (for example nginx
-`limit_conn`); the per-IP rate limiter still applies to the forwarded client
-address.
+connection cap and from the per-client worker share. Limit connections and
+concurrent requests per client at the proxy (for example nginx `limit_conn`);
+the per-IP rate limiter still applies to the forwarded client address.
 
 #### TURN server — `server.turn.*`
 
@@ -539,14 +558,16 @@ opaque provider id (may itself contain dots, e.g.
 | `listeners.federation.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.federation.tls_certificate_file` | (empty) | Required when federation TLS is enabled. |
 | `listeners.federation.tls_private_key_file` | (empty) | Required when federation TLS is enabled. |
-| `listeners.max_queued_connections` | `1024` | Connections allowed to wait for a worker thread before new ones are refused. `0` disables the cap. |
+| `listeners.max_queued_connections` | `1024` | Accepted connections allowed to wait for their first request before new ones are refused. `0` disables the cap. |
 
-`listeners.max_queued_connections` bounds the accept loops' work queues. Each
-accepted connection queues one closure, so without a cap a connection flood
-grows the queue until the process is killed by the OOM reaper. Past the cap the
-listener closes the connection immediately, which sheds load in the one way the
+`listeners.max_queued_connections` bounds how many accepted connections may be
+waiting, at once, for their first request (they are held by the connection
+dispatcher, not by worker threads). Without a cap a connection flood grows
+that set until the process runs out of descriptors or memory. Past the cap a
+new connection is closed immediately, which sheds load in the one way the
 client can observe and retry. Raise it if legitimate bursts are being refused;
-lower it to shed load sooner under a smaller memory budget. Restart required.
+lower it to shed load sooner under a smaller memory budget. The long-poll
+`/sync` pool's queue uses the same bound. Restart required.
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
 `localhost`, `::1`, or `[::1]`) **and** declare `reverse_proxy=true`, which is
@@ -706,6 +727,18 @@ rooms.
 | `security.federation.remote_timeout` | `60s` | General outbound federation HTTP timeout. |
 | `security.federation.max_transaction_size` | `10MiB` | Cap on inbound transaction body size. The shipped example sets `20MiB`. |
 
+Remote lookups that a client triggers (`GET`/`POST /publicRooms?server=`, a
+room-alias lookup for a remote alias, and remote media when
+`security.media.remote_fetch_enabled` is on) are not governed by
+`remote_timeout` alone: they are limited to 4 in flight at once across all
+clients and 1 per client address, and end after at most 10 s (30 s for media),
+whichever of that and `remote_timeout` is shorter. A request over the limit is
+answered `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 and a `Retry-After`
+header; a lookup that runs out of time is answered `502`. These limits are
+fixed, not configuration keys: they exist to keep half of the 8-thread request
+pool free for requests that never leave this server. Behind a reverse proxy set
+`server.trusted_proxies`, or every client shares one address and so one slot.
+
 #### Federation join/leave budget — `security.federation.join_*`
 
 | Key | Default | When to change |
@@ -789,6 +822,19 @@ so the defaults are generous for real traffic. If you tighten them and a new
 federation partner intermittently fails to join, look for
 `key_resolution.throttled` at warning level — it names the origin and which
 budget denied it.
+
+A request whose `X-Matrix` signature fails is charged to the **source address**
+(after `trusted_proxies` and IPv6-prefix grouping, as above), never to the origin
+it names, because that origin is unauthenticated until the signature verifies.
+Beyond 30 failed signatures per 60 seconds from one address (a fixed limit, not
+a config key), that address is answered `429 M_LIMIT_EXCEEDED` with a
+`federation.rate_limited` audit event, and other addresses are unaffected. A
+real peer that shares an address with a sender of forged requests, including
+every peer behind a reverse proxy that has no `trusted_proxies` configured,
+shares that budget. Separately, an origin that sends malformed transactions or
+forged relayed PDUs after a valid signature is backed off after three
+consecutive failures; the backoff lapses after five minutes without a further
+failure.
 
 Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). The six `per_origin_*`
 and transaction keys are reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
@@ -896,8 +942,8 @@ record but no additional bytes.
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |
-| `security.media.remote_fetch_enabled` | `false` | Opt-in for live remote media fetching. |
-| `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path still uses hard-coded timeouts. |
+| `security.media.remote_fetch_enabled` | `false` | Opt-in for live remote media fetching. While it is `false` (the default) a download or thumbnail of media hosted on another server is answered `404 M_NOT_FOUND` before any server discovery or outbound call, on the legacy `/_matrix/media/v3/` routes and the authenticated `/_matrix/client/v1/media/` routes alike. When it is `true`, fetches run under a fixed in-flight budget (4 at once across all clients, 1 per client address; over it the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000) and a 30 s total deadline. A request that carries `allow_remote=false` is never fetched remotely, whatever this is set to. |
+| `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path does not read it: remote fetches use the fixed 30 s client-outbound deadline (bounded further by `security.federation.remote_timeout` when that is shorter). |
 | `security.media.decode_in_sandbox` | `true` | Decode/thumbnail media inside a sandboxed child process. |
 | `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |
@@ -2062,6 +2108,15 @@ admin endpoint:
 ```sh
 curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 ```
+
+The endpoint lists the most recent 1 024 audit rows the running process holds; its
+first line ends in `evicted=<n>` once older rows have left that window, and the
+`audit_log` table keeps every row. Rejections that any unauthenticated client can
+trigger (`access_token.rejected`, `rate_limit.exceeded`, `request.rejected`) are
+written at most 10 times per kind per 60 seconds; the first row after a busier
+window carries `suppressed=<n>` in its reason. `actor`, `target` and `reason` are
+recorded as at most 255 bytes. See [`docs/observability-audit.md`](observability-audit.md),
+"Audit volume bounds".
 
 ### Admin API
 

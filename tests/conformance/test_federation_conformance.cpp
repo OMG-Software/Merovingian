@@ -23,6 +23,7 @@
 #include "../support/master_key.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -42,6 +43,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -269,6 +271,27 @@ SCENARIO("Federation version endpoint is served without authentication",
                                                                                     key_seed, std::string{room_ver});
     return std::string{"{\"room_version\":\""} + std::string{room_ver} + "\",\"event\":" + signed_event +
            ",\"invite_room_state\":[]}";
+}
+
+// The event ID of the event carried in a v2 invite body. The {eventId} in the
+// invite URL must equal it (audit FED-5): "$" + the reference hash of the event.
+[[nodiscard]] auto v2_invite_body_event_id(std::string const& body, std::string_view room_ver = "12") -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    if (parsed.error != merovingian::canonicaljson::ParseError::none || root == nullptr)
+    {
+        return {};
+    }
+    for (auto const& member : *root)
+    {
+        if (member.key == "event")
+        {
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(*member.value);
+            return merovingian::federation::test::reference_hash_event_id(serialized.output, room_ver);
+        }
+    }
+    return {};
 }
 
 // Navigate a JSON object and return a pointer to the Value for `key`.
@@ -664,10 +687,10 @@ SCENARIO("invite v2 processes inbound invite and returns signed event", "[federa
 
         WHEN("a signed invite v2 request is dispatched")
         {
-            auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const body = make_signed_v2_invite_body(std::string{room_id}, "@remote:remote.example.org",
                                                          "@local:local.example.org");
+            auto const event_id = v2_invite_body_event_id(body);
+            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const request = signed_put_request(origin, key_id, key_seed, target, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -772,8 +795,6 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
 
         WHEN("a signed invite v1 request is dispatched")
         {
-            auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target = "/_matrix/federation/v1/invite/" + std::string{room_id} + "/" + event_id;
             // v1 invite body IS the bare signed event.
             // Build a properly signed invite event with state_key pointing to a local user.
             auto const unsigned_json =
@@ -782,6 +803,9 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
                 "\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
             auto const signed_body =
                 merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "12");
+            // The {eventId} must be the event's own reference-hash ID (audit FED-5).
+            auto const event_id = merovingian::federation::test::reference_hash_event_id(signed_body, "12");
+            auto const target = "/_matrix/federation/v1/invite/" + std::string{room_id} + "/" + event_id;
             auto const request = signed_put_request(origin, key_id, key_seed, target, signed_body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -1123,9 +1147,12 @@ SCENARIO("GET /event/{eventId} returns the PDU when the event_query_provider is 
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         // Provider returns a non-empty body for the known event, empty for unknown.
-        runtime.event_query_provider = [](std::string_view ev_id) -> std::string {
+        runtime.event_query_provider =
+            [](std::string_view ev_id,
+               [[maybe_unused]] std::string_view requesting_origin) -> merovingian::federation::RoomReadResult {
             if (ev_id == "$known_event:local.example.org")
-                return "{\"type\":\"m.room.message\",\"room_id\":\"!conformance:local.example.org\"}";
+                return {merovingian::federation::RoomReadStatus::ok,
+                        "{\"type\":\"m.room.message\",\"room_id\":\"!conformance:local.example.org\"}"};
             return {};
         };
 
@@ -1201,10 +1228,11 @@ SCENARIO("GET /state/{roomId} returns room state when the state_query_provider i
         // The provider only returns a body when it receives BOTH the room ID and
         // the required event_id query parameter, proving the handler threads the
         // spec-required `event_id` through to the state resolver.
-        runtime.state_query_provider = [](std::string_view queried_room_id,
-                                          std::string_view queried_event_id) -> std::string {
+        runtime.state_query_provider =
+            [](std::string_view queried_room_id, std::string_view queried_event_id,
+               [[maybe_unused]] std::string_view requesting_origin) -> merovingian::federation::RoomReadResult {
             if (queried_room_id == "!conformance:local.example.org" && queried_event_id == "$anchor:local.example.org")
-                return "{\"auth_chain\":[],\"pdus\":[]}";
+                return {merovingian::federation::RoomReadStatus::ok, "{\"auth_chain\":[],\"pdus\":[]}"};
             return {};
         };
 
@@ -1289,10 +1317,12 @@ SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_quer
 
         // The provider only returns a body when the handler threads through both
         // the room ID and the spec-required `event_id` query parameter.
-        runtime.state_ids_query_provider = [](std::string_view queried_room_id,
-                                              std::string_view queried_event_id) -> std::string {
+        runtime.state_ids_query_provider =
+            [](std::string_view queried_room_id, std::string_view queried_event_id,
+               [[maybe_unused]] std::string_view requesting_origin) -> merovingian::federation::RoomReadResult {
             if (queried_room_id == "!conformance:local.example.org" && queried_event_id == "$anchor:local.example.org")
-                return "{\"pdu_ids\":[\"$create:local.example.org\"],\"auth_chain_ids\":[]}";
+                return {merovingian::federation::RoomReadStatus::ok,
+                        "{\"pdu_ids\":[\"$create:local.example.org\"],\"auth_chain_ids\":[]}"};
             return {};
         };
 
@@ -1369,10 +1399,11 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         auto provider_invoked = std::make_shared<bool>(false);
-        runtime.missing_events_query_provider = [provider_invoked](std::string_view /*room_id*/,
-                                                                   std::string_view /*body*/) -> std::string {
+        runtime.missing_events_query_provider =
+            [provider_invoked](std::string_view /*room_id*/, std::string_view /*body*/,
+                               std::string_view /*origin*/) -> merovingian::federation::RoomReadResult {
             *provider_invoked = true;
-            return "{\"events\":[]}";
+            return {merovingian::federation::RoomReadStatus::ok, "{\"events\":[]}"};
         };
 
         WHEN("a signed POST /get_missing_events request is dispatched")
@@ -1412,6 +1443,96 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
             THEN("the response is 501 Not Implemented")
             {
                 REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- FED-2: room-scoped reads are limited to servers in the room --------------
+// Spec: Matrix Server-Server API v1.19
+// Endpoints: GET /state/{roomId}, GET /state_ids/{roomId}, GET /event/{eventId},
+//            GET /backfill/{roomId}, POST /get_missing_events/{roomId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
+//
+// Spec: GET /state_ids lists "403 | The requesting host is not in the room, or is
+// excluded from the room via m.room.server_acl". The other four endpoints have no
+// 403 row; refusing a server that is not in the room is a security requirement of
+// this server and uses the same 403 M_FORBIDDEN response. The room provider decides
+// from the X-Matrix-AUTHENTICATED origin, so the handler MUST pass exactly that.
+SCENARIO("Room-scoped federation reads pass the authenticated origin to the provider and answer 403 when it refuses",
+         "[federation][conformance][fed2][security]")
+{
+    GIVEN("a runtime whose room providers record the origin they are given and refuse it")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto seen_origins = std::make_shared<std::vector<std::string>>();
+        auto const refuse = [seen_origins](std::string_view given_origin) {
+            seen_origins->emplace_back(given_origin);
+            return merovingian::federation::RoomReadResult{merovingian::federation::RoomReadStatus::forbidden, {}};
+        };
+        runtime.event_query_provider = [refuse](std::string_view, std::string_view given_origin) {
+            return refuse(given_origin);
+        };
+        runtime.state_query_provider = [refuse](std::string_view, std::string_view, std::string_view given_origin) {
+            return refuse(given_origin);
+        };
+        runtime.state_ids_query_provider = [refuse](std::string_view, std::string_view, std::string_view given_origin) {
+            return refuse(given_origin);
+        };
+        runtime.missing_events_query_provider = [refuse](std::string_view, std::string_view,
+                                                         std::string_view given_origin) {
+            return refuse(given_origin);
+        };
+        runtime.backfill_provider =
+            [seen_origins](
+                merovingian::federation::BackfillRequest const& request) -> merovingian::federation::BackfillResult {
+            seen_origins->push_back(request.origin);
+            return {false, 403U, R"({"errcode":"M_FORBIDDEN","error":"refused"})", {}};
+        };
+
+        // A hostile peer also tries to name another origin in the query string.
+        auto const forged = std::string{"&origin=trusted.example.org"};
+        auto const room = std::string{"!conformance:local.example.org"};
+        auto const targets = std::vector<std::pair<std::string, std::string>>{
+            {"GET",  "/_matrix/federation/v1/state/" + room + "?event_id=$a:local.example.org" + forged    },
+            {"GET",  "/_matrix/federation/v1/state_ids/" + room + "?event_id=$a:local.example.org" + forged},
+            {"GET",  "/_matrix/federation/v1/event/$a:local.example.org?origin=trusted.example.org"        },
+            {"GET",  "/_matrix/federation/v1/backfill/" + room + "?v=$a:local.example.org&limit=5" + forged},
+            {"POST", "/_matrix/federation/v1/get_missing_events/" + room                                   }
+        };
+
+        WHEN("a signed request for each of the five endpoints is dispatched")
+        {
+            auto responses = std::vector<merovingian::federation::FederationResponse>{};
+            for (auto const& [method, target] : targets)
+            {
+                responses.push_back(
+                    method == "GET"
+                        ? merovingian::federation::handle_inbound_federation_request(
+                              runtime, signed_get_request(origin, key_id, key_seed, target))
+                        : merovingian::federation::handle_inbound_federation_request(
+                              runtime, signed_post_request(
+                                           origin, key_id, key_seed, target,
+                                           R"({"latest_events":["$a:local.example.org"],"earliest_events":[]})")));
+            }
+
+            THEN("every provider saw the X-Matrix origin and every response is 403 M_FORBIDDEN with no room data")
+            {
+                REQUIRE(seen_origins->size() == targets.size());
+                for (auto const& seen : *seen_origins)
+                {
+                    REQUIRE(seen == origin);
+                }
+                for (auto const& response : responses)
+                {
+                    REQUIRE(response.status == 403U);
+                    REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                    REQUIRE(response.body.find("pdus") == std::string::npos);
+                    REQUIRE(response.body.find("pdu_ids") == std::string::npos);
+                    REQUIRE(response.body.find("events") == std::string::npos);
+                }
             }
         }
     }
@@ -2500,10 +2621,10 @@ SCENARIO("invite v2 response body contains the event key as a JSON object", "[fe
 
         WHEN("a signed invite v2 request is dispatched")
         {
-            auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const body =
                 make_signed_v2_invite_body(std::string{room_id}, "@alice:remote.example.org", "@bob:local.example.org");
+            auto const event_id = v2_invite_body_event_id(body);
+            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 

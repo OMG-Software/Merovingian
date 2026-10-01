@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/local_services.hpp"
 
+#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -106,18 +107,44 @@ namespace
 auto append_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
                         std::string_view actor, std::string_view target, std::string_view reason) -> void
 {
+    // AUTH-1 (ADR-0080): per-request rejections that any unauthenticated client
+    // can trigger are rate-capped per kind. A suppressed event is only counted;
+    // its diagnostic log line was already emitted by the caller, and the count
+    // rides on the next row the kind is allowed to write.
+    auto const admission = database.audit_rate_gate.admit(event_type);
+    if (!admission.write)
+    {
+        return;
+    }
+    // AUTH-1: actor, target and reason can carry client-supplied text (a login
+    // `user`, a request target). Bound and sanitise them once, here, so the log
+    // line, the in-memory window and the durable row all see the same value.
+    auto const safe_actor = database::bounded_utf8(actor, database::max_audit_field_bytes);
+    auto const safe_target = database::bounded_utf8(target, database::max_audit_field_bytes);
+    auto const safe_reason = [&]() {
+        if (admission.suppressed == 0U)
+        {
+            return database::bounded_utf8(reason, database::max_audit_field_bytes);
+        }
+        auto const suffix = " suppressed=" + std::to_string(admission.suppressed);
+        return database::bounded_utf8(reason, database::max_audit_field_bytes - suffix.size()) + suffix;
+    }();
     log_diagnostic("audit.append", {
                                        {"category",   std::string{observability::audit_category_name(category)}, false},
                                        {"event_type", std::string{event_type},                                   false},
-                                       {"actor",      std::string{actor},                                        false},
-                                       {"target",     std::string{target},                                       false},
-                                       {"reason",     std::string{reason},                                       false}
+                                       {"actor",      safe_actor,                                                false},
+                                       {"target",     safe_target,                                               false},
+                                       {"reason",     safe_reason,                                               false}
     });
-    database.audit_events.push_back(
-        observability::make_audit_event(category, event_type, actor, target, reason, "local-vertical-slice"));
-    std::ignore = database::append_audit_event(database.persistent_store,
-                                               {observability::audit_category_name(category), std::string{event_type},
-                                                std::string{actor}, std::string{target}, std::string{reason}});
+    database.audit_events.push_back(observability::make_audit_event(category, event_type, safe_actor, safe_target,
+                                                                    safe_reason, "local-vertical-slice"));
+    while (database.audit_events.size() > database::max_in_memory_audit_events)
+    {
+        database.audit_events.pop_front();
+    }
+    std::ignore = database::append_audit_event(
+        database.persistent_store,
+        {observability::audit_category_name(category), std::string{event_type}, safe_actor, safe_target, safe_reason});
 }
 
 auto log_diagnostic_audit(LocalDatabase& database, std::string_view logger, std::string_view event,
@@ -126,6 +153,15 @@ auto log_diagnostic_audit(LocalDatabase& database, std::string_view logger, std:
                           std::string_view audit_event_type, std::string_view actor, std::string_view target,
                           std::string_view reason) -> void
 {
+    // AUTH-1: a diagnostic field can hold client-supplied text (a login `user`,
+    // a request target), so cap each value before it is written to the log.
+    for (auto& field : fields)
+    {
+        if (field.value.size() > database::max_audit_field_bytes)
+        {
+            field.value = database::bounded_utf8(field.value, database::max_audit_field_bytes);
+        }
+    }
     // Always emit the diagnostic line. The helper takes ownership of
     // `fields` so the call site does not have to clone it twice.
     observability::log_diagnostic(logger, event, fields, severity);

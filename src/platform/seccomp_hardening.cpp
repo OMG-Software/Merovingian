@@ -3,13 +3,17 @@
 
 #include "merovingian/platform/seccomp_hardening.hpp"
 
+#include <charconv>
+#include <cstddef>
+#include <optional>
 #include <string_view>
+#include <system_error>
 
 #ifdef __linux__
-#include <cstddef>
 #include <cstdint>
-#include <optional>
+#include <filesystem>
 #include <span>
+#include <string>
 #include <vector>
 
 #include <fcntl.h>
@@ -56,6 +60,26 @@ namespace
 #else
     static constexpr auto k_seccomp_ret_kill_process = std::uint32_t{SECCOMP_RET_KILL_PROCESS};
 #endif
+
+    // Every filter is installed with SECCOMP_FILTER_FLAG_TSYNC (ISO-1, ADR-0082) so
+    // that a thread which already exists is confined by the same call, instead
+    // of keeping the (weaker or absent) filter it had. Added in kernel 3.17; the
+    // numeric value is used directly so this compiles against older headers.
+#ifndef SECCOMP_FILTER_FLAG_TSYNC
+    static constexpr auto k_seccomp_filter_flag_tsync = 1UL;
+#else
+    static constexpr auto k_seccomp_filter_flag_tsync = static_cast<unsigned long>(SECCOMP_FILTER_FLAG_TSYNC);
+#endif
+
+    // Installs `prog` on every thread of the process. Returns true only when the
+    // kernel reports 0. With TSYNC a failure to synchronise a sibling thread
+    // makes seccomp() return that thread's id (positive) rather than -1, and a
+    // partially confined process is worse than none, so anything but 0 is a
+    // failure. There is deliberately no fallback to a per-thread install.
+    [[nodiscard]] auto install_filter_on_all_threads(::sock_fprog const& prog) noexcept -> bool
+    {
+        return ::syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, k_seccomp_filter_flag_tsync, &prog) == 0;
+    }
 
     // Landlock syscall numbers are unified across x86_64 and aarch64; older
     // libc headers may not define them (same fallback as landlock_hardening.cpp).
@@ -787,7 +811,7 @@ namespace
         {
             return false;
         }
-        return ::syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) == 0;
+        return install_filter_on_all_threads(prog);
     }
 
     [[nodiscard]] auto install_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool
@@ -815,7 +839,7 @@ namespace
         {
             return false;
         }
-        return ::syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) == 0;
+        return install_filter_on_all_threads(prog);
     }
 
     [[nodiscard]] auto install_seccomp_filter() noexcept -> bool
@@ -823,34 +847,83 @@ namespace
         return install_seccomp_filter_with_default(k_seccomp_ret_kill_process);
     }
 
+    // Reads a whole /proc status file. Returns std::nullopt when it cannot be
+    // opened or read; `gone` is set when the failure is ENOENT/ESRCH, i.e. the
+    // task exited after the directory listing.
+    [[nodiscard]] auto read_proc_status(std::string const& path, bool& gone) -> std::optional<std::string>
+    {
+        gone = false;
+        auto const guard = FdGuard{::open(path.c_str(), O_RDONLY | O_CLOEXEC)}; // NOLINT(*-vararg)
+        if (guard.fd < 0)
+        {
+            gone = errno == ENOENT || errno == ESRCH;
+            return std::nullopt;
+        }
+        auto text = std::string{};
+        char buf[4096] = {}; // NOLINT(*-avoid-c-arrays)
+        while (true)
+        {
+            auto const n = ::read(guard.fd, buf, sizeof(buf));
+            if (n < 0)
+            {
+                gone = errno == ESRCH;
+                return std::nullopt;
+            }
+            if (n == 0)
+            {
+                break;
+            }
+            text.append(buf, static_cast<std::size_t>(n));
+            // A status file is a couple of kilobytes; refuse to grow without bound.
+            if (text.size() > (1U << 20U))
+            {
+                return std::nullopt;
+            }
+        }
+        return text;
+    }
+
+    // Walks /proc/self/task and inspects every task. /proc/self/status reports
+    // only the thread-group leader, so it cannot see an unconfined sibling
+    // thread (ISO-1).
     [[nodiscard]] auto read_seccomp_status() -> SeccompProbeResult
     {
         auto result = SeccompProbeResult{};
-        auto const guard = FdGuard{::open("/proc/self/status", O_RDONLY | O_CLOEXEC)};
-        if (guard.fd < 0)
+        auto ec = std::error_code{};
+        auto tasks = std::filesystem::directory_iterator{"/proc/self/task", ec};
+        if (ec)
         {
             return result;
         }
-        char buf[4096] = {};
-        auto const n = ::read(guard.fd, buf, sizeof(buf) - 1U);
-        if (n <= 0)
+        for (; !ec && tasks != std::filesystem::directory_iterator{}; tasks.increment(ec))
         {
-            return result;
+            auto gone = false;
+            auto const status = read_proc_status((tasks->path() / "status").string(),
+                                                 gone); // NOLINT(bugprone-unchecked-optional-access)
+            if (!status.has_value())
+            {
+                if (!gone)
+                {
+                    // Unreadable is not the same as confined: fail closed.
+                    ++result.tasks_checked;
+                    ++result.unconfined_tasks;
+                }
+                continue;
+            }
+            ++result.tasks_checked;
+            if (!parse_task_confinement(*status).confined())
+            {
+                ++result.unconfined_tasks;
+            }
         }
-        result.probed = true;
-        auto const sv = std::string_view{buf, static_cast<std::size_t>(n)};
-        auto const pos = sv.find("Seccomp:");
-        if (pos == std::string_view::npos)
+        if (ec)
         {
-            return result;
+            // The directory could not be walked to the end: the verdict would
+            // cover an unknown set of tasks.
+            ++result.unconfined_tasks;
         }
-        auto value_start = pos + 8U;
-        while (value_start < sv.size() && (sv[value_start] == ' ' || sv[value_start] == '\t'))
-        {
-            ++value_start;
-        }
-        // Mode 2 = SECCOMP_MODE_FILTER: a bpf filter is active.
-        result.seccomp_active = value_start < sv.size() && sv[value_start] == '2';
+        result.probed = result.tasks_checked > 0U;
+        result.seccomp_active = result.probed && result.unconfined_tasks == 0U;
         return result;
     }
 
@@ -911,6 +984,53 @@ auto apply_decoder_seccomp_filter_with_default([[maybe_unused]] std::uint32_t de
 #else
     return false;
 #endif
+}
+
+namespace
+{
+
+    // Value of the "<key>:" line in a /proc status file, or std::nullopt when
+    // the line is absent or its value is not a plain non-negative integer.
+    // Lines are matched from their start, so "Seccomp:" never matches the
+    // "Seccomp_filters:" line that newer kernels print after it.
+    [[nodiscard]] auto status_field(std::string_view text, std::string_view key) noexcept -> std::optional<int>
+    {
+        while (!text.empty())
+        {
+            auto const newline = text.find('\n');
+            auto line = text.substr(0U, newline);
+            text = newline == std::string_view::npos ? std::string_view{} : text.substr(newline + 1U);
+            if (!line.starts_with(key) || line.size() == key.size() || line[key.size()] != ':')
+            {
+                continue;
+            }
+            line.remove_prefix(key.size() + 1U);
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+            {
+                line.remove_prefix(1U);
+            }
+            auto value = int{};
+            auto const [end, error] = std::from_chars(line.data(), line.data() + line.size(), value);
+            if (error != std::errc{} || end == line.data() || value < 0)
+            {
+                return std::nullopt;
+            }
+            return value;
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+auto parse_task_confinement(std::string_view status_text) noexcept -> TaskConfinement
+{
+    auto const seccomp = status_field(status_text, "Seccomp");
+    auto const no_new_privs = status_field(status_text, "NoNewPrivs");
+    if (!seccomp.has_value() || !no_new_privs.has_value())
+    {
+        return {};
+    }
+    return TaskConfinement{.parsed = true, .seccomp_mode = *seccomp, .no_new_privs = *no_new_privs};
 }
 
 auto probe_seccomp_status() -> SeccompProbeResult

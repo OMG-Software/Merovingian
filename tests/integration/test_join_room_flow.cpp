@@ -59,10 +59,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -423,23 +425,24 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
     return remote;
 }
 
-// Signs `raw_event_json` with the keypair derived from `sign_seed` and attaches
+// Signs `raw_event_json` with the raw 64-byte Ed25519 `secret_key` and attaches
 // the signature under {claimed_server, claimed_key_id}, returning the fully
 // signed event as a parsed canonicaljson::Value ready to drop into a state or
-// auth_chain array.
-[[nodiscard]] auto sign_test_event(std::string const& raw_event_json,
-                                   merovingian::rooms::RoomVersionPolicy const& policy,
-                                   std::string const& claimed_server, std::string const& claimed_key_id,
-                                   std::string const& sign_seed) -> merovingian::canonicaljson::Value
+// auth_chain array. sign_test_event below does the same with the keypair
+// derived from a seed.
+[[nodiscard]] auto sign_test_event_with_secret(
+    std::string const& raw_event_json, merovingian::rooms::RoomVersionPolicy const& policy,
+    std::string const& claimed_server, std::string const& claimed_key_id,
+    std::span<std::uint8_t const> secret_key) -> merovingian::canonicaljson::Value
 {
+    REQUIRE(secret_key.size() == crypto_sign_SECRETKEYBYTES);
     auto const parsed = merovingian::canonicaljson::parse_lossless(raw_event_json);
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
     auto const payload = merovingian::events::make_event_signing_payload(parsed.value, policy);
     REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
-    auto const kp = merovingian::federation::test::keypair_from_seed(sign_seed);
     auto sig = std::array<unsigned char, crypto_sign_BYTES>{};
     crypto_sign_detached(sig.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
-                         payload.output.size(), reinterpret_cast<unsigned char const*>(kp.secret_key.data()));
+                         payload.output.size(), secret_key.data());
     auto const sig_b64 =
         merovingian::events::matrix_base64_from_bytes({reinterpret_cast<char const*>(sig.data()), crypto_sign_BYTES});
     auto const attached =
@@ -448,6 +451,52 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
     auto const reparsed = merovingian::canonicaljson::parse_lossless(attached.output);
     REQUIRE(reparsed.error == merovingian::canonicaljson::ParseError::none);
     return reparsed.value;
+}
+
+[[nodiscard]] auto sign_test_event(std::string const& raw_event_json,
+                                   merovingian::rooms::RoomVersionPolicy const& policy,
+                                   std::string const& claimed_server, std::string const& claimed_key_id,
+                                   std::string const& sign_seed) -> merovingian::canonicaljson::Value
+{
+    auto const kp = merovingian::federation::test::keypair_from_seed(sign_seed);
+    return sign_test_event_with_secret(raw_event_json, policy, claimed_server, claimed_key_id,
+                                       merovingian::federation::test::secret_key_span(kp));
+}
+
+// Signs `raw_event_json` with this runtime's own current server signing key,
+// under the key ID the server publishes — an event this server genuinely
+// authored, as a resident server would echo it back in a send_join response.
+[[nodiscard]] auto sign_with_local_server_key(
+    merovingian::homeserver::HomeserverRuntime& runtime, std::string const& raw_event_json,
+    merovingian::rooms::RoomVersionPolicy const& policy) -> merovingian::canonicaljson::Value
+{
+    auto const own_key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+    REQUIRE(own_key.has_value());
+    return sign_test_event_with_secret(raw_event_json, policy, local_server, own_key->key_id,
+                                       runtime.database.signing_secret_key.bytes());
+}
+
+[[nodiscard]] auto reference_event_id(merovingian::canonicaljson::Value const& event,
+                                      merovingian::rooms::RoomVersionPolicy const& policy) -> std::string
+{
+    auto const eid = merovingian::events::make_reference_hash_event_id(event, policy);
+    REQUIRE(eid.error.empty());
+    REQUIRE_FALSE(eid.event_id.empty());
+    return eid.event_id;
+}
+
+// Blocks until every background task a join queued (the partial-state
+// member fill, see HomeserverRuntime::orphan_futures_) has finished.
+auto wait_for_join_background_tasks(merovingian::homeserver::HomeserverRuntime& runtime) -> void
+{
+    auto const lock = std::lock_guard{runtime.orphan_futures_mutex_};
+    for (auto& future : runtime.orphan_futures_)
+    {
+        if (future.valid())
+        {
+            future.wait();
+        }
+    }
 }
 
 [[nodiscard]] auto canonicaljson_array_to_string(merovingian::canonicaljson::Array const& array) -> std::string
@@ -568,11 +617,12 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
             sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
         state_array.push_back(
             sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
-        // Our own just-accepted join event: sender domain == our_server, so
-        // filter_verified_send_join_events trusts it without a resolver round
-        // trip — any placeholder signature is accepted for this entry.
-        state_array.push_back(
-            sign_test_event(make_join_event, policy, local_server, "ed25519:placeholder", resident_key_seed));
+        // Our own join event, echoed back: sender domain == our_server, so
+        // filter_verified_send_join_events verifies it against this server's
+        // own signing keys, with no resolver round trip. It must carry a
+        // genuine signature from our key — an own-domain event is never
+        // trusted without one (FED-1, ADR-0083).
+        state_array.push_back(sign_with_local_server_key(runtime, make_join_event, policy));
 
         static constexpr auto k_other_member_count = std::size_t{5U};
         for (auto member_index = std::size_t{0U}; member_index < k_other_member_count; ++member_index)
@@ -915,6 +965,374 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                     auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
                     REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
                 }
+            }
+        }
+    }
+}
+
+// FED-1 (security audit 2026-09-29): a send_join response is the resident
+// server's description of the room being joined, and nothing else. Spec:
+// Server-Server API v1.19, "Joining Rooms" (`state` is the room state before
+// the join event, `auth_chain` its auth chain) and "Checks performed on
+// receipt of a PDU", step 2: "Passes signature checks, otherwise it is
+// dropped" — with no exception for events naming our own domain. Before the
+// fix, a local user could join a room on a server they control and have its
+// send_join response rewrite the current state of any room hosted here.
+SCENARIO("A send_join response cannot inject state into a local room",
+         "[fed1][security][homeserver][federation][join][integration]")
+{
+    GIVEN("local room L with power levels P, and a resident server whose send_join names L in forged events")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                            merovingian::tests::registration_token);
+        REQUIRE(alice_reg.ok);
+        auto const alice_login =
+            merovingian::homeserver::login_local_user(runtime, alice_reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(alice_login.ok);
+        auto const bob_reg = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                          merovingian::tests::registration_token);
+        REQUIRE(bob_reg.ok);
+        auto const bob_login =
+            merovingian::homeserver::login_local_user(runtime, bob_reg.value, "CorrectHorse7!", "DEVICE2");
+        REQUIRE(bob_login.ok);
+        auto const bob = bob_reg.value;
+
+        // L: created by alice, bob invited and joined, alice holds power 100.
+        auto const created = merovingian::homeserver::create_room(runtime, alice_login.value);
+        REQUIRE(created.ok);
+        auto const local_room = created.value;
+        REQUIRE(merovingian::homeserver::invite_user(runtime, alice_login.value, local_room, bob).ok);
+        REQUIRE(merovingian::homeserver::join_room(runtime, bob_login.value, local_room).ok);
+
+        using StateRow = std::tuple<std::string, std::string, std::string>;
+        auto const local_state = [&] {
+            auto rows = std::vector<StateRow>{};
+            for (auto const& s : runtime.database.persistent_store.state)
+            {
+                if (s.room_id == local_room)
+                {
+                    rows.emplace_back(s.event_type, s.state_key, s.event_id);
+                }
+            }
+            std::ranges::sort(rows);
+            return rows;
+        };
+        auto const local_memberships = [&] {
+            auto rows = std::vector<std::pair<std::string, std::string>>{};
+            for (auto const& m : runtime.database.persistent_store.memberships)
+            {
+                if (m.room_id == local_room)
+                {
+                    rows.emplace_back(m.user_id, m.membership);
+                }
+            }
+            std::ranges::sort(rows);
+            return rows;
+        };
+        auto const local_event_ids = [&] {
+            auto ids = std::vector<std::string>{};
+            for (auto const& e : runtime.database.persistent_store.events)
+            {
+                if (e.room_id == local_room)
+                {
+                    ids.push_back(e.event_id);
+                }
+            }
+            std::ranges::sort(ids);
+            return ids;
+        };
+        auto const state_before = local_state();
+        auto const memberships_before = local_memberships();
+        auto const events_before = local_event_ids();
+        REQUIRE(std::ranges::any_of(state_before, [](StateRow const& row) {
+            return std::get<0>(row) == "m.room.power_levels";
+        }));
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const joined_room = std::string{"!fed1:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const evil = std::string{"@evil:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+
+        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + bob +
+                                     R"(","room_id":")" + joined_room + R"(","sender":")" + bob +
+                                     R"(","depth":3,"origin_server_ts":1000,)"
+                                     R"("prev_events":[],"auth_events":[],)"
+                                     R"("content":{"membership":"join"}})";
+        auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
+        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
+                                  R"(","room_id":")" + joined_room +
+                                  R"(","depth":1,"origin_server_ts":900,"prev_events":[],"auth_events":[],)"
+                                  R"("content":{"room_version":"10","creator":")" +
+                                  creator + R"("}})";
+        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
+                                        creator + R"(","room_id":")" + joined_room +
+                                        R"(","depth":2,"origin_server_ts":901,"prev_events":[],"auth_events":[],)"
+                                        R"("content":{"users":{")" +
+                                        creator + R"(":100}}})";
+
+        // (a) an unsigned m.room.power_levels for L naming an own-domain sender.
+        auto const forged_unsigned_pl = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
+                                        bob + R"(","room_id":")" + local_room +
+                                        R"(","depth":10,"origin_server_ts":950,"prev_events":[],"auth_events":[],)"
+                                        R"("content":{"users":{")" +
+                                        bob + R"(":100}}})";
+        // (b) an m.room.power_levels for L genuinely signed by the resident server.
+        auto const forged_signed_pl = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} + evil +
+                                      R"(","room_id":")" + local_room +
+                                      R"(","depth":11,"origin_server_ts":951,"prev_events":[],"auth_events":[],)"
+                                      R"("content":{"users":{")" +
+                                      bob + R"(":100,")" + evil + R"(":100}}})";
+        // (c) another user's m.room.member for L, deferred to the background fill.
+        auto const forged_member = std::string{R"({"type":"m.room.member","state_key":")"} + evil + R"(","room_id":")" +
+                                   local_room + R"(","sender":")" + evil +
+                                   R"(","depth":12,"origin_server_ts":952,"prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})";
+
+        auto const forged_unsigned_pl_value = merovingian::canonicaljson::parse_lossless(forged_unsigned_pl).value;
+        auto const forged_signed_pl_value =
+            sign_test_event(forged_signed_pl, policy, resident_server, resident_key_id, resident_key_seed);
+        auto const forged_member_value =
+            sign_test_event(forged_member, policy, resident_server, resident_key_id, resident_key_seed);
+        auto const forged_ids = std::vector<std::string>{
+            reference_event_id(forged_unsigned_pl_value, policy),
+            reference_event_id(forged_signed_pl_value, policy),
+            reference_event_id(forged_member_value, policy),
+        };
+
+        auto state_array = merovingian::canonicaljson::Array{};
+        state_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        state_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        state_array.push_back(forged_unsigned_pl_value);
+        state_array.push_back(forged_signed_pl_value);
+        state_array.push_back(forged_member_value);
+
+        auto auth_chain_array = merovingian::canonicaljson::Array{};
+        auth_chain_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auth_chain_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auth_chain_array.push_back(forged_unsigned_pl_value);
+        auth_chain_array.push_back(forged_signed_pl_value);
+
+        auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
+                                    R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
+        auto const make_join_response = json_http_response("200 OK", make_join_body);
+        auto const send_join_response = json_http_response("200 OK", send_join_body);
+
+        WHEN("bob joins the resident server's room through it")
+        {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+            auto const result = merovingian::homeserver::join_room(runtime, bob_login.value, joined_room,
+                                                                   {std::string{resident_server}});
+            server_thread.join();
+            wait_for_join_background_tasks(runtime);
+            auto const lock = std::lock_guard{runtime.mutex};
+
+            THEN("the join itself still succeeds, with the joined room's genuine state")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(std::ranges::any_of(runtime.database.persistent_store.state, [&](auto const& s) {
+                    return s.room_id == joined_room && s.event_type == "m.room.power_levels";
+                }));
+            }
+
+            THEN("L's current state and memberships are unchanged")
+            {
+                REQUIRE(local_state() == state_before);
+                REQUIRE(local_memberships() == memberships_before);
+            }
+
+            THEN("none of the forged events is stored")
+            {
+                REQUIRE(local_event_ids() == events_before);
+                for (auto const& forged_id : forged_ids)
+                {
+                    CAPTURE(forged_id);
+                    REQUIRE_FALSE(std::ranges::any_of(runtime.database.persistent_store.events, [&](auto const& e) {
+                        return e.event_id == forged_id;
+                    }));
+                }
+            }
+        }
+    }
+}
+
+// FED-1, the legitimate side: an own-domain event genuinely signed with this
+// server's key (a re-join, where the resident server echoes back events we
+// authored) is still accepted. And an event that reaches us only through the
+// auth chain is an outlier: stored for auth lookups, never current state.
+SCENARIO("A send_join response's own-domain events are accepted when signed with our key, and auth-chain-only "
+         "events never become current state",
+         "[fed1][security][homeserver][federation][join][integration]")
+{
+    GIVEN("a resident server whose state holds a local user's membership signed with our key, and whose auth chain "
+          "holds an event that is not in the state")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+        auto const carol = std::string{"@carol:"} + local_server;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!fed1legit:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const former = std::string{"@former:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+
+        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
+                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice +
+                                     R"(","depth":5,"origin_server_ts":1000,)"
+                                     R"("prev_events":[],"auth_events":[],)"
+                                     R"("content":{"membership":"join"}})";
+        auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
+        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
+                                  R"(","room_id":")" + room_id +
+                                  R"(","depth":1,"origin_server_ts":900,"prev_events":[],"auth_events":[],)"
+                                  R"("content":{"room_version":"10","creator":")" +
+                                  creator + R"("}})";
+        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
+                                        creator + R"(","room_id":")" + room_id +
+                                        R"(","depth":2,"origin_server_ts":901,"prev_events":[],"auth_events":[],)"
+                                        R"("content":{"users":{")" +
+                                        creator + R"(":100}}})";
+        auto const carol_member = std::string{R"({"type":"m.room.member","state_key":")"} + carol + R"(","room_id":")" +
+                                  room_id + R"(","sender":")" + carol +
+                                  R"(","depth":3,"origin_server_ts":902,"prev_events":[],"auth_events":[],)"
+                                  R"("content":{"membership":"join"}})";
+        auto const former_member = std::string{R"({"type":"m.room.member","state_key":")"} + former +
+                                   R"(","room_id":")" + room_id + R"(","sender":")" + former +
+                                   R"(","depth":2,"origin_server_ts":901,"prev_events":[],"auth_events":[],)"
+                                   R"("content":{"membership":"join"}})";
+
+        auto const carol_value = sign_with_local_server_key(runtime, carol_member, policy);
+        auto const carol_event_id = reference_event_id(carol_value, policy);
+        auto const former_value =
+            sign_test_event(former_member, policy, resident_server, resident_key_id, resident_key_seed);
+        auto const former_event_id = reference_event_id(former_value, policy);
+
+        auto state_array = merovingian::canonicaljson::Array{};
+        state_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        state_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        state_array.push_back(carol_value);
+
+        auto auth_chain_array = merovingian::canonicaljson::Array{};
+        auth_chain_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auth_chain_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auth_chain_array.push_back(former_value);
+
+        auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
+                                    R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
+        auto const make_join_response = json_http_response("200 OK", make_join_body);
+        auto const send_join_response = json_http_response("200 OK", send_join_body);
+
+        WHEN("alice joins the room through the resident server")
+        {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
+            }};
+            auto const result =
+                merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+            server_thread.join();
+            wait_for_join_background_tasks(runtime);
+            auto const lock = std::lock_guard{runtime.mutex};
+            auto const& store = runtime.database.persistent_store;
+
+            THEN("the own-domain membership signed with our key is accepted into the room's state")
+            {
+                CAPTURE(result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(std::ranges::any_of(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == carol &&
+                           s.event_id == carol_event_id;
+                }));
+                REQUIRE(std::ranges::any_of(store.memberships, [&](auto const& m) {
+                    return m.room_id == room_id && m.user_id == carol && m.membership == "join";
+                }));
+            }
+
+            THEN("the auth-chain-only event is stored as an outlier but is not current state")
+            {
+                REQUIRE(result.ok);
+                auto const stored = std::ranges::find_if(store.events, [&](auto const& e) {
+                    return e.event_id == former_event_id;
+                });
+                REQUIRE(stored != store.events.end());
+                REQUIRE(stored->status == "outlier");
+                REQUIRE_FALSE(std::ranges::any_of(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == former;
+                }));
+                REQUIRE_FALSE(std::ranges::any_of(store.memberships, [&](auto const& m) {
+                    return m.room_id == room_id && m.user_id == former;
+                }));
             }
         }
     }

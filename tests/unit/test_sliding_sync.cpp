@@ -4,6 +4,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
+#include <string>
+
 namespace
 {
 
@@ -378,6 +381,137 @@ SCENARIO("parse_sliding_sync_timeout extracts the timeout query parameter", "[sy
             {
                 REQUIRE_FALSE(result.has_value());
             }
+        }
+    }
+}
+
+// ── Request limits (CSAZ-1) ──────────────────────────────────────────────────
+
+namespace
+{
+
+[[nodiscard]] auto required_state_json(std::size_t count) -> std::string
+{
+    auto out = std::string{"["};
+    for (auto i = std::size_t{0U}; i < count; ++i)
+    {
+        out += (i == 0U ? "" : ",") + std::string{R"(["m.custom.)"} + std::to_string(i) + R"(",""])";
+    }
+    return out + "]";
+}
+
+} // namespace
+
+SCENARIO("Sliding sync parser clamps timeline_limit to the server maximum", "[sync][sliding-sync][security][csaz-1]")
+{
+    GIVEN("a list and a room subscription that ask for far more timeline events than the server allows")
+    {
+        auto const body = std::string{R"({"lists":{"a":{"ranges":[[0,9]],"timeline_limit":1000000}},)"
+                                      R"("room_subscriptions":{"!r:example.org":{"timeline_limit":5000}}})"};
+
+        WHEN("parsed")
+        {
+            auto const result = parse_sliding_sync_request(body);
+
+            THEN("both limits are reduced to the maximum")
+            {
+                REQUIRE(result.has_value());
+                REQUIRE(result->lists.at("a").timeline_limit == sliding_sync_max_timeline_limit);
+                REQUIRE(result->room_subscriptions.at("!r:example.org").timeline_limit ==
+                        sliding_sync_max_timeline_limit);
+            }
+        }
+    }
+
+    GIVEN("a request whose timeline_limit is within the maximum")
+    {
+        WHEN("parsed")
+        {
+            auto const result =
+                parse_sliding_sync_request(R"({"room_subscriptions":{"!r:example.org":{"timeline_limit":7}}})");
+
+            THEN("the limit is unchanged")
+            {
+                REQUIRE(result.has_value());
+                REQUIRE(result->room_subscriptions.at("!r:example.org").timeline_limit == 7U);
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync request limits reject oversized subscriptions and required_state",
+         "[sync][sliding-sync][security][csaz-1]")
+{
+    GIVEN("a request with exactly the maximum number of room subscriptions")
+    {
+        auto body = std::string{R"({"room_subscriptions":{)"};
+        for (auto i = std::size_t{0U}; i < sliding_sync_max_room_subscriptions; ++i)
+        {
+            body += (i == 0U ? "" : ",") + std::string{"\"!r"} + std::to_string(i) + R"(:example.org":{})";
+        }
+        body += "}}";
+        auto const request = parse_sliding_sync_request(body);
+        REQUIRE(request.has_value());
+
+        THEN("it is within limits")
+        {
+            REQUIRE_FALSE(sliding_sync_request_limit_violation(*request).has_value());
+        }
+    }
+
+    GIVEN("a request with one more subscription than the maximum")
+    {
+        auto body = std::string{R"({"room_subscriptions":{)"};
+        for (auto i = std::size_t{0U}; i <= sliding_sync_max_room_subscriptions; ++i)
+        {
+            body += (i == 0U ? "" : ",") + std::string{"\"!r"} + std::to_string(i) + R"(:example.org":{})";
+        }
+        body += "}}";
+        auto const request = parse_sliding_sync_request(body);
+        REQUIRE(request.has_value());
+
+        THEN("a violation is reported")
+        {
+            REQUIRE(sliding_sync_request_limit_violation(*request).has_value());
+        }
+    }
+
+    GIVEN("a subscription with exactly the maximum number of required_state entries")
+    {
+        auto const request =
+            parse_sliding_sync_request(R"({"room_subscriptions":{"!r:example.org":{"required_state":)" +
+                                       required_state_json(sliding_sync_max_required_state_entries) + "}}}");
+        REQUIRE(request.has_value());
+
+        THEN("it is within limits")
+        {
+            REQUIRE_FALSE(sliding_sync_request_limit_violation(*request).has_value());
+        }
+    }
+
+    GIVEN("a subscription with one more required_state entry than the maximum")
+    {
+        auto const request =
+            parse_sliding_sync_request(R"({"room_subscriptions":{"!r:example.org":{"required_state":)" +
+                                       required_state_json(sliding_sync_max_required_state_entries + 1U) + "}}}");
+        REQUIRE(request.has_value());
+
+        THEN("a violation is reported")
+        {
+            REQUIRE(sliding_sync_request_limit_violation(*request).has_value());
+        }
+    }
+
+    GIVEN("a list with one more required_state entry than the maximum")
+    {
+        auto const request =
+            parse_sliding_sync_request(R"({"lists":{"a":{"ranges":[[0,9]],"required_state":)" +
+                                       required_state_json(sliding_sync_max_required_state_entries + 1U) + "}}}");
+        REQUIRE(request.has_value());
+
+        THEN("a violation is reported")
+        {
+            REQUIRE(sliding_sync_request_limit_violation(*request).has_value());
         }
     }
 }

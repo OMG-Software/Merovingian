@@ -13,6 +13,18 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 2. **Verify every inbound PDU's signature** against the sending server's published key before
    allowing it to enter the event graph. Unverified events must be silently dropped (not persisted).
+   There is no exception for an event whose sender is on our own server: verify it against this
+   server's own signing keys (current and retired, never fetched over the network), and drop it if
+   the key is not one we hold. Events in a `send_join` response must also belong to the room being
+   joined; drop any other entry before verifying or storing it (ADR-0083).
+
+   A failed signature is NEVER charged to the claimed origin's `RemoteTrustState`: the origin
+   is unauthenticated until the signature verifies, so doing so lets any sender lock a real
+   peer out (FED-4, ADR-0081). Charge it to the source address
+   (`SignedFederationRequest::remote_addr`, budget `bad_signature_per_ip_rate`, 429
+   `M_LIMIT_EXCEEDED`). Write `consecutive_failures` only through
+   `record_remote_trust_failure()` and only after the signature has verified; the backoff
+   it feeds decays after `remote_backoff_decay_window` (5 minutes).
 
 3. **Fetch remote server keys via `remote_key_cache.hpp`** — never trust a key the remote server
    supplies inline. The key cache fetches from `/_matrix/key/v2/server` and trusts a key for at
@@ -37,6 +49,32 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    signatures only through `key_signatures.hpp`, passing `std::nullopt` as the viewer for
    anything sent to another server (ADR-0060).
 
+7. **Every room-scoped federation read checks the origin is in the room.** `/state`,
+   `/state_ids`, `/event`, `/backfill` and `/get_missing_events` pass the X-Matrix-authenticated
+   origin to their provider, which answers 403 `M_FORBIDDEN` unless
+   `federation::origin_may_read_room()` holds (a joined user on that server in the room's
+   current state, or `world_readable` history visibility). Never take the origin from the
+   query string or body. The gate lives in `event_query.cpp`, not the handler, so it holds on
+   both the worker-snapshot path and the main-relay path (`/event`, which resolves the event's
+   own room). `/state` and `/state_ids` return 404 for an unknown `event_id` — never fall
+   back to current state — and `get_missing_events` is a bounded walk (limit at most 20), not
+   a room scan. The server ACL check in `inbound_request.cpp` stays in front of all of this.
+
+8. **An inbound EDU's identity claims are the sending server's, so bind them to it.** A
+   `m.direct_to_device` `sender` must be a user of the sending origin, and only local, active
+   users may be targeted; `message_id` (1 to 32 codepoints) is de-duplicated per
+   `(origin, message_id)` through `EduIdempotenceWindow` and one EDU queues at most
+   `max_inbound_direct_to_device_deliveries` messages. A `m.device_list_update` /
+   `m.signing_key_update` writes a `device_list_changes` row only for local users who share a
+   joined room with the subject, as one batch (`record_device_list_changes`), one row per
+   (observer, subject). Every new EDU type needs the same three answers: whose claim is this,
+   who may it reach, and what bounds its cost (audit FED-3, FED-7).
+
+9. **An inbound `/invite` for a room whose state we hold is authorised against that state
+   before we sign it, never overwrites a `ban`, and never writes room state.** The
+   transaction path is what updates state. The `{eventId}` in the URL must equal the event's
+   own reference-hash ID (audit FED-5).
+
 ## Key files
 
 | File | Responsibility |
@@ -52,8 +90,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
 | `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
+| `edu_idempotence.cpp` | Bounded in-memory replay window for `m.direct_to_device` `message_id`s, keyed on (origin, message_id) |
 | `dispatch_worker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
-| `event_query.cpp` | Serves `GET /_matrix/federation/v1/event/{eventId}` |
+| `event_query.cpp` | Serves the room-scoped reads `event`, `state`, `state_ids`, `backfill`, `get_missing_events`, and owns the origin-in-room gate (`origin_may_read_room`) |
 | `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
 | `cached_server_discovery.cpp` | TTL-bounded in-memory cache in front of server discovery |
 | `runtime_federation.cpp` | Federation route registration and per-origin request caps |

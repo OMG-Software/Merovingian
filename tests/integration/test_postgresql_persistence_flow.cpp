@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/master_key.hpp"
+#include "../support/temp_directory.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <merovingian/config/config.hpp>
 #include <merovingian/database/migration.hpp>
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/database/postgresql_store.hpp>
 #include <merovingian/database/schema.hpp>
+#include <merovingian/homeserver/room_service.hpp>
+#include <merovingian/homeserver/runtime.hpp>
 
 namespace
 {
@@ -439,6 +447,198 @@ SCENARIO("PostgreSQL media blob bytes round-trip exactly through a real BYTEA co
                 }
             }
         }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto find_signing_key(merovingian::database::PersistentStore const& store, std::string const& server_name,
+                                    std::string const& key_id)
+    -> merovingian::database::PersistentServerSigningKey const*
+{
+    auto const found = std::ranges::find_if(store.server_signing_keys,
+                                            [&](merovingian::database::PersistentServerSigningKey const& key) {
+                                                return key.server_name == server_name && key.key_id == key_id;
+                                            });
+    return found == store.server_signing_keys.end() ? nullptr : &(*found);
+}
+
+} // namespace
+
+// 0.12.14 audit, DB-1: server_signing_keys.secret_key is a BYTEA column on
+// PostgreSQL. The write stored the secretbox string intact, but the read
+// returned PostgreSQL's `\x<hex>` text form undecoded, so after the first
+// restart the server could not decrypt its own signing key and every
+// federation signature failed. Every BLOB column must round-trip byte-exactly.
+SCENARIO("PostgreSQL server signing key secret survives an open/close/reopen cycle unchanged",
+         "[database][postgresql][integration][restart][signing_key][binary]")
+{
+    GIVEN("a live PostgreSQL URI and a stored secretbox:v1: signing key")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+
+        auto const suffix = unique_test_suffix();
+        auto const server_name = "pg-signing-store-" + suffix + ".example.org";
+        auto const key_id = std::string{"ed25519:pgrestart"};
+        auto const secret = std::string{"secretbox:v1:QUJDREVGR0hJSktM+/0123456789abcdefghijklmnopqrstuvwxyz=="};
+        REQUIRE(merovingian::database::store_server_signing_key(
+            opened.store, {server_name, key_id, "cHVibGljLWtleQ", 4102444800000U, secret}));
+
+        WHEN("the store is closed and a brand-new store is opened against the same database")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("secret_key equals the stored string, not its bytea hex representation")
+            {
+                REQUIRE(reopened.ok);
+                auto const* key = find_signing_key(reopened.store, server_name, key_id);
+                REQUIRE(key != nullptr);
+                REQUIRE(key->secret_key == secret);
+                REQUIRE(key->public_key == "cHVibGljLWtleQ");
+            }
+
+            AND_WHEN("only the validity window is refreshed with an empty secret, then the store is reopened")
+            {
+                REQUIRE(reopened.ok);
+                REQUIRE(merovingian::database::store_server_signing_key(
+                    reopened.store, {server_name, key_id, "cHVibGljLWtleQ", 4102444800001U, std::string{}}));
+                reopened = {};
+                auto third = merovingian::database::open_postgresql_persistent_store(uri);
+
+                THEN("the stored secret is preserved and still reads back exactly")
+                {
+                    REQUIRE(third.ok);
+                    auto const* key = find_signing_key(third.store, server_name, key_id);
+                    REQUIRE(key != nullptr);
+                    REQUIRE(key->secret_key == secret);
+                    REQUIRE(key->valid_until_ts == 4102444800001U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL BLOB columns round-trip arbitrary non-UTF-8 bytes including 0x00 and 0xFF",
+         "[database][postgresql][integration][restart][signing_key][binary]")
+{
+    GIVEN("a live PostgreSQL URI and a secret_key holding every byte value in a non-UTF-8 order")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+
+        // Starts with a lone continuation byte and 0xFF, has embedded NULs, a
+        // backslash run followed by "x41" (bytea's escape and hex spellings),
+        // then every byte value descending, and ends on a NUL.
+        auto payload = std::string{};
+        for (auto const byte : {0x80, 0xFF, 0x00, 0x00, 0x5C, 0x5C, 0x78, 0x34, 0x31})
+        {
+            payload.push_back(static_cast<char>(byte));
+        }
+        for (auto value = 255; value >= 0; --value)
+        {
+            payload.push_back(static_cast<char>(value));
+        }
+        payload.push_back('\0');
+        REQUIRE(payload.find('\0') != std::string::npos);
+
+        auto const suffix = unique_test_suffix();
+        auto const server_name = "pg-binary-key-" + suffix + ".example.org";
+        auto const key_id = std::string{"ed25519:pgbinary"};
+        REQUIRE(merovingian::database::store_server_signing_key(
+            opened.store, {server_name, key_id, "cHVibGljLWtleQ", 4102444800000U, payload}));
+
+        WHEN("the store is closed and reopened, forcing a real round trip through PostgreSQL")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("every byte comes back exactly, with the same length")
+            {
+                REQUIRE(reopened.ok);
+                auto const* key = find_signing_key(reopened.store, server_name, key_id);
+                REQUIRE(key != nullptr);
+                REQUIRE(key->secret_key.size() == payload.size());
+                REQUIRE(key->secret_key == payload);
+            }
+        }
+    }
+}
+
+// The whole path the audit traced: persisted secretbox key -> restart ->
+// ensure_runtime_server_signing_key decrypts it -> the same identity.
+SCENARIO("A PostgreSQL-backed runtime reloads its own signing key after a restart",
+         "[database][postgresql][integration][restart][signing_key][homeserver]")
+{
+    GIVEN("a live PostgreSQL URI and a runtime that has minted and encrypted its signing key")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+
+        auto const uri_file =
+            merovingian::tests::temporary_directory() / ("merovingian-pg-uri-" + unique_test_suffix() + ".txt");
+        {
+            auto output = std::ofstream{uri_file};
+            output << uri << '\n';
+        }
+
+        // A fresh server name keeps this scenario independent of signing keys
+        // other runs left in the shared test database, which were encrypted
+        // under master keys this process does not have.
+        auto server = merovingian::config::ServerConfig{};
+        server.server_name = "pg-signing-runtime-" + unique_test_suffix() + ".example.org";
+        auto database = merovingian::config::DatabaseConfig{};
+        database.backend = merovingian::config::DatabaseBackend::postgresql;
+        database.uri_file = uri_file.string();
+        auto security = merovingian::config::SecurityConfig{};
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+        auto const config = merovingian::config::Config{
+            server,   merovingian::config::ListenersConfig{},        database,
+            security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+
+        auto first = merovingian::homeserver::start_runtime(config);
+        REQUIRE(first.started);
+        auto const original = merovingian::homeserver::ensure_runtime_server_signing_key(first.runtime);
+        REQUIRE(original.has_value());
+        REQUIRE(original->secret_key.starts_with("secretbox:v1:"));
+
+        WHEN("the runtime is stopped and a new runtime starts against the same database")
+        {
+            first = {};
+            auto second = merovingian::homeserver::start_runtime(config);
+            REQUIRE(second.started);
+            auto const reloaded = merovingian::homeserver::ensure_runtime_server_signing_key(second.runtime);
+
+            THEN("the same signing key is returned, decrypted into the runtime's signing provider")
+            {
+                REQUIRE(reloaded.has_value());
+                REQUIRE(reloaded->key_id == original->key_id);
+                REQUIRE(reloaded->public_key == original->public_key);
+                REQUIRE(reloaded->secret_key == original->secret_key);
+                REQUIRE(second.runtime.database.signing_secret_key.bytes().size() > 0U);
+            }
+        }
+
+        std::filesystem::remove(uri_file);
     }
 }
 
@@ -1162,6 +1362,85 @@ SCENARIO("PostgreSQL migrations execute as the migration role, never as the logi
             {
                 REQUIRE(opened.ok);
                 REQUIRE(opened.store.schema.version == merovingian::database::current_schema_version());
+            }
+        }
+    }
+}
+
+// AUTH-1 follow-up: the in-memory audit window is a bounded view, so code that
+// must not lose old rows (the admin safety-report listing) reads the table.
+SCENARIO("PostgreSQL audit rows outlive the in-memory window and hydrate newest-last",
+         "[database][postgresql][integration][audit][auth-1]")
+{
+    GIVEN("a live PostgreSQL store holding earlier reports and then more rows than the window keeps")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        // Event types are unique to this run so rows from other scenarios and
+        // earlier runs in the shared database cannot be mistaken for ours.
+        auto const suffix = unique_test_suffix();
+        auto const report_prefix = "trust_safety_audit_" + suffix + ".";
+        auto const flood_type = "flood_" + suffix;
+        for (auto i = 0; i < 3; ++i)
+        {
+            REQUIRE(merovingian::database::append_audit_event(store, {"policy", report_prefix + "accept_report",
+                                                                      "@reporter:example.org", "$e" + std::to_string(i),
+                                                                      "spam"}));
+        }
+        auto const flood = merovingian::database::max_in_memory_audit_events + 76U;
+        for (auto i = std::size_t{0U}; i < flood; ++i)
+        {
+            REQUIRE(merovingian::database::append_audit_event(
+                store, {"auth", flood_type, "<unknown>", std::to_string(i), "flood"}));
+        }
+
+        WHEN("the rows are queried by event-type prefix")
+        {
+            auto const found = merovingian::database::load_audit_events_by_type_prefix(store, report_prefix, 1000U);
+            auto const limited = merovingian::database::load_audit_events_by_type_prefix(store, report_prefix, 2U);
+            auto const wildcard = merovingian::database::load_audit_events_by_type_prefix(store, "%", 1000U);
+
+            THEN("every earlier report is found, newest first, although the window no longer holds them")
+            {
+                REQUIRE(store.audit_log.size() == merovingian::database::max_in_memory_audit_events);
+                REQUIRE(std::ranges::none_of(store.audit_log, [&report_prefix](auto const& event) {
+                    return event.event_type.starts_with(report_prefix);
+                }));
+                REQUIRE(found.size() == 3U);
+                REQUIRE(found.front().target == "$e2");
+                REQUIRE(found.back().target == "$e0");
+                REQUIRE(limited.size() == 2U);
+                REQUIRE(limited.front().target == "$e2");
+                // The prefix is data, not a LIKE pattern.
+                REQUIRE(wildcard.empty());
+            }
+        }
+
+        WHEN("the store is reopened")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+
+            THEN("the hydrated window is the newest rows in insertion order")
+            {
+                auto const& log = reopened.store.audit_log;
+                REQUIRE(log.size() == merovingian::database::max_in_memory_audit_events);
+                REQUIRE(log.front().event_type == flood_type);
+                REQUIRE(log.front().target == "76");
+                REQUIRE(log.back().target == std::to_string(flood - 1U));
+                for (auto i = std::size_t{1U}; i < log.size(); ++i)
+                {
+                    REQUIRE(std::stoul(log[i].target) == std::stoul(log[i - 1U].target) + 1U);
+                }
             }
         }
     }

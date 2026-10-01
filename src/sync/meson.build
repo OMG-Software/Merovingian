@@ -1,5 +1,9 @@
 sync_sources = files(
   'device_list_delta.cpp',
+  'history_visibility.cpp',
+  'receipt_visibility.cpp',
+  'room_access.cpp',
+  'room_read_access.cpp',
   'sliding_sync_extensions.cpp',
   'sliding_sync_parser.cpp',
   'sliding_sync_room_builder.cpp',

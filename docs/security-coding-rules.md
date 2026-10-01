@@ -188,6 +188,19 @@ quickly finding everything a given `AGENTS.md` file contributed.
   path where a future secret-logging bug is one missed `if` away.
   Source: `security/coding-rules.md`.
 
+- **An audit event an unauthenticated client can trigger on every request must not write one
+  durable row per request, and client-supplied audit text is bounded.**
+  `access_token.rejected`, `rate_limit.exceeded` and `request.rejected` are admitted through
+  `AuditRateGate` (10 rows per kind per 60 s; the rest counted and reported as `suppressed=<n>`
+  on the next row); `actor`, `target` and `reason` are cut to 255 bytes on a UTF-8 boundary with
+  invalid bytes and control characters replaced.
+  Why: a durable, synchronous audit write per junk request under the runtime mutex hands a
+  client with no credential control over the server's write rate, memory and table growth
+  (CWE-400, CWE-770), and an unbounded or malformed attacker-supplied string in an audit row
+  or log line is a memory-exhaustion and log-forging vector (CWE-117).
+  Source: [ADR-0080](adr/0080-rate-cap-audit-rows-for-unauthenticated-rejections.md);
+  `src/observability/AGENTS.md`.
+
 ## Cryptography
 
 - **Never call libsodium functions directly from outside the permitted crypto boundary**
@@ -375,12 +388,29 @@ quickly finding everything a given `AGENTS.md` file contributed.
   after body processing.
   Source: `src/federation/AGENTS.md`.
 
+- **Never charge a failed X-Matrix signature to the origin the request names.**
+  Why: until the signature verifies, the claimed origin is whatever the sender wrote.
+  Incrementing that origin's `consecutive_failures` (the original H-04 design) let three
+  unauthenticated packets trip `remote_trust_policy` for a real peer and, because only an
+  accepted request reset the count, lock it out until restart (FED-4). A bad signature is
+  charged to the source network address instead (429 `M_LIMIT_EXCEEDED` beyond the
+  budget), and the origin-level backoff is written only after a verified signature and
+  decays after a 5-minute quiet period. See ADR-0081.
+  Source: `src/federation/AGENTS.md`, `docs/adr/0081-failed-inbound-signatures-are-never-charged-to-the-claimed-origin.md`.
+
 - **Verify every inbound PDU's signature against the sending server's published key before
   it enters the event graph. Unverified events must be silently dropped, not persisted.**
   Why: without this, any peer (or a relay forwarding on another server's behalf) could
   inject events attributed to a user or server it doesn't control — this was a real, fixed
   vulnerability (`authorize_federation_pdu` originally skipped verification for relayed
   PDUs; see `docs/threat-model.md`, entries C1 and #270).
+  There is no exception for an event whose sender is on our own server: verify it against
+  this server's own signing keys (current and retired, never fetched over the network) and
+  drop it if the key is not one we hold. Events in a `send_join` response must also belong
+  to the room being joined; drop any other entry before verifying or storing it.
+  Why: the `send_join` path once kept own-domain events unchecked and stored each event
+  under its own `room_id`, so a local user's remote server could rewrite the power levels
+  of any local room (FED-1, ADR-0083).
   Source: `src/federation/AGENTS.md`.
 
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
@@ -414,6 +444,24 @@ quickly finding everything a given `AGENTS.md` file contributed.
   sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Every room-scoped federation read checks that the authenticated origin is in the room.**
+  `GET /state`, `/state_ids`, `/event`, `/backfill` and `POST /get_missing_events` take the
+  X-Matrix-verified `origin` (never a value from the request) and answer `403 M_FORBIDDEN`
+  with no room data unless `federation::origin_may_read_room` holds: the room's CURRENT
+  state has a `join` member on that server, or its current `m.room.history_visibility` is
+  `world_readable`. The check is in the provider (`src/federation/event_query.cpp`), so it
+  runs in whichever process serves the endpoint (the federation worker from its room
+  snapshot, main for `/event`). It runs before the event or the request body is looked at,
+  and an unknown room answers 403 rather than 404 so room existence is not disclosed. A new
+  room-scoped read endpoint must take the origin and call this gate. `/state` and
+  `/state_ids` answer 404 for an `event_id` that is unknown or in another room (no fallback
+  to current state); `get_missing_events` walks back from `latest_events`, caps `limit` at
+  20, caps `latest_events` at 100 and bounds its lookups.
+  Why: until 0.12.15 the only gate was the server ACL, so any federating server that knew a
+  room ID could dump the state, member list and full history of a private room
+  (`docs/threat-model.md`, "Federation reads not limited to servers in the room").
+  Source: `src/federation/AGENTS.md`.
+
 - **Never relay a remote server's answer about users to a client unfiltered. Keep only
   the users you asked that server about, and only records that describe the user they are
   filed under.** For E2EE keys, go through `federation::accept_remote_key_query_response()`.
@@ -422,6 +470,25 @@ quickly finding everything a given `AGENTS.md` file contributed.
   other server and have its keys accepted as theirs. Before 0.12.10 the `/keys/query` proxy
   passed through every user ID in the response (see `docs/threat-model.md`, "A remote server
   injecting E2EE identities").
+  Source: `src/federation/AGENTS.md`.
+
+- **An inbound EDU's identity claims belong to the sending server: bind the `sender` /
+  `user_id` to the origin, deliver only to local users, de-duplicate by `message_id`, and
+  cap what one EDU can write.** `m.direct_to_device` requires `sender` on the origin, targets
+  only local active users, keeps a bounded `(origin, message_id)` replay window and queues at
+  most 1 000 messages per EDU; `m.device_list_update` / `m.signing_key_update` record a
+  change only for local users who share a joined room with the subject, as one batched write
+  with one row per (observer, subject).
+  Why: until 0.12.15 a peer could deliver verification and key-request to-device messages
+  that appeared to come from any user, fill the queue with invented targets, and write one
+  `device_list_changes` row per local user per EDU (audit FED-3, FED-7).
+  Source: `src/federation/AGENTS.md`.
+
+- **Authorise an inbound `/invite` for a room we hold against the room's current state before
+  signing it, never overwrite a `ban` from that path, and leave `current_state` to the
+  transaction path.** The URL event ID must equal the event's own reference-hash ID.
+  Why: the endpoint used to rewrite a banned user's membership to `invite` and store the
+  forged event as their state, so the ban could be undone by any remote server (audit FED-5).
   Source: `src/federation/AGENTS.md`.
 
 ## Application Service API
@@ -552,8 +619,22 @@ quickly finding everything a given `AGENTS.md` file contributed.
   denial-of-service lever — accepting a TCP connection and then never answering is enough
   to halt the whole homeserver for the length of the timeout, and both a `/keys/query`
   naming a user on the attacker's server and any media reference pointing at it reach that
-  path without privilege. Request signing must stay *inside* the lock: `OutboundCall::secret_key`
-  borrows a span into the runtime's `SecretBuffer`.
+  path without privilege. Copy the signing secret into an owned `core::SecretBuffer`
+  before the scope opens and move it into `OutboundCall::secret_key`; the call owns
+  the key and signs after the mutex is released (ADR-0086).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A client request that makes this server call another one takes a slot in the
+  client-outbound budget first, and runs under a short total deadline.** Take it with
+  `homeserver::admit_client_outbound_proxy` (key: `rate_limit_client_key`), answer `429
+  M_LIMIT_EXCEEDED` with `retry_after_ms` when it is refused, hold the slot until the call has
+  ended, and draw discovery and every request from one `OutboundDeadline`
+  (`homeserver/client_outbound_proxy.hpp`). Remote media additionally checks
+  `security.media.remote_fetch_enabled` and `allow_remote` before any discovery.
+  Why: releasing the runtime mutex frees the mutex, not the thread; `publicRooms?server=`, a
+  remote alias lookup and remote media are reachable without authentication, and a peer that
+  never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079). The caps are
+  half of `server.http.request_threads`, never a separate setting.
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and
@@ -567,6 +648,28 @@ quickly finding everything a given `AGENTS.md` file contributed.
   the server believes it is enforcing, parking one worker thread for as long as the
   attacker holds the connection open.
   Source: [ADR-0054](adr/0054-tls-sockets-stay-non-blocking-for-the-life-of-the-connection.md).
+
+- **No worker thread may wait on a connection with nothing to read.** Waiting for a first
+  byte or the next keep-alive request is the connection dispatcher's job
+  (`homeserver::HttpConnectionDispatcher` over `net::ConnectionParker`); a request round
+  that has written its response hands the connection back rather than waiting on it. A
+  connection is dispatched only when readable, at most one per worker and at most
+  `max(1, request_threads / 4)` per client address (trusted proxies exempt), and it is owned
+  by exactly one of the dispatcher, one pool task or one sync-pool task.
+  Why: a worker tied to its connection through idle and partial-read phases let one client
+  hold the whole pool with eight sockets — kept alive with one request every idle − 1
+  seconds, trickled bodies, or connects that never send a byte (audit HTTP-1, ADR-0077).
+  Source: `src/net/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **Request bodies are read under a minimum rate, and a large upload only after its head
+  authenticates.** After a 10 s grace the body must have delivered 16 KiB/s × (elapsed −
+  10 s) or the round ends with 408; the media upload routes read beyond the 1 MiB transport
+  cap only once `media_upload_authentication_refusal` has accepted the access token, and
+  otherwise answer 401 from the head and close. A new route that accepts a large body gets
+  the same pre-body authentication.
+  Why: a whole-body deadline with a 5 s inter-byte gap let one byte every 4.9 s hold a worker
+  for most of an hour on an unauthenticated 50 MiB upload (audit HTTP-1, HTTP-6; ADR-0077).
+  Source: `src/homeserver/AGENTS.md`, `src/http/AGENTS.md`.
 
 ## Database
 
@@ -588,6 +691,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: untracked schema changes can leave different deployments running different, unaudited
   schemas — including ones that never received a security-relevant column addition/removal
   that a migration would have applied consistently everywhere.
+  Source: `src/database/AGENTS.md`.
+
+- **Every write to a `BLOB` column sets `BoundValue::binary`; reads decode every `bytea`
+  result column generically.**
+  Why: on PostgreSQL a text-bound binary value truncates at a NUL or is rejected as
+  non-UTF-8, and an undecoded `bytea` read returns its hex text. Either breaks
+  `server_signing_keys.secret_key`, after which the server cannot load its own signing
+  key (0.12.14 audit, DB-1).
   Source: `src/database/AGENTS.md`.
 
 - **Higher-level modules receive a `PersistentStore&` and must not downcast to a
@@ -621,6 +732,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Making the unsafe sequence unrepresentable, rather than merely unused, is what closes
   the class rather than the one instance.
   Source: [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md); `src/auth/AGENTS.md`.
+
+- **Never retain committed statements in production; in-memory mirrors of append-only tables
+  are bounded windows.** Statement capture is opt-in, bounded and off by default;
+  `PersistentStore::audit_log` keeps only the newest 1 024 rows.
+  Why: a committed statement's parameters include password and token hashes, so retaining
+  every one keeps those hashes resident for the life of the process and grows memory with
+  every write (CWE-316, CWE-770); an unbounded mirror of an append-only table lets any write
+  path become a memory-exhaustion path.
+  Source: `src/database/AGENTS.md`.
 
 ## Media
 
@@ -718,6 +838,27 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/platform/AGENTS.md`,
   [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
 
+- **No thread may exist before a process's Landlock ruleset and seccomp filter are installed;
+  every seccomp filter is installed with `SECCOMP_FILTER_FLAG_TSYNC`.** The logger starts no
+  thread until `SingleLog::start_writers()` is called (it writes synchronously until then),
+  and an executable that hardens itself calls that only after hardening. `TSYNC` failure is
+  fatal; never fall back to a per-thread install. The hardening self-check reads
+  `/proc/self/task/<tid>/status` for every task, not `/proc/self/status`.
+  Why: seccomp and Landlock attach to the calling thread only. Landlock has no thread-sync
+  flag on older kernels, so ordering is the only thing that confines a thread against it.
+  The logger's constructor once started two threads before the federation worker was
+  sandboxed, and a compromised worker thread could aim a signal handler at one of them and
+  run unconfined with `execve`, `open` and `connect` available.
+  Source: `src/platform/AGENTS.md`, `src/observability/AGENTS.md`,
+  [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md).
+
+- **Every executable's `main()` calls `platform::ignore_sigpipe()` first, before any thread
+  starts, and exits non-zero if it fails.**
+  Why: OpenSSL's socket BIO writes with plain `write()` and no `MSG_NOSIGNAL`. With the
+  default SIGPIPE disposition, one TLS client that completes the handshake and resets the
+  connection kills the whole server on the error response it writes back.
+  Source: `src/platform/AGENTS.md`.
+
 ## Sync
 
 - **Use `stream_token.hpp` — never parse or construct sync tokens manually.**
@@ -726,6 +867,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   the single, reviewed implementation, and inconsistent construction risks producing a token
   that either desyncs the client or leaks stream-position information it shouldn't.
   Source: `src/sync/AGENTS.md`.
+
+- **Every client read path that returns room events or room state goes through
+  `sync::HistoryVisibility` (events) and `sync::room_read_access_for` (state), and nothing
+  else decides what a user may see.**
+  Why: the spec judges visibility from the state at each event, and a path that re-derives a
+  rule, or checks only "is a member", discloses history the room's owner restricted and lets a
+  banned or departed user read on (audit CSAZ-2, CSAZ-3). The filter fails closed: no recorded
+  state at an event means not visible, never a fallback to current state.
+  Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 ## Trust and safety
 
@@ -883,7 +1033,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
-| `src/homeserver/AGENTS.md` | HTTP and network boundary; Federation |
+| `src/homeserver/AGENTS.md` | HTTP and network boundary; Federation; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |
 | `migrations/AGENTS.md` | Database |

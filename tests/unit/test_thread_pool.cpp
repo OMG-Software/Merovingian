@@ -253,9 +253,12 @@ SCENARIO("ThreadPool refuses work once the queue reaches its configured depth", 
 
         WHEN("more work is submitted than the queue can hold")
         {
-            auto const first = pool.submit([] {});
-            auto const second = pool.submit([] {});
-            auto const beyond_cap = pool.submit([] {});
+            auto const first = pool.submit([] {
+            });
+            auto const second = pool.submit([] {
+            });
+            auto const beyond_cap = pool.submit([] {
+            });
 
             THEN("submissions up to the cap are accepted and the one beyond it is refused")
             {
@@ -328,7 +331,8 @@ SCENARIO("A ThreadPool with no configured depth stays unbounded", "[net][thread_
             auto all_accepted = true;
             for (auto i = 0U; i < 64U; ++i)
             {
-                all_accepted = pool.submit([] {}) && all_accepted;
+                all_accepted = pool.submit([] {
+                }) && all_accepted;
             }
 
             THEN("every submission is accepted, preserving the existing IPC-pool behaviour")
@@ -337,6 +341,22 @@ SCENARIO("A ThreadPool with no configured depth stays unbounded", "[net][thread_
             }
 
             release.store(true);
+        }
+    }
+}
+
+SCENARIO("ThreadPool reports how many workers it has", "[net][thread_pool][http-1]")
+{
+    GIVEN("a pool built with six workers")
+    {
+        auto pool = merovingian::net::ThreadPool{6U};
+
+        THEN("it reports six, before and after it is stopped")
+        {
+            // The connection dispatcher sizes its caps from this (ADR-0077).
+            REQUIRE(pool.worker_count() == 6U);
+            pool.request_stop();
+            REQUIRE(pool.worker_count() == 6U);
         }
     }
 }

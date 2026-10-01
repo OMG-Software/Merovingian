@@ -72,6 +72,11 @@ struct ClientApiLimits final
     // `next_batch` continuation, so one cheap authenticated request cannot
     // force an O(store size) scan.
     std::size_t max_search_events_scanned{2000U};
+    // GET /messages hides events the user may not see (m.room.history_visibility), and
+    // any number of consecutive events can be hidden. This bounds how many events one page
+    // examines before it returns what it has, with an `end` token to continue from; the spec
+    // allows it ("an empty chunk does not necessarily imply that no more events are available").
+    std::size_t max_messages_events_examined{2000U};
 };
 
 // Wall-clock source for the rate-limit engine. The engine takes a
@@ -165,10 +170,10 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
 // Sync surface mutators. Each enqueues the row through the persistent
 // store and bumps the SyncNotifier so a parked /sync request can wake.
 // Returns true on success, false if the store rejected the row.
-[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message)
-    -> bool;
-[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
-    -> bool;
+[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime,
+                                          database::PersistentToDeviceMessage message) -> bool;
+[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime,
+                                             database::PersistentDeviceListChange change) -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
 
@@ -186,21 +191,31 @@ struct ClientServerStartOptions final
     bool debug_startup_enabled{false};
 };
 
-[[nodiscard]] auto start_client_server(config::Config const& config, ClientServerStartOptions options = {})
-    -> ClientServerStartResult;
+[[nodiscard]] auto start_client_server(config::Config const& config,
+                                       ClientServerStartOptions options = {}) -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
-[[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message, std::uint32_t retry_after_ms)
-    -> std::string;
+[[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message,
+                                std::uint32_t retry_after_ms) -> std::string;
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                 bool can_wait = true) -> DispatchResult;
-[[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime, std::string_view raw_request)
-    -> LocalHttpResponse;
+// HTTP-1 / HTTP-6 (ADR-0077): decides from the request head alone whether a
+// media upload may have its body read under the raised
+// security.media.max_upload_size cap. `head` is the request with an empty
+// body. nullopt: its access token authenticates (a live session, or an
+// application service's as_token). Otherwise the response to send before
+// closing the connection unread: 401 M_MISSING_TOKEN or M_UNKNOWN_TOKEN (with
+// soft_logout for an expired token), with CORS headers, as the dispatcher
+// itself would answer. Takes the runtime lock; call it holding nothing.
+[[nodiscard]] auto media_upload_authentication_refusal(ClientServerRuntime& runtime, LocalHttpRequest const& head)
+    -> std::optional<LocalHttpResponse>;
+[[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime,
+                                                     std::string_view raw_request) -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;
-[[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
-    -> std::size_t;
-[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
-    -> std::size_t;
+[[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime,
+                                     std::string_view user_id) noexcept -> std::size_t;
+[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime,
+                                        std::string_view user_id) noexcept -> std::size_t;
 [[nodiscard]] auto run_client_server_flow(config::Config const& config) -> OperationResult;
 
 } // namespace merovingian::homeserver

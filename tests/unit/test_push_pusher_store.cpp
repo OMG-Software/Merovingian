@@ -11,6 +11,8 @@ SCENARIO("Persistent store upserts, finds, lists, and deletes pushers", "[databa
     GIVEN("an in-memory persistent store")
     {
         auto store = merovingian::database::PersistentStore{};
+        // AUTH-11: the store keeps no committed statements unless capture is enabled.
+        merovingian::database::enable_statement_capture(store, 256U);
 
         WHEN("alice registers an http pusher and the same (user_id, app_id, pushkey) is upserted with updated fields")
         {
@@ -33,9 +35,9 @@ SCENARIO("Persistent store upserts, finds, lists, and deletes pushers", "[databa
                 REQUIRE(stored->profile_tag == "xyz");
                 REQUIRE(stored->lang == "en-US");
                 REQUIRE(stored->data_format == "event_id_only");
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_pusher");
-                REQUIRE(store.prepared_statements[1].name == "upsert_pusher");
+                REQUIRE(store.captured_statements.size() == 2U);
+                REQUIRE(store.captured_statements[0].name == "upsert_pusher");
+                REQUIRE(store.captured_statements[1].name == "upsert_pusher");
             }
         }
 
@@ -59,7 +61,7 @@ SCENARIO("Persistent store upserts, finds, lists, and deletes pushers", "[databa
                 REQUIRE_FALSE(redelete);
                 REQUIRE(remaining.size() == 1U);
                 REQUIRE(remaining.front().app_id == "m.email");
-                REQUIRE(store.prepared_statements.back().name == "delete_pusher");
+                REQUIRE(store.captured_statements.back().name == "delete_pusher");
                 REQUIRE_FALSE(
                     merovingian::database::find_pusher(store, "@alice:example.org", "org.example.app.ios", "abc123")
                         .has_value());

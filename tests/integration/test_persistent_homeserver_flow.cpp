@@ -10,6 +10,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
@@ -17,8 +18,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace
@@ -566,6 +569,9 @@ SCENARIO("Persistent homeserver store records the client-server flow",
             registration_enabled_config_with_master_key(merovingian::tests::master_key_file()));
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        // AUTH-11: committed statements are not retained unless capture is
+        // enabled, and the redaction check below reads the capture buffer.
+        merovingian::database::enable_statement_capture(runtime.homeserver.database.persistent_store, 1024U);
 
         WHEN("a user registers logs in creates a room sends a message and logs out")
         {
@@ -632,5 +638,81 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                     merovingian::database::sensitive_values_are_redacted(runtime.homeserver.database.persistent_store));
             }
         }
+    }
+}
+
+// AUTH-1 follow-up: capping the in-memory audit window must not make moderators
+// lose abuse reports. The admin listing reads the audit_log table, not the window.
+SCENARIO("Admin safety-report listing keeps earlier reports after unauthenticated traffic fills the audit window",
+         "[database][sqlite][homeserver][integration][audit][trust-safety][auth-1]")
+{
+    GIVEN("a SQLite-backed runtime with an admin and three submitted safety reports")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto started = merovingian::homeserver::start_client_server(sqlite_registration_enabled_config(sqlite_path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, "alice", "CorrectHorse7!").ok);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = token_from_login_body(login.response.body);
+        for (auto i = 1; i <= 3; ++i)
+        {
+            auto const report = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event" + std::to_string(i), token,
+                          R"({"reason":"spam","score":50})"});
+            REQUIRE(report.response.status == 200U);
+        }
+
+        WHEN("1 100 unauthenticated rejections and 1 100 further audit rows follow, then the admin lists reports")
+        {
+            for (auto i = 0; i < 1100; ++i)
+            {
+                std::ignore = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET",
+                              "/_matrix/client/v3/account/whoami",
+                              "unknown-token-" + std::to_string(i),
+                              {},
+                              {},
+                              "198.51.100." + std::to_string((i % 200) + 1)});
+            }
+            for (auto i = std::size_t{0U}; i < merovingian::database::max_in_memory_audit_events + 76U; ++i)
+            {
+                merovingian::homeserver::append_local_audit(
+                    runtime.homeserver.database, merovingian::observability::AuditCategory::auth, "login.rejected",
+                    "<unknown>", std::to_string(i), "403:unknown user");
+            }
+            auto const reports = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/admin/safety/reports", token, {}});
+
+            THEN("the in-memory window no longer holds the reports but the listing still returns all three")
+            {
+                auto const& log = runtime.homeserver.database.persistent_store.audit_log;
+                REQUIRE(std::ranges::none_of(log, [](auto const& event) {
+                    return event.event_type.starts_with("trust_safety.");
+                }));
+                REQUIRE(reports.response.status == 200U);
+                auto count = std::size_t{0U};
+                auto const needle = std::string_view{"trust_safety.room.accept_report"};
+                for (auto at = reports.response.body.find(needle); at != std::string::npos;
+                     at = reports.response.body.find(needle, at + needle.size()))
+                {
+                    ++count;
+                }
+                REQUIRE(count == 3U);
+                for (auto i = 1; i <= 3; ++i)
+                {
+                    REQUIRE(reports.response.body.find("$event" + std::to_string(i)) != std::string::npos);
+                }
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
     }
 }

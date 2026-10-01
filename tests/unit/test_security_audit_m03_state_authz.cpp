@@ -271,11 +271,17 @@ SCENARIO("A user who left a room sees the state as of their leave point, not a v
     }
 }
 
-// The spec sentence for this endpoint names "joined" and "has left". A ban is
-// neither: the user was ejected rather than departing. Reading state as of the
-// ban point would give a banned user more than GET /rooms/{roomId}/state gives
-// anyone who is not currently joined, so a ban denies access outright.
-SCENARIO("A banned user cannot read a room's state at all", "[security][client-server][m03]")
+// Spec (client-server-api.md, GET /rooms/{roomId}/state/{eventType}/{stateKey}): "If the user
+// is joined to the room then the state is taken from the current state of the room. If the user
+// has left the room then the state is taken from the state of the room when they left", and the
+// only 403 is "You aren't a member of the room and weren't previously a member of the room". A
+// banned user WAS a member, so the 403 does not apply; they read the state as it was when they
+// were ejected, never anything written after (CSAZ-2). This scenario used to assert that a ban
+// denies access outright, which read "has left" more narrowly than the 403 sentence allows and
+// disagreed with `GET /members` and `initialSync`, which serve a banned user the room as it
+// was at the ban.
+SCENARIO("A banned user reads a room's state only as it was when they were banned",
+         "[security][client-server][m03][csaz-2]")
 {
     GIVEN("a room from which a member has been banned, with state written before the ban")
     {
@@ -305,6 +311,13 @@ SCENARIO("A banned user cannot read a room's state at all", "[security][client-s
                               R"({"user_id":"@bob:example.org"})"})
                     .response.status == 200U);
 
+        // Version 2 of the same state event, written after the ban: the banned user must
+        // never see this value.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/" + std::string{custom_state_type},
+                              alice_token, R"({"value":"after-ban"})"})
+                    .response.status == 200U);
+
         WHEN("the banned user requests the state event")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
@@ -313,10 +326,11 @@ SCENARIO("A banned user cannot read a room's state at all", "[security][client-s
                           bob_token,
                           {}});
 
-            THEN("the request is refused and no state content is disclosed")
+            THEN("the value in force when he was banned is returned, not the later one")
             {
-                REQUIRE(response.response.status == 403U);
-                REQUIRE(response.response.body.find("before-ban") == std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("before-ban") != std::string::npos);
+                REQUIRE(response.response.body.find("after-ban") == std::string::npos);
             }
         }
     }

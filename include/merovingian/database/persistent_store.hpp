@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -448,6 +449,15 @@ struct PersistentPolicyRule final
     std::string reason{};
 };
 
+// AUTH-1: how many of the most recent audit rows the process keeps in memory,
+// in `PersistentStore::audit_log` and in `LocalDatabase::audit_events`. The
+// database holds every row; memory holds a window.
+inline constexpr auto max_in_memory_audit_events = std::size_t{1024U};
+
+// AUTH-11: the most committed statements `enable_statement_capture` will hold,
+// however large a capacity is requested.
+inline constexpr auto max_statement_capture_capacity = std::size_t{65536U};
+
 struct PersistentAuditEvent final
 {
     std::string category{};
@@ -782,6 +792,7 @@ struct PersistentStore final
         , remote_media{other.remote_media}
         , media_blobs{other.media_blobs}
         , audit_log{other.audit_log}
+        , audit_log_evicted{other.audit_log_evicted}
         , admin_actions{other.admin_actions}
         , policy_rules{other.policy_rules}
         , account_data{other.account_data}
@@ -802,8 +813,9 @@ struct PersistentStore final
         , state_group_state{other.state_group_state}
         , event_state_groups{other.event_state_groups}
         , forward_extremities{other.forward_extremities}
-        , prepared_statements{other.prepared_statements}
-        , prepared_statements_mutex{std::make_unique<std::mutex>()}
+        , captured_statements{other.captured_statements}
+        , statement_capture_capacity{other.statement_capture_capacity}
+        , statement_capture_mutex{std::make_unique<std::mutex>()}
         , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
@@ -847,6 +859,7 @@ struct PersistentStore final
         remote_media = other.remote_media;
         media_blobs = other.media_blobs;
         audit_log = other.audit_log;
+        audit_log_evicted = other.audit_log_evicted;
         admin_actions = other.admin_actions;
         policy_rules = other.policy_rules;
         account_data = other.account_data;
@@ -867,8 +880,9 @@ struct PersistentStore final
         state_group_state = other.state_group_state;
         event_state_groups = other.event_state_groups;
         forward_extremities = other.forward_extremities;
-        prepared_statements = other.prepared_statements;
-        prepared_statements_mutex = std::make_unique<std::mutex>();
+        captured_statements = other.captured_statements;
+        statement_capture_capacity = other.statement_capture_capacity;
+        statement_capture_mutex = std::make_unique<std::mutex>();
         server_signing_keys_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
@@ -918,7 +932,16 @@ struct PersistentStore final
     std::vector<PersistentLocalMedia> local_media{};
     std::vector<PersistentRemoteMedia> remote_media{};
     std::vector<PersistentMediaBlob> media_blobs{};
-    std::vector<PersistentAuditEvent> audit_log{};
+    // In-memory window over the most recent `max_in_memory_audit_events` audit
+    // rows (AUTH-1). The database table is the durable, complete record; this
+    // deque is a bounded mirror for the admin views, so an unauthenticated flood
+    // cannot grow process memory. Append through `append_audit_event`, and load
+    // through `remember_audit_event`, never by push_back.
+    std::deque<PersistentAuditEvent> audit_log{};
+    // Rows that were appended and have since been evicted from `audit_log`.
+    // `audit_log.size() + audit_log_evicted` is the number of rows this store has
+    // seen since it was created or hydrated.
+    std::uint64_t audit_log_evicted{0U};
     std::vector<PersistentAdminAction> admin_actions{};
     std::vector<PersistentPolicyRule> policy_rules{};
     std::vector<PersistentAccountData> account_data{};
@@ -939,13 +962,19 @@ struct PersistentStore final
     std::vector<PersistentStateGroupStateEntry> state_group_state{};
     std::vector<PersistentEventStateGroup> event_state_groups{};
     std::vector<PersistentForwardExtremity> forward_extremities{};
-    std::vector<PreparedStatement> prepared_statements{};
-    // Guards prepared_statements, which is appended to by
+    // Test-only capture of committed statements (AUTH-11). Empty and disabled
+    // (`statement_capture_capacity == 0`) unless `enable_statement_capture` is
+    // called, so production retains no statement or bound parameter after it
+    // commits. When enabled it holds at most `statement_capture_capacity` of the
+    // most recent statements; the oldest is dropped first.
+    std::deque<PreparedStatement> captured_statements{};
+    std::size_t statement_capture_capacity{0U};
+    // Guards captured_statements and statement_capture_capacity. Written by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
     // and read by sensitive_values_are_redacted. Kept separate from the room
-    // stripe locks because audit-vector access is independent of any room.
-    // Wrapped in unique_ptr so PersistentStore remains moveable.
-    mutable std::unique_ptr<std::mutex> prepared_statements_mutex{std::make_unique<std::mutex>()};
+    // stripe locks because capture access is independent of any room. Wrapped
+    // in unique_ptr so PersistentStore remains moveable.
+    mutable std::unique_ptr<std::mutex> statement_capture_mutex{std::make_unique<std::mutex>()};
     // Guards server_signing_keys. The remote-key resolver stores and reads
     // keys from federation relay threads and from backfill, both with the
     // runtime mutex released, so after start-up hydration every access goes
@@ -1247,6 +1276,23 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool;
 [[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob blob) -> bool;
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool;
+// Adds `event` to the bounded in-memory audit window without persisting it,
+// evicting the oldest entry once `max_in_memory_audit_events` is reached. Used by
+// append_audit_event after the durable write and by the backends when they
+// hydrate the window from the audit_log table.
+auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) -> void;
+// The most rows `load_audit_events_by_type_prefix` will return, however large a
+// limit is requested.
+inline constexpr auto max_audit_query_rows = std::size_t{10000U};
+// Audit rows whose event_type starts with `prefix`, newest first, at most `limit`
+// (clamped to `max_audit_query_rows`). Reads the audit_log table, so it is not
+// limited to the in-memory window; use it where an old row must not be lost, such
+// as the admin safety-report listing. `prefix` is bound as a parameter and matched
+// literally and case-sensitively: no LIKE pattern, so `%` and `_` are ordinary
+// characters. A store with no database backend, or a backend read that fails,
+// answers from the in-memory window instead (a failure is logged as a warning).
+[[nodiscard]] auto load_audit_events_by_type_prefix(PersistentStore const& store, std::string_view prefix,
+                                                    std::size_t limit) -> std::vector<PersistentAuditEvent>;
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
@@ -1255,7 +1301,21 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;
+// Records that `subject_user_id`'s device list changed for `observer_user_id`.
+//
+// There is at most one row per (observer, subject) pair: a repeat replaces the
+// earlier row and takes the newest stream position, so a client whose since
+// token lies between the two positions still sees the change, and the table is
+// bounded by observers x subjects however many EDUs a peer sends (audit FED-7).
+// /sync only ever reports the latest change per subject
+// (sync::collect_device_list_delta), so nothing is lost by replacing.
 [[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool;
+// Records many changes as one unit: every change is validated first (any invalid
+// one rejects the whole batch), the rows share ONE newly allocated stream
+// position, and all writes go to the backend in a single transaction. An empty
+// batch succeeds without touching the sync stream.
+[[nodiscard]] auto record_device_list_changes(PersistentStore& store,
+                                              std::vector<PersistentDeviceListChange> changes) -> bool;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;
@@ -1382,6 +1442,15 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // record its value here so a restart cannot roll the timeline counter
 // backward behind a pos/since token a client already holds.
 [[nodiscard]] auto persist_event_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool;
+// AUTH-11: turns on retention of committed statements, bounded to `capacity`
+// (clamped to `max_statement_capture_capacity`). A capacity of zero disables
+// capture and drops anything held. Intended for tests that assert on the SQL and
+// bound parameters a store operation produced; production never calls it.
+auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void;
+// True when statement capture is enabled and no captured parameter that looks
+// like a token or secret was left unmarked as sensitive. Fails closed: with
+// capture disabled there is nothing to inspect, so it returns false rather than
+// passing on an empty buffer.
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
 
 namespace detail
@@ -1401,6 +1470,17 @@ namespace detail
     // result with `room == nullopt` inside the snapshot, not a nullopt return.
     [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
+    // Backend half of load_audit_events_by_type_prefix: newest first, already
+    // bounded by `limit`. Returns nullopt on a connection/query failure.
+    [[nodiscard]] auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix,
+                                                      std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>;
+    [[nodiscard]] auto load_audit_events_from_sqlite(std::string const& path, std::string_view prefix,
+                                                     std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>;
+    [[nodiscard]] auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                         std::string_view prefix, std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>;
     [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
     [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,

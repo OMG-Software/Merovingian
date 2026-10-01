@@ -8,6 +8,8 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
+#include "merovingian/sync/receipt_visibility.hpp"
+#include "merovingian/sync/room_access.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
@@ -220,7 +222,8 @@ namespace
 
     // ── receipts extension ────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
+    [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+                                      std::string_view user, std::uint64_t since_sync_stream_id,
                                       std::vector<std::string> const& ext_rooms,
                                       std::vector<std::string> const& response_room_ids,
                                       std::unordered_set<std::string> const& ignored_senders) -> ExtReceiptsResponse
@@ -230,12 +233,23 @@ namespace
 
         for (auto const& room_id : rooms)
         {
+            // CSAZ-1: `rooms` is client-supplied. Only a room the caller has joined may be named.
+            if (room_access_for(store, room_id, user) != RoomAccess::joined)
+            {
+                continue;
+            }
             // Index: event_id → receipt_type → user_id → ts
             auto idx = std::map<std::string, std::map<std::string, std::map<std::string, std::uint64_t>>>{};
 
             for (auto const& receipt : rt.receipts)
             {
                 if (receipt.room_id != room_id || receipt.stream_id <= since_sync_stream_id)
+                {
+                    continue;
+                }
+                // CSAZ-4: m.read.private is for its sender alone and m.fully_read is never an
+                // m.receipt (same rule as /sync).
+                if (!receipt_visible_to(receipt.receipt_type, receipt.user_id, user))
                 {
                     continue;
                 }
@@ -288,7 +302,8 @@ namespace
 
     // ── typing extension ──────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
+    [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+                                    std::string_view user, std::uint64_t since_sync_stream_id,
                                     std::vector<std::string> const& ext_rooms,
                                     std::vector<std::string> const& response_room_ids,
                                     std::unordered_set<std::string> const& ignored_senders) -> ExtTypingResponse
@@ -298,6 +313,11 @@ namespace
 
         for (auto const& room_id : rooms)
         {
+            // CSAZ-1: `rooms` is client-supplied. Only a room the caller has joined may be named.
+            if (room_access_for(store, room_id, user) != RoomAccess::joined)
+            {
+                continue;
+            }
             auto const room_typing_id = homeserver::room_typing_stream_id_for(rt, room_id);
             if (room_typing_id <= since_sync_stream_id)
             {
@@ -371,13 +391,14 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
 
     if (ext_req.receipts.has_value() && ext_req.receipts->enabled)
     {
-        resp.receipts =
-            build_receipts(rt, since_sync_stream_id, ext_req.receipts->rooms, response_room_ids, ignored_senders);
+        resp.receipts = build_receipts(rt, store, user, since_sync_stream_id, ext_req.receipts->rooms,
+                                       response_room_ids, ignored_senders);
     }
 
     if (ext_req.typing.has_value() && ext_req.typing->enabled)
     {
-        resp.typing = build_typing(rt, since_sync_stream_id, ext_req.typing->rooms, response_room_ids, ignored_senders);
+        resp.typing = build_typing(rt, store, user, since_sync_stream_id, ext_req.typing->rooms, response_room_ids,
+                                   ignored_senders);
     }
 
     return resp;

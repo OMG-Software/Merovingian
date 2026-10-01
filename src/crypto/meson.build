@@ -7,6 +7,7 @@ crypto_sources = files(
   'ipc_stream_cipher.cpp',
   'master_key.cpp',
   'random.cpp',
+  'refusing_ed25519_provider.cpp',
   'runtime_ed25519_provider.cpp',
   'runtime_multikey_ed25519_provider.cpp',
   'secret_box.cpp',

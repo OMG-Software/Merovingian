@@ -6,7 +6,6 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/secret_buffer.hpp"
-#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/events/event_signer.hpp"
@@ -41,7 +40,7 @@ namespace merovingian::homeserver
 namespace
 {
 
-    // Minimal JSON helpers for sign_request / pdu_ingest frames.
+    // Minimal JSON helpers for pdu_ingest frames.
     // Serializers (json_str, json_str_array_literal) build wire JSON.  Parsers
     // below use canonicaljson::parse_json instead of substring scanning so
     // escaping, whitespace, and nested keys are handled correctly.
@@ -365,21 +364,6 @@ namespace
         return body;
     }
 
-    auto serialize_sign_response(crypto::SignatureResult const& result) -> std::string
-    {
-        auto signature_b64 = std::string{};
-        if (!result.signature.bytes.empty())
-        {
-            signature_b64 = events::matrix_base64_from_bytes(result.signature.bytes);
-        }
-        auto body = std::string{R"({"type":"sign_response","signature":)"};
-        body += json_str(signature_b64);
-        body += R"(,"error":)";
-        body += json_str(result.error);
-        body += '}';
-        return body;
-    }
-
     // RAII release of a per-channel in-flight slot. Acquired on the IPC
     // dispatch thread before a request is queued; released when the handler
     // lambda finishes, even if it throws (ThreadPool swallows exceptions, so a
@@ -421,10 +405,6 @@ namespace
         if (type == "edu_ingest")
         {
             return R"({"type":"edu_ingest_result","status":"rejected_invalid","reason":"main at per-channel in-flight cap"})";
-        }
-        if (type == "sign_request")
-        {
-            return R"({"type":"sign_response","signature":"","error":"main at per-channel in-flight cap"})";
         }
         return R"({"type":"error","status":503,"reason":"main at per-channel in-flight cap"})";
     }
@@ -603,10 +583,12 @@ namespace
         return body;
     }
 
-    auto serialize_event_query_ingest_result(std::string_view response_body) -> std::string
+    auto serialize_event_query_ingest_result(federation::RoomReadResult const& result) -> std::string
     {
-        auto body = std::string{R"({"type":"event_query_ingest_result","response_body":)"};
-        body += json_str(response_body);
+        auto body = std::string{R"({"type":"event_query_ingest_result","status":)"};
+        body += json_str(federation::room_read_status_name(result.status));
+        body += R"(,"response_body":)";
+        body += json_str(result.body);
         body += '}';
         return body;
     }
@@ -982,16 +964,22 @@ auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_v
     // shard selection for an ID space with no room ID to key off. See
     // docs/architecture.md, "Federation worker user/device/profile/event query
     // relay".
+    //
+    // FED-2: the worker forwards the X-Matrix-verified origin with the event ID,
+    // and the provider (run here against main's own store) resolves the event's
+    // room and answers forbidden unless that origin may read it. A frame with no
+    // origin therefore reads as forbidden, never as an unrestricted read.
     auto const event_id = json_get_str(request_json, "event_id");
-    auto response_body = std::string{};
+    auto const origin = json_get_str(request_json, "origin");
+    auto result = federation::RoomReadResult{};
     {
         auto guard = std::unique_lock{runtime.mutex};
         if (runtime.federation.event_query_provider)
         {
-            response_body = runtime.federation.event_query_provider(event_id);
+            result = runtime.federation.event_query_provider(event_id, origin);
         }
     }
-    return serialize_event_query_ingest_result(response_body);
+    return serialize_event_query_ingest_result(result);
 }
 
 namespace
@@ -1032,6 +1020,30 @@ namespace
     }
 
 } // namespace
+
+auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t request_id, std::string_view type) -> bool
+{
+    // sign_request used to be answered by signing whatever the worker sent with
+    // any held key (a signing oracle, audit CRY-1). No legitimate worker sends
+    // it any more, so a sign_request is always a sign of a compromised or badly
+    // confused worker. It is answered with an explicit error so the sender's
+    // send_request returns at once, and it is deliberately not forwarded to any
+    // handler: no runtime.mutex, no crypto provider, no pool slot.
+    // The channel stays up, matching how every other unexpected frame type is
+    // handled (logged and dropped, never a teardown): the supervisor already
+    // restarts a worker that dies, and tearing the channel down would only hand
+    // a compromised worker a way to churn restarts. The payload and key id are
+    // attacker-controlled and are never logged.
+    if (type != "sign_request")
+    {
+        return false;
+    }
+    LOG_ERROR("WorkerPool: refused a sign_request frame from a federation worker; workers never sign (ADR-0078)");
+    channel.send_response(
+        request_id,
+        R"({"type":"error","status":403,"reason":"sign_request is not permitted: federation workers never sign"})");
+    return true;
+}
 
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
                        std::string config_path)
@@ -1130,6 +1142,12 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             // restart, so it must hold its own reference rather than
             // dereferencing the supervisor pointer.
             auto const ch = ptr->channel_snapshot();
+            // ADR-0078: frames a worker must never send are refused first,
+            // inline, with no runtime lock, no handler-pool slot and no work.
+            if (ch && refuse_forbidden_worker_request(*ch, id, type))
+            {
+                return;
+            }
             if (type == "pdu_ingest")
             {
                 auto const room_id = json_get_str(json, "room_id");
@@ -1234,31 +1252,6 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                         auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_event_query_ingest_request(runtime_, json));
-                    }))
-                {
-                    ch->send_response(id, overload_response_for(type));
-                }
-            }
-            else if (type == "sign_request")
-            {
-                auto const key_id = json_get_str(json, "key_id");
-                auto const canonical = json_get_str(json, "canonical_json");
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, key_id, canonical]() {
-                        auto const flight_guard = InFlightGuard{*ch};
-                        auto result = crypto::SignatureResult{};
-                        {
-                            auto lock = std::unique_lock{runtime_.mutex};
-                            if (runtime_.crypto_provider != nullptr)
-                            {
-                                result =
-                                    runtime_.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{key_id}, canonical);
-                            }
-                            else
-                            {
-                                result.error = "crypto provider not available";
-                            }
-                        }
-                        ch->send_response(id, serialize_sign_response(result));
                     }))
                 {
                     ch->send_response(id, overload_response_for(type));
@@ -1384,8 +1377,8 @@ auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size
     return federation_worker_shard_for(room_id, cfg_.shards);
 }
 
-auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
-    -> http::OutboundResult
+auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
+                                       std::chrono::seconds ipc_margin) -> http::OutboundResult
 {
     auto const index = shard_for(room_id);
     if (index >= workers_.size())
@@ -1400,9 +1393,10 @@ auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std
         return {false, {}, http::OutboundError::network_error, "federation worker shard unavailable"};
     }
 
-    // Give the IPC channel a 10 s buffer beyond the HTTP total timeout so the
-    // worker always has time to return a response before we declare a timeout.
-    auto const ipc_timeout = std::chrono::seconds{static_cast<long>(request.total_timeout_seconds) + 10};
+    // Give the IPC channel a buffer (10 s unless the caller asked for less)
+    // beyond the HTTP total timeout so the worker always has time to return a
+    // response before we declare a timeout.
+    auto const ipc_timeout = std::chrono::seconds{static_cast<long>(request.total_timeout_seconds)} + ipc_margin;
     auto const reply = ch->send_request(ipc::serialize_outbound_http_request(request), ipc_timeout);
     if (!reply.has_value())
     {

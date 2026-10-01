@@ -380,6 +380,31 @@ auto find_cached_remote_key(database::PersistentStore const& store, std::string_
     return record;
 }
 
+auto find_own_server_signing_key(database::PersistentStore const& store, std::string_view own_server_name,
+                                 std::string_view key_id) -> std::optional<FederationKeyRecord>
+{
+    if (own_server_name.empty())
+    {
+        return std::nullopt;
+    }
+    auto const persistent = database::find_server_signing_key(store, own_server_name, key_id);
+    // Only a row holding a secret is a key this server generated.
+    if (!persistent.has_value() || persistent->secret_key.empty())
+    {
+        return std::nullopt;
+    }
+    auto record = FederationKeyRecord{};
+    record.server_name = persistent->server_name;
+    record.key_id = persistent->key_id;
+    record.public_key_bytes = events::matrix_bytes_from_base64(persistent->public_key);
+    record.valid_until_ts = persistent->valid_until_ts;
+    if (record.public_key_bytes.size() != crypto::ed25519_public_key_bytes)
+    {
+        return std::nullopt;
+    }
+    return record;
+}
+
 auto find_any_cached_remote_key(database::PersistentStore const& store, std::string_view server_name)
     -> std::optional<FederationKeyRecord>
 {
@@ -450,11 +475,28 @@ namespace
     // must outlive the resolver (the runtime owns both).
     [[nodiscard]] auto make_resolver_impl(database::PersistentStore& store, http::OutboundClient& client,
                                           std::uint32_t timeout_seconds, RemoteKeyClock clock, DiscoverFn discover,
-                                          FetchKeysFn fetch_keys) -> RemoteKeyResolver
+                                          FetchKeysFn fetch_keys, std::string own_server_name) -> RemoteKeyResolver
     {
         return [&store, &client, timeout_seconds, clock = std::move(clock), discover = std::move(discover),
-                fetch_keys = std::move(fetch_keys)](std::string_view server_name,
-                                                    std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+                fetch_keys = std::move(fetch_keys), own_server_name = std::move(own_server_name)](
+                   std::string_view server_name, std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+            // FED-1 (ADR-0083): our own keys come from our own secret-holding
+            // rows only. A fetch for our own name would go through DNS and
+            // .well-known, and caching its answer would overwrite the public
+            // keys our own signatures are verified against.
+            if (!own_server_name.empty() && server_name == own_server_name)
+            {
+                auto own_key = find_own_server_signing_key(store, own_server_name, key_id);
+                if (!own_key.has_value())
+                {
+                    log_resolver("own_key_unknown", {
+                                                        {"server_name", std::string{server_name}, false},
+                                                        {"key_id",      std::string{key_id},      false},
+                    });
+                    return std::nullopt;
+                }
+                return build_remote_runtime(server_name, std::move(*own_key), ServerDiscoveryResult{});
+            }
             auto const now = clock();
             auto cached_key = find_cached_remote_key(store, server_name, key_id);
             auto const discovery = discover(server_name, timeout_seconds);
@@ -533,7 +575,7 @@ namespace
 
 auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                          ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
-                                         RemoteKeyClock now_ms) -> RemoteKeyResolver
+                                         RemoteKeyClock now_ms, std::string_view own_server_name) -> RemoteKeyResolver
 {
     // Fall back to the real wall clock when the caller passes an empty
     // callback. Returning 0 from a missing clock made every cached key look
@@ -546,12 +588,13 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         },
         [&network](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
             return fetch_remote_server_keys(c, network, sn, ts);
-        });
+        },
+        std::string{own_server_name});
 }
 
 auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                          CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
-                                         RemoteKeyClock now_ms) -> RemoteKeyResolver
+                                         RemoteKeyClock now_ms, std::string_view own_server_name) -> RemoteKeyResolver
 {
     auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
     // Both the resolver's own discovery lookup and the fetch's internal lookup
@@ -564,7 +607,8 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         },
         [&discovery](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
             return fetch_remote_server_keys(c, discovery, sn, ts);
-        });
+        },
+        std::string{own_server_name});
 }
 
 } // namespace merovingian::federation

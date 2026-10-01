@@ -31,9 +31,11 @@ Use this checklist for every release candidate.
   (`crypto::IpcStreamCipher`); a process that can read the socket pair without
   completing the handshake sees only ciphertext.
 - The Ed25519 signing key and inbound client credentials (`Authorization`/
-  `X-Matrix` headers, access tokens) never cross the channel — the worker asks
-  main to sign via `sign_request`/`sign_response` frames and
-  `IpcEd25519Provider::verify()` terminates the process if ever called.
+  `X-Matrix` headers, access tokens) never cross the channel, and the worker
+  cannot ask main to sign: there is no `sign_request` frame, main answers one
+  with an error and no signature without taking the runtime lock, and the
+  worker's provider (`crypto::RefusingEd25519Provider`) refuses every sign and
+  verify request (ADR-0078).
 - The worker refuses to start unsandboxed: on a platform with no seccomp
   equivalent, hardening failure is fail-closed (federation degrades to 503)
   rather than running unconfined while logging hardening as active.

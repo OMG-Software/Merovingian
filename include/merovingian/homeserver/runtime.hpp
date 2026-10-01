@@ -9,13 +9,17 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
+#include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
+#include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/net/listener.hpp"
+#include "merovingian/observability/audit_rate_gate.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
@@ -28,6 +32,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <future>
 #include <map>
@@ -137,7 +142,13 @@ struct LocalDatabase final
     std::vector<LocalUser> users{};
     std::vector<LocalSession> sessions{};
     std::vector<LocalRoom> rooms{};
-    std::vector<observability::AuditLogEvent> audit_events{};
+    // Bounded window over the most recent `database::max_in_memory_audit_events`
+    // audit events (AUTH-1); the oldest is dropped first. The durable copy of
+    // every event is the audit_log table, reachable through `persistent_store`.
+    std::deque<observability::AuditLogEvent> audit_events{};
+    // Rate-caps the audit events an unauthenticated client can trigger on every
+    // request (AUTH-1, ADR-0080). Guarded by the runtime mutex like the audit rows.
+    observability::AuditRateGate audit_rate_gate{};
     database::PersistentStore persistent_store{};
     core::SecretBuffer signing_secret_key{};
     // All currently-active server signing secrets loaded into the runtime, keyed
@@ -172,6 +183,12 @@ struct LocalDatabase final
 // evicted, since ephemeral state that old is already stale.
 constexpr auto max_inbound_typing_entries = std::size_t{4096U};
 constexpr auto max_inbound_receipt_entries = std::size_t{65536U};
+
+// Most (user, device) deliveries one inbound m.direct_to_device EDU may queue
+// (audit FED-3). Deliveries past this are dropped and logged: a peer that names
+// thousands of devices in one EDU must not be able to grow the to-device queue
+// without bound. A "*" device counts as one delivery.
+constexpr auto max_inbound_direct_to_device_deliveries = std::size_t{1000U};
 
 struct InboundTypingUser final
 {
@@ -323,22 +340,25 @@ struct HomeserverRuntime final
     // variable so it destructs after runtime's blocking dtor has drained
     // every orphaned future.
     std::vector<std::string>* test_room_changed_log{nullptr};
-    // Owned implementation of the runtime signing provider. Null when an
-    // external provider (e.g. IpcEd25519Provider in the federation worker)
-    // is supplied via RuntimeStartOptions::signing_override.
+    // Owned implementation of the runtime signing provider: the production
+    // multi-key provider in main, or the refusing provider in the federation
+    // worker (RuntimeStartOptions::signing_disabled, ADR-0078).
     std::unique_ptr<crypto::Ed25519Provider> crypto_provider_owned{};
-    // Active Ed25519 provider used for server signing. Points to
-    // crypto_provider_owned for the main process and to the override in
-    // worker contexts. Check for nullptr before signing.
+    // Active Ed25519 provider used for server signing. Points at
+    // crypto_provider_owned. Check for nullptr before signing.
     crypto::Ed25519Provider* crypto_provider{nullptr};
-    // True when crypto_provider points at an external override supplied through
-    // RuntimeStartOptions::signing_override. The signing secret is not present in
-    // this process, so reset_runtime_crypto_provider must leave the override
-    // alone instead of replacing it with a provider built from local secrets.
+    // True when this process never signs (RuntimeStartOptions::signing_disabled,
+    // the federation worker). The signing secret is not present in this
+    // process, so reset_runtime_crypto_provider must leave the refusing
+    // provider alone instead of replacing it with one built from local secrets.
     bool crypto_provider_overridden{false};
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
+    // Replay window for inbound m.direct_to_device message IDs, keyed on
+    // (origin, message_id). In memory only: a restart forgets it (see
+    // federation/edu_idempotence.hpp). Guarded by `mutex` like the state above.
+    federation::EduIdempotenceWindow inbound_to_device_window{};
     // Per-room monotonic cursor advanced whenever the set of typing users in
     // the room changes.  Used by /sync and MSC4186 typing extensions to emit
     // the current (possibly empty) typing list on every change.
@@ -346,6 +366,12 @@ struct HomeserverRuntime final
     // Per-connection MSC4186 sliding sync state.
     // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
     std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};
+    // In-flight budget and limits for client-triggered outbound proxying (ADR-0079):
+    // publicRooms?server=, remote alias lookups and remote media fetches. The
+    // budget has its own mutex and is never held together with `mutex`. Held
+    // through a unique_ptr so the address slots refer to survives a runtime move.
+    std::unique_ptr<http::InFlightBudget> client_outbound_budget{std::make_unique<http::InFlightBudget>()};
+    ClientOutboundProxyPolicy client_outbound_proxy_policy{default_client_outbound_proxy_policy()};
     // Failed-login counters keyed on the claimed user ID. See FailedLoginRecord.
     std::unordered_map<std::string, FailedLoginRecord> failed_logins{};
     std::uint64_t next_request_sequence{1U};
@@ -427,10 +453,11 @@ struct RuntimeStartOptions final
 {
     config::Config config{};
     database::SchemaState existing_state{};
-    // Non-owning pointer to an Ed25519Provider to use instead of loading the
-    // server signing secret into this runtime. Used by the federation worker
-    // to delegate signing to the main process over IPC.
-    crypto::Ed25519Provider* signing_override{nullptr};
+    // True for the federation worker (ADR-0078): the runtime loads no server
+    // signing secret, mints no key, publishes no key document, and installs a
+    // crypto::RefusingEd25519Provider that fails every sign and verify request.
+    // The worker never signs and never asks main to sign for it.
+    bool signing_disabled{false};
     // ADR-0062 part 2: which tables to hydrate from the store. The federation
     // worker sets this to TableLoadProfile::federation_worker before calling
     // start_runtime so it never pulls server_signing_keys and the other

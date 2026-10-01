@@ -15,6 +15,7 @@
 ## High-risk surfaces
 
 - Federation transaction parsing
+- Federation room-scoped reads (`state`, `state_ids`, `event`, `backfill`, `get_missing_events`)
 - Per-room server ACL enforcement (`m.room.server_acl`)
 - Canonical JSON
 - Event authorization
@@ -69,10 +70,10 @@ flowchart TB
 |---|---|---|
 | Malicious local user | Client-server API | Access-token auth, login-enumeration-resistant errors, rate limits, bounded parsers |
 | Malicious federated server | Federation transactions | X-Matrix verification, per-PDU content-hash + sender-domain Ed25519 checks, auth rules before persist, EDU origin-ownership checks, and per-room `m.room.server_acl` enforcement on protected endpoints and inbound PDUs/EDUs |
-| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers, bounded keep-alive idle parking (per-connection idle window + process-wide parked-connection cap) |
+| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers, connection dispatcher: no worker waits on an idle or unreadable connection, per-client worker share, minimum body rate, per-connection request and lifetime caps (ADR-0077) |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation; public listeners require TLS and cannot declare a local reverse proxy, while loopback cleartext requires an explicit `reverse_proxy=true` declaration |
-| Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
+| Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317), and the worker holds no signing capability at all — no `sign_request` frame, a refusing provider (ADR-0078); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
 | DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction; at-rest encryption for the server signing secret when a master key is configured; Argon2id hashing for registration tokens |
 | Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
 | Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
@@ -343,14 +344,14 @@ threat it closes; the controls above are the standing defences these reinforce.
   exclusively in the main process so stream-ordering integrity is preserved.
   **Residual worker-trust model after #318/#319/#323:** the worker is trusted to
   act on the verified identity main forwards (it cannot forge peer credentials,
-  and the signing secret never enters the worker per #317), but the outbound
+  and the worker holds no signing capability at all, per #317 and ADR-0078), but the outbound
   `Authorization` header the worker places on its own outbound HTTP requests is
   still pre-signed in main and carried across IPC — it is our own request-bound
   X-Matrix signature (bound to the method/url/body/destination of the exact
   request), not a reusable peer credential, so it carries no harvest/replay value.
-  Relocating outbound signing into the worker via `IpcEd25519Provider` so the
-  signed value never crosses IPC is deferred (requires a `build_outbound_request`
-  provider-abstraction refactor) for minimal additional security value.
+  Relocating outbound signing into the worker is deliberately not done: the
+  worker never signs (ADR-0078), so the pre-signed value crossing IPC is the
+  design, not a gap to close by giving the worker a signing provider.
 
   **Main re-verifies the signature of every PDU a worker relays (#450,
   resolved in 0.12.13, ADR-0071).** Until 0.12.13 main trusted the worker's
@@ -369,14 +370,28 @@ threat it closes; the controls above are the standing defences these reinforce.
   transport `origin` is still the worker's claim; it only chooses where main
   backfills from, and everything fetched there is verified again.
 
-- **Signing secret in federation worker address space (v0.10.2):**
-  in Phase 1 the worker loaded the server signing secret from the database, so a
-  compromised worker could forge federation signatures. Phase 2 removes the
-  secret from the worker entirely: the worker delegates signing to the main
-  process over the existing encrypted IPC channel via `sign_request` /
-  `sign_response` frames, and `IpcEd25519Provider::verify` is unsupported in
-  the worker. The private key exists only in the main process's locked
-  `SecretBuffer`; worker compromise now leaks no long-lived signing material.
+- **Signing capability in the federation worker (v0.10.2, corrected
+  by the security audit 2026-09-29 finding CRY-1 fix, ADR-0078):** in Phase 1
+  the worker loaded the server signing secret from the database, so a
+  compromised worker could forge federation signatures. Phase 2 (v0.10.2)
+  removed the secret from the worker but replaced it with a `sign_request` /
+  `sign_response` IPC pair that main answered by signing arbitrary bytes with
+  any held key, under the global runtime lock. That did **not** prevent
+  forgery: a compromised worker could still mint valid signatures as this
+  server (PDUs from any local user, X-Matrix requests, key-server responses),
+  deliver them to any peer over its own outbound network access, and hold
+  main's lock while doing so. The earlier text presented the split as the fix;
+  it fixed key exfiltration only. Since that fix the worker has no signing
+  capability at all: the `sign_request` frame, `IpcEd25519Provider` and
+  `RuntimeStartOptions::signing_override` are removed, the worker's runtime
+  installs `crypto::RefusingEd25519Provider` (every sign and verify request
+  fails closed), and main answers any `sign_request` frame with an error and no
+  signature without taking `runtime.mutex` (logged, channel kept, see ADR-0078).
+  The worker had no production need for a signature: outbound X-Matrix
+  requests and invites are signed in main, and `/_matrix/key/v2/server` is
+  served by main. Residual: the worker can still relay our own already-signed
+  outbound requests that main hands it (see above), and a compromised worker
+  can still send `sign_request` frames, which are refused inline and logged.
 
 - **Operator master key reachable from the federation worker (0.12.13 audit,
   finding N1; part 1 of 3, this entry updated as later parts land):** the
@@ -391,8 +406,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   actually reaches the client-server or `GET /_matrix/key/v2/server` handlers
   that use them today (`FederationProxy::handle` always serves
   `/_matrix/key/v2/server` and `/_matrix/federation/v1/openid/userinfo` on
-  main, and the worker always installs a non-null `signing_override`, so
-  `ensure_runtime_server_signing_key` is never called there) — the exposure
+  main, and the worker starts with signing disabled, so
+  `ensure_runtime_server_signing_key` is not called during its start-up) — the exposure
   was the *ability* to derive these keys from a file the worker had open, not
   a reachable code path that used it. Part 1 (this entry) removes the file
   access at the code level: `homeserver::WorkerSupervisor::spawn_and_connect`
@@ -457,6 +472,23 @@ threat it closes; the controls above are the standing defences these reinforce.
   part 3, for the allowlist derivation and the `strace` evidence it is based
   on.
 
+- **Worker sandbox did not cover threads that existed before it was applied (ISO-1,
+  security-audit-report-2026-09-29.md, closed):** seccomp and Landlock attach to the calling
+  thread only, and the logger's two writer threads were started by the worker's first log
+  line, before either was installed. A compromised worker thread could aim a signal handler
+  at one of them (`rt_sigaction` and `tgkill` are allowed) and run with the main process's
+  filter (`execve`, `open`, `connect` allowed) and no Landlock ruleset, reading the master
+  key or the database credentials. The logger now starts no thread until after hardening,
+  every seccomp filter is installed with `SECCOMP_FILTER_FLAG_TSYNC`, and the self-check
+  reads every task's status instead of only the thread-group leader. See
+  [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md).
+  Residual: a thread that exists before hardening is confined by seccomp (TSYNC) but not by
+  Landlock, which has no thread-sync flag on older kernels; the ordering rule is what
+  prevents it.
+- **SIGPIPE terminated the server (HTTP-5, closed):** OpenSSL's socket BIO writes without
+  `MSG_NOSIGNAL`, so a TLS client that reset its connection after the handshake killed the
+  process on the 408 write. Every executable now ignores SIGPIPE first thing in `main()`.
+
 - **Single worker as a chokepoint (v0.10.3, mitigated in v0.10.4):**
   Phase 1 used one federation worker for every room. A CPU-heavy room could
   still delay federation traffic for all other rooms because that single process
@@ -509,12 +541,46 @@ threat it closes; the controls above are the standing defences these reinforce.
   concurrency, `security.federation.join_state_key_parallelism`, default
   `100`), and each event's signature is verified against its resolved key
   before being handed to `ingest_send_join_state` / the auth_chain persistence
-  loop. Events whose sender is our own server are trusted without a resolver
-  round trip (self-signed). Fail-closed: an event whose key cannot be
-  resolved or whose signature does not verify is silently dropped, not
-  persisted, and does not fail the join — a resident server acting in bad
-  faith degrades the joining server's view of the room rather than being able
-  to inject forged state.
+  loop. Fail-closed: an event whose key cannot be resolved or whose signature
+  does not verify is silently dropped, not persisted, and does not fail the
+  join. As first shipped, this fix left two holes, closed in FED-1 below.
+
+- **`send_join` response events were not bound to the joined room, and
+  own-domain events skipped the signature check (FED-1, security audit
+  2026-09-29, critical):** the 0.10.11 fix above kept every event whose sender
+  was on our own server without any signature check, and nothing compared an
+  event's `room_id` with the room being joined. `ingest_send_join_state`
+  stored each event under its own `room_id` and wrote it to that room's
+  `current_state`, and the auth-chain loop did the same for auth-chain events.
+  A local user who controlled a remote server could join a room there and have
+  its `send_join` response carry an unsigned `m.room.power_levels` for any
+  room hosted here, naming a local sender — and become that room's admin, or
+  forge memberships through the background member fill. Fixed (ADR-0083):
+  `filter_send_join_events_for_room` drops every `state` and `auth_chain`
+  entry that does not belong to the joined room before any key resolution, on
+  both the synchronous and the background path (for v12, the `m.room.create`
+  event belongs only when its derived room ID is the joined room), and
+  `ingest_send_join_state` repeats the check at the writer. Own-domain events
+  are verified against this server's own signing keys — the current key and
+  every retired key it still holds, never fetched over the network — and are
+  dropped when the key ID is not one we hold or the signature fails. Those
+  key rows cannot be replaced from outside: the remote-key resolver never
+  fetches or caches keys for our own server name (a relayed PDU can name our
+  domain as its sender), and `store_server_signing_key` refuses a secretless
+  write that would change the public key of a secret-holding row.
+  Auth-chain events are stored as outliers with no `current_state` row, and
+  the start-up `repair_missing_state_entries` pass only promotes `accepted`
+  events, so an outlier cannot become current state after a restart either.
+
+  What this guarantees, and what it does not: a `send_join` response can only
+  write the state of the room being joined, and only with events whose
+  signatures verify. It does not make the resident server honest about that
+  room. The `state` array is not run through the authorisation rules, so a
+  resident server can still hand us a self-consistent but false view of its
+  own room — for example, omit a ban or supply an earlier, validly signed
+  power-levels event as current. Such a view is confined to the joined room;
+  events that reach us later go through normal PDU ingestion, which
+  authorises them and resolves state against it as usual.
 
 - **Fast join / partial-state trade-off (v0.10.11):** verifying a large room's
   full `state` array before returning `join_room`'s response means the client
@@ -1135,26 +1201,52 @@ threat it closes; the controls above are the standing defences these reinforce.
 - **Idle-connection thread holding through HTTP keep-alive parking.** With
   HTTP/1.1 persistent connections (RFC 9112 §9.3) a client that has received
   its response can leave the connection open and simply never send the next
-  request; a naive keep-alive loop would then park one main-pool worker
-  thread per connection for as long as the client cares to wait, and an
-  attacker needs nothing more than N open sockets to stall all request
-  handling. Three bounds compose to close this: (1) each park is limited to
-  the operator-tunable idle window (`server.http.keep_alive_idle_seconds`,
-  default 15 s — strictly shorter than the 30 s slowloris head deadline that
-  already bounds a worker per connection, so the parking surface is no wider
-  than the pre-existing one), polled in one-second slices so shutdown stays
-  bounded; (2) a process-wide CAS counter caps how many connections may be
-  parked at once (`server.http.keep_alive_max_connections`, default 8) —
-  beyond the cap the server answers `Connection: close` instead of parking,
-  so a single client cannot convert open sockets into held worker threads
-  beyond the operator's budget; and (3) the slowloris guard is phase-aware
-  (`http::connection_should_close`): an idle park is bounded only by the
-  idle window — a quiet connection is not a slow client — while the full
-  slowloris rate policy applies unchanged to the request head/body read the
-  moment bytes arrive, so an attacker cannot use keep-alive to outlive the
-  per-request slowloris kill. The parked slot is held only while no request
-  is in flight; it is released the moment the next request's first bytes
-  arrive, so the cap bounds parked threads, not active requests.
+  request. Until the 2026-09-29 audit (HTTP-1) a parked connection held a
+  main-pool worker thread for its whole idle window, and the parked-connection
+  cap (`server.http.keep_alive_max_connections`, default 8) equalled the pool
+  size, so this text's earlier claim that the cap stopped "a single client
+  [from converting] open sockets into held worker threads beyond the
+  operator's budget" was wrong: eight sockets sending one request every
+  idle − 1 seconds held every worker indefinitely. Now (ADR-0077) no worker
+  ever waits on a quiet connection: the connection dispatcher holds every
+  parked connection (and every new one before its first byte) on one
+  `poll(2)` thread and hands it to a worker only once it is readable. The idle
+  window (`server.http.keep_alive_idle_seconds`, default 15 s) and the
+  parked-connection cap still apply, but they bound open descriptors and
+  memory, not workers. Once bytes arrive the head and body limits apply to
+  that request as before.
+
+- **One client holding every worker (2026-09-29 audit HTTP-1 and HTTP-8,
+  ADR-0077).** Besides keep-alive parking, a single client could hold the
+  whole main pool by opening connections and sending nothing (5 s each), by
+  dribbling request heads (30 s each), by dribbling a TLS ClientHello, or by
+  trickling request bodies one byte every 4.9 s under a 5 s inter-byte gap
+  (about 94 s per POST, and nearly an hour for an upload declaring the 50 MiB
+  maximum, which the transport accepted before authentication). Mitigations,
+  which compose:
+  - the dispatcher above, so idle and not-yet-readable connections cost no
+    worker;
+  - a per-client worker share: at most `max(1, server.http.request_threads /
+    4)` connections from one client address (IPv6 grouped by
+    `server.http.ipv6_client_prefix_length`) are held by workers at once; a
+    readable connection over the share waits in the dispatcher, out of the
+    poll set, until one of that client's workers is released;
+  - a continuous minimum body rate: once 10 s have passed since the body read
+    started, the body must have delivered at least 16 KiB/s × (elapsed − 10 s)
+    or the server answers 408 and closes;
+  - a media upload is read under `security.media.max_upload_size` only when
+    its request head authenticates; otherwise the server answers 401
+    `M_MISSING_TOKEN`/`M_UNKNOWN_TOKEN` before reading the body and closes;
+  - HTTP-8: a connection is closed (`Connection: close`) after 1 000 requests
+    or one hour, so a kept-alive connection cannot be held indefinitely;
+  - `server.http.request_threads` (default 16, range 4..256) sizes the pool.
+  **Residual:** a client can still hold its own share of workers for the head
+  deadline (30 s) or at the minimum body rate; many distinct addresses can
+  still share out the whole pool (the share bounds one address, not a
+  distributed attack); and connections from a `server.trusted_proxies`
+  address are exempt from the per-client share — the reverse proxy must
+  enforce per-client fairness itself. The TLS handshake still runs on a
+  worker, bounded by the 15 s handshake timeout and the per-client share.
 
 - **One host filling the global connection budget (0.12.13 audit item 1,
   ADR-0072).** Admission was bounded only by the global queue depth and the
@@ -1169,7 +1261,34 @@ threat it closes; the controls above are the standing defences these reinforce.
   **Residual:** addresses in `server.trusted_proxies` are exempt, so behind a
   reverse proxy the per-client connection limit is the proxy's job; and many
   distinct hosts can still share out the global budget — the cap bounds one
-  host's share, not a distributed flood.
+  host's share of *connections*, not a distributed flood. It never bounded one
+  host's share of *worker threads*: the cap (64) was eight times the pool.
+  That is the per-client worker share of ADR-0077 (see the bullet above).
+
+- **Unauthenticated audit flood (2026-09-29 audit AUTH-1, ADR-0080).** A request
+  with an unknown bearer token, one the rate limiter refused, or one refused
+  before routing each wrote a durable `audit_log` row (one synchronous commit on
+  SQLite) under the runtime mutex and grew two uncapped in-memory containers, so
+  a client with no credential chose the server's write rate and memory growth.
+  Mitigation: `access_token.rejected`, `rate_limit.exceeded` and
+  `request.rejected` pass through `observability::AuditRateGate` — at most 10
+  durable rows per kind per 60 seconds, further events counted and reported as
+  `suppressed=<n>` on the kind's next row; `LocalDatabase::audit_events` and
+  `PersistentStore::audit_log` keep only the newest 1 024 rows; actor, target and
+  reason are cut to 255 bytes on a UTF-8 boundary with invalid bytes and control
+  characters replaced. **Residual:** `login.rejected` is not gated (it is
+  throttled per IP at the auth tier), so many source addresses can still write
+  one row per attempt; and the `audit_log` table itself has no retention, so a
+  distributed flood of ungated kinds still grows it. Rejected requests beyond a
+  window's allowance keep their diagnostic log line but no audit row.
+
+- **Committed statements and their parameters retained in memory (2026-09-29
+  audit AUTH-11).** `commit_persistent_transaction` appended every committed
+  `PreparedStatement`, bound parameters included, to a vector nothing trimmed, so
+  password hashes and token hashes stayed resident for the life of the process
+  and memory grew with every write. Mitigation: the store keeps no committed
+  statement unless a test calls `enable_statement_capture`, which is bounded
+  (`max_statement_capture_capacity`) and drops the oldest first.
 
 - **Outbound Application Service API transaction delivery is deliberately
   NOT SSRF-filtered the way federation/push/identity outbound calls are
@@ -1369,6 +1488,10 @@ threat it closes; the controls above are the standing defences these reinforce.
   `pump()` driving `WANT_READ`/`WANT_WRITE` against a deadline for both
   reads and writes. See
   [ADR-0054](adr/0054-tls-sockets-stay-non-blocking-for-the-life-of-the-connection.md).
+  The body deadline was later replaced by a continuous minimum body rate
+  (2026-09-29 audit HTTP-1, ADR-0077): with the old deadline and a 5 s
+  inter-byte gap, one byte every 4.9 s still held a worker for most of an hour
+  on a large upload.
 - **Unconfined decoder on the primary production platform (0.12.7):** the
   thumbnail worker exists so a libpng/libjpeg-turbo memory-safety bug is
   contained rather than fatal, and OpenBSD (`pledge("stdio")`) and FreeBSD
@@ -1409,7 +1532,24 @@ threats they represent, and the mitigations now in place:
   breaker never fired. Mitigation: the consecutive-failure count survives any
   transaction in which a PDU failed a trust check; only a clean transaction
   resets it. Room-ACL denials are excluded, being local policy rather than peer
-  misbehaviour.
+  misbehaviour. These failures follow a verified signature; the resulting backoff
+  decays after 5 quiet minutes (see the FED-4 entry below).
+- **Forged X-Matrix requests locked a real peer out of federation until restart
+  (FED-4).** The H-04 fix charged a failed signature to the *claimed*
+  origin's `consecutive_failures`. The origin in an `X-Matrix` header is
+  unauthenticated until the signature verifies, so three forged packets naming a
+  peer tripped `remote_trust_policy` (which runs before the signature check) for
+  every genuine request from it, and nothing ever reset the count. Mitigation: a
+  failed signature is never charged to the claimed origin (ADR-0081). It is
+  counted per source address (`bad_signature_per_ip_rate`, 30 per 60 s; excess is
+  answered 429 `M_LIMIT_EXCEEDED` for that address only, before any signature
+  work; capped, FIFO-evicted, pre-authentication container). The per-origin
+  `consecutive_failures` is now written only by failures that follow a verified
+  signature (malformed or oversize transactions, forged relayed PDUs), and the
+  resulting backoff lapses after `remote_backoff_decay_window` (5 minutes of
+  quiet) instead of persisting until restart. Residual risk: an attacker
+  sharing a source address with a real peer (CGNAT, or a reverse proxy with
+  `trusted_proxies` unset) throttles that address, not the named origin.
 - **Debug logs retained full event content.** The event signer logged the
   canonical signing payload and the signed event JSON under field names the
   redactor did not recognise, and the legacy `LOG_*` macros bypassed the
@@ -1463,7 +1603,15 @@ threats they represent, and the mitigations now in place:
   inside each SQLite step — see ADR-0059.
 - **Binary media could be silently corrupted on PostgreSQL.** Parameters were
   sent as null-terminated C strings, truncating at an embedded NUL. Mitigation:
-  binary parameters are hex-encoded into the `bytea` literal and decoded on read.
+  binary parameters are bound in libpq's binary format, and every `bytea`
+  result column is decoded on read.
+- **A PostgreSQL server could not read back its own signing key after a
+  restart (0.12.14 audit, DB-1).** Only `media_blobs.bytes` was decoded on
+  read, so `server_signing_keys.secret_key` came back as `bytea` hex text, the
+  key failed to load, and the server could not sign anything until the row was
+  repaired by hand. Mitigation: the decode is generic over every `bytea` result
+  column (`PQftype`), and a value that cannot be decoded fails the query rather
+  than reading as an empty secret.
 - Smaller closures: an exported federation verifier that honoured a caller-set
   "already verified" bool; a v1 invite defaulting to room version 12 for
   signature and hash; a well-known discovery overload that resolved every host
@@ -1471,6 +1619,37 @@ threats they represent, and the mitigations now in place:
   backfill `limit`; Ed25519 secret material reaching libsodium unvalidated;
   guessable shared UIAA session ids; device IDs containing the key-ID separator;
   and transport-layer errors reaching browsers as opaque CORS failures.
+
+### Federation reads not limited to servers in the room (v0.12.15, audit FED-2)
+
+Threat: any federating server that knew a room ID could call `GET /state/{roomId}`,
+`/state_ids`, `/event/{eventId}`, `/backfill` or `POST /get_missing_events` and receive the
+room's state, member list and history, including private and encrypted rooms (ciphertext
+and metadata). The providers took no origin and the server ACL was the only gate.
+`/state` and `/state_ids` also fell back to the current state for an unknown `event_id`, and
+`get_missing_events` ignored `earliest_events` and `latest_events` and returned every event
+of the room above `min_depth`, scanned in full under the runtime lock.
+
+Mitigation:
+- Every room-scoped read now takes the X-Matrix-authenticated origin and answers
+  `403 M_FORBIDDEN` with no room data unless the origin has a joined user in the room's
+  current state or the room's current `m.room.history_visibility` is `world_readable`
+  (`federation::origin_may_read_room`, `src/federation/event_query.cpp`). The gate runs
+  where the data is served: the worker room snapshot for `state`, `state_ids`, `backfill`
+  and `get_missing_events`, and main for `/event` (the worker relays the origin over IPC
+  and main resolves the event's own room). An unknown room answers 403 so its existence is
+  not disclosed; an unknown event answers 404, a known event in a room the origin cannot
+  read answers 403. `/event` additionally applies the room's server ACL.
+- `/state` and `/state_ids` answer 404 for an `event_id` that is unknown or not in the room.
+- `get_missing_events` is the spec's breadth-first walk of `prev_events` from
+  `latest_events`, skipping `earliest_events`, `min_depth` and other rooms, capped at 20
+  events (default 10), at most 100 `latest_events` and 512 lookups.
+
+Residual: the event store has no index, so each lookup is linear in the events held by the
+process; the gate and the walk are bounded in the number of lookups but not O(1) each. The
+worker's snapshot is refreshed per room by `room_sync`, so a membership change is seen with
+that delay (a newly joined server may get 403 briefly; a server that just left may read
+until the refresh).
 
 ### PDU ingestion resolved state diverging by delivery order (v0.12.13, ADR-0064 phase B1)
 
@@ -1590,6 +1769,173 @@ threats they represent, and the mitigations now in place:
   every returned event passes its own checks, but a malicious origin can still
   omit events it is entitled to omit; state resolution against other forks is
   the same residual risk every conformant server accepts.
+
+### Federation EDU identity, invite authorisation and device-list fan-out (audit FED-3, FED-5, FED-7)
+
+- **`m.direct_to_device` sender not bound to the sending server (FED-3).** The EDU's
+  `sender` was stored as given, targets were not checked to be local, and `message_id` was
+  never read. Any peer could deliver verification requests and key requests that appeared to
+  come from any user on any server, and invented targets grew the to-device queue without
+  bound. Mitigation: the sink requires `server_name(sender) == origin` (otherwise the whole
+  EDU is dropped and logged; the transaction still succeeds), queues only for existing local
+  active users, drops an EDU whose `message_id` is missing or over 32 codepoints, de-duplicates
+  on `(origin, message_id)` in `federation::EduIdempotenceWindow` (65 536 entries, 24 hours,
+  oldest evicted first), and stops at 1 000 (user, device) deliveries per EDU. **Residual
+  risk:** the window is in memory only, so a replay that straddles a restart is delivered
+  again, and a replay older than 24 hours or evicted by 65 536 newer messages from any origin
+  is too; persisting it would need a migration and buys little for a best-effort EDU. The
+  origin a federation worker relays with an `edu_ingest` frame is still taken from the worker
+  (the PDU relays re-verify, EDU relays do not; ADR-0071 covers PDUs only).
+- **Inbound `/invite` overwrote a ban with a forged invite (FED-5).** `invite_handler` ran no
+  room authorisation rules: it rewrote the target's membership row from `ban` to `invite` and
+  stored the remote event as the target's current `m.room.member` state, so local composition
+  then allowed a banned user to join an invite-only room. Mitigation: for a room whose create
+  event we hold, the invite is authorised against the room's current state first (sender
+  joined and permitted to invite, target not banned or joined; 403 `M_FORBIDDEN` on failure),
+  a `ban` row is never replaced on this path, and for such a room neither the event nor any
+  state row is written (spec: the invite is delivered again by a federation transaction,
+  whose path does the full PDU checks). The URL `{eventId}` must equal the event's
+  reference-hash ID (400 `M_INVALID_PARAM`), as the worker relay already required. An invite
+  for a room we hold no state for keeps the stripped-state behaviour, since nothing can be
+  checked. **Residual risk:** until the transaction copy arrives, a local user invited to an
+  invite-only room we host cannot join it from this server (their join is authorised against
+  state that lacks the invite); that is the spec's ordering, not a regression.
+- **Device-list and signing-key EDUs wrote one row per local user, per EDU (FED-7).** Each
+  EDU recorded a change for every local user (not only those sharing a room with the subject),
+  with no de-duplication or pruning, one synchronous commit per row under the runtime mutex.
+  Mitigation: a change is recorded only for local active users who share a joined room with
+  the subject; nothing is written if none does. All rows for one EDU are written as one
+  batch (one stream position, one transaction), and `device_list_changes` holds at most one
+  row per (observer, subject): a repeat replaces the earlier row at the newest stream
+  position, which is what `/sync` needs because it reports only the latest change per
+  subject. The table is thereby bounded by observers x subjects that share a room, so no
+  age-based pruning is needed and no sync token can lose a change. No migration was needed.
+  **Residual risk:** the per-origin EDU rate limit is not weighted by fan-out, and the write
+  still happens under the runtime mutex (now once per EDU rather than once per user).
+
+### Sliding sync served rooms by name; private receipts reached every member (audit CSAZ-1, CSAZ-4)
+
+- **Sliding sync trusted every room ID the client named.** A `room_subscriptions` key
+  was served without a membership check (name, members, all matching state and up to an
+  unclamped number of timeline events), and the `receipts` and `typing` extensions
+  returned whatever rooms the client listed. The only secret protecting a room was its
+  ID, and IDs below room version 12 are sequential. Each subscription also scanned the
+  whole event store, so one request was a CPU amplifier.
+- **Mitigation:** `sync::room_access_for` classifies the caller's current membership. A
+  subscription is served in full only for `join`; `invite` yields `invite_state` only (an
+  ignored inviter's invite is omitted); every other membership omits the room. The
+  extensions drop rooms the caller has not joined. `timeline_limit` is clamped to 100, and
+  more than 256 subscriptions or 256 `required_state` pairs on a list or subscription is a
+  400 `M_INVALID_PARAM`. `world_readable` is deliberately not treated as permission to
+  subscribe. Tests: `[csaz-1]` in `tests/integration/test_sliding_sync_flow.cpp` and
+  `tests/unit/test_sliding_sync.cpp`.
+- **`m.read.private` and `m.fully_read` were delivered as ordinary receipts.** Both
+  `/sync` and sliding sync indexed every stored receipt of a room by type and user, so
+  every member saw a user's private read position (spec: "Servers MUST NOT send the
+  `m.read.private` receipt to any other user than the one which originally sent it").
+  `m.fully_read` was stored as a receipt too, and `POST .../receipt/m.fully_read/...` also
+  federated it.
+- **Mitigation:** one shared predicate, `sync::receipt_visible_to`, gates both surfaces:
+  `m.read` is public, `m.read.private` is visible only to its sender, `m.fully_read` never
+  appears under `m.receipt`, and an unknown type is withheld. `m.fully_read` is now stored
+  as the owner's `m.fully_read` room account data, delivered through `/sync` and the
+  sliding sync `account_data` extension. Only `m.read` is federated, and an inbound
+  `m.receipt` EDU keeps only `m.read` entries. Tests: `[csaz-4]` in
+  `tests/conformance/test_receipt_conformance.cpp`,
+  `tests/integration/test_receipt_federation_flow.cpp` and
+  `tests/integration/test_sliding_sync_flow.cpp`.
+- **Residual risk:** the `receipts`/`typing` extension `rooms` lists are not themselves
+  length-capped, so a request can still name many rooms; each is one membership lookup.
+  An invited user's `invite_state` is the invite's stored stripped state (see audit
+  CSAZ-7 for what that state contains).
+
+### History visibility was never enforced; state reads admitted any membership row (audit CSAZ-2, CSAZ-3)
+
+- **`m.room.history_visibility` was read only for `/publicRooms`, the initialSync peek
+  and the space hierarchy.** In a room set to `joined` or `invited`, a newcomer read the
+  entire earlier history through `/messages`, `/context`, `/event`, `/search`, `/relations`,
+  `/threads`, `/sync` and sliding sync; the owner's setting had no effect. Only the default,
+  `shared`, behaved.
+- **`initialSync`, `/members` and `/state/{type}/{key}` admitted any membership row.** An
+  invite, a knock (anyone can create one in a knock room), a declined invite, a ban and a
+  leave all passed, and the answer was the room's *current* state, roster and newest
+  messages, indefinitely: a banned or departed user kept reading. `/members` also ignored
+  `at`.
+- **Mitigation:** one filter, `sync::HistoryVisibility`, applies the spec's five rules to the
+  state recorded at each event (ADR-0064 state groups; ADR-0084), with the two
+  before-or-after special cases (`m.room.history_visibility` events and the user's own
+  `m.room.member` events). It is built once per request, caches per state group, and fails
+  closed: an event with no recorded state, a broken group chain, or a rejected or soft-failed
+  status is not visible. Every client read path that returns room events goes through it:
+  `/messages` (the page skips hidden events and its token still advances), `/context` (target
+  404, `events_before`/`events_after` filtered, `state` pinned to the last returned event),
+  `/event` (404), `/search` and its per-result context, `/relations`, `/threads`, `/sync`
+  timelines (including the initial join snapshot), the sliding sync timeline and the
+  `initialSync` chunk. One predicate, `sync::room_read_access_for`, gates state reads: `current`
+  for a joined user, `as_of` (the state recorded at the event that ended their join) for a user
+  who left or was banned, `none` for a knock, an invite, a declined invite or a forgotten room.
+  It drives `initialSync`, `/members` (which now honours `at`, capped at a departed user's
+  leave), `/joined_members` (joined only), `/state` and `/state/{type}/{key}`. A user with no
+  read access may peek (`/messages`, `/event`, `/context`, `initialSync`) only when the room's
+  current visibility is `world_readable`. Tests: `[csaz-2]` and `[csaz-3]` in
+  `tests/conformance/test_history_visibility_conformance.cpp`,
+  `tests/unit/test_sync_history_visibility.cpp` and
+  `tests/integration/test_sliding_sync_flow.cpp`.
+- **Residual risk:** history stored before state groups existed has no recorded state, so
+  its visibility at the time cannot be proved: it is visible only to users who were joined when
+  it was sent (rule 2 from their own membership timeline, undeterminable means denied), and
+  `shared` or `world_readable` history from that period is not shown to later joiners or
+  peekers until state is recorded for it. The unread counts
+  (`notification_count`, `highlight_count`, and the `by_notification_count` room ordering)
+  still count every event after the user's read receipt without the filter, so a newcomer to a
+  `joined` room can learn how many messages preceded their join (never their content). `/notifications` rows are
+  returned as recorded: they were created for a user who was joined at delivery, and are not
+  re-filtered. `/messages` examines at most `max_messages_events_examined` (2000) events per
+  page, but each request still builds a sorted list of the room's events, so its cost grows
+  with room history, as before. The per-request indexes (events, state groups) are O(store)
+  to build, in line with the store's existing linear scans.
+
+### Unauthenticated proxying pinned request workers; the remote-fetch opt-in was not enforced (audit HTTP-2, OUT-7)
+
+- **HTTP-2: `publicRooms?server=`, a remote-alias directory lookup and remote media fetches
+  held a main-pool thread for the whole outbound round trip.** The spec lets a client call
+  them without authentication, and they ran server discovery and a federation request
+  synchronously with a 60 s `remote_timeout` (a federation-worker round trip waited up to 10 s
+  longer). Releasing the runtime mutex frees the mutex, not the thread, so a peer that
+  accepted a connection and never answered pinned all 8 request-pool threads at about 8
+  requests a minute and stalled every client and inbound federation request. It also made the
+  server send signed requests on the attacker's schedule.
+- **OUT-7: `security.media.remote_fetch_enabled=false` (the default) did not stop remote media
+  fetches.** The flag was checked only in `media::fetch_remote_media`, after discovery, the
+  federation request (up to `max_upload_size` bytes, 120 s) and the legacy fallback had already
+  run, and the result was then discarded. On the default configuration any unauthenticated
+  caller could make the server connect to an arbitrary server and download up to about 50 MiB,
+  which also made OUT-1 and OUT-2 reachable on the default configuration.
+- **Mitigation (ADR-0079):**
+  - OUT-7: the flag, and the `allow_remote=false` query parameter the spec defines on the
+    download and thumbnail routes, are checked at the top of every remote media route (legacy
+    `/_matrix/media/v3/` and authenticated `/_matrix/client/v1/media/`, download and
+    thumbnail, including the federation-media fallback) before any discovery or outbound
+    call. The answer is `404 M_NOT_FOUND`.
+  - HTTP-2: every client-triggered outbound call (the routes above plus remote media when
+    enabled) takes a slot in `http::InFlightBudget` before it leaves: 4 in flight overall (half
+    the pool) and 1 per client address (`rate_limit_client_key`, so `trusted_proxies` applies).
+    Over either cap the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000, at once. The
+    total deadline, discovery included, is 10 s for directory lookups and 30 s for media, and
+    the federation-worker round trip may exceed it by at most 2 s. The slot is an RAII object
+    taken before the runtime lock is released and dropped on every exit path. Tests:
+    `[http-2]` and `[out-7]` in `tests/integration/test_client_outbound_proxy_flow.cpp`,
+    `tests/unit/test_http_in_flight_budget.cpp`, `tests/unit/test_client_outbound_proxy.cpp`.
+- **Residual risk:** an attacker holding 4 slots costs the pool 4 of 8 threads for up to 10 s
+  (30 s for media) at a time, and each address needs to be distinct to hold more than one, so a
+  botnet can keep the 4 slots busy and lock legitimate remote lookups out with 429; the other 4
+  threads stay available to everything that does not leave this server. Threads are still
+  blocked while a call is in flight: the fix bounds how many, and a separate pool or an
+  asynchronous proxy path was rejected for now. Outbound calls to operator-configured
+  destinations that an unauthenticated client can trigger (appservice `query_user` and
+  `query_room_alias`, identity-server `requestToken`) are not under the budget. DNS lookups
+  inside server discovery are bounded by the resolver, not by the deadline. Clients behind a
+  shared address that is not a configured trusted proxy share one per-client slot.
 
 ## Security principles
 

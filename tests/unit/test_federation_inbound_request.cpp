@@ -627,7 +627,9 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
             return std::string{"12"};
         };
         auto request = signed_request(origin, key_id, token, invite_event_json);
-        request.target = "/_matrix/federation/v1/invite/!room1:example.org/$event1:example.org";
+        // The {eventId} must be the event's own reference-hash ID (audit FED-5).
+        request.target = "/_matrix/federation/v1/invite/!room1:example.org/" +
+                         merovingian::federation::test::reference_hash_event_id(invite_event_json, "12");
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);
@@ -740,33 +742,198 @@ SCENARIO("Inbound federation fails closed for unknown private denied and quarant
     }
 }
 
-SCENARIO("Inbound federation applies backoff and increments failure count", "[federation][inbound][trust]")
+// Regression tests for security audit finding FED-4 (2026-09-29), ADR-0081.
+//
+// Spec: Matrix Server-Server API v1.19 - Request authentication
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication
+//
+// The origin named in an X-Matrix header is unauthenticated until its signature
+// verifies. Charging a FAILED signature to that origin's trust record let three
+// forged packets naming a real peer trip the pre-signature backoff for every
+// genuine request from it, permanently. A failed signature is now charged to
+// the source address instead.
+namespace
 {
-    GIVEN("a remote with a bad signature and then a backoff state")
+
+[[nodiscard]] auto genuine_transaction_from(
+    std::string const& origin, std::string const& key_id, std::string const& token, std::string const& transaction_id,
+    std::string const& remote_addr) -> merovingian::federation::SignedFederationRequest
+{
+    auto request =
+        signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+    request.target = "/_matrix/federation/v1/send/" + transaction_id;
+    request.signature = merovingian::federation::make_federation_signature(
+        request.origin, request.destination, request.method, request.target, request.body,
+        merovingian::federation::test::keypair_from_seed(token).secret_key);
+    request.remote_addr = remote_addr;
+    return request;
+}
+
+[[nodiscard]] auto forged_request_naming(std::string const& origin, std::string const& key_id, std::string const& token,
+                                         std::string const& remote_addr)
+    -> merovingian::federation::SignedFederationRequest
+{
+    auto request = signed_request(origin, key_id, token, pdu_for(origin));
+    request.signature = "sig:v1:bad";
+    request.remote_addr = remote_addr;
+    return request;
+}
+
+} // namespace
+
+SCENARIO("A failed X-Matrix signature is never charged to the claimed origin",
+         "[federation][inbound][trust][security][fed4]")
+{
+    GIVEN("a known peer and an attacker at another address sending forged requests naming it")
     {
+        REQUIRE(sodium_is_ready());
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
-        auto bad_request = signed_request(origin, key_id, token, pdu_for(origin));
-        bad_request.signature = "sig:v1:bad";
 
-        WHEN("bad signatures accumulate")
+        WHEN("ten bad-signature requests naming the peer arrive from the attacker's address")
         {
-            auto const first = merovingian::federation::handle_inbound_federation_request(runtime, bad_request);
-            auto const second = merovingian::federation::handle_inbound_federation_request(runtime, bad_request);
-            auto const third = merovingian::federation::handle_inbound_federation_request(runtime, bad_request);
-            auto const backoff = merovingian::federation::handle_inbound_federation_request(runtime, bad_request);
-
-            THEN("failures are counted and backoff returns 429")
+            auto rejected = 0U;
+            for (auto attempt = 0U; attempt < 10U; ++attempt)
             {
-                REQUIRE(first.status == 403U);
-                REQUIRE(second.status == 403U);
-                REQUIRE(third.status == 403U);
-                REQUIRE(runtime.remotes.front().trust.consecutive_failures == 3U);
-                REQUIRE(backoff.status == 429U);
-                REQUIRE(backoff.body == "remote backoff required");
+                auto const response = merovingian::federation::handle_inbound_federation_request(
+                    runtime, forged_request_naming(origin, key_id, token, "198.51.100.7"));
+                rejected += response.status == 403U ? 1U : 0U;
+            }
+            auto const genuine = merovingian::federation::handle_inbound_federation_request(
+                runtime, genuine_transaction_from(origin, key_id, token, "txn-genuine-1", "203.0.113.9"));
+
+            THEN("the forgeries are rejected, the peer's trust record is untouched, and its genuine request is "
+                 "accepted")
+            {
+                REQUIRE(rejected == 10U);
+                REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
+                REQUIRE(genuine.status == 200U);
+            }
+        }
+
+        WHEN("the exported verifier is given bad signatures naming the peer")
+        {
+            for (auto attempt = 0U; attempt < 5U; ++attempt)
+            {
+                std::ignore = merovingian::federation::verify_inbound_federation_signature(
+                    runtime, forged_request_naming(origin, key_id, token, "198.51.100.7"));
+            }
+            auto const verdict = merovingian::federation::verify_inbound_federation_signature(
+                runtime, genuine_transaction_from(origin, key_id, token, "txn-genuine-2", "203.0.113.9"));
+
+            THEN("the peer is still verifiable and its record is untouched")
+            {
+                REQUIRE(verdict.accepted);
+                REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Bad X-Matrix signatures are throttled per source address",
+         "[federation][inbound][rate-limit][security][fed4]")
+{
+    GIVEN("a known peer and a budget of three bad signatures per address")
+    {
+        REQUIRE(sodium_is_ready());
+        auto config = runtime_config();
+        config.bad_signature_per_ip_rate = {3U, 60U};
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const attacker = std::string{"198.51.100.7"};
+        auto const bystander = std::string{"203.0.113.9"};
+
+        WHEN("one address exhausts its budget of bad signatures")
+        {
+            auto within_budget = std::vector<std::uint16_t>{};
+            for (auto attempt = 0U; attempt < 3U; ++attempt)
+            {
+                within_budget.push_back(merovingian::federation::handle_inbound_federation_request(
+                                            runtime, forged_request_naming(origin, key_id, token, attacker))
+                                            .status);
+            }
+            auto const excess = merovingian::federation::handle_inbound_federation_request(
+                runtime, forged_request_naming(origin, key_id, token, attacker));
+            auto const other_address_bad = merovingian::federation::handle_inbound_federation_request(
+                runtime, forged_request_naming(origin, key_id, token, bystander));
+            auto const other_address_genuine = merovingian::federation::handle_inbound_federation_request(
+                runtime, genuine_transaction_from(origin, key_id, token, "txn-genuine-3", bystander));
+
+            THEN("that address is answered 429 M_LIMIT_EXCEEDED while another address is not throttled")
+            {
+                REQUIRE(within_budget == std::vector<std::uint16_t>{403U, 403U, 403U});
+                REQUIRE(excess.status == 429U);
+                REQUIRE(excess.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(other_address_bad.status == 403U);
+                REQUIRE(other_address_genuine.status == 200U);
+                REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Origin-level backoff decays after a quiet period", "[federation][inbound][trust][security][fed4]")
+{
+    GIVEN("a known peer whose trust record is in backoff")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        auto remote = remote_for(origin, key_id, token);
+        remote.trust.consecutive_failures = 3U;
+        merovingian::federation::upsert_remote(runtime, remote);
+        auto const quiet_period = merovingian::federation::remote_backoff_decay_window;
+
+        WHEN("the last failure was recent")
+        {
+            runtime.remotes.front().trust.last_failure_at = std::chrono::steady_clock::now() - quiet_period / 2;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, genuine_transaction_from(origin, key_id, token, "txn-recent", "203.0.113.9"));
+
+            THEN("the peer is still backed off")
+            {
+                REQUIRE(response.status == 429U);
+                REQUIRE(response.body == "remote backoff required");
+            }
+        }
+
+        WHEN("the last failure is older than the decay window")
+        {
+            runtime.remotes.front().trust.last_failure_at =
+                std::chrono::steady_clock::now() - quiet_period - std::chrono::seconds{1};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, genuine_transaction_from(origin, key_id, token, "txn-quiet", "203.0.113.9"));
+
+            THEN("the peer's genuine request is accepted and the count is cleared")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
+            }
+        }
+
+        WHEN("a new failure follows a quiet period")
+        {
+            runtime.remotes.front().trust.last_failure_at =
+                std::chrono::steady_clock::now() - quiet_period - std::chrono::seconds{1};
+            auto unsigned_pdu_request = genuine_transaction_from(origin, key_id, token, "txn-fail", "203.0.113.9");
+            unsigned_pdu_request.body = transaction_body(origin, "{\"type\":\"m.room.message\"}");
+            unsigned_pdu_request.signature = merovingian::federation::make_federation_signature(
+                unsigned_pdu_request.origin, unsigned_pdu_request.destination, unsigned_pdu_request.method,
+                unsigned_pdu_request.target, unsigned_pdu_request.body,
+                merovingian::federation::test::keypair_from_seed(token).secret_key);
+            std::ignore = merovingian::federation::handle_inbound_federation_request(runtime, unsigned_pdu_request);
+
+            THEN("the stale count is not carried into the new failure")
+            {
+                REQUIRE(runtime.remotes.front().trust.consecutive_failures == 1U);
             }
         }
     }

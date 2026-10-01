@@ -105,12 +105,27 @@ namespace
     event.event_id = std::move(event_id);
     event.room_id = std::move(room_id);
     event.sender_user_id = "@creator:example.org";
+    // A membership event carries a `join` so the requesting server (example.org,
+    // the creator's server) counts as being in the room (FED-2).
+    auto const content =
+        type == "m.room.member" ? std::string{",\"content\":{\"membership\":\"join\"}"} : std::string{};
     event.json = "{\"type\":\"" + std::move(type) + "\",\"state_key\":\"" + std::move(state_key) +
-                 "\",\"sender\":\"@creator:example.org\"}";
+                 "\",\"sender\":\"@creator:example.org\"" + content + "}";
     event.depth = depth;
     event.auth_event_ids = std::move(auth_event_ids);
     event.prev_event_ids = std::move(prev_event_ids);
     return event;
+}
+
+// The requesting server. It is example.org because the rooms below have a joined
+// user, @creator:example.org, on that server: the FED-2 in-room check passes.
+constexpr auto requesting_server = std::string_view{"example.org"};
+
+// Returns the body of a successful room read, failing the calling test otherwise.
+[[nodiscard]] auto ok_body(merovingian::federation::RoomReadResult const& result) -> std::string
+{
+    REQUIRE(result.status == merovingian::federation::RoomReadStatus::ok);
+    return result.body;
 }
 
 } // namespace
@@ -131,16 +146,22 @@ SCENARIO("state_ids response reconstructs the transitive auth chain", "[federati
         auto store = merovingian::database::PersistentStore{};
         // Auth DAG: create <- power_levels <- member. The member event names
         // both create and power_levels as auth events; power_levels names create.
-        store.events.push_back(make_event("$create", room, "m.room.create", {}));
-        store.events.push_back(make_event("$pl", room, "m.room.power_levels", {"$create"}));
-        store.events.push_back(make_event("$member", room, "m.room.member", {"$create", "$pl"}));
+        // The message event follows the member event, giving /state_ids a real
+        // event to resolve the state at.
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(make_state_event("$pl", room, "m.room.power_levels", "", 2U, {"$create"}, {"$create"}));
+        store.events.push_back(make_state_event("$member", room, "m.room.member", "@creator:example.org", 3U,
+                                                {"$create", "$pl"}, {"$pl"}));
+        store.events.push_back(
+            make_event("$message", room, "m.room.message", {"$create", "$pl", "$member"}, {"$member"}));
         store.state.push_back({room, "m.room.create", "", "$create"});
         store.state.push_back({room, "m.room.power_levels", "", "$pl"});
         store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
 
         WHEN("the state_ids response is built")
         {
-            auto const body = merovingian::federation::build_state_ids_response(store, room);
+            auto const body =
+                ok_body(merovingian::federation::build_state_ids_response(store, room, "$message", requesting_server));
             auto const pdu_ids = string_array_member(body, "pdu_ids");
             auto const auth_chain_ids = string_array_member(body, "auth_chain_ids");
 
@@ -216,16 +237,20 @@ SCENARIO("state response embeds the auth chain events", "[federation][conformanc
     {
         auto const room = std::string{"!graph-full:example.org"};
         auto store = merovingian::database::PersistentStore{};
-        store.events.push_back(make_event("$create", room, "m.room.create", {}));
-        store.events.push_back(make_event("$pl", room, "m.room.power_levels", {"$create"}));
-        store.events.push_back(make_event("$member", room, "m.room.member", {"$create", "$pl"}));
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(make_state_event("$pl", room, "m.room.power_levels", "", 2U, {"$create"}, {"$create"}));
+        store.events.push_back(make_state_event("$member", room, "m.room.member", "@creator:example.org", 3U,
+                                                {"$create", "$pl"}, {"$pl"}));
+        store.events.push_back(
+            make_event("$message", room, "m.room.message", {"$create", "$pl", "$member"}, {"$member"}));
         store.state.push_back({room, "m.room.create", "", "$create"});
         store.state.push_back({room, "m.room.power_levels", "", "$pl"});
         store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
 
         WHEN("the state response is built")
         {
-            auto const body = merovingian::federation::build_state_response(store, room);
+            auto const body =
+                ok_body(merovingian::federation::build_state_response(store, room, "$message", requesting_server));
 
             THEN("the response is well-formed and carries a non-empty auth_chain array")
             {
@@ -281,7 +306,8 @@ SCENARIO("state_ids reconstructs the room state as of the requested event",
 
         WHEN("state_ids is requested as of the second topic event")
         {
-            auto const body = merovingian::federation::build_state_ids_response(store, room, "$topic_v2");
+            auto const body =
+                ok_body(merovingian::federation::build_state_ids_response(store, room, "$topic_v2", requesting_server));
             auto const pdu_ids = string_array_member(body, "pdu_ids");
 
             THEN("the state carries the topic value prior to that event, not the event itself")
@@ -299,7 +325,8 @@ SCENARIO("state_ids reconstructs the room state as of the requested event",
 
         WHEN("state_ids is requested as of the first topic event")
         {
-            auto const body = merovingian::federation::build_state_ids_response(store, room, "$topic_v1");
+            auto const body =
+                ok_body(merovingian::federation::build_state_ids_response(store, room, "$topic_v1", requesting_server));
             auto const pdu_ids = string_array_member(body, "pdu_ids");
 
             THEN("no topic is present because none had been set before that event")
@@ -310,6 +337,149 @@ SCENARIO("state_ids reconstructs the room state as of the requested event",
                 // Spec MUST: the create and membership state are still present.
                 REQUIRE(contains(pdu_ids, "$create"));
                 REQUIRE(contains(pdu_ids, "$join"));
+            }
+        }
+    }
+}
+
+// --- Room membership gate for federation reads (FED-2) ------------------------
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state_ids/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
+//
+// The 403 response is "The requesting host is not in the room, or is excluded from
+// the room via `m.room.server_acl`." The other event-graph endpoints list no 403;
+// this server applies the same refusal to them as a security requirement, so that a
+// server outside a room cannot pull its state, members or history.
+SCENARIO("event-graph reads refuse a server that is not in the room",
+         "[federation][conformance][event-graph][fed2][security]")
+{
+    GIVEN("a room whose only joined user is on example.org")
+    {
+        auto const room = std::string{"!private:example.org"};
+        auto store = merovingian::database::PersistentStore{};
+        store.events.push_back(make_state_event("$create", room, "m.room.create", "", 1U, {}, {}));
+        store.events.push_back(
+            make_state_event("$member", room, "m.room.member", "@creator:example.org", 2U, {"$create"}, {"$create"}));
+        store.events.push_back(make_event("$message", room, "m.room.message", {"$create", "$member"}, {"$member"}));
+        store.state.push_back({room, "m.room.create", "", "$create"});
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
+
+        WHEN("a server that has no user in the room reads state_ids, state and an event")
+        {
+            using merovingian::federation::RoomReadStatus;
+            auto const state_ids =
+                merovingian::federation::build_state_ids_response(store, room, "$message", "outsider.example.net");
+            auto const state =
+                merovingian::federation::build_state_response(store, room, "$message", "outsider.example.net");
+            auto const event =
+                merovingian::federation::build_event_response(store, "$message", "example.org", "outsider.example.net");
+
+            THEN("each is refused with no room data")
+            {
+                // Spec: state_ids 403 "The requesting host is not in the room".
+                REQUIRE(state_ids.status == RoomReadStatus::forbidden);
+                REQUIRE(state_ids.body.empty());
+                REQUIRE(state.status == RoomReadStatus::forbidden);
+                REQUIRE(state.body.empty());
+                REQUIRE(event.status == RoomReadStatus::forbidden);
+                REQUIRE(event.body.empty());
+            }
+        }
+
+        WHEN("state_ids names an event this server never stored")
+        {
+            auto const result = merovingian::federation::build_state_ids_response(store, room, "$nope", "example.org");
+
+            THEN("the answer is not found instead of the room's current state")
+            {
+                REQUIRE(result.status == merovingian::federation::RoomReadStatus::not_found);
+                REQUIRE(result.body.empty());
+            }
+        }
+    }
+}
+
+// --- get_missing_events walk --------------------------------------------------
+// Spec: Matrix Server-Server API v1.19, POST /_matrix/federation/v1/get_missing_events/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1get_missing_eventsroomid
+//
+// "Retrieves previous events that the sender is missing. This is done by doing a
+// breadth-first walk of the `prev_events` for the `latest_events`, ignoring any
+// events in `earliest_events` and stopping at the `limit`." The 200 response is
+// "The previous events for `latest_events`, excluding any `earliest_events`, up to
+// the provided `limit`." `limit` defaults to 10.
+SCENARIO("get_missing_events walks prev_events from latest_events, excluding earliest_events, up to limit",
+         "[federation][conformance][event-graph][get_missing_events][fed2]")
+{
+    GIVEN("a room with a chain e0 <- e1 <- ... <- e29 and a server that is in the room")
+    {
+        auto const room = std::string{"!chain:example.org"};
+        auto store = merovingian::database::PersistentStore{};
+        store.events.push_back(make_state_event("$member", room, "m.room.member", "@creator:example.org", 1U, {}, {}));
+        store.state.push_back({room, "m.room.member", "@creator:example.org", "$member"});
+        for (auto i = 0; i < 30; ++i)
+        {
+            auto const id = "$e" + std::to_string(i);
+            auto event = make_event(id, room, "m.room.message", {},
+                                    i == 0 ? std::vector<std::string>{"$member"}
+                                           : std::vector<std::string>{"$e" + std::to_string(i - 1)});
+            // Carry the ID in the JSON so a response can be checked event by event.
+            event.json = "{\"type\":\"m.room.message\",\"event_id\":\"" + id + "\"}";
+            event.depth = static_cast<std::uint64_t>(i) + 10U;
+            store.events.push_back(std::move(event));
+        }
+
+        auto const events_in = [](merovingian::federation::RoomReadResult const& result) {
+            REQUIRE(result.status == merovingian::federation::RoomReadStatus::ok);
+            auto parsed = merovingian::canonicaljson::parse_lossless(result.body);
+            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+            REQUIRE(object != nullptr);
+            REQUIRE(object->size() == 1U);
+            REQUIRE((*object)[0].key == "events");
+            auto const* events = std::get_if<merovingian::canonicaljson::Array>(&(*object)[0].value->storage());
+            REQUIRE(events != nullptr);
+            return events->size();
+        };
+
+        WHEN("the request asks for limit 1000 with the walk starting at e29")
+        {
+            auto const result = merovingian::federation::build_get_missing_events_response(
+                store, room, R"({"latest_events":["$e29"],"earliest_events":[],"limit":1000})", "example.org");
+
+            THEN("at most 20 previous events come back and e29 itself is not among them")
+            {
+                // Spec: "stopping at the limit"; this server caps the limit at 20.
+                REQUIRE(events_in(result) == 20U);
+                // Spec: "The previous events for latest_events" - not latest_events.
+                REQUIRE(result.body.find("\"$e29\"") == std::string::npos);
+                REQUIRE(result.body.find("\"$e28\"") != std::string::npos);
+            }
+        }
+
+        WHEN("the request lists e25 as an earliest event")
+        {
+            auto const result = merovingian::federation::build_get_missing_events_response(
+                store, room, R"({"latest_events":["$e29"],"earliest_events":["$e25"],"limit":10})", "example.org");
+
+            THEN("only the events after e25 come back: neither e25 nor anything behind it")
+            {
+                // Spec: "ignoring any events in earliest_events".
+                REQUIRE(events_in(result) == 3U);
+                REQUIRE(result.body.find("\"$e26\"") != std::string::npos);
+                REQUIRE(result.body.find("\"$e25\"") == std::string::npos);
+                REQUIRE(result.body.find("\"$e24\"") == std::string::npos);
+            }
+        }
+
+        WHEN("the request omits the limit")
+        {
+            auto const result = merovingian::federation::build_get_missing_events_response(
+                store, room, R"({"latest_events":["$e29"],"earliest_events":[]})", "example.org");
+
+            THEN("the spec default of 10 applies")
+            {
+                REQUIRE(events_in(result) == 10U);
             }
         }
     }

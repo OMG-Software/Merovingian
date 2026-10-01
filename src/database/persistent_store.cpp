@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/events/limits.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -16,8 +17,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <iterator>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <tuple>
@@ -547,8 +550,21 @@ namespace
         return false;
     }
     {
-        auto const lk = std::lock_guard{*store.prepared_statements_mutex};
-        store.prepared_statements.insert(store.prepared_statements.end(), statements.begin(), statements.end());
+        // AUTH-11: retain nothing unless a test opted in, and never more than the
+        // configured capacity. Password hashes and token hashes must not outlive
+        // the commit in process memory.
+        auto const lk = std::lock_guard{*store.statement_capture_mutex};
+        if (store.statement_capture_capacity != 0U)
+        {
+            for (auto const& statement : statements)
+            {
+                store.captured_statements.push_back(statement);
+                while (store.captured_statements.size() > store.statement_capture_capacity)
+                {
+                    store.captured_statements.pop_front();
+                }
+            }
+        }
     }
     return true;
 }
@@ -1045,14 +1061,48 @@ namespace
     {
         return false;
     }
+    // FED-1 (ADR-0083): a row that holds a secret is a key this server
+    // generated, and its public key is what our own signatures are verified
+    // against. A write without a secret (a key fetched over federation, or a
+    // retirement) may change its validity but never its public key. Checked
+    // here, before the upsert, so neither the database row nor the in-memory
+    // mirror is touched; done in C++ so it does not depend on how the backend
+    // stores secret_key.
+    if (key.secret_key.empty())
+    {
+        auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+        auto const existing =
+            std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
+                return row.server_name == key.server_name && row.key_id == key.key_id;
+            });
+        if (existing != store.server_signing_keys.end() && !existing->secret_key.empty() &&
+            existing->public_key != key.public_key)
+        {
+            log_diagnostic("server_signing_key.rejected",
+                           {
+                               {"server_name", key.server_name,                                         false},
+                               {"key_id",      key.key_id,                                              false},
+                               {"reason",      "secretless write would replace a generated public key", false}
+            },
+                           observability::LogEventSeverity::warning);
+            return false;
+        }
+    }
     if (!record_and_persist(
             store, record_statement(
                        "upsert_server_signing_key",
                        "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4, $5) ON CONFLICT (server_name, key_id) "
                        "DO UPDATE SET public_key = $3, valid_until_ts = $4, "
                        "secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END",
-                       {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
-                        public_value(std::to_string(key.valid_until_ts)), sensitive_value(key.secret_key)})))
+                       {
+                           public_value(key.server_name),
+                           public_value(key.key_id),
+                           public_value(key.public_key),
+                           public_value(std::to_string(key.valid_until_ts)),
+                           // `secret_key` is a BLOB column: bind it as binary so it is
+                           // byte-exact on PostgreSQL (still sensitive: never traced).
+                           {key.secret_key, true, true}
+    })))
     {
         return false;
     }
@@ -2694,13 +2744,9 @@ namespace
                                  {blob.hash_algorithm, false},
                                  {blob.digest, false},
                                  {std::to_string(blob.size_bytes), false},
-                                 // M-09: raw binary payload — mark it `binary`
-                                 // so the PostgreSQL backend hex-encodes it
-                                 // instead of sending it as a null-terminated
-                                 // C string, which would truncate at any
-                                 // embedded NUL byte. `sensitive` stays true
-                                 // so the content itself never reaches a
-                                 // query trace or log either.
+                                 // Raw binary payload (BLOB column): marked `binary` so
+                                 // PostgreSQL binds it byte-exactly, and `sensitive` so
+                                 // the content never reaches a query trace or log.
                                  {blob.bytes, true, true},
                                  {std::to_string(blob.ref_count), false}
     })))
@@ -2721,6 +2767,13 @@ namespace
 
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool
 {
+    // AUTH-1: actor, target and reason can carry client-supplied text. Bound them
+    // here, at the lowest audit-append layer, so no caller can store more than
+    // `max_audit_field_bytes` of it or leave it as malformed UTF-8. Idempotent,
+    // so a caller that already bounded its values is unaffected.
+    event.actor = bounded_utf8(event.actor, max_audit_field_bytes);
+    event.target = bounded_utf8(event.target, max_audit_field_bytes);
+    event.reason = bounded_utf8(event.reason, max_audit_field_bytes);
     if (!record_and_persist(store, record_statement("append_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
                                                     {
                                                         {event.category,   false},
@@ -2732,8 +2785,50 @@ namespace
     {
         return false;
     }
-    store.audit_log.push_back(std::move(event));
+    remember_audit_event(store, std::move(event));
     return true;
+}
+
+auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) -> void
+{
+    store.audit_log.push_back(std::move(event));
+    while (store.audit_log.size() > max_in_memory_audit_events)
+    {
+        store.audit_log.pop_front();
+        ++store.audit_log_evicted;
+    }
+}
+
+[[nodiscard]] auto load_audit_events_by_type_prefix(PersistentStore const& store, std::string_view prefix,
+                                                    std::size_t limit) -> std::vector<PersistentAuditEvent>
+{
+    limit = std::min(limit, max_audit_query_rows);
+    if (limit == 0U)
+    {
+        return {};
+    }
+    if (store.backend != PersistentStoreBackend::memory)
+    {
+        if (auto rows = detail::load_audit_events_from_backend(store, prefix, limit); rows.has_value())
+        {
+            return std::move(*rows);
+        }
+        log_diagnostic("audit.query_failed",
+                       {
+                           {"prefix", std::string{prefix}, false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    // No database backend (or it could not be read): answer from the window.
+    auto rows = std::vector<PersistentAuditEvent>{};
+    for (auto event = store.audit_log.rbegin(); event != store.audit_log.rend() && rows.size() < limit; ++event)
+    {
+        if (event->event_type.starts_with(prefix))
+        {
+            rows.push_back(*event);
+        }
+    }
+    return rows;
 }
 
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool
@@ -2942,29 +3037,100 @@ namespace
     return drained;
 }
 
-[[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool
+[[nodiscard]] auto record_device_list_changes(PersistentStore& store,
+                                              std::vector<PersistentDeviceListChange> changes) -> bool
 {
-    if (change.observer_user_id.empty() || change.subject_user_id.empty())
+    if (changes.empty())
     {
-        return false;
+        return true;
     }
-    if (change.change_type != "changed" && change.change_type != "left")
+    for (auto const& change : changes)
     {
-        return false;
+        if (change.observer_user_id.empty() || change.subject_user_id.empty())
+        {
+            return false;
+        }
+        if (change.change_type != "changed" && change.change_type != "left")
+        {
+            return false;
+        }
     }
-    change.stream_id = allocate_sync_stream_id(store);
-    if (!record_and_persist(
-            store,
+    // A pair named twice in one batch keeps its last entry, so the batch can
+    // never insert the same (stream_id, observer, subject) key twice.
+    {
+        auto seen = std::set<std::pair<std::string, std::string>>{};
+        auto kept = std::vector<PersistentDeviceListChange>{};
+        kept.reserve(changes.size());
+        for (auto index = changes.size(); index > 0U; --index)
+        {
+            auto& change = changes[index - 1U];
+            if (seen.emplace(change.observer_user_id, change.subject_user_id).second)
+            {
+                kept.push_back(std::move(change));
+            }
+        }
+        std::ranges::reverse(kept);
+        changes = std::move(kept);
+    }
+    // The pairs the batch touches, and which of them already have a row: one
+    // pass over the table rather than one scan per change.
+    auto batch_pairs = std::set<std::pair<std::string_view, std::string_view>>{};
+    for (auto const& change : changes)
+    {
+        batch_pairs.emplace(change.observer_user_id, change.subject_user_id);
+    }
+    auto existing_pairs = std::set<std::pair<std::string_view, std::string_view>>{};
+    for (auto const& existing : store.device_list_changes)
+    {
+        if (batch_pairs.contains({existing.observer_user_id, existing.subject_user_id}))
+        {
+            existing_pairs.emplace(existing.observer_user_id, existing.subject_user_id);
+        }
+    }
+    // One stream position for the whole batch: the primary key is
+    // (stream_id, observer, subject), so rows for distinct pairs coexist.
+    auto const stream_id = allocate_sync_stream_id(store);
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(changes.size() * 2U);
+    for (auto& change : changes)
+    {
+        change.stream_id = stream_id;
+        // Replace, do not accumulate: drop the pair's earlier row (if we hold
+        // one) before inserting the new one, in the same transaction.
+        if (existing_pairs.contains({change.observer_user_id, change.subject_user_id}))
+        {
+            statements.push_back(
+                record_statement("delete_device_list_change",
+                                 "DELETE FROM device_list_changes WHERE observer_user_id = $1 AND "
+                                 "subject_user_id = $2",
+                                 {public_value(change.observer_user_id), public_value(change.subject_user_id)}));
+        }
+        statements.push_back(
             record_statement("insert_device_list_change",
                              "INSERT INTO device_list_changes (stream_id, observer_user_id, subject_user_id, "
                              "change_type) VALUES ($1, $2, $3, $4)",
                              {public_value(std::to_string(change.stream_id)), public_value(change.observer_user_id),
-                              public_value(change.subject_user_id), public_value(change.change_type)})))
+                              public_value(change.subject_user_id), public_value(change.change_type)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
-    store.device_list_changes.push_back(std::move(change));
+    // The views above point into `changes` and `store.device_list_changes`;
+    // they are done with before either is modified.
+    std::erase_if(store.device_list_changes, [&](PersistentDeviceListChange const& existing) {
+        return batch_pairs.contains({existing.observer_user_id, existing.subject_user_id});
+    });
+    store.device_list_changes.insert(store.device_list_changes.end(), std::make_move_iterator(changes.begin()),
+                                     std::make_move_iterator(changes.end()));
     return true;
+}
+
+[[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool
+{
+    auto batch = std::vector<PersistentDeviceListChange>{};
+    batch.push_back(std::move(change));
+    return record_device_list_changes(store, std::move(batch));
 }
 
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool
@@ -3701,10 +3867,24 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void
+{
+    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    store.statement_capture_capacity = std::min(capacity, max_statement_capture_capacity);
+    while (store.captured_statements.size() > store.statement_capture_capacity)
+    {
+        store.captured_statements.pop_front();
+    }
+}
+
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
 {
-    auto const lk = std::lock_guard{*store.prepared_statements_mutex};
-    for (auto const& statement : store.prepared_statements)
+    auto const lk = std::lock_guard{*store.statement_capture_mutex};
+    if (store.statement_capture_capacity == 0U)
+    {
+        return false;
+    }
+    for (auto const& statement : store.captured_statements)
     {
         for (auto const& value : statement.parameters)
         {
@@ -3746,6 +3926,16 @@ auto repair_missing_state_entries(PersistentStore& store) -> std::size_t
 
     for (auto const& event : store.events)
     {
+        // FED-1 (ADR-0083): only an accepted event can be current state. An
+        // outlier (a send_join auth-chain event, a backfilled event) or a
+        // rejected or soft-failed event is stored without a state row on
+        // purpose; this repair must not promote it on the next restart. The
+        // legacy rows this repair exists for predate the status column and
+        // read back as its default, "accepted".
+        if (event.status != "accepted")
+        {
+            continue;
+        }
         auto const json_state_key = top_level_json_string_field(event.json, "state_key");
         if (!json_state_key.has_value())
         {

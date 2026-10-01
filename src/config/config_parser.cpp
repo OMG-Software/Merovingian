@@ -228,6 +228,31 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        else if (key == "server.http.request_threads")
+        {
+            // HTTP-1 (ADR-0077): the main request pool size. Parsed digit by
+            // digit so a sign, a suffix or an overflow is a finding, not a
+            // silently wrapped or truncated value.
+            auto parsed = std::uint64_t{0U};
+            auto valid = !value.empty() && value.size() <= 4U;
+            for (auto const character : value)
+            {
+                if (character < '0' || character > '9')
+                {
+                    valid = false;
+                    break;
+                }
+                parsed = (parsed * 10U) + static_cast<std::uint64_t>(character - '0');
+            }
+            if (!valid || parsed < 4U || parsed > 256U)
+            {
+                add_parse_finding(findings, std::string{key}, "expected an integer in 4..256");
+            }
+            else
+            {
+                server.http.request_threads = static_cast<std::uint32_t>(parsed);
+            }
+        }
         else if (key == "server.http.max_connections_per_ip")
         {
             try

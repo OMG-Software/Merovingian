@@ -4,11 +4,14 @@
 
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/ipc/channel.hpp"
 #include "merovingian/net/thread_pool.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -131,6 +134,18 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> std::string;
 
+// Refuses frame types a federation worker must never send to main (ADR-0078).
+// Today that is `sign_request`: the worker holds no signing capability and main
+// no longer signs on its behalf. Returns true when `type` was refused, in which
+// case an error response (never a signature) has already been sent on `channel`
+// for `request_id`; returns false, sending nothing, for every other type so the
+// caller's normal dispatch continues. It takes no HomeserverRuntime, so a refused
+// frame can never take runtime.mutex or reach a crypto provider. Exposed as a free
+// function so tests can drive it over a real IpcChannel pair without spawning a
+// worker process.
+[[nodiscard]] auto refuse_forbidden_worker_request(ipc::IpcChannel& channel, std::uint64_t request_id,
+                                                   std::string_view type) -> bool;
+
 // Owns N out-of-process federation worker supervisors. Routes each inbound
 // federation request to the worker that owns the request's room ID.
 //
@@ -138,7 +153,7 @@ struct HomeserverRuntime;
 //   shard = fnv1a_32(room_id) % N
 // Non-room requests (key queries, profile queries, etc.) route to shard 0.
 //
-// IPC request handlers (pdu_ingest, sign_request) are wired against each
+// IPC request handlers (pdu_ingest, membership_ingest, ...) are wired against each
 // worker's channel and operate on the supplied HomeserverRuntime.
 class WorkerPool final
 {
@@ -159,8 +174,9 @@ public:
     // Sends a pre-signed outbound HTTP request to the worker shard that owns
     // room_id for execution. The worker calls OutboundClient::perform() in its
     // own thread pool, keeping the main process handler thread free.
-    // IPC timeout = request.total_timeout_seconds + 10 s buffer.
-    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+    // IPC timeout = request.total_timeout_seconds + `ipc_margin` (10 s by default).
+    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,
+                                             std::chrono::seconds ipc_margin = default_worker_ipc_margin)
         -> http::OutboundResult;
 
     // Tells the worker shard that owns room_id to re-read that room from the
@@ -187,7 +203,7 @@ private:
     HomeserverRuntime& runtime_;
     // Thread pool that runs the IPC request handlers from each worker
     // (pdu_ingest, membership_ingest, edu_ingest, invite_ingest, query
-    // relays, sign_request). The per-channel IPC dispatch thread only classifies
+    // relays). The per-channel IPC dispatch thread only classifies
     // and enqueues; running the handlers here keeps a slow handler from
     // stalling every later queued frame on the same channel.
     net::ThreadPool handler_pool_;

@@ -148,6 +148,18 @@ remaining work before PostgreSQL-backed production operation.
   in durable rows (account data, to-device messages, device-list changes,
   presence) into the watermark on startup, so fresh upgrades start from the
   maximum persisted value rather than the table default.
+- `device_list_changes` holds at most one row per `(observer_user_id,
+  subject_user_id)`. `database::record_device_list_change()` and
+  `record_device_list_changes()` replace a pair's earlier row (a `DELETE` then an
+  `INSERT` in one transaction) so it carries the newest stream position and the
+  latest `change_type`; `/sync` reports only the latest change per subject, so
+  nothing is lost, and a peer sending the same EDU repeatedly cannot grow the
+  table. The batch form validates every change first, allocates one sync stream
+  position for all of them and commits once. This needs no migration: the primary
+  key stays `(stream_id, observer_user_id, subject_user_id)`. Rows written before
+  this rule (duplicates per pair) are harmless, are collapsed by
+  `sync::collect_device_list_delta()` on read, and are replaced the next time
+  their pair changes.
 - `event_stream_watermark` table stores the highest allocated timeline
   `stream_ordering` and is updated by `homeserver::allocate_stream_ordering()`
   (via `database::persist_event_stream_watermark()`) on every allocation. Some
@@ -569,7 +581,11 @@ remaining work before PostgreSQL-backed production operation.
     chained off that snapshot (`homeserver::record_event_state_with_parent`,
     `record_event_state` generalised to an explicit parent group), and
     makes it the room's sole forward extremity — so the first inbound PDU
-    after a join no longer hits `missing_prev_state`.
+    after a join no longer hits `missing_prev_state`. Since FED-1
+    (ADR-0083) only entries whose room is the joined room are stored, and
+    `auth_chain` events are stored as outliers with no `current_state` row;
+    `repair_missing_state_entries` (start-up) likewise only promotes
+    `accepted` events, never an outlier or a rejected one.
   - A source-tree guard test (`tests/unit/test_store_event_choke_point.cpp`)
     fails the build if `database::store_event_with_state(` appears anywhere
     in `src/` outside a reviewed, counted allowlist.
@@ -645,6 +661,27 @@ remaining work before PostgreSQL-backed production operation.
   and admin action rows.
 - Policy rule and media blob helpers upsert durable rows and hydrate them after
   SQLite/PostgreSQL reopen.
+- Committed statements are not retained (AUTH-11). `commit_persistent_transaction`
+  used to append every committed `PreparedStatement`, bound parameters included,
+  to `PersistentStore::prepared_statements`, which nothing trimmed. The store now
+  keeps nothing unless a test calls `enable_statement_capture(store, capacity)`;
+  the capture is `PersistentStore::captured_statements`, holds at most
+  `capacity` statements (clamped to `max_statement_capture_capacity`, 65 536),
+  drops the oldest first, and is empty and disabled by default.
+  `sensitive_values_are_redacted` reads that capture and returns false when capture
+  is disabled instead of passing on an empty buffer. Production code never enables
+  capture: password and token hashes must not outlive the commit in process memory.
+- `PersistentStore::audit_log` is a bounded window (AUTH-1): the newest
+  `max_in_memory_audit_events` (1 024) rows, oldest dropped first, with
+  `audit_log_evicted` counting what left. The table is the complete record.
+  Append through `append_audit_event`; hydrate through `remember_audit_event`.
+  Hydration keeps the newest rows in insertion order on both backends (PostgreSQL
+  orders by `ctid`, the only ordering the column-less `audit_log` offers).
+  `load_audit_events_by_type_prefix(store, prefix, limit)` reads older rows straight
+  from the table (newest first, `limit` clamped to `max_audit_query_rows`, prefix
+  bound and matched literally); in-memory stores answer from the window.
+  `append_audit_event` cuts `actor`, `target` and `reason` to 255 bytes on a UTF-8
+  boundary. See `docs/observability-audit.md`, "Audit volume bounds".
 - Unit coverage for statement validation, executor gating, redaction, migration
   planning, and schema inventory.
 - Migration-plan validation coverage uses explicit hand-built plans, while
@@ -748,14 +785,28 @@ The boundary provides these guarantees:
   one-way transition, enforced by the store's API surface rather than by
   caller discipline (see `revoke_tokens_for_user_except_device` above and
   [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md)).
-- Binary payloads round-trip byte-exactly on both backends. `BoundValue` carries
-  a `binary` flag; SQLite already bound every parameter by explicit length, but
-  PostgreSQL sends parameters to `PQexecParams` as null-terminated C strings, so
-  a raw payload truncated at its first embedded NUL. A `binary` parameter is now
-  hex-encoded into PostgreSQL's own `\x` bytea literal on the way in — plain
-  ASCII, never containing a NUL — and decoded on the way out. `media_blobs.bytes`
-  is the column that needs it today; any future `BLOB`/`BYTEA` column carrying
-  non-text bytes must set the flag on both the write and the read path.
+- Binary (`BLOB`) columns round-trip byte-exactly on both backends. The columns
+  are `media_blobs.bytes` and `server_signing_keys.secret_key` — every `BLOB`
+  in `migrations/*.sql` and `schema.cpp`; a new one must follow this
+  mechanism. `BoundValue` carries a `binary` flag, and a write must set it for
+  every `BLOB` parameter. SQLite binds every parameter by explicit length and
+  reads columns by `sqlite3_column_bytes`, so it ignores the flag and is
+  unchanged. On PostgreSQL, `execute_prepared_statement` binds a `binary`
+  parameter in libpq's binary wire format (`paramFormats` = 1, explicit
+  `paramLengths`, declared type `bytea`), so arbitrary bytes — NULs, invalid
+  UTF-8, backslashes — arrive exactly and nothing is escaped or truncated.
+  The read side is one generic rule rather than a per-table special case:
+  `load_result_rows` asks libpq for each result column's type (`PQftype`) and
+  decodes every `bytea` column from PostgreSQL's `\x` hex text form back to raw
+  bytes, so any query that selects a `BLOB` column gets bytes, not hex. Each
+  connection pins `SET bytea_output = 'hex'` at open so a role or database
+  default of `escape` cannot change that form; a `bytea` value that is not
+  valid hex fails the query rather than returning empty or garbled bytes,
+  because an empty `secret_key` reads as "no signing key" and would make the
+  server mint a new identity. Until DB-1 was fixed only `media_blobs.bytes` was
+  decoded, so the signing secret came back as its own hex text after a restart
+  and the server could not load its signing key (0.12.14 audit). Existing
+  rows hold the raw bytes intact, so no data migration was needed.
 - Identity-server unbind credentials (`account_threepids.client_secret` and
   `.sid`) are bound as sensitive values, so they never reach a query trace or
   diagnostic log. They remain plaintext at rest; that is the documented residual

@@ -9,6 +9,7 @@
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/random.hpp"
+#include "merovingian/crypto/refusing_ed25519_provider.hpp"
 #include "merovingian/crypto/runtime_ed25519_provider.hpp"
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/crypto/secret_box.hpp"
@@ -1655,6 +1656,56 @@ SCENARIO("The signing-secret box key is unavailable when no master key path is c
             THEN("no key is produced")
             {
                 REQUIRE_FALSE(key.has_value());
+            }
+        }
+    }
+}
+
+// --- Security audit 2026-09-29, CRY-1 (ADR-0078) ------------------------------
+//
+// The federation worker has no production need to sign, and it is the process
+// most exposed to hostile input, so it installs a provider that refuses every
+// request rather than one that forwards signing to main.
+
+SCENARIO("The refusing Ed25519 provider never produces a signature", "[crypto][worker_signing_refused][security]")
+{
+    GIVEN("a refusing provider, as installed in the federation worker")
+    {
+        auto provider = merovingian::crypto::RefusingEd25519Provider{};
+
+        WHEN("it is asked to sign an arbitrary payload with an arbitrary key id")
+        {
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:any"},
+                                              R"({"type":"m.room.message","content":{"body":"forged"}})");
+
+            THEN("the result is an error naming the refusal and carries no signature bytes")
+            {
+                REQUIRE(result.signature.bytes.empty());
+                REQUIRE_FALSE(result.error.empty());
+            }
+        }
+
+        WHEN("it is asked to sign an empty payload")
+        {
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:any"}, "");
+
+            THEN("it still refuses")
+            {
+                REQUIRE(result.signature.bytes.empty());
+                REQUIRE_FALSE(result.error.empty());
+            }
+        }
+
+        WHEN("it is asked to verify a signature")
+        {
+            auto const verified =
+                provider.verify(merovingian::crypto::Ed25519PublicKey{std::string(32U, 'k')}, "message",
+                                merovingian::crypto::Ed25519Signature{std::string(64U, 's')});
+
+            THEN("it reports the signature as not valid instead of terminating the process")
+            {
+                REQUIRE_FALSE(verified.valid);
+                REQUIRE_FALSE(verified.error.empty());
             }
         }
     }

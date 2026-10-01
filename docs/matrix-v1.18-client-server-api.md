@@ -409,15 +409,41 @@ fields in the JSON body. The server prefers query parameters when both are prese
 | `lists.*.ranges` | array of [start, end] pairs | required if list present | Windowed view into the sorted room list. Ranges MUST NOT overlap; start MUST be ≤ end. |
 | `lists.*.range` | [start, end] | alternative to `ranges` | A single sliding window. Accepted for clients that send one window as a 2-tuple rather than a nested array. |
 | `lists.*.sort` | array of strings | optional | Sort criteria applied left-to-right: `by_recency`, `by_notification_count`, `by_name`. |
-| `lists.*.required_state` | array of [type, state_key] pairs | optional | State events to include in each room. `"*"` is a wildcard in either position. `["m.room.member","$ME"]` resolves to the requesting user's own membership event. `["m.room.member","$LAZY"]` (matrix-rust-sdk's MSC3575-era lazy-loading sentinel, still sent by Element X) resolves to the members relevant to the timeline this response returns — scoped to just those members when the timeline is truncated or this is the room's first appearance on the connection, otherwise treated as the wildcard `"*"` for `m.room.member`. A member relevant for the first time on a connection is always delivered even if their own membership event predates the incremental since-floor. |
-| `lists.*.timeline_limit` | integer | optional | Maximum number of timeline events to return per room. |
-| `room_subscriptions` | object | optional | Explicit per-room subscriptions keyed by room ID. |
+| `lists.*.required_state` | array of [type, state_key] pairs | optional | State events to include in each room (at most 256 pairs; more is rejected with `400 M_INVALID_PARAM`). `"*"` is a wildcard in either position. `["m.room.member","$ME"]` resolves to the requesting user's own membership event. `["m.room.member","$LAZY"]` (matrix-rust-sdk's MSC3575-era lazy-loading sentinel, still sent by Element X) resolves to the members relevant to the timeline this response returns — scoped to just those members when the timeline is truncated or this is the room's first appearance on the connection, otherwise treated as the wildcard `"*"` for `m.room.member`. A member relevant for the first time on a connection is always delivered even if their own membership event predates the incremental since-floor. |
+| `lists.*.timeline_limit` | integer | optional | Maximum number of timeline events to return per room. Values above 100 are clamped to 100 (see "Request limits and room access"). |
+| `room_subscriptions` | object | optional | Explicit per-room subscriptions keyed by room ID. At most 256 entries; more is rejected with `400 M_INVALID_PARAM`. Each entry takes `required_state` (at most 256 pairs), `timeline_limit` (clamped to 100) and `include_heroes`. A subscription is only honoured for a room the user has joined, or is invited to (stripped invite state only); see "Request limits and room access". |
 | `extensions` | object | optional | Extension requests. Each extension has an `enabled` boolean. |
 | `extensions.to_device` | object | optional | Fetch pending to-device messages. Fields: `enabled`, `limit`, `since`. |
 | `extensions.e2ee` | object | optional | Fetch device list changes and OTK counts. Fields: `enabled`. |
 | `extensions.account_data` | object | optional | Fetch global and per-room account data. Fields: `enabled`. |
-| `extensions.receipts` | object | optional | Fetch read receipts. Fields: `enabled`, `rooms`. `rooms: ["*"]` (the `AllSubscribed` sentinel) and an omitted/empty `rooms` are equivalent — both mean "every room in this response"; matrix-rust-sdk (Element X) always sends `["*"]` explicitly. |
-| `extensions.typing` | object | optional | Fetch typing notifications. Fields: `enabled`, `rooms`. Same `["*"]`-means-all-rooms handling as `extensions.receipts.rooms`. |
+| `extensions.receipts` | object | optional | Fetch read receipts (`m.read` from every member; `m.read.private` only to the user who sent it; never `m.fully_read`). Rooms the user has not joined are dropped silently, even when named explicitly. Fields: `enabled`, `rooms`. `rooms: ["*"]` (the `AllSubscribed` sentinel) and an omitted/empty `rooms` are equivalent — both mean "every room in this response"; matrix-rust-sdk (Element X) always sends `["*"]` explicitly. |
+| `extensions.typing` | object | optional | Fetch typing notifications. Fields: `enabled`, `rooms`. Same `["*"]`-means-all-rooms handling as `extensions.receipts.rooms`, and the same rule that rooms the user has not joined are dropped silently. |
+
+#### Request limits and room access
+
+A user needs to join a room to view events in it (C-S API, "Room history visibility":
+"In all cases except `world_readable`, a user needs to join a room to view events in that
+room"). Sliding sync applies that to every room a request names, not only to the rooms a list
+window selects:
+
+| Caller's current membership of a room named in `room_subscriptions` | Response |
+| --- | --- |
+| `join` | The room is served in full (timeline, `required_state`, counts, heroes). |
+| `invite` | The room entry carries `invite_state` (the invite's stripped state) only: no `timeline`, no `required_state`. An invite from a user the caller has ignored is omitted entirely. |
+| none, `leave`, `ban`, `knock` | The room is omitted from `rooms` silently, exactly as if it did not exist. |
+
+`world_readable` history visibility is deliberately not treated as permission to subscribe.
+The `receipts` and `typing` extensions (and the room-scoped part of `account_data`) return data
+only for rooms the caller has joined; any other room named in an extension's `rooms` array is
+dropped silently. The classification is `sync::room_access_for()` (`include/merovingian/sync/room_access.hpp`).
+
+Bounds on one request (`include/merovingian/sync/sliding_sync.hpp`):
+
+| Limit | Value | Behaviour |
+| --- | --- | --- |
+| `timeline_limit` (list or subscription) | 100 | Larger values are clamped to 100. |
+| `room_subscriptions` entries | 256 | More is rejected with `400 M_INVALID_PARAM`. |
+| `required_state` pairs per list or subscription | 256 | More is rejected with `400 M_INVALID_PARAM`. |
 
 #### Response body fields
 
@@ -445,7 +471,7 @@ fields in the JSON body. The server prefers query parameters when both are prese
 | `heroes` | array | Hero members for computing a fallback room name. |
 | `required_state` | array | State events matching the subscription's `required_state`. |
 | `timeline` | array | **MSC4186: a plain `[Event]` array**, not the `/v3/sync` `{events, limited, prev_batch}` object. |
-| `invite_state` | array | For invited rooms, the stripped state events. |
+| `invite_state` | array | For invited rooms (reachable only through an explicit `room_subscriptions` entry), the invite's stripped state events. An invited room carries no `timeline` or `required_state` entries. |
 
 #### List operations (`ops` array)
 

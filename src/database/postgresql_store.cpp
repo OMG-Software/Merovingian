@@ -15,6 +15,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -26,29 +27,15 @@
 namespace merovingian::database
 {
 
-auto encode_postgresql_bytea_hex(std::string_view bytes) -> std::string
+auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::optional<std::string>
 {
-    static constexpr char hex_digits[] = "0123456789abcdef";
-    auto encoded = std::string{};
-    encoded.reserve(2U + (bytes.size() * 2U));
-    encoded.append("\\x");
-    for (auto const character : bytes)
-    {
-        auto const byte = static_cast<unsigned char>(character);
-        encoded.push_back(hex_digits[byte >> 4U]);
-        encoded.push_back(hex_digits[byte & 0x0FU]);
-    }
-    return encoded;
-}
-
-auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::string
-{
-    // Anything that isn't the `\x` hex prefix PostgreSQL's default
-    // bytea_output writes cannot be one of our encoded values — fail closed
-    // with an empty string rather than guess at a different encoding.
+    // Anything that isn't the `\x` hex form of bytea_output = hex (which every
+    // connection pins at open) fails closed with no value rather than guessing
+    // at a different encoding. An empty string is a legitimate, empty bytea,
+    // so failure must not be spelled as one.
     if (hex_text.size() < 2U || hex_text[0] != '\\' || hex_text[1] != 'x')
     {
-        return {};
+        return std::nullopt;
     }
 
     auto const nibble = [](char character) -> int {
@@ -69,7 +56,7 @@ auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::string
 
     if ((hex_text.size() - 2U) % 2U != 0U)
     {
-        return {}; // An odd number of hex digits cannot represent whole bytes.
+        return std::nullopt; // An odd number of hex digits cannot represent whole bytes.
     }
 
     auto decoded = std::string{};
@@ -80,7 +67,7 @@ auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::string
         auto const low = nibble(hex_text[index + 1U]);
         if (high < 0 || low < 0)
         {
-            return {}; // Malformed hex digit; fail closed rather than return garbage bytes.
+            return std::nullopt; // Malformed hex digit; fail closed rather than return garbage bytes.
         }
         decoded.push_back(static_cast<char>((high << 4) | low));
     }
@@ -241,7 +228,14 @@ namespace
         return PQresultStatus(&result) == PGRES_COMMAND_OK;
     }
 
-    [[nodiscard]] auto load_result_rows(PGresult& result) -> std::vector<std::vector<std::string>>
+    // PostgreSQL's built-in type OID for bytea (pg_type.dat). Every `BLOB` column
+    // in the schema is translated to BYTEA, so this one OID is how a result
+    // column is recognised as binary, whichever table it came from.
+    constexpr auto bytea_type_oid = Oid{17U};
+
+    // Returns nullopt when a bytea value cannot be decoded: the caller fails the
+    // whole query rather than hand back an empty or garbled secret.
+    [[nodiscard]] auto load_result_rows(PGresult& result) -> std::optional<std::vector<std::vector<std::string>>>
     {
         auto rows = std::vector<std::vector<std::string>>{};
         auto const row_count = PQntuples(&result);
@@ -249,6 +243,17 @@ namespace
         if (row_count <= 0 || column_count <= 0)
         {
             return rows;
+        }
+
+        // Result values come back in text format, where a bytea column is its
+        // `\x` hex form (`SET bytea_output = 'hex'` is pinned at connection
+        // open). Decode those columns here, once, so no caller ever sees hex
+        // and no per-table special case is needed.
+        auto column_is_bytea = std::vector<bool>{};
+        column_is_bytea.reserve(static_cast<std::size_t>(column_count));
+        for (auto column = 0; column < column_count; ++column)
+        {
+            column_is_bytea.push_back(PQftype(&result, column) == bytea_type_oid);
         }
 
         rows.reserve(static_cast<std::size_t>(row_count));
@@ -265,8 +270,17 @@ namespace
                 }
                 auto const* value = PQgetvalue(&result, row, column);
                 auto const length = PQgetlength(&result, row, column);
-                values.emplace_back(value == nullptr ? std::string{}
-                                                     : std::string{value, static_cast<std::size_t>(length)});
+                auto text = value == nullptr ? std::string{} : std::string{value, static_cast<std::size_t>(length)};
+                if (column_is_bytea[static_cast<std::size_t>(column)])
+                {
+                    auto decoded = decode_postgresql_bytea_hex(text);
+                    if (!decoded.has_value())
+                    {
+                        return std::nullopt;
+                    }
+                    text = std::move(*decoded);
+                }
+                values.push_back(std::move(text));
             }
             rows.push_back(std::move(values));
         }
@@ -292,34 +306,45 @@ namespace
             return {false, "too many PostgreSQL statement parameters", {}};
         }
 
-        // M-09: parameters marked `binary` (e.g. media_blobs.bytes) are
-        // hex-encoded into PostgreSQL's bytea text literal so the raw bytes
-        // never travel as a null-terminated C string — see
-        // encode_postgresql_bytea_hex's doc comment. `encoded_values` must
-        // outlive the PQexecParams call below, so it is reserved up front:
-        // pushing into a vector that never reallocates keeps every
-        // `.c_str()` pointer taken from it valid for the whole function.
-        auto encoded_values = std::vector<std::string>{};
-        encoded_values.reserve(statement.parameters.size());
+        // Parameters marked `binary` (every `BLOB` column: media_blobs.bytes,
+        // server_signing_keys.secret_key) travel in libpq's binary format, with
+        // an explicit length and a declared bytea type. The raw bytes are then
+        // never treated as a null-terminated C string (which truncates at the
+        // first NUL), never parsed as text (which rejects invalid UTF-8) and
+        // never subject to bytea's backslash escaping, so any byte sequence
+        // arrives exactly. Declaring the type also keeps a parameter that
+        // appears in more than one expression (`$5 = ''`, `ELSE $5`) bytea
+        // rather than leaving it to inference. Text parameters keep the text
+        // format and the server's own inference (type 0).
+        auto const parameter_count = statement.parameters.size();
+        auto parameter_types = std::vector<Oid>(parameter_count, Oid{0U});
         auto parameter_values = std::vector<char const*>{};
-        parameter_values.reserve(statement.parameters.size());
-        for (auto const& parameter : statement.parameters)
+        parameter_values.reserve(parameter_count);
+        auto parameter_lengths = std::vector<int>(parameter_count, 0);
+        auto parameter_formats = std::vector<int>(parameter_count, 0);
+        for (auto index = std::size_t{0U}; index < parameter_count; ++index)
         {
-            if (parameter.binary)
+            auto const& parameter = statement.parameters[index];
+            parameter_values.push_back(parameter.value.c_str());
+            if (!parameter.binary)
             {
-                encoded_values.push_back(encode_postgresql_bytea_hex(parameter.value));
-                parameter_values.push_back(encoded_values.back().c_str());
+                continue;
             }
-            else
+            if (parameter.value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
             {
-                parameter_values.push_back(parameter.value.c_str());
+                return {false, "PostgreSQL binary parameter is too large", {}};
             }
+            parameter_types[index] = bytea_type_oid;
+            parameter_lengths[index] = static_cast<int>(parameter.value.size());
+            parameter_formats[index] = 1;
         }
 
         auto* const values = parameter_values.empty() ? nullptr : parameter_values.data();
-        auto result = PostgresqlResultPtr{PQexecParams(&connection, statement.sql.c_str(),
-                                                       static_cast<int>(statement.parameters.size()), nullptr, values,
-                                                       nullptr, nullptr, 0)};
+        auto* const types = parameter_types.empty() ? nullptr : parameter_types.data();
+        auto* const lengths = parameter_lengths.empty() ? nullptr : parameter_lengths.data();
+        auto* const formats = parameter_formats.empty() ? nullptr : parameter_formats.data();
+        auto result = PostgresqlResultPtr{PQexecParams(
+            &connection, statement.sql.c_str(), static_cast<int>(parameter_count), types, values, lengths, formats, 0)};
         if (result == nullptr)
         {
             return {false, connection_error(connection), {}};
@@ -328,7 +353,12 @@ namespace
         {
             return {false, result_error(*result), {}};
         }
-        return {true, {}, load_result_rows(*result)};
+        auto rows = load_result_rows(*result);
+        if (!rows.has_value())
+        {
+            return {false, "PostgreSQL returned a malformed bytea value", {}};
+        }
+        return {true, {}, std::move(*rows)};
     }
 
     [[nodiscard]] auto execute_postgresql_transaction(PGconn& connection,
@@ -1045,12 +1075,9 @@ namespace
             {
                 if (row.size() >= 6U)
                 {
-                    // M-09: `bytes` was written through the binary parameter path
-                    // (execute_prepared_statement's encode_postgresql_bytea_hex),
-                    // and comes back as PostgreSQL's `\x`-hex bytea text
-                    // representation — decode it to recover the original bytes.
-                    store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]),
-                                                 decode_postgresql_bytea_hex(row[4]), parse_u64(row[5])});
+                    // `bytes` is a bytea column; the result loader has already
+                    // decoded it to the raw payload.
+                    store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], parse_u64(row[5])});
                 }
             }
         }
@@ -1075,18 +1102,24 @@ namespace
 
         if (table_load_profile_includes("audit_log", profile))
         {
+            // audit_log has no ordering column (migration 001); ctid, the physical
+            // position in an append-only table, stands in for insertion order. Fetch
+            // only the newest window, then replay it oldest-first so the in-memory
+            // window matches SQLite's: the newest rows, in insertion order.
             auto audit_log = query_rows(connection, "postgresql_load_audit_log",
                                         "SELECT category, event_type, actor, target, reason FROM audit_log ORDER "
-                                        "BY event_type, actor");
+                                        "BY ctid DESC LIMIT " +
+                                            std::to_string(max_in_memory_audit_events));
             if (!audit_log.ok)
             {
                 return false;
             }
-            for (auto const& row : audit_log.rows)
+            for (auto const& row : std::views::reverse(audit_log.rows))
             {
                 if (row.size() >= 5U)
                 {
-                    store.audit_log.push_back({row[0], row[1], row[2], row[3], row[4]});
+                    // AUTH-1: hydrate only the bounded in-memory window; the table stays complete.
+                    remember_audit_event(store, {row[0], row[1], row[2], row[3], row[4]});
                 }
             }
         }
@@ -1783,6 +1816,20 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
         return {false, reason, redacted, {}};
     }
 
+    // Pin the bytea text output form: load_result_rows decodes bytea columns
+    // from the `\x` hex form, and a role or database default of `escape` would
+    // otherwise change what the server sends. Refuse the connection rather than
+    // run with a form the decoder would reject.
+    if (!execute_raw_command(*connection, "SET bytea_output = 'hex'"))
+    {
+        auto reason = std::string{"unable to pin PostgreSQL bytea_output to hex"};
+        log_diagnostic("connection.rejected", {
+                                                  {"conninfo", redacted, false},
+                                                  {"reason",   reason,   false}
+        });
+        return {false, std::move(reason), redacted, {}};
+    }
+
     log_diagnostic("connection.ready", {
                                            {"conninfo", redacted, false}
     });
@@ -2240,6 +2287,49 @@ namespace detail
             return std::nullopt;
         }
         return load_room_snapshot_impl(opened.connection, room_id);
+    }
+
+    auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                           std::string_view prefix,
+                                           std::size_t limit) -> std::optional<std::vector<PersistentAuditEvent>>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // The prefix is a bound parameter compared with left(), not LIKE, so `%` and
+        // `_` stay literal. audit_log has no ordering column (migration 001), so
+        // ctid, the physical position, stands in for insertion order: the table is
+        // append-only (no UPDATE or DELETE), so new rows land after old ones.
+        // `limit` is a size_t the caller has already clamped.
+        auto result = opened.connection.execute(
+            {"postgresql_query_audit_log_by_prefix",
+             "SELECT category, event_type, actor, target, reason FROM audit_log "
+             "WHERE left(event_type, char_length($1::text)) = $1::text ORDER BY ctid DESC LIMIT " +
+                 std::to_string(limit),
+             {{std::string{prefix}, false}}});
+        if (!result.ok)
+        {
+            return std::nullopt;
+        }
+        auto rows = std::vector<PersistentAuditEvent>{};
+        for (auto const& row : result.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                rows.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+        return rows;
     }
 
 } // namespace detail

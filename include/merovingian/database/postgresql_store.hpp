@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -69,19 +70,20 @@ struct PostgresqlConnectionOpenResult final
 [[nodiscard]] auto validate_postgresql_conninfo(std::string_view conninfo) -> PostgresqlConnectionPolicyResult;
 [[nodiscard]] auto redact_postgresql_conninfo(std::string_view conninfo) -> std::string;
 
-// M-09: PQexecParams sends every parameter as a null-terminated C string
-// unless told otherwise, which silently truncates a raw binary payload
-// (e.g. media_blobs.bytes) at its first embedded NUL byte. Rather than
-// switching that parameter to libpq's binary wire format, a BoundValue
-// marked `binary` is hex-encoded into PostgreSQL's own bytea text literal
-// (`\x` followed by lowercase hex pairs) before being bound as an ordinary
-// text parameter — the encoded form is plain ASCII and never contains a NUL,
-// so the existing null-terminated text path round-trips it exactly. Reading
-// a bytea column back (PostgreSQL's default `bytea_output = hex`) reverses
-// the encoding. Exposed here (rather than kept file-local) so both
-// directions are independently unit-testable without a live database.
-[[nodiscard]] auto encode_postgresql_bytea_hex(std::string_view bytes) -> std::string;
-[[nodiscard]] auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::string;
+// Binary (`BLOB`/BYTEA) columns round-trip byte-exactly. A BoundValue marked
+// `binary` is bound in libpq's binary wire format with an explicit length and a
+// declared bytea type, so the raw bytes are never treated as a null-terminated
+// C string (truncated at the first NUL) or as text (rejected if not UTF-8).
+// Result values arrive in text format, so every result column whose type is
+// bytea (PQftype) is decoded from PostgreSQL's `\x` hex form back to raw bytes
+// as the rows are loaded — one generic rule for every table. Connections pin
+// `bytea_output = hex` so that form is the only one the decoder sees.
+//
+// Returns the decoded bytes, or nullopt for anything that is not `\x` followed
+// by an even number of hex digits — an empty result is a valid, empty bytea, so
+// failure is not spelled as one. Exposed so the decoder is unit-testable without
+// a live database.
+[[nodiscard]] auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::optional<std::string>;
 [[nodiscard]] auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>;
 [[nodiscard]] auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult;
 // `runtime_role` is the DML-only role from packaging/postgresql/provision-roles.sql;
