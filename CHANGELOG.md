@@ -1,3 +1,9 @@
+## 0.12.16
+
+- **WIP: medium-severity findings from the 2026-09-29 security audit.**
+  Branch `fix/audit-medium-0.12.16` addresses the 29 medium-severity findings
+  not covered by the 0.12.15 critical/high fix pass.
+
 ## 0.12.15
 
 - **FIXED: critical logs lost when the process exits after hardening refusal
