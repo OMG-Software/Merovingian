@@ -378,10 +378,10 @@ shell = find_program('sh')
     cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
   )
 
-#Integration tests spawn real dependencies(PostgreSQL, SQLite, thumbnail
-#worker) and can be slow under sanitizers; give them the same headroom as
-#the unit and conformance suites.
-  test('integration-tests', integration_tests, timeout: 600)
+# Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
+# worker) and can be slow under sanitizers and on emulated BSD runners;
+# give them the same headroom as the load-test suite.
+  test('integration-tests', integration_tests, timeout: 900)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(

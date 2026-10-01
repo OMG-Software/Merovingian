@@ -28,6 +28,11 @@
   requires 200 concurrent socketpairs to all be accepted on runners with
   tight per-process file-descriptor limits.
 
+- **FIXED: OpenBSD integration-test timeout flake (BSD-2).**
+  `tests/meson.build` raises the `integration-tests` timeout from 600 s to
+  900 s; the emulated OpenBSD runner frequently takes ~580 s and was
+  hitting the old limit.
+
 - **FIXED: worker-pool starvation via idle and slow connections (HTTP-1) and
   keep-alive lifetime limits (HTTP-8).** New `net::ConnectionParker` and
   `homeserver::HttpConnectionDispatcher` hold every connection that is not being
