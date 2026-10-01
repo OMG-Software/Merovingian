@@ -21,6 +21,13 @@
   includes `<algorithm>` so `std::ranges::find` is visible on libc++
   implementations that do not pull it in transitively.
 
+- **FIXED: OpenBSD/NetBSD test failures caused by platform limits
+  (BSD-1).** `tests/unit/test_logger_writers.cpp` skips its thread-count
+  assertions when `/proc/self/task` does not enumerate process threads
+  reliably, and `tests/unit/test_net_connection_parker.cpp` no longer
+  requires 200 concurrent socketpairs to all be accepted on runners with
+  tight per-process file-descriptor limits.
+
 - **FIXED: worker-pool starvation via idle and slow connections (HTTP-1) and
   keep-alive lifetime limits (HTTP-8).** New `net::ConnectionParker` and
   `homeserver::HttpConnectionDispatcher` hold every connection that is not being

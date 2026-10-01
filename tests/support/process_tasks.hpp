@@ -9,8 +9,11 @@ namespace merovingian::tests
 {
 
 // Number of tasks (threads) currently in this process, read from
-// /proc/self/task. Returns 0 where /proc is unavailable (non-Linux), so callers
-// that compare two counts must not treat 0 as "no threads".
+// /proc/self/task on Linux. Returns 0 on platforms without /proc (e.g., the
+// BSD runners), so callers that compare two counts must not treat 0 as "no
+// threads". NetBSD exposes /proc/self but counts only LWPs from the current
+// pthread, so comparing before/after writer creation can undercount; callers
+// should skip when this returns 1 or 0.
 [[nodiscard]] inline auto count_process_tasks() -> std::size_t
 {
     auto count = std::size_t{0U};
