@@ -267,6 +267,41 @@ SCENARIO("namespace regex matching", "[appservice][registration]")
     }
 }
 
+SCENARIO("appservice_owns_user rejects foreign users before namespace matching", "[appservice][registration][security][auth-6]")
+{
+    GIVEN("a registration whose users namespace would match a foreign user id")
+    {
+        auto const json = std::string{R"({
+            "id": "bridge",
+            "url": "http://127.0.0.1:5555",
+            "as_token": "as-token",
+            "hs_token": "hs-token",
+            "sender_localpart": "bot",
+            "namespaces": {
+                "users": [{"regex": "@_x_.*", "exclusive": false}]
+            }
+        })"};
+        auto const parsed = parse_registration_json(json);
+        REQUIRE(parsed.value.has_value());
+
+        WHEN("checked against a matching user on a different homeserver")
+        {
+            THEN("appservice_owns_user is false")
+            {
+                CHECK_FALSE(appservice_owns_user(*parsed.value, "example.org", "@_x_a:other.org"));
+            }
+        }
+
+        WHEN("checked against a matching user on the local homeserver")
+        {
+            THEN("appservice_owns_user is true")
+            {
+                CHECK(appservice_owns_user(*parsed.value, "example.org", "@_x_a:example.org"));
+            }
+        }
+    }
+}
+
 SCENARIO("appservice_owns_user resolves the sender_localpart default", "[appservice][registration]")
 {
     GIVEN("a registration whose sender_localpart is '_irc_bot' with no matching users namespace")

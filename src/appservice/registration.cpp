@@ -150,6 +150,13 @@ auto sender_user_id(AppserviceRegistration const& registration, std::string_view
 auto appservice_owns_user(AppserviceRegistration const& registration, std::string_view server_name,
                           std::string_view user_id) noexcept -> bool
 {
+    // Identity assertion and ownership are only meaningful for local users.
+    // A compromised appservice must not be able to assert a foreign user and
+    // have the homeserver sign events as that user (AUTH-6).
+    if (!user_id.ends_with(':' + std::string{server_name}))
+    {
+        return false;
+    }
     if (sender_user_id(registration, server_name) == user_id)
     {
         return true;
