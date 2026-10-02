@@ -10,6 +10,12 @@
 namespace merovingian::sync
 {
 
+// Spec: GET /sync timeout is a non-negative number of milliseconds supplied by
+// the client. The server is free to impose a cap; without one a client can pin
+// a worker indefinitely or exhaust connection bookkeeping. This constant is the
+// maximum long-poll timeout used on every sync endpoint (HTTP-4).
+inline constexpr std::uint64_t k_max_sync_timeout_ms = 120'000U;
+
 // Long-polling primitive for /sync. The runtime increments the global
 // stream counters every time a new event, to-device message, device-list
 // change, account-data row, or presence update becomes visible. Sync

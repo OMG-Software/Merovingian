@@ -35,7 +35,6 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -2815,7 +2814,7 @@ namespace
             }
         }
         auto const decision =
-            rt.rate_limit_engine->check(std::string_view{ip_key}, req.target, std::string_view{user_key});
+            rt.rate_limit_engine->check(std::string_view{ip_key}, norm, std::string_view{user_key});
         if (!decision.allowed)
         {
             // Audit-routing: rate-limit denial is one of the five
@@ -3783,8 +3782,11 @@ namespace
         // in the timeline ordering, both of which the mutator helpers below
         // publish through `ensure_sync_notifier(rt).publish(...)`.
         // Spec §9.4: omitting `timeout` means respond immediately — no default.
+        // HTTP-4: cap the client-supplied timeout so a single sync cannot pin a
+        // worker indefinitely; the client receives the capped wait.
         if (can_wait && request.timeout.has_value() && *request.timeout > 0U)
         {
+            auto const capped_timeout_ms = std::min(*request.timeout, sync::k_max_sync_timeout_ms);
             auto const has_timeline_advance = rt.homeserver.database.next_stream_ordering - 1U > since_ordering;
             auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
             if (!has_timeline_advance && !has_sync_advance)
@@ -3792,7 +3794,7 @@ namespace
                 return DispatchResult{
                     DispatchResult::Status::needs_wait,
                     {},
-                    {since_ordering, since_sync_stream_id, std::chrono::milliseconds{*request.timeout}}
+                    {since_ordering, since_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms}}
                 };
             }
         }
@@ -9432,11 +9434,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "token is required");
         }
+        // Spec: this endpoint must refuse to compare tokens when registration is
+        // disabled, otherwise it leaks whether a configured token exists and burns
+        // Argon2id work for unauthenticated callers (AUTH-4).
+        if (!rt.homeserver.config.security().registration.enabled)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "registration is disabled");
+        }
         // Compare via the Argon2id hash rather than holding the plaintext token on
         // the request path (matches /register).  Only the hash is consulted; a missing
         // or unreadable token file means no token is configured -> valid:false.
+        // AUTH-4: route is now auth_sensitive, and verification runs without the
+        // runtime mutex so Argon2id work cannot block other requests.
         auto const expected_hash = load_hashed_registration_token(rt.homeserver.config.security().registration);
-        auto const valid = expected_hash.has_value() && auth::registration_token_matches(*expected_hash, *token);
+        auto const valid = [expected_hash = expected_hash.value_or(std::string{}), token = *token]() {
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            return !expected_hash.empty() && auth::registration_token_matches(expected_hash, token);
+        }();
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
     }
@@ -12361,7 +12375,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             pos = sync::decode_stream_token(*sliding_req->pos);
         }
-        auto const timeout = sync::parse_sliding_sync_timeout(req.target).value_or(sliding_req->timeout.value_or(0U));
+        auto const timeout =
+            std::min(sync::parse_sliding_sync_timeout(req.target).value_or(sliding_req->timeout.value_or(0U)),
+                     sync::k_max_sync_timeout_ms);
         log_diagnostic("sliding_sync.dispatch", {
                                                     {"actor",     *user,          false},
                                                     {"device_id", device_id_4186, false}

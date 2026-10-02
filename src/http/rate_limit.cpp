@@ -59,7 +59,8 @@ auto rate_limit_tier_for(std::string_view target) noexcept -> RateLimitTier
     // (/account/3pid/email|msisdn/requestToken, /register/*/requestToken),
     // so it is matched by suffix.
     if (starts_with(target, "/_matrix/client/v3/login") || starts_with(target, "/_matrix/client/v3/refresh") ||
-        starts_with(target, "/_matrix/client/v3/register") || target.find("/requestToken") != std::string_view::npos)
+        starts_with(target, "/_matrix/client/v3/register") || starts_with(target, "/_matrix/client/v1/register") ||
+        target.find("/requestToken") != std::string_view::npos)
     {
         return RateLimitTier::auth_sensitive;
     }

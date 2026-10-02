@@ -16,6 +16,7 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/token_key.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -948,7 +949,13 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
     if (registration.require_token)
     {
         auto const expected_hash = load_hashed_registration_token(registration);
-        if (!expected_hash.has_value() || !auth::registration_token_matches(*expected_hash, registration_token))
+        auto const token_ok = [expected_hash = expected_hash.value_or(std::string{}), registration_token]() {
+            // AUTH-4: registration-token verification is also Argon2id; release
+            // the runtime mutex while it runs.
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            return !expected_hash.empty() && auth::registration_token_matches(expected_hash, registration_token);
+        }();
+        if (!token_ok)
         {
             return make_operation_result(false, {}, "registration token rejected", 403U);
         }
@@ -1027,8 +1034,16 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     }
 
     auto* user = find_user(runtime.database, user_id);
-    auto const* password_hash = user != nullptr ? &user->password_hash : dummy_password_hash();
-    auto const password_valid = password_hash != nullptr && auth::password_matches(*password_hash, password);
+    auto const password_hash =
+        std::string{user != nullptr ? user->password_hash : *dummy_password_hash()};
+    // AUTH-4: release the runtime mutex around Argon2id verification so a pile
+    // of login attempts cannot serialise every other request. Snapshot the hash
+    // by value first; then verify outside the lock.
+    auto password_valid = false;
+    {
+        auto const released = merovingian::homeserver::RuntimeLockRelease{};
+        password_valid = auth::password_matches(password_hash, password);
+    }
     if (user == nullptr || !password_valid)
     {
         // Counted against the *claimed* user_id whether or not it exists, so the
