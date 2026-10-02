@@ -41,6 +41,22 @@ namespace merovingian::federation
 namespace
 {
 
+    class FederationEd25519Verifier final : public crypto::Ed25519Provider
+    {
+    public:
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const&, std::string_view)
+            -> crypto::SignatureResult override
+        {
+            return {{}, "federation verifier does not sign"};
+        }
+
+        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
+                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
+        {
+            return crypto::ed25519_verify(public_key, message, signature);
+        }
+    };
+
     // RFC 9110 §5.6.2 tchar: the characters allowed in an unquoted `token`.
     // The X-Matrix Authorization header lets a sender leave a token-shaped
     // parameter value unquoted, so the parser needs the same character set the
@@ -1088,8 +1104,11 @@ namespace
                 }
             }
 
-            // Signature verification (Ed25519 + key validity).
-            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
+            // Signature verification (Ed25519 + key validity). For restricted joins
+            // the authorising user's homeserver signature is also verified (EVT-1).
+            auto verifier = FederationEd25519Verifier{};
+            auto const pdu_decision =
+                authorize_federation_pdu(pdu, request.origin, key_for_pdu, runtime.remote_key_resolver, verifier);
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.membership_rejected", request.origin, request.target,
@@ -1757,22 +1776,6 @@ namespace
         return {500U, "unknown endpoint"};
     }
 
-    class FederationEd25519Verifier final : public crypto::Ed25519Provider
-    {
-    public:
-        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const&, std::string_view)
-            -> crypto::SignatureResult override
-        {
-            return {{}, "federation verifier does not sign"};
-        }
-
-        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
-                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
-        {
-            return crypto::ed25519_verify(public_key, message, signature);
-        }
-    };
-
 } // namespace
 
 auto load_server_signing_key(std::string_view server_name, std::string_view key_id, std::string_view key_material)
@@ -2115,6 +2118,118 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     // Event-authorization rules (authorize_event_against_auth_events) are enforced
     // in the pdu_sink before persistence — see local_http_router.cpp wire_federation_callbacks_impl.
     return make_decision(true, 200U, {});
+}
+
+[[nodiscard]] auto join_authorising_user_server(canonicaljson::Value const& event) noexcept -> std::string
+{
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    if (root == nullptr)
+    {
+        return {};
+    }
+    auto const* content = find_canonical_member(*root, "content");
+    if (content == nullptr)
+    {
+        return {};
+    }
+    auto const* content_obj = std::get_if<canonicaljson::Object>(&content->storage());
+    if (content_obj == nullptr)
+    {
+        return {};
+    }
+    auto const* auth_user = find_canonical_member(*content_obj, "join_authorised_via_users_server");
+    if (auth_user == nullptr)
+    {
+        return {};
+    }
+    auto const* auth_user_text = std::get_if<std::string>(&auth_user->storage());
+    if (auth_user_text == nullptr)
+    {
+        return {};
+    }
+    auto const colon = auth_user_text->find(':');
+    if (colon == std::string::npos)
+    {
+        return {};
+    }
+    return auth_user_text->substr(colon + 1);
+}
+
+[[nodiscard]] auto verify_event_signature_for_server(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
+                                                    std::string_view server_name, FederationKeyRecord const& key,
+                                                    crypto::Ed25519Provider& provider) -> FederationDecision
+{
+    auto const validity = check_signing_key_valid_for_event(key, event, room_version);
+    if (!validity.accepted)
+    {
+        return validity;
+    }
+    auto const verified = events::verify_event_signature(event, room_version, {std::string{server_name}, key.key_id},
+                                                         crypto::Ed25519PublicKey{key.public_key_bytes}, provider);
+    if (!verified.valid)
+    {
+        return make_decision(false, 403U, verified.error);
+    }
+    return make_decision(true, 200U, {});
+}
+
+auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+                              std::optional<FederationKeyRecord> const& key,
+                              RemoteKeyResolver const& remote_key_resolver, crypto::Ed25519Provider& provider)
+    -> FederationDecision
+{
+    auto const sender_decision = authorize_federation_pdu(pdu, expected_origin, key);
+    if (!sender_decision.accepted)
+    {
+        return sender_decision;
+    }
+
+    auto const* room_version = rooms::find_room_version_policy(pdu.room_version.empty() ? std::string{"12"} : pdu.room_version);
+    if (room_version == nullptr)
+    {
+        return make_decision(false, 500U, "room version policy is unavailable");
+    }
+
+    auto const parsed = canonicaljson::parse_lossless(pdu.json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+    }
+
+    auto const authorising_server = join_authorising_user_server(parsed.value);
+    if (authorising_server.empty())
+    {
+        return make_decision(true, 200U, {});
+    }
+
+    // EVT-1: restricted/knock-restricted joins must be signed by the authorising
+    // user's homeserver. Resolve that server's key and verify the signature.
+    auto authorising_key_id = std::string{};
+    for (auto const& sig : pdu.signatures)
+    {
+        if (sig.server_name == authorising_server)
+        {
+            authorising_key_id = sig.key_id;
+            break;
+        }
+    }
+    if (authorising_key_id.empty())
+    {
+        return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");
+    }
+
+    auto const resolved = remote_key_resolver(authorising_server, authorising_key_id);
+    if (!resolved.has_value())
+    {
+        return make_decision(false, 403U, "could not resolve authorising user's server signing key");
+    }
+    auto const auth_key = resolved->signing_key;
+    if (auth_key.server_name != authorising_server)
+    {
+        return make_decision(false, 403U, "resolved authorising key does not match expected server");
+    }
+
+    return verify_event_signature_for_server(parsed.value, *room_version, authorising_server, auth_key, provider);
 }
 
 auto check_signing_key_valid_for_event(FederationKeyRecord const& key, canonicaljson::Value const& event,
@@ -2928,7 +3043,11 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 }
             }
         }
-        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
+        // Signature verification (Ed25519 + key validity). For restricted joins
+        // the authorising user's homeserver signature is also verified (EVT-1).
+        auto verifier = FederationEd25519Verifier{};
+        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu,
+                                                            runtime.remote_key_resolver, verifier);
         if (!pdu_decision.accepted)
         {
             record_remote_trust_failure(remote.trust);

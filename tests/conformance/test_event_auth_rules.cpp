@@ -1424,7 +1424,8 @@ SCENARIO("Auth rules allow a join to an invite-only room for a previously invite
 //
 // A restricted join without an invite is allowed when the event includes
 // content.join_authorised_via_users_server naming a joined resident user with
-// enough power to invite others.
+// enough power to invite others. The event must also carry a signature from
+// that user's homeserver (EVT-1).
 SCENARIO("Auth rules allow a restricted-room join when join_authorised_via_users_server is valid",
          "[events][auth][membership][join-rules][restricted]")
 {
@@ -1435,7 +1436,8 @@ SCENARIO("Auth rules allow a restricted-room join when join_authorised_via_users
             "\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"join\","
             "\"join_authorised_via_users_server\":\"@alice:example.org\"},"
             "\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
-            "\"hashes\":{\"sha256\":\"hash\"}}"};
+            "\"hashes\":{\"sha256\":\"hash\"},"
+            "\"signatures\":{\"example.org\":{\"ed25519:test\":\"c2ln\"}}}"};
         auto const parsed = merovingian::canonicaljson::parse_lossless(join_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
@@ -1464,6 +1466,52 @@ SCENARIO("Auth rules allow a restricted-room join when join_authorised_via_users
     }
 }
 
+// Spec: Matrix Room Version 8+ authorization rules for restricted joins.
+// URL: ../../docs/matrix-v1.19-spec/rooms/v8.md#authorization-rules
+//
+// Rule 4.2 (v10) / 5.2 (v12): if content has join_authorised_via_users_server,
+// the event MUST be validly signed by the homeserver of the user ID denoted by
+// the key. Without that signature the join is rejected (EVT-1).
+SCENARIO("Auth rules reject a restricted-room join that lacks the authorising server's signature",
+         "[events][auth][membership][join-rules][restricted][evt1]")
+{
+    GIVEN("a restricted room and a join naming a joined resident user")
+    {
+        auto const join_json = std::string{
+            "{\"type\":\"m.room.member\",\"state_key\":\"@bob:example.org\",\"sender\":\"@bob:example.org\","
+            "\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"join\","
+            "\"join_authorised_via_users_server\":\"@alice:example.org\"},"
+            "\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
+            "\"hashes\":{\"sha256\":\"hash\"}}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(join_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
+                .value;
+        auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("restricted")).value;
+        auth_events.authorising_user_member = merovingian::canonicaljson::parse_lossless(
+                                                  make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                                  .value;
+
+        WHEN("the join event is authorized without a signature from the authorising user's server")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the join is rejected for missing the authorising server's signature")
+            {
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.reason.find("authorising user's server") != std::string::npos);
+            }
+        }
+    }
+}
+
 namespace
 {
 
@@ -1477,12 +1525,15 @@ namespace
     auto const content = authorised ? std::string{"{\"membership\":\""} + std::string{membership} +
                                           "\",\"join_authorised_via_users_server\":\"@alice:example.org\"}"
                                     : std::string{"{\"membership\":\""} + std::string{membership} + "\"}";
+    auto const signatures = authorised
+                                ? std::string{",\"signatures\":{\"example.org\":{\"ed25519:test\":\"c2ln\"}}"}
+                                : std::string{};
     auto const event_json =
         std::string{"{\"type\":\"m.room.member\",\"state_key\":\"@bob:example.org\",\"sender\":\"@bob:example.org\","
                     "\"room_id\":\"!room:example.org\",\"content\":"} +
         content +
         ",\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
-        "\"hashes\":{\"sha256\":\"hash\"}}";
+        "\"hashes\":{\"sha256\":\"hash\"}" + signatures + "}";
     auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
     auto const* policy = merovingian::rooms::find_room_version_policy(version);

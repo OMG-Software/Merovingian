@@ -996,15 +996,19 @@ namespace
 }
 
 // Build an m.room.member join event carrying content.join_authorised_via_users_server,
-// as a resident server issues for a join into a restricted room.
+// as a resident server issues for a join into a restricted room. Includes a
+// signatures entry from the authorising user's server so the auth rule (EVT-1)
+// is satisfied during state resolution.
 [[nodiscard]] auto make_restricted_join_event(std::string const& user_id, std::string const& authorising_user,
                                               std::string const& event_id, std::int64_t ts, std::uint64_t depth)
     -> StateEventReference
 {
+    auto const authorising_server = authorising_user.substr(authorising_user.find(':') + 1);
     auto const json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + user_id + "\",\"sender\":\"" +
                       user_id + "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
                       ",\"content\":{\"membership\":\"join\",\"join_authorised_via_users_server\":\"" +
-                      authorising_user + "\"}}";
+                      authorising_user + "\"},\"signatures\":{\"" + authorising_server +
+                      "\":{\"ed25519:test\":\"c2ln\"}}}";
     return make_event_ref("m.room.member", user_id, event_id, user_id, ts, depth, json);
 }
 

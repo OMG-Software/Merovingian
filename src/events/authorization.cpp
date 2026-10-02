@@ -86,6 +86,47 @@ namespace
         return {true, {}, std::move(step), {}};
     }
 
+    [[nodiscard]] auto event_has_signature_from_server(canonicaljson::Value const& event, std::string_view server_name) noexcept
+        -> bool
+    {
+        auto const* obj = value_is_object(event);
+        if (obj == nullptr || server_name.empty())
+        {
+            return false;
+        }
+        auto const* signatures_value = object_member(*obj, "signatures");
+        if (signatures_value == nullptr)
+        {
+            return false;
+        }
+        auto const* signatures = std::get_if<canonicaljson::Object>(&signatures_value->storage());
+        if (signatures == nullptr)
+        {
+            return false;
+        }
+        for (auto const& server_member : *signatures)
+        {
+            if (server_member.key == server_name)
+            {
+                auto const* server_signatures = std::get_if<canonicaljson::Object>(&server_member.value->storage());
+                if (server_signatures == nullptr)
+                {
+                    return false;
+                }
+                for (auto const& key_member : *server_signatures)
+                {
+                    auto const* signature = std::get_if<std::string>(&key_member.value->storage());
+                    if (signature != nullptr && !signature->empty())
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] auto event_content_string(canonicaljson::Value const& event, std::string_view key) noexcept
         -> std::string const*
     {
@@ -1077,6 +1118,19 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 {
                     return make_denied("5", "restricted join requires join_authorised_via_users_server");
                 }
+
+                // EVT-1: the authorising user's homeserver must have signed the event.
+                // The federation layer verifies the signature cryptographically before
+                // ingesting the PDU; state resolution re-runs this rule without network
+                // access, so the structural presence of a signature from that server is
+                // required here and is enough to fail closed.
+                // Spec: Matrix room versions v8+ (v10 rule 4.2, v12 rule 5.2).
+                auto const authorising_server = domain_of(*authorising_user);
+                if (!event_has_signature_from_server(event, authorising_server))
+                {
+                    return make_denied("5", "restricted join event lacks a signature from the authorising user's server");
+                }
+
                 auto const* authorising_member_obj = value_is_object(auth_events.authorising_user_member);
                 if (authorising_member_obj == nullptr)
                 {

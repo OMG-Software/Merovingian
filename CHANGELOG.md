@@ -1,8 +1,15 @@
 ## 0.12.16
 
 - **WIP: medium-severity findings from the 2026-09-29 security audit.**
-  Branch `fix/audit-medium-0.12.16` addresses the 29 medium-severity findings
+  Branch `fix/audit-medium-0.12.16` addresses the 20 medium-severity findings
   not covered by the 0.12.15 critical/high fix pass.
+
+- **FIXED: restricted-join authorising-server signature verification (EVT-1).**
+  The restricted/knock-restricted join authorization rule now requires a
+  signature from the authorising user's homeserver in the event's `signatures`
+  object. Federation PDU ingestion cryptographically verifies that signature
+  after resolving the authorising server's key, and state resolution enforces
+  the structural presence of the signature without network access.
 
 ## 0.12.15
 
