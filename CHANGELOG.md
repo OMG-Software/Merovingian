@@ -21,6 +21,11 @@
   and ordinary `/register` and `/register/available` reject that localpart as
   reserved.
 
+- **FIXED: v11+ room creator detection (EVT-7).**
+  Rooms created elsewhere with v11 (no `content.creator`) now derive the creator
+  from the create event's sender, so bootstrap joins and power checks can be
+  re-authorised locally.
+
 - **FIXED: Argon2id verification under global lock, sync timeout cap, and
   rate-limit key normalisation (AUTH-4, HTTP-3, HTTP-4).**
   Password and registration-token verification now run without the runtime mutex.
