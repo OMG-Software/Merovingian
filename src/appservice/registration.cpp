@@ -404,8 +404,15 @@ auto AppserviceRegistry::find_by_id(std::string_view id) const noexcept -> Appse
     return it == m_registrations.end() ? nullptr : &(*it);
 }
 
+auto AppserviceRegistry::is_sender_user_id(std::string_view user_id, std::string_view server_name) const noexcept -> bool
+{
+    return std::ranges::any_of(m_registrations, [user_id, server_name](AppserviceRegistration const& reg) {
+        return sender_user_id(reg, server_name) == user_id;
+    });
+}
+
 auto AppserviceRegistry::user_namespace_exclusively_owned_by_other(std::string_view user_id,
-                                                                   std::string_view excluded_id) const noexcept -> bool
+                                                                 std::string_view excluded_id) const noexcept -> bool
 {
     return std::ranges::any_of(m_registrations, [user_id, excluded_id](AppserviceRegistration const& reg) {
         return reg.id != excluded_id && any_exclusive_namespace_matches(reg.namespaces.users, user_id);

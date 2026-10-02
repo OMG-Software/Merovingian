@@ -336,6 +336,42 @@ SCENARIO("appservice_owns_user resolves the sender_localpart default", "[appserv
     }
 }
 
+SCENARIO("cross-registration sender_localpart is reserved from ordinary registration", "[appservice][registration][security][auth-3]")
+{
+    GIVEN("a registration whose sender_localpart is outside its own users namespace")
+    {
+        auto registrations = std::vector<AppserviceRegistration>{};
+        auto const json = std::string{R"({
+            "id": "bridge",
+            "url": "http://127.0.0.1:5555",
+            "as_token": "as-token",
+            "hs_token": "hs-token",
+            "sender_localpart": "bridgebot",
+            "namespaces": {
+                "users": [{"regex": "@_irc_.*", "exclusive": true}]
+            }
+        })"};
+        auto parsed = parse_registration_json(json);
+        REQUIRE(parsed.value.has_value());
+        registrations.push_back(std::move(*parsed.value));
+
+        WHEN("the registry is asked whether @bridgebot:example.org is a sender user id")
+        {
+            auto const registry = AppserviceRegistry{std::move(registrations)};
+
+            THEN("it is recognised as a sender")
+            {
+                CHECK(registry.is_sender_user_id("@bridgebot:example.org", "example.org"));
+            }
+
+            THEN("an unrelated user is not")
+            {
+                CHECK_FALSE(registry.is_sender_user_id("@_irc_bob:example.org", "example.org"));
+            }
+        }
+    }
+}
+
 SCENARIO("cross-registration uniqueness validation", "[appservice][registration]")
 {
     GIVEN("two registrations sharing the same id")

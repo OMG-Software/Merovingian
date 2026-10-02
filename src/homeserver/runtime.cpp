@@ -14,6 +14,7 @@
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -834,6 +835,43 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
             },
                            observability::LogEventSeverity::warning);
         }
+        // Create or verify every appservice's sender_localpart user. The
+        // sender is the bridge's own identity; it must exist and must not be
+        // claimable by ordinary registration (AUTH-3). Registration is
+        // passwordless — the bridge authenticates by as_token and masquerades
+        // by user_id.
+        for (auto const& registration : runtime.appservices.all())
+        {
+            auto const sender_id = appservice::sender_user_id(registration, runtime.config.server().server_name);
+            auto const user_exists =
+                std::ranges::any_of(runtime.database.users, [&sender_id](LocalUser const& user) {
+                    return user.user_id == sender_id;
+                });
+            if (!user_exists)
+            {
+                auto const result = register_appservice_user(runtime, registration.sender_localpart);
+                if (!result.ok)
+                {
+                    log_diagnostic("start.appservice_sender_creation_failed",
+                                   {
+                                       {"appservice_id", registration.id, false},
+                                       {"sender", sender_id,                false},
+                                       {"reason", result.reason,            false}
+                    },
+                                   observability::LogEventSeverity::error);
+                }
+                else
+                {
+                    log_diagnostic("start.appservice_sender_created",
+                                   {
+                                       {"appservice_id", registration.id, false},
+                                       {"sender", sender_id,                false}
+                    },
+                                   observability::LogEventSeverity::info);
+                }
+            }
+        }
+
         log_diagnostic("start.appservices_ready",
                        {
                            {"count", std::to_string(loaded.registry.size()), false}

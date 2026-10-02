@@ -9416,7 +9416,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
         }
         auto const user_id = matrix_user_id(rt.homeserver.config.server().server_name, *username);
-        if (user_exists(rt, user_id))
+        if (user_exists(rt, user_id) ||
+            rt.homeserver.appservices.is_sender_user_id(user_id, rt.homeserver.config.server().server_name))
         {
             return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
         }
@@ -9776,7 +9777,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // (non-appservice) registration — the m.login.application_service
         // branch above already returned.
         if (auto const desired_user_id = "@" + body->localpart + ":" + rt.homeserver.config.server().server_name;
-            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}))
+            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}) ||
+            rt.homeserver.appservices.is_sender_user_id(desired_user_id, rt.homeserver.config.server().server_name))
         {
             return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
         }
