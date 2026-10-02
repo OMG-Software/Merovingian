@@ -21,6 +21,14 @@
   and ordinary `/register` and `/register/available` reject that localpart as
   reserved.
 
+- **FIXED: Argon2id verification under global lock, sync timeout cap, and
+  rate-limit key normalisation (AUTH-4, HTTP-3, HTTP-4).**
+  Password and registration-token verification now run without the runtime mutex.
+  `/v1/register/*` routes are `auth_sensitive` and the token-validity endpoint
+  refuses requests when registration is disabled. Rate-limit policy lookup uses
+  the normalised route so varying path/query segments share buckets. `/sync` and
+  sliding-sync long-poll timeouts are capped at 120 s.
+
 ## 0.12.15
 
 - **FIXED: critical logs lost when the process exits after hardening refusal
