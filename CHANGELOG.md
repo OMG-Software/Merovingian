@@ -11,6 +11,11 @@
   after resolving the authorising server's key, and state resolution enforces
   the structural presence of the signature without network access.
 
+- **FIXED: application-service foreign-user assertion (AUTH-6).**
+  `appservice_owns_user` now rejects any `user_id` whose domain is not the
+  local homeserver before matching namespace regexes, preventing a compromised
+  appservice from having this server sign events as a foreign user.
+
 ## 0.12.15
 
 - **FIXED: critical logs lost when the process exits after hardening refusal
