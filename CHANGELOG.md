@@ -16,6 +16,11 @@
   local homeserver before matching namespace regexes, preventing a compromised
   appservice from having this server sign events as a foreign user.
 
+- **FIXED: application-service sender_localpart reservation (AUTH-3).**
+  Every appservice's `sender_localpart` user is created at startup if missing,
+  and ordinary `/register` and `/register/available` reject that localpart as
+  reserved.
+
 ## 0.12.15
 
 - **FIXED: critical logs lost when the process exits after hardening refusal
