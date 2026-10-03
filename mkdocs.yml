@@ -1,0 +1,77 @@
+site_name: Merovingian
+site_description: Security-first Matrix homeserver written in modern C++26
+site_url: https://omg-software.github.io/Merovingian/
+repo_url: https://github.com/OMG-Software/Merovingian
+repo_name: OMG-Software/Merovingian
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - User guide: user-manual.md
+  - Architecture: architecture.md
+  - Security:
+      - Threat model: threat-model.md
+      - Runtime hardening: hardening.md
+      - Cryptographic boundary: crypto-boundary.md
+      - Security coding rules: security-coding-rules.md
+      - Security review checklist: security-review-checklist.md
+  - Operations:
+      - Database persistence: database-persistence.md
+      - Trust & safety: trust-safety.md
+  - Development:
+      - Development environment: dev-environment.md
+      - Testing standards: testing-standards.md
+      - Release process: release-process.md
+      - Versioning: versioning.md
+  - Road to 1.0:
+      - Production milestone: todos/production-milestone.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; OMG Software contributors — GPL-3.0-or-later
