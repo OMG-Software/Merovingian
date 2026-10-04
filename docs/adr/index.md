@@ -103,6 +103,7 @@
 * [0099 - Default unrecorded directory publication to private](0099-default-unrecorded-directory-publication-private.md)
 * [0100 - Commit media moderation with audit and blob state](0100-commit-media-moderation-with-audit-and-blob-state.md)
 * [0101 - Build the documentation site on every branch, but publish only from main](0101-build-the-documentation-site-on-every-branch-but-publish-only-from-main.md)
+* [0102 - Escape log control characters once, at the sink](0102-escape-log-control-characters-once-at-the-sink.md)
 
 ## Rejected Records
 

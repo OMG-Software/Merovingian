@@ -480,6 +480,20 @@ SCENARIO("redact_log_message redacts key=value tokens carrying secret markers in
             }
         }
     }
+
+    GIVEN("a composed log line whose last token is sensitive, followed by the record terminator")
+    {
+        WHEN("it is redacted")
+        {
+            auto const redacted =
+                merovingian::observability::redact_log_message("auth:  event=login.rejected password=hunter2\n");
+
+            THEN("the value is redacted and the line still ends the record, so the next record cannot join it")
+            {
+                REQUIRE(redacted == "auth:  event=login.rejected password=<redacted>\n");
+            }
+        }
+    }
 }
 
 SCENARIO("DropEpisodePolicy reports exactly one drop episode per contiguous run of failures",

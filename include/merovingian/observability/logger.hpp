@@ -419,11 +419,15 @@ private:
         return std::string{result.data()};
     }
 
+    // AUTH-9: the module and message are escaped here, at the one place every
+    // console and file line is composed, so the trailing '\n' is the only line
+    // break a record can contain whatever the caller passed in.
     static auto make_log_line(std::string const& level, std::string const& module, std::string const& message)
         -> std::string
     {
         auto stream = std::ostringstream{};
-        stream << current_date_time() << "  <" << level << ">  " << module << ":  " << message << '\n';
+        stream << current_date_time() << "  <" << level << ">  " << escape_log_controls(module) << ":  "
+               << escape_log_controls(message) << '\n';
         return stream.str();
     }
 

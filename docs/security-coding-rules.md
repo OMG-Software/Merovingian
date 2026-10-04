@@ -157,6 +157,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/crypto/AGENTS.md`, `src/auth/AGENTS.md`, `src/observability/AGENTS.md`,
   `security/coding-rules.md`.
 
+- **Write log records only through `SingleLog`, and never remove the control-character
+  escaping in `SingleLog::make_log_line`.** Every line is passed through
+  `escape_log_controls`, so `\n`, `\r`, other C0 controls, DEL and UTF-8 C1 controls in a
+  logged value appear as printable escapes and the record's own `\n` is its only line break.
+  Do not write log data to `std::cout`/`std::cerr` directly, and do not pre-escape a value
+  yourself (it would be escaped twice).
+  Why: logged values such as a login `identifier.user` or `device_id` are client-controlled;
+  an unescaped newline forges a whole extra log record that downstream parsers and operators
+  trust, and an escape sequence reaches the operator's terminal (CWE-117 Improper Output
+  Neutralization for Logs). AUTH-9 in the 2026-09-29 security audit.
+  Source: `src/observability/AGENTS.md`.
+
 - **Never read config values directly from environment or disk inside other modules — all
   config access goes through `runtime_config.hpp`. Log the effective config at startup
   excluding secrets; never log TLS private key paths or secret values.**

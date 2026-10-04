@@ -6,6 +6,26 @@
   suite passes 55 groups with no failures or timeouts; strict Pages build,
   8 package checks and 20 documentation-tooling checks pass.
 
+- **Log records cannot be forged by control characters (AUTH-9).** A JSON
+  `\n` in a login `identifier.user` or `device_id` wrote an extra physical
+  log line, and ESC or a C1 CSI reached the operator's terminal raw.
+  `SingleLog::make_log_line` now passes the module and message of every
+  console and file line through the new `escape_log_controls`: `\n`, `\r`,
+  `\t` become those escapes, other C0 controls and DEL become `\xHH`, UTF-8
+  C1 controls become `\u00HH`, and all other bytes (including UTF-8) pass
+  through. ADR-0102.
+
+- **FIXED: a sensitive last field joined the next log record onto its line.**
+  `redact_log_message` split tokens on spaces only, so when a line ended in a
+  sensitive `key=value` its replacement also discarded the record's `\n`. It
+  now treats every whitespace character as a token boundary and keeps it.
+
+- **TESTS:** new `tests/unit/test_security_audit_log_controls.cpp` asserts at
+  the real synchronous console sink that controls in values, keys and event
+  names are escaped (C0, DEL and C1), each call is one physical record, and
+  redaction still holds. `test_observability.cpp` gains a scenario for the
+  terminator surviving a redacted last token.
+
 - **Directory durability and authenticated lookup (CSAZ-5).** Schema 18 stores
   publication independently of join rules and defaults previously unrecorded
   publication to private. Creation persists it with initial membership; PUT

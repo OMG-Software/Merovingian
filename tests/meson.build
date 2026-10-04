@@ -185,6 +185,7 @@ shell = find_program('sh')
       'unit/test_http_rate_limit.cpp',
       'unit/test_http_rate_limit_tiers.cpp',
       'unit/test_security_audit_http_3.cpp',
+      'unit/test_security_audit_log_controls.cpp',
       'unit/test_security_audit_outbound.cpp',
       'unit/test_http_request.cpp',
       'unit/test_http_request_limits.cpp',

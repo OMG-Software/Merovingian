@@ -198,6 +198,14 @@ private:
 // shape used by every current LOG_*/LOGF_* call site (e.g. "shard=0
 // config=/etc/x").
 [[nodiscard]] auto redact_log_message(std::string_view message) -> std::string;
+// AUTH-9 (security-audit-report-2026-09-29.md): renders control characters as
+// printable escapes so a logged value cannot forge an extra log line or send a
+// terminal control sequence to an operator's console. `\n`, `\r` and `\t` become
+// those two-character escapes, every other C0 control and DEL becomes `\xHH`,
+// and a UTF-8 encoded C1 control (U+0080-U+009F) becomes `\u00HH`. All other
+// bytes, including the rest of UTF-8, pass through unchanged. `SingleLog`
+// applies it to every line it writes (see logger.hpp).
+[[nodiscard]] auto escape_log_controls(std::string_view text) -> std::string;
 [[nodiscard]] auto structured_log_summary(StructuredLogEvent const& event) -> std::string;
 [[nodiscard]] auto diagnostic_log_summary(std::string_view logger, std::string_view event,
                                           std::vector<StructuredLogField> fields) -> std::string;
