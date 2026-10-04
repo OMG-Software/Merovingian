@@ -124,8 +124,8 @@ namespace
         observability::log_diagnostic("persistent_store", event, fields, severity);
     }
 
-    [[nodiscard]] auto record_statement(std::string name, std::string sql, std::vector<BoundValue> parameters = {})
-        -> PreparedStatement
+    [[nodiscard]] auto record_statement(std::string name, std::string sql,
+                                        std::vector<BoundValue> parameters = {}) -> PreparedStatement
     {
         return {std::move(name), std::move(sql), std::move(parameters)};
     }
@@ -150,8 +150,8 @@ namespace
         return !hash_algorithm.empty() && !digest.empty() && digest.find('/') == std::string_view::npos;
     }
 
-    [[nodiscard]] auto top_level_json_string_field(std::string_view json, std::string_view field_name)
-        -> std::optional<std::string>
+    [[nodiscard]] auto top_level_json_string_field(std::string_view json,
+                                                   std::string_view field_name) -> std::optional<std::string>
     {
         auto const parsed = canonicaljson::parse_lossless(json);
         if (parsed.error != canonicaljson::ParseError::none)
@@ -174,8 +174,8 @@ namespace
         return std::nullopt;
     }
 
-    [[nodiscard]] auto state_matches_persisted_event(PersistentStore const& store, PersistentStateEvent const& state)
-        -> bool
+    [[nodiscard]] auto state_matches_persisted_event(PersistentStore const& store,
+                                                     PersistentStateEvent const& state) -> bool
     {
         auto const iterator = std::ranges::find_if(store.events, [&state](PersistentEvent const& event) {
             auto const event_type = top_level_json_string_field(event.json, "type");
@@ -599,8 +599,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
-    -> bool
+[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id,
+                                        std::string_view new_hash) -> bool
 {
     auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
         return u.user_id == user_id;
@@ -639,8 +639,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended, bool locked)
-    -> bool
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
+                                          bool locked) -> bool
 {
     auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
         return u.user_id == user_id;
@@ -924,8 +924,8 @@ namespace
     return revoked;
 }
 
-[[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store, std::string_view predecessor_hash)
-    -> std::size_t
+[[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store,
+                                                          std::string_view predecessor_hash) -> std::size_t
 {
     if (predecessor_hash.empty())
     {
@@ -1143,8 +1143,8 @@ namespace
     return store.server_signing_keys;
 }
 
-[[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
-    -> bool
+[[nodiscard]] auto store_federation_destination(PersistentStore& store,
+                                                PersistentFederationDestination destination) -> bool
 {
     if (destination.server_name.empty() || destination.state.empty())
     {
@@ -1176,8 +1176,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
-    -> bool
+[[nodiscard]] auto store_federation_transaction(PersistentStore& store,
+                                                PersistentFederationTransaction transaction) -> bool
 {
     if (!federation_transaction_is_valid(transaction))
     {
@@ -1374,15 +1374,40 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_room", "INSERT INTO rooms VALUES ($1, $2)",
-                                                    {
-                                                        {room.room_id,         false},
-                                                        {room.creator_user_id, false}
+    if (!record_and_persist(
+            store,
+            record_statement("insert_room",
+                             "INSERT INTO rooms (room_id, creator_user_id, directory_public) VALUES ($1, $2, $3)",
+                             {
+                                 {room.room_id,                             false},
+                                 {room.creator_user_id,                     false},
+                                 {room.directory_public ? "true" : "false", false}
     })))
     {
         return false;
     }
     store.rooms.push_back(std::move(room));
+    return true;
+}
+
+[[nodiscard]] auto set_room_directory_public(PersistentStore& store, std::string_view room_id,
+                                             bool directory_public) -> bool
+{
+    auto const room = std::ranges::find_if(store.rooms, [room_id](PersistentRoom const& candidate) {
+        return candidate.room_id == room_id;
+    });
+    if (room == store.rooms.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement("set_room_directory_public", "UPDATE rooms SET directory_public = $2 WHERE room_id = $1",
+                             {public_value(std::string{room_id}), public_value(directory_public ? "true" : "false")})))
+    {
+        return false;
+    }
+    room->directory_public = directory_public;
     return true;
 }
 
@@ -1611,8 +1636,8 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
-    -> std::optional<PersistentInvite>
+[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id,
+                               std::string_view user_id) -> std::optional<PersistentInvite>
 {
     auto const it = std::ranges::find_if(store.invites, [&](PersistentInvite const& invite) {
         return invite.room_id == room_id && invite.user_id == user_id;
@@ -1634,10 +1659,12 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
         });
         return false;
     }
-    auto const room_statement = record_statement("insert_room", "INSERT INTO rooms VALUES ($1, $2)",
-                                                 {
-                                                     {room.room_id,         false},
-                                                     {room.creator_user_id, false}
+    auto const room_statement = record_statement(
+        "insert_room", "INSERT INTO rooms (room_id, creator_user_id, directory_public) VALUES ($1, $2, $3)",
+        {
+            {room.room_id,                             false},
+            {room.creator_user_id,                     false},
+            {room.directory_public ? "true" : "false", false}
     });
     auto const membership_statement =
         record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
@@ -2001,8 +2028,8 @@ namespace
         return map;
     }
 
-    [[nodiscard]] auto find_persistent_state_group(PersistentStore const& store, std::string_view state_group_id)
-        -> PersistentStateGroup const*
+    [[nodiscard]] auto find_persistent_state_group(PersistentStore const& store,
+                                                   std::string_view state_group_id) -> PersistentStateGroup const*
     {
         auto const iterator =
             std::ranges::find_if(store.state_groups, [state_group_id](PersistentStateGroup const& group) {
@@ -2018,8 +2045,8 @@ namespace
 
 } // namespace
 
-[[nodiscard]] auto find_state_group(PersistentStore const& store, std::string_view state_group_id)
-    -> std::optional<PersistentStateGroup>
+[[nodiscard]] auto find_state_group(PersistentStore const& store,
+                                    std::string_view state_group_id) -> std::optional<PersistentStateGroup>
 {
     auto const* group = find_persistent_state_group(store, state_group_id);
     return group == nullptr ? std::nullopt : std::optional<PersistentStateGroup>{*group};
@@ -2077,11 +2104,10 @@ namespace
     return result;
 }
 
-[[nodiscard]] auto create_or_reuse_state_group(PersistentStore& store, std::string_view room_id,
-                                               std::string_view new_state_group_id,
-                                               std::optional<std::string> const& parent_state_group_id,
-                                               std::vector<PersistentStateGroupStateEntry> const& full_state)
-    -> std::optional<std::string>
+[[nodiscard]] auto create_or_reuse_state_group(
+    PersistentStore& store, std::string_view room_id, std::string_view new_state_group_id,
+    std::optional<std::string> const& parent_state_group_id,
+    std::vector<PersistentStateGroupStateEntry> const& full_state) -> std::optional<std::string>
 {
     auto const requested_map = to_state_group_map(full_state);
 
@@ -2197,8 +2223,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
-    -> std::optional<std::string>
+[[nodiscard]] auto find_event_state_group(PersistentStore const& store,
+                                          std::string_view event_id) -> std::optional<std::string>
 {
     auto const existing =
         std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
@@ -2255,8 +2281,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)
-    -> std::vector<std::string>
+[[nodiscard]] auto find_forward_extremities(PersistentStore const& store,
+                                            std::string_view room_id) -> std::vector<std::string>
 {
     auto result = std::vector<std::string>{};
     for (auto const& extremity : store.forward_extremities)
@@ -2292,8 +2318,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto find_event_status(PersistentStore const& store, std::string_view event_id)
-    -> std::optional<std::string>
+[[nodiscard]] auto find_event_status(PersistentStore const& store,
+                                     std::string_view event_id) -> std::optional<std::string>
 {
     auto const existing = std::ranges::find_if(store.events, [event_id](PersistentEvent const& event) {
         return event.event_id == event_id;
@@ -2328,8 +2354,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
-    -> std::optional<PersistentDeviceKey>
+[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id,
+                                   std::string_view device_id) -> std::optional<PersistentDeviceKey>
 {
     auto const existing = std::ranges::find_if(store.device_keys, [user_id, device_id](PersistentDeviceKey const& key) {
         return key.user_id == user_id && key.device_id == device_id;
@@ -2517,8 +2543,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
-    -> bool
+[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id,
+                                             std::string_view version) -> bool
 {
     auto const existing =
         std::ranges::find_if(store.key_backup_versions, [user_id, version](PersistentKeyBackupVersion const& v) {
@@ -2700,6 +2726,75 @@ namespace
     }
     existing->quarantined = quarantined;
     existing->removed = removed;
+    return true;
+}
+
+[[nodiscard]] auto commit_local_media_moderation(PersistentStore& store, std::string_view media_id, bool quarantined,
+                                                 bool removed, PersistentAdminAction action,
+                                                 PersistentAuditEvent audit) -> bool
+{
+    auto const media = std::ranges::find_if(store.local_media, [media_id](auto const& row) {
+        return row.media_id == media_id;
+    });
+    if (media == store.local_media.end() || media->removed || (removed && quarantined) || action.target != media_id)
+    {
+        return false;
+    }
+    auto blob = store.media_blobs.end();
+    if (removed)
+    {
+        auto const matches = [&media](auto const& row) {
+            return row.hash_algorithm == media->hash_algorithm && row.digest == media->digest &&
+                   row.size_bytes == media->size_bytes && row.ref_count > 0U;
+        };
+        blob = std::ranges::find_if(store.media_blobs, matches);
+        if (blob == store.media_blobs.end() || std::ranges::count_if(store.media_blobs, matches) != 1)
+        {
+            return false;
+        }
+    }
+    audit.actor = bounded_utf8(audit.actor, max_audit_field_bytes);
+    audit.target = bounded_utf8(audit.target, max_audit_field_bytes);
+    audit.reason = bounded_utf8(audit.reason, max_audit_field_bytes);
+    auto statements = std::vector<PreparedStatement>{
+        record_statement("moderate_media_state", "UPDATE media SET quarantined = $2, removed = $3 WHERE media_id = $1",
+                         {public_value(media_id), public_value(quarantined ? "true" : "false"),
+                          public_value(removed ? "true" : "false")})};
+    if (removed)
+    {
+        // Do not re-bind the payload. A shared blob keeps its bytes; the final
+        // reference clears them in the same transaction as removal metadata.
+        statements.push_back(record_statement(
+            "moderate_media_blob",
+            "UPDATE media_blobs SET ref_count = $2, bytes = CASE WHEN $2 = '0' THEN $3 ELSE bytes END "
+            "WHERE storage_id = $1",
+            {
+                public_value(blob->storage_id), public_value(std::to_string(blob->ref_count - 1U)), {"", true, true}
+        }));
+    }
+    statements.push_back(record_statement(
+        "moderate_media_admin_action", "INSERT INTO admin_actions VALUES ($1, $2, $3)",
+        {public_value(action.admin_user_id), public_value(action.action), public_value(action.target)}));
+    statements.push_back(
+        record_statement("moderate_media_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
+                         {public_value(audit.category), public_value(audit.event_type), public_value(audit.actor),
+                          public_value(audit.target), public_value(audit.reason)}));
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+    media->quarantined = quarantined;
+    media->removed = removed;
+    if (removed)
+    {
+        --blob->ref_count;
+        if (blob->ref_count == 0U)
+        {
+            blob->bytes.clear();
+        }
+    }
+    store.admin_actions.push_back(std::move(action));
+    remember_audit_event(store, std::move(audit));
     return true;
 }
 
@@ -3182,8 +3277,8 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     return true;
 }
 
-[[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
-    -> std::optional<PersistentRoomAlias>
+[[nodiscard]] auto find_room_alias(PersistentStore const& store,
+                                   std::string_view room_alias) -> std::optional<PersistentRoomAlias>
 {
     auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
         return alias.room_alias == room_alias;
@@ -3302,8 +3397,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
-    -> std::optional<PersistentFilter>
+[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id,
+                               std::string_view filter_id) -> std::optional<PersistentFilter>
 {
     auto const it = std::ranges::find_if(store.filters, [user_id, filter_id](PersistentFilter const& f) {
         return f.user_id == user_id && f.filter_id == filter_id;
@@ -3338,8 +3433,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto find_profile(PersistentStore const& store, std::string_view user_id)
-    -> std::optional<PersistentProfile>
+[[nodiscard]] auto find_profile(PersistentStore const& store,
+                                std::string_view user_id) -> std::optional<PersistentProfile>
 {
     auto const it = std::ranges::find_if(store.profiles, [user_id](PersistentProfile const& p) {
         return p.user_id == user_id;
@@ -3389,8 +3484,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
 }
 
 [[nodiscard]] auto find_account_threepid(PersistentStore const& store, std::string_view user_id,
-                                         std::string_view medium, std::string_view address)
-    -> std::optional<PersistentThreePidBinding>
+                                         std::string_view medium,
+                                         std::string_view address) -> std::optional<PersistentThreePidBinding>
 {
     auto const it = std::ranges::find_if(store.account_threepids, [&](PersistentThreePidBinding const& current) {
         return current.user_id == user_id && current.medium == medium && current.address == address;
@@ -3487,8 +3582,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto list_pushers_for_user(PersistentStore const& store, std::string_view user_id)
-    -> std::vector<PersistentPusher>
+[[nodiscard]] auto list_pushers_for_user(PersistentStore const& store,
+                                         std::string_view user_id) -> std::vector<PersistentPusher>
 {
     auto result = std::vector<PersistentPusher>{};
     for (auto const& pusher : store.pushers)
@@ -3592,8 +3687,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
-    -> std::vector<PersistentNotification>
+[[nodiscard]] auto list_notifications_for_user(PersistentStore const& store,
+                                               std::string_view user_id) -> std::vector<PersistentNotification>
 {
     auto result = std::vector<PersistentNotification>{};
     for (auto const& notification : store.notifications)
@@ -3703,8 +3798,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto consume_login_token(PersistentStore& store, std::vector<std::string> const& candidate_hashes)
-    -> std::optional<std::string>
+[[nodiscard]] auto consume_login_token(PersistentStore& store,
+                                       std::vector<std::string> const& candidate_hashes) -> std::optional<std::string>
 {
     auto const now = std::chrono::system_clock::now();
     auto const matched = std::ranges::find_if(store.login_tokens, [&](PersistentLoginToken const& row) {
@@ -3736,8 +3831,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return matched->user_id;
 }
 
-[[nodiscard]] auto find_appservice_txn_cursor(PersistentStore const& store, std::string_view appservice_id)
-    -> PersistentAppserviceTxnCursor
+[[nodiscard]] auto find_appservice_txn_cursor(PersistentStore const& store,
+                                              std::string_view appservice_id) -> PersistentAppserviceTxnCursor
 {
     auto const it =
         std::ranges::find_if(store.appservice_txn_cursors, [appservice_id](PersistentAppserviceTxnCursor const& row) {

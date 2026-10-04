@@ -1166,14 +1166,26 @@ namespace
     }
     auto const& admin_user_id = *admin.user_id;
 
+    auto const validation = media::validate_local_media_admin_action(runtime.media_repository, media_id,
+                                                                     media::LocalMediaAdminAction::quarantine, reason);
+    if (!validation.ok)
+    {
+        return admin_result_to_operation(validation);
+    }
+
+    auto const audit = database::PersistentAuditEvent{"moderation", "media.quarantined", admin_user_id,
+                                                      std::string{media_id}, std::string{reason}};
+    if (!database::commit_local_media_moderation(runtime.database.persistent_store, media_id, true, false,
+                                                 {admin_user_id, "media.quarantine", std::string{media_id}}, audit))
+    {
+        return make_operation_result(false, {}, "media moderation persistence failed", 500U);
+    }
+
     auto const result = media::quarantine_local_media(runtime.media_repository, media_id, reason);
     if (result.ok)
     {
-        std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, true, false);
-        std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                                    {admin_user_id, "media.quarantine", std::string{media_id}});
-        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.quarantined",
-                           admin_user_id, media_id, reason);
+        remember_local_audit(runtime.database, observability::AuditCategory::moderation, audit.event_type, audit.actor,
+                             audit.target, audit.reason);
     }
     return admin_result_to_operation(result);
 }
@@ -1190,14 +1202,26 @@ namespace
     }
     auto const& admin_user_id = *admin.user_id;
 
+    auto const validation = media::validate_local_media_admin_action(runtime.media_repository, media_id,
+                                                                     media::LocalMediaAdminAction::release);
+    if (!validation.ok)
+    {
+        return admin_result_to_operation(validation);
+    }
+
+    auto const audit = database::PersistentAuditEvent{"moderation", "media.released", admin_user_id,
+                                                      std::string{media_id}, "released"};
+    if (!database::commit_local_media_moderation(runtime.database.persistent_store, media_id, false, false,
+                                                 {admin_user_id, "media.release", std::string{media_id}}, audit))
+    {
+        return make_operation_result(false, {}, "media moderation persistence failed", 500U);
+    }
+
     auto const result = media::release_local_media(runtime.media_repository, media_id);
     if (result.ok)
     {
-        std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, false);
-        std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                                    {admin_user_id, "media.release", std::string{media_id}});
-        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.released", admin_user_id,
-                           media_id, "released");
+        remember_local_audit(runtime.database, observability::AuditCategory::moderation, audit.event_type, audit.actor,
+                             audit.target, audit.reason);
     }
     return admin_result_to_operation(result);
 }
@@ -1214,15 +1238,26 @@ namespace
     }
     auto const& admin_user_id = *admin.user_id;
 
+    auto const validation = media::validate_local_media_admin_action(runtime.media_repository, media_id,
+                                                                     media::LocalMediaAdminAction::remove, reason);
+    if (!validation.ok)
+    {
+        return admin_result_to_operation(validation);
+    }
+
+    auto const audit = database::PersistentAuditEvent{"moderation", "media.removed", admin_user_id,
+                                                      std::string{media_id}, std::string{reason}};
+    if (!database::commit_local_media_moderation(runtime.database.persistent_store, media_id, false, true,
+                                                 {admin_user_id, "media.remove", std::string{media_id}}, audit))
+    {
+        return make_operation_result(false, {}, "media moderation persistence failed", 500U);
+    }
+
     auto const result = media::remove_local_media(runtime.media_repository, media_id, reason);
     if (result.ok)
     {
-        std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, true);
-        persist_blob_for_media(runtime, media_id);
-        std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                                    {admin_user_id, "media.remove", std::string{media_id}});
-        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.removed", admin_user_id,
-                           media_id, reason);
+        remember_local_audit(runtime.database, observability::AuditCategory::moderation, audit.event_type, audit.actor,
+                             audit.target, audit.reason);
     }
     return admin_result_to_operation(result);
 }

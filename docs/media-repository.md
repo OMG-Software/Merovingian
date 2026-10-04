@@ -321,3 +321,7 @@ blob bytes through `media_blobs`, and hydrate the runtime repository from those
 rows after a SQLite/PostgreSQL restart.
 
 Media moderation events are persisted with the `moderation` audit category so operator filtering can distinguish media policy and admin moderation events from auth or generic admin activity.
+
+### Security audit follow-up (0.12.16)
+
+Administrative quarantine, release and removal validate without changing repository state. Metadata, optional blob reference-count/byte clearing, admin_actions and audit_log commit atomically before repository state or metrics change. Any required write failure returns 500 and preserves the prior state across restart (ADR-0100).

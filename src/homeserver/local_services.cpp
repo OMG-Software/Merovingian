@@ -97,8 +97,8 @@ namespace
 
 } // namespace
 
-[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason, std::uint16_t status)
-    -> OperationResult
+[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason,
+                                         std::uint16_t status) -> OperationResult
 {
     auto const resolved_status = status == 0U ? static_cast<std::uint16_t>(ok ? 200U : 400U) : status;
     return {ok, resolved_status, std::move(value), std::move(reason)};
@@ -145,6 +145,27 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
     std::ignore = database::append_audit_event(
         database.persistent_store,
         {observability::audit_category_name(category), std::string{event_type}, safe_actor, safe_target, safe_reason});
+}
+
+auto remember_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
+                          std::string_view actor, std::string_view target, std::string_view reason) -> void
+{
+    auto const safe_actor = database::bounded_utf8(actor, database::max_audit_field_bytes);
+    auto const safe_target = database::bounded_utf8(target, database::max_audit_field_bytes);
+    auto const safe_reason = database::bounded_utf8(reason, database::max_audit_field_bytes);
+    log_diagnostic("audit.append", {
+                                       {"category",   std::string{observability::audit_category_name(category)}, false},
+                                       {"event_type", std::string{event_type},                                   false},
+                                       {"actor",      safe_actor,                                                false},
+                                       {"target",     safe_target,                                               false},
+                                       {"reason",     safe_reason,                                               false}
+    });
+    database.audit_events.push_back(observability::make_audit_event(category, event_type, safe_actor, safe_target,
+                                                                    safe_reason, "local-vertical-slice"));
+    while (database.audit_events.size() > database::max_in_memory_audit_events)
+    {
+        database.audit_events.pop_front();
+    }
 }
 
 auto log_diagnostic_audit(LocalDatabase& database, std::string_view logger, std::string_view event,

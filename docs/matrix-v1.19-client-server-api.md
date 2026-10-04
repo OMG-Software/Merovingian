@@ -386,3 +386,7 @@ Implemented: returns RFC 8414 metadata when `server.oidc.*` is configured; `404 
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/_matrix/client/v3/voip/turnServer` | `getTurnServer` | access token | - | 200, 429 |
+
+### Security audit follow-up (0.12.16)
+
+POST /_matrix/client/v3/publicRooms runs after the shared authentication and account-state gates, including remote lookups. Directory publication is durable and independent of join rules: a published invite-only room remains listed. Presence sync includes only peers sharing a current joined membership; PUT presence requires online, offline or unavailable and an optional string status_msg. The local 1024 UTF-8 byte status cap is resource policy (ADR-0098).

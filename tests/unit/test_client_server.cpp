@@ -10027,6 +10027,21 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
         REQUIRE(bob_login.response.status == 200U);
         auto const bob_token = login_token(bob_login.response.body);
 
+        // Matrix v1.19 §Presence, Security considerations: presence is published
+        // to users who share a room with the target user. Make the users joined
+        // to the same room before checking cross-user delivery.
+        auto const created_room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(created_room.response.status == 200U);
+        auto const shared_room_id = room_id(created_room.response.body);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + shared_room_id + "/invite", alice_token,
+                              R"({"user_id":"@bob:example.org"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/join/" + shared_room_id, bob_token, "{}"})
+                    .response.status == 200U);
+
         WHEN("alice sets online presence with a status message")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
@@ -10083,22 +10098,22 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
             }
         }
 
-        WHEN("alice omits presence fields")
+        WHEN("alice omits the required presence field")
         {
+            auto const sync_watermark_before = runtime.homeserver.database.persistent_store.next_sync_stream_id;
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"PUT", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", alice_token, "{}"});
 
-            THEN("the server defaults the stored state to offline with no status message")
+            THEN("the server rejects the request without storing presence or advancing its sync watermark")
             {
-                REQUIRE(response.response.status == 200U);
+                // Matrix v1.19 §PUT /presence/{userId}/status requires `presence`.
+                REQUIRE(response.response.status == 400U);
                 auto const presence = std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
                                                            [](auto const& state) {
                                                                return state.user_id == "@alice:example.org";
                                                            });
-                REQUIRE(presence != runtime.homeserver.database.persistent_store.presence_states.end());
-                REQUIRE(presence->presence == "offline");
-                REQUIRE(presence->status_msg.empty());
-                REQUIRE_FALSE(presence->currently_active);
+                REQUIRE(presence == runtime.homeserver.database.persistent_store.presence_states.end());
+                REQUIRE(runtime.homeserver.database.persistent_store.next_sync_stream_id == sync_watermark_before);
             }
         }
 

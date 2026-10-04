@@ -652,7 +652,8 @@ SCENARIO("Every unauthenticated proxy route shares one budget, and authenticated
                     },
                     2000ms);
                 get_rooms = send(runtime, "GET", silent_rooms_target, "192.0.2.21");
-                post_rooms = send(runtime, "POST", silent_rooms_target, "192.0.2.22", {}, R"({"limit":5})");
+                // Matrix v1.19 POST /publicRooms requires authentication before proxy admission.
+                post_rooms = send(runtime, "POST", silent_rooms_target, "192.0.2.22", token, R"({"limit":5})");
                 alias = send(runtime, "GET", silent_alias_target, "192.0.2.23");
                 authenticated_alias = send(runtime, "GET", silent_alias_target, "192.0.2.24", token);
                 media = send(runtime, "GET", "/_matrix/media/v3/download/" + std::string{silent_server} + "/abc",

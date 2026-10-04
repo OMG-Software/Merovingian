@@ -224,6 +224,16 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
         auto const device_id = first_device_id_for(rt, alice_id);
         auto& store = rt.homeserver.database.persistent_store;
 
+        // Matrix v1.19 §Presence, Security considerations: presence is published
+        // to users who share a room with the target user. Keep Charlie and Alice
+        // in a real shared room so this fixture exercises entitled delivery.
+        auto const shared_room_id = std::string{"!presence-shared:example.org"};
+        REQUIRE(merovingian::database::store_room(store, {shared_room_id, alice_id}));
+        REQUIRE(merovingian::database::store_membership(store, {shared_room_id, alice_id, "join", 0U}) ==
+                merovingian::database::MembershipStoreResult::stored);
+        REQUIRE(merovingian::database::store_membership(store, {shared_room_id, "@charlie:example.org", "join", 0U}) ==
+                merovingian::database::MembershipStoreResult::stored);
+
         REQUIRE(merovingian::homeserver::set_account_data(rt, {alice_id, "", "m.tag", R"({"tags":{"u.fav":{}}})"}));
         REQUIRE(merovingian::homeserver::push_to_device_message(
             rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"session":"abc"})"}));

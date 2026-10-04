@@ -513,7 +513,7 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     database.rooms.reserve(database.persistent_store.rooms.size());
     for (auto const& room : database.persistent_store.rooms)
     {
-        database.rooms.push_back({room.room_id, room.creator_user_id, {}, {}});
+        database.rooms.push_back({room.room_id, room.creator_user_id, {}, {}, room.directory_public});
     }
 
     for (auto const& membership : database.persistent_store.memberships)

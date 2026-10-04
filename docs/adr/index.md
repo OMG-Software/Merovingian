@@ -99,6 +99,9 @@
 * [0095 - Bound conflicted state traversal by distinct auth events](0095-bound-state-resolution-by-distinct-auth-events.md)
 * [0096 - Retry worker spawn failures without waiting on unrelated children](0096-retry-worker-spawn-failures-with-owned-child-waits.md)
 * [0097 - Check outbound socket peers against each request's approved pins](0097-check-outbound-socket-peers-against-request-pins.md)
+* [0098 - Limit presence status messages by UTF-8 byte length](0098-limit-presence-status-by-utf8-bytes.md)
+* [0099 - Default unrecorded directory publication to private](0099-default-unrecorded-directory-publication-private.md)
+* [0100 - Commit media moderation with audit and blob state](0100-commit-media-moderation-with-audit-and-blob-state.md)
 
 ## Rejected Records
 

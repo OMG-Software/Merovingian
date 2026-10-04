@@ -3529,7 +3529,7 @@ namespace
         for (auto const& room : rt.homeserver.database.rooms)
         {
             auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
-            if (!room.directory_public || !join_rule.has_value() || *join_rule != "public")
+            if (!room.directory_public)
                 continue;
 
             auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
@@ -3550,7 +3550,10 @@ namespace
             room_entry.push_back(json_member("room_id", json_str(room.room_id)));
             room_entry.push_back(json_member(
                 "num_joined_members", json_int(static_cast<std::int64_t>(joined_member_count(rt, room.room_id)))));
-            room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
+            if (join_rule.has_value())
+            {
+                room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
+            }
 
             auto const history_visibility =
                 room_state_string(store, index, room.room_id, "m.room.history_visibility", "history_visibility");
@@ -4050,9 +4053,28 @@ namespace
     {
         auto events = canonicaljson::Array{};
         auto emitted = std::size_t{0U};
+        // Presence is shared only with current joined peers (Matrix v1.19
+        // Presence security considerations). Build the scope once per response.
+        auto joined_rooms = std::unordered_set<std::string_view>{};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.user_id == user && membership.membership == "join")
+            {
+                joined_rooms.insert(membership.room_id);
+            }
+        }
+        auto visible_users = std::unordered_set<std::string_view>{};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.membership == "join" && joined_rooms.contains(membership.room_id))
+            {
+                visible_users.insert(membership.user_id);
+            }
+        }
         for (auto const& presence : store.presence_states)
         {
-            if (presence.user_id == user || presence.stream_id <= since_sync_stream_id)
+            if (presence.user_id == user || presence.stream_id <= since_sync_stream_id ||
+                !visible_users.contains(presence.user_id))
             {
                 continue;
             }
@@ -9637,92 +9659,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         return dispatch_resp(req, rt, 200U, public_rooms_json(rt));
     }
-    // Spec: POST /_matrix/client/v3/publicRooms
-    // ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
-    if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
-    {
-        auto filter_term = std::string{};
-        auto limit = std::optional<std::size_t>{};
-        auto since_raw = std::string{};      // raw string; forwarded as-is to remote
-        auto since_offset = std::size_t{0U}; // parsed integer for local pagination
-
-        if (auto const body = parsed_json_object(req.body); body.has_value())
-        {
-            if (auto const* filter_val = object_member(*body, "filter"); filter_val != nullptr)
-            {
-                if (auto const* filter_obj = std::get_if<canonicaljson::Object>(&filter_val->storage());
-                    filter_obj != nullptr)
-                {
-                    if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
-                        filter_term = *term;
-                }
-            }
-            if (auto const* lv = object_member(*body, "limit"); lv != nullptr)
-            {
-                if (auto const* li = std::get_if<std::int64_t>(&lv->storage()); li != nullptr && *li > 0)
-                    limit = static_cast<std::size_t>(*li);
-            }
-            if (auto const* sv = string_member(*body, "since"); sv != nullptr && !sv->empty())
-            {
-                since_raw = *sv;
-                auto result = std::size_t{0U};
-                auto const [ptr, ec] = std::from_chars(sv->data(), sv->data() + sv->size(), result);
-                if (ec == std::errc{})
-                    since_offset = result;
-            }
-        }
-
-        auto const server_param = query_param_value(req.target, "server");
-        auto const& our_server = rt.homeserver.config.server().server_name;
-        if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
-        {
-            // ADR-0079: reachable without authentication and blocks this thread
-            // on a peer we do not control, so it runs under the in-flight budget.
-            auto const proxy_slot = admit_client_proxy(rt, req);
-            if (!proxy_slot.has_value())
-            {
-                return client_proxy_refused(req, rt);
-            }
-            auto const proxy_deadline = effective_client_outbound_deadline(
-                rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
-            wire_federation_callbacks(rt.homeserver);
-            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
-            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
-            auto const opt_since = since_raw.empty() ? std::nullopt : std::make_optional<std::string_view>(since_raw);
-            // Use POST when filter_term is set so servers supporting
-            // POST /_matrix/federation/v1/publicRooms can apply the filter.
-            // Fall back to GET for unfiltered requests (wider server compatibility).
-            auto fed_body = std::string{};
-            auto const fed_method = filter_term.empty() ? std::string_view{"GET"} : std::string_view{"POST"};
-            if (!filter_term.empty())
-            {
-                auto filter_obj = canonicaljson::Object{};
-                filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
-                auto body_obj = canonicaljson::Object{};
-                body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
-                if (limit.has_value())
-                    body_obj.push_back(json_member("limit", json_int(static_cast<std::int64_t>(*limit))));
-                if (!since_raw.empty())
-                    body_obj.push_back(json_member("since", json_str(since_raw)));
-                fed_body = json_serialize(json_obj(std::move(body_obj)));
-            }
-            auto const tx = federation::make_outbound_transaction(
-                *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
-            auto const [ok, body] = [&] {
-                // Re-acquire before returning: dispatch_resp/dispatch_err read
-                // reloadable runtime state (rt.cors), and every other return path
-                // from this handler leaves the guard held.
-                auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "public_rooms.proxy", proxy_deadline);
-            }();
-            if (!ok)
-                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
-            return dispatch_resp(req, rt, 200U, body);
-        }
-        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset));
-    }
     auto constexpr directory_room_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
     auto constexpr directory_list_room_prefix = std::string_view{"/_matrix/client/v3/directory/list/room/"};
     if (req.method == "GET" && starts_with(request_path, directory_room_prefix))
@@ -10927,6 +10863,93 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
     }
 
+    // Spec: POST /_matrix/client/v3/publicRooms
+    // ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
+    {
+        auto filter_term = std::string{};
+        auto limit = std::optional<std::size_t>{};
+        auto since_raw = std::string{};      // raw string; forwarded as-is to remote
+        auto since_offset = std::size_t{0U}; // parsed integer for local pagination
+
+        if (auto const body = parsed_json_object(req.body); body.has_value())
+        {
+            if (auto const* filter_val = object_member(*body, "filter"); filter_val != nullptr)
+            {
+                if (auto const* filter_obj = std::get_if<canonicaljson::Object>(&filter_val->storage());
+                    filter_obj != nullptr)
+                {
+                    if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
+                        filter_term = *term;
+                }
+            }
+            if (auto const* lv = object_member(*body, "limit"); lv != nullptr)
+            {
+                if (auto const* li = std::get_if<std::int64_t>(&lv->storage()); li != nullptr && *li > 0)
+                    limit = static_cast<std::size_t>(*li);
+            }
+            if (auto const* sv = string_member(*body, "since"); sv != nullptr && !sv->empty())
+            {
+                since_raw = *sv;
+                auto result = std::size_t{0U};
+                auto const [ptr, ec] = std::from_chars(sv->data(), sv->data() + sv->size(), result);
+                if (ec == std::errc{})
+                    since_offset = result;
+            }
+        }
+
+        auto const server_param = query_param_value(req.target, "server");
+        auto const& our_server = rt.homeserver.config.server().server_name;
+        if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
+        {
+            // ADR-0079: reachable without authentication and blocks this thread
+            // on a peer we do not control, so it runs under the in-flight budget.
+            auto const proxy_slot = admit_client_proxy(rt, req);
+            if (!proxy_slot.has_value())
+            {
+                return client_proxy_refused(req, rt);
+            }
+            auto const proxy_deadline = effective_client_outbound_deadline(
+                rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
+            wire_federation_callbacks(rt.homeserver);
+            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+            auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+            auto const opt_since = since_raw.empty() ? std::nullopt : std::make_optional<std::string_view>(since_raw);
+            // Use POST when filter_term is set so servers supporting
+            // POST /_matrix/federation/v1/publicRooms can apply the filter.
+            // Fall back to GET for unfiltered requests (wider server compatibility).
+            auto fed_body = std::string{};
+            auto const fed_method = filter_term.empty() ? std::string_view{"GET"} : std::string_view{"POST"};
+            if (!filter_term.empty())
+            {
+                auto filter_obj = canonicaljson::Object{};
+                filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
+                auto body_obj = canonicaljson::Object{};
+                body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
+                if (limit.has_value())
+                    body_obj.push_back(json_member("limit", json_int(static_cast<std::int64_t>(*limit))));
+                if (!since_raw.empty())
+                    body_obj.push_back(json_member("since", json_str(since_raw)));
+                fed_body = json_serialize(json_obj(std::move(body_obj)));
+            }
+            auto const tx = federation::make_outbound_transaction(
+                *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
+                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
+                                                     "public_rooms.proxy", proxy_deadline);
+            }();
+            if (!ok)
+                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
+            return dispatch_resp(req, rt, 200U, body);
+        }
+        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset));
+    }
+
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
     // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
     // Authenticated media endpoints (MSC3860 / Matrix v1.11). The v1 routes
@@ -11050,7 +11073,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
         }
-        room_it->directory_public = (*vis_str == "public");
+        auto const published = *vis_str == "public";
+        if (!database::set_room_directory_public(rt.homeserver.database.persistent_store, room_id, published))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "directory visibility persistence failed");
+        }
+        room_it->directory_public = published;
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/password")
@@ -12543,6 +12571,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& body = *body_object;
         auto const* preset_value = string_member(body, "preset");
         auto const* visibility_value = string_member(body, "visibility");
+        if (object_member(body, "visibility") != nullptr &&
+            (visibility_value == nullptr || (*visibility_value != "public" && *visibility_value != "private")))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "visibility must be public or private");
+        }
         auto const effective_preset = [&]() -> std::string {
             if (preset_value != nullptr && !preset_value->empty())
             {
@@ -12580,6 +12613,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
 
         auto options = CreateRoomOptions{};
+        options.directory_public = visibility_value != nullptr && *visibility_value == "public";
         options.room_version = room_version;
         options.preset = effective_preset;
         options.invitees = invitees;
@@ -12636,17 +12670,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, create_result.status, errcode, create_result.reason);
         }
         auto const& room_id = create_result.value;
-        if (visibility_value != nullptr && *visibility_value == "public")
-        {
-            auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](LocalRoom const& current) {
-                return current.room_id == room_id;
-            });
-            if (room != rt.homeserver.database.rooms.end())
-            {
-                room->directory_public = true;
-            }
-        }
-
         for (auto const& invitee : invitees)
         {
             auto const invitee_server = server_name_from_user_id(invitee);
@@ -14386,13 +14409,28 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto const body = canonicaljson::parse_lossless(req.body);
             auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
-            if (body_obj == nullptr)
+            if (body.error != canonicaljson::ParseError::none || body_obj == nullptr)
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "presence body must be Matrix JSON");
             }
             auto const* presence_str = string_member(*body_obj, "presence");
-            auto const presence_state = presence_str != nullptr ? *presence_str : std::string{"offline"};
+            if (presence_str == nullptr ||
+                (*presence_str != "online" && *presence_str != "offline" && *presence_str != "unavailable"))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "presence must be online, offline or unavailable");
+            }
+            auto const& presence_state = *presence_str;
             auto const* status_msg = string_member(*body_obj, "status_msg");
+            if (object_member(*body_obj, "status_msg") != nullptr && status_msg == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg must be a string");
+            }
+            // Local resource policy, not a Matrix protocol limit (ADR-0098).
+            if (status_msg != nullptr && status_msg->size() > 1024U)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg exceeds 1024 UTF-8 bytes");
+            }
             auto state = database::PersistentPresence{};
             state.stream_id = 0U;
             state.user_id = std::string{*user};

@@ -997,9 +997,9 @@ SCENARIO("SQLite persistent transactions roll back failed statement groups",
         merovingian::database::enable_statement_capture(store, 256U);
         auto const statements = std::vector<merovingian::database::PreparedStatement>{
             {"insert_room",
-             "INSERT INTO rooms VALUES ($1, $2)", {{"!room1:example.org", false}, {"@alice:example.org", false}}},
+             "INSERT INTO rooms (room_id, creator_user_id) VALUES ($1, $2)", {{"!room1:example.org", false}, {"@alice:example.org", false}}},
             {"insert_room_duplicate",
-             "INSERT INTO rooms VALUES ($1, $2)", {{"!room1:example.org", false}, {"@bob:example.org", false}}  },
+             "INSERT INTO rooms (room_id, creator_user_id) VALUES ($1, $2)", {{"!room1:example.org", false}, {"@bob:example.org", false}}  },
         };
 
         WHEN("the transaction is committed")

@@ -14,11 +14,17 @@
 namespace merovingian::homeserver
 {
 
-[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason = {}, std::uint16_t status = 0U)
-    -> OperationResult;
+[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason = {},
+                                         std::uint16_t status = 0U) -> OperationResult;
 
 auto append_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
                         std::string_view actor, std::string_view target, std::string_view reason) -> void;
+
+// Updates the bounded runtime audit mirror and diagnostic log without a
+// database write or admission decision. Callers own persistence and admission;
+// transactional moderation invokes this only after its required audit commits.
+auto remember_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
+                          std::string_view actor, std::string_view target, std::string_view reason) -> void;
 
 // Combined diagnostic + audit-routing helper (0.5.0). The five
 // high-signal failure call sites (rate_limit.exceeded, login.rejected,

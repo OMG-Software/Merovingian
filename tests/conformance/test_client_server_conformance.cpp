@@ -163,9 +163,10 @@ using namespace merovingian::tests;
 
 // Builds and signs the third_party_signed object expected by POST /rooms/{roomId}/join.
 // The signature covers the canonical JSON of mxid, sender and token only.
-[[nodiscard]] auto make_signed_third_party_object(
-    std::string_view mxid, std::string_view sender, std::string_view token, std::string const& secret_key_bytes,
-    std::string_view signature_origin) -> merovingian::canonicaljson::Object
+[[nodiscard]] auto make_signed_third_party_object(std::string_view mxid, std::string_view sender,
+                                                  std::string_view token, std::string const& secret_key_bytes,
+                                                  std::string_view signature_origin)
+    -> merovingian::canonicaljson::Object
 {
     using merovingian::canonicaljson::make_member;
     using merovingian::canonicaljson::Object;
@@ -201,8 +202,8 @@ using namespace merovingian::tests;
 // (lock/suspend) conformance scenarios, whose endpoints require a server admin
 // caller per spec v1.19. The localpart lets a scenario create a second, distinct
 // administrator to exercise the "target is another administrator" guard.
-[[nodiscard]] auto admin_token(merovingian::homeserver::ClientServerRuntime& runtime,
-                               std::string const& localpart) -> std::string
+[[nodiscard]] auto admin_token(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& localpart)
+    -> std::string
 {
     auto const boot = merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, localpart, "CorrectHorse7!");
     REQUIRE(boot.ok);
@@ -249,8 +250,8 @@ auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, 
                 .response.status == 200U);
 }
 
-[[nodiscard]] auto push_rule_by_id(merovingian::canonicaljson::Array const& rules,
-                                   std::string_view rule_id) -> merovingian::canonicaljson::Object const*
+[[nodiscard]] auto push_rule_by_id(merovingian::canonicaljson::Array const& rules, std::string_view rule_id)
+    -> merovingian::canonicaljson::Object const*
 {
     for (auto const& rule : rules)
     {
@@ -287,8 +288,8 @@ auto constexpr remote_key_seed = "client-server-conformance-remote-seed";
     return remote;
 }
 
-[[nodiscard]] auto federation_fixture_auth(std::string_view method, std::string_view target,
-                                           std::string_view body) -> std::string
+[[nodiscard]] auto federation_fixture_auth(std::string_view method, std::string_view target, std::string_view body)
+    -> std::string
 {
     auto const signature = merovingian::federation::make_federation_signature(
         remote_origin, "example.org", method, target, body,
@@ -312,8 +313,8 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
 }
 
 // Creates a room for the logged-in user and returns the room_id.
-[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& runtime,
-                               std::string const& token) -> std::string
+[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
@@ -324,8 +325,8 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     return *rid;
 }
 
-[[nodiscard]] auto create_public_room(merovingian::homeserver::ClientServerRuntime& runtime,
-                                      std::string const& token) -> std::string
+[[nodiscard]] auto create_public_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat","visibility":"public"})"});
@@ -336,8 +337,8 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     return *rid;
 }
 
-[[nodiscard]] auto create_knock_room(merovingian::homeserver::ClientServerRuntime& runtime,
-                                     std::string const& token) -> std::string
+[[nodiscard]] auto create_knock_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime,
@@ -360,8 +361,8 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
 }
 
 [[nodiscard]] auto current_membership_event(merovingian::database::PersistentStore const& store,
-                                            std::string const& room_id,
-                                            std::string const& user_id) -> merovingian::canonicaljson::Object
+                                            std::string const& room_id, std::string const& user_id)
+    -> merovingian::canonicaljson::Object
 {
     auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
         return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
@@ -3385,15 +3386,15 @@ struct TokenPair final
     return pair;
 }
 
-[[nodiscard]] auto refresh_with(merovingian::homeserver::ClientServerRuntime& runtime,
-                                std::string const& token) -> TokenPair
+[[nodiscard]] auto refresh_with(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> TokenPair
 {
     return token_pair_from(merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/refresh", {}, std::string{R"({"refresh_token":")"} + token + R"("})"}));
 }
 
-[[nodiscard]] auto whoami_status(merovingian::homeserver::ClientServerRuntime& runtime,
-                                 std::string const& access) -> std::uint16_t
+[[nodiscard]] auto whoami_status(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& access)
+    -> std::uint16_t
 {
     return merovingian::homeserver::handle_client_server_request(
                runtime, {"GET", "/_matrix/client/v3/account/whoami", access, {}})
@@ -8231,20 +8232,22 @@ SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate", "[confo
 // Spec: Matrix Client-Server API v1.19
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
 //
-// POST /publicRooms accepts an optional JSON body with filter and pagination
-// parameters and returns 200 with chunk (array) and total_room_count_estimate.
+// POST /publicRooms requires authentication and accepts an optional JSON body
+// with filter and pagination parameters. It returns 200 with chunk (array) and
+// total_room_count_estimate.
 SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate",
          "[conformance][client-server][room-discovery]")
 {
-    GIVEN("a running client-server")
+    GIVEN("a running client-server and an authenticated user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
 
         WHEN("POST /publicRooms is called with no body")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, {}});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, {}});
 
             THEN("the server returns 200 with a chunk array and total_room_count_estimate")
             {
@@ -8261,7 +8264,7 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
         WHEN("POST /publicRooms is called with limit=0")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, R"({"limit":0})"});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, R"({"limit":0})"});
 
             THEN("the server returns 200 with an empty chunk because limit=0 is treated as no-op")
             {
@@ -8276,7 +8279,7 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
         WHEN("POST /publicRooms is called with a filter body containing limit=1")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, R"({"limit":1})"});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, R"({"limit":1})"});
 
             THEN("the server returns 200 and the chunk contains at most one room")
             {

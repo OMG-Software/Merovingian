@@ -725,19 +725,63 @@ auto build_federation_media_download_body(std::string_view media_content_type,
     return {std::move(body), "multipart/mixed; boundary=" + boundary};
 }
 
-auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
-                            std::string_view reason) -> LocalMediaAdminResult
+auto validate_local_media_admin_action(LocalMediaRepository const& repository, std::string_view media_id,
+                                       LocalMediaAdminAction action, std::string_view reason) -> LocalMediaAdminResult
 {
     if (!media_id_is_safe(media_id))
     {
         return {false, 400U, {}, LocalMediaState::available, "invalid media id"};
     }
-    if (reason.empty())
+
+    auto state = LocalMediaState::available;
+    auto message = std::string_view{};
+    switch (action)
     {
-        return {false, 400U, std::string{media_id}, LocalMediaState::available, "quarantine reason is required"};
+    case LocalMediaAdminAction::quarantine:
+        if (reason.empty())
+        {
+            return {false, 400U, std::string{media_id}, LocalMediaState::available, "quarantine reason is required"};
+        }
+        state = LocalMediaState::quarantined;
+        message = "quarantined";
+        break;
+    case LocalMediaAdminAction::release:
+        message = "released";
+        break;
+    case LocalMediaAdminAction::remove:
+        if (reason.empty())
+        {
+            return {false, 400U, std::string{media_id}, LocalMediaState::available, "removal reason is required"};
+        }
+        state = LocalMediaState::removed;
+        message = "removed";
+        break;
+    default:
+        return {false, 400U, std::string{media_id}, LocalMediaState::available, "invalid media action"};
+    }
+
+    auto const record = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& current) {
+        return current.media_id == media_id;
+    });
+    if (record == repository.records.end() || record->state == LocalMediaState::removed)
+    {
+        return {false, 404U, std::string{media_id}, LocalMediaState::removed, "media not found"};
+    }
+
+    return {true, 200U, record->media_id, state, std::string{message}};
+}
+
+auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
+                            std::string_view reason) -> LocalMediaAdminResult
+{
+    auto const validation =
+        validate_local_media_admin_action(repository, media_id, LocalMediaAdminAction::quarantine, reason);
+    if (!validation.ok)
+    {
+        return validation;
     }
     auto* record = find_record(repository, media_id);
-    if (record == nullptr || record->state == LocalMediaState::removed)
+    if (record == nullptr)
     {
         return {false, 404U, std::string{media_id}, LocalMediaState::removed, "media not found"};
     }
@@ -755,12 +799,13 @@ auto quarantine_local_media(LocalMediaRepository& repository, std::string_view m
 
 auto release_local_media(LocalMediaRepository& repository, std::string_view media_id) -> LocalMediaAdminResult
 {
-    if (!media_id_is_safe(media_id))
+    auto const validation = validate_local_media_admin_action(repository, media_id, LocalMediaAdminAction::release);
+    if (!validation.ok)
     {
-        return {false, 400U, {}, LocalMediaState::available, "invalid media id"};
+        return validation;
     }
     auto* record = find_record(repository, media_id);
-    if (record == nullptr || record->state == LocalMediaState::removed)
+    if (record == nullptr)
     {
         return {false, 404U, std::string{media_id}, LocalMediaState::removed, "media not found"};
     }
@@ -777,16 +822,14 @@ auto release_local_media(LocalMediaRepository& repository, std::string_view medi
 auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
                         std::string_view reason) -> LocalMediaAdminResult
 {
-    if (!media_id_is_safe(media_id))
+    auto const validation =
+        validate_local_media_admin_action(repository, media_id, LocalMediaAdminAction::remove, reason);
+    if (!validation.ok)
     {
-        return {false, 400U, {}, LocalMediaState::available, "invalid media id"};
-    }
-    if (reason.empty())
-    {
-        return {false, 400U, std::string{media_id}, LocalMediaState::available, "removal reason is required"};
+        return validation;
     }
     auto* record = find_record(repository, media_id);
-    if (record == nullptr || record->state == LocalMediaState::removed)
+    if (record == nullptr)
     {
         return {false, 404U, std::string{media_id}, LocalMediaState::removed, "media not found"};
     }

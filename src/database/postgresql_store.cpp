@@ -674,16 +674,16 @@ namespace
         if (table_load_profile_includes("rooms", profile))
         {
             auto rooms = query_rows(connection, "postgresql_load_rooms",
-                                    "SELECT room_id, creator_user_id FROM rooms ORDER BY room_id");
+                                    "SELECT room_id, creator_user_id, directory_public FROM rooms ORDER BY room_id");
             if (!rooms.ok)
             {
                 return false;
             }
             for (auto const& row : rooms.rows)
             {
-                if (row.size() >= 2U)
+                if (row.size() >= 3U)
                 {
-                    store.rooms.push_back({row[0], row[1]});
+                    store.rooms.push_back({row[0], row[1], text_is_true(row[2])});
                 }
             }
         }
@@ -1633,8 +1633,8 @@ namespace
         bool held_{false};
     };
 
-    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state)
-        -> std::optional<SchemaState>
+    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection,
+                                                SchemaState state) -> std::optional<SchemaState>
     {
         // Taken before the plan is computed and released only after it is
         // complete (this object outlives every return path below).
@@ -1839,8 +1839,8 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
 }
 
 auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role,
-                                      std::string_view migration_role, TableLoadProfile profile)
-    -> PersistentStoreOpenResult
+                                      std::string_view migration_role,
+                                      TableLoadProfile profile) -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
                                         {"backend", "postgresql", false}
@@ -2065,41 +2065,24 @@ auto current_postgresql_user(PostgresqlConnection& connection) -> std::string
 namespace
 {
 
-    // Builds a "$1,$2,...,$N" placeholder list for an IN (...) clause with
-    // `count` entries. Only the placeholder count is interpolated — the
-    // actual values are always bound as statement parameters by the caller.
-    [[nodiscard]] auto in_clause_placeholders(std::size_t count) -> std::string
-    {
-        auto result = std::string{};
-        result.reserve(count * 3U);
-        for (auto i = std::size_t{0U}; i < count; ++i)
-        {
-            if (i != 0U)
-            {
-                result += ',';
-            }
-            result += '$' + std::to_string(i + 1U);
-        }
-        return result;
-    }
-
-    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection,
+                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
 
         auto room = connection.execute({"postgresql_reload_room",
-                                        "SELECT room_id, creator_user_id FROM rooms WHERE "
+                                        "SELECT room_id, creator_user_id, directory_public FROM rooms WHERE "
                                         "room_id = $1",
                                         {{room_id_str, false}}});
         if (!room.ok)
         {
             return std::nullopt;
         }
-        if (!room.rows.empty() && room.rows.front().size() >= 2U)
+        if (!room.rows.empty() && room.rows.front().size() >= 3U)
         {
-            snapshot.room = PersistentRoom{room.rows.front()[0], room.rows.front()[1]};
+            snapshot.room =
+                PersistentRoom{room.rows.front()[0], room.rows.front()[1], text_is_true(room.rows.front()[2])};
         }
 
         auto memberships = connection.execute(
@@ -2175,22 +2158,16 @@ namespace
             return snapshot;
         }
 
-        // Scope the relation-table reads to exactly this room's event ids
-        // rather than reading the (potentially much larger) full tables.
-        auto event_id_params = std::vector<BoundValue>{};
-        event_id_params.reserve(snapshot.events.size());
-        for (auto const& event : snapshot.events)
-        {
-            event_id_params.push_back({event.event_id, false});
-        }
-        auto const placeholders = in_clause_placeholders(event_id_params.size());
+        // Bind the room once, rather than one parameter per event: rooms can
+        // exceed PreparedStatement's parameter cap. Joins keep each relation
+        // query scoped to this room without reading unrelated event graphs.
         auto relations = PersistentStore{};
         relations.events = snapshot.events;
 
-        auto edges = connection.execute(
-            {"postgresql_reload_event_edges",
-             "SELECT event_id, prev_event_id FROM event_edges WHERE event_id IN (" + placeholders + ")",
-             event_id_params});
+        auto edges = connection.execute({"postgresql_reload_event_edges",
+                                         "SELECT r.event_id, r.prev_event_id FROM event_edges r "
+                                         "JOIN events e ON e.event_id = r.event_id WHERE e.room_id = $1",
+                                         {{room_id_str, false}}});
         if (!edges.ok)
         {
             return std::nullopt;
@@ -2203,10 +2180,10 @@ namespace
             }
         }
 
-        auto auth = connection.execute(
-            {"postgresql_reload_event_auth",
-             "SELECT event_id, auth_event_id FROM event_auth WHERE event_id IN (" + placeholders + ")",
-             event_id_params});
+        auto auth = connection.execute({"postgresql_reload_event_auth",
+                                        "SELECT r.event_id, r.auth_event_id FROM event_auth r "
+                                        "JOIN events e ON e.event_id = r.event_id WHERE e.room_id = $1",
+                                        {{room_id_str, false}}});
         if (!auth.ok)
         {
             return std::nullopt;
@@ -2219,11 +2196,11 @@ namespace
             }
         }
 
-        auto signatures = connection.execute(
-            {"postgresql_reload_event_signatures",
-             "SELECT event_id, server_name, key_id, signature FROM event_signatures WHERE event_id IN (" +
-                 placeholders + ")",
-             event_id_params});
+        auto signatures =
+            connection.execute({"postgresql_reload_event_signatures",
+                                "SELECT r.event_id, r.server_name, r.key_id, r.signature FROM event_signatures r "
+                                "JOIN events e ON e.event_id = r.event_id WHERE e.room_id = $1",
+                                {{room_id_str, false}}});
         if (!signatures.ok)
         {
             return std::nullopt;

@@ -562,6 +562,26 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {17U, "token_rotation_lineage", std::move(statements), MigrationDirection::upgrade};
 }
 
+// Published directory visibility is independent of room join rules. Older
+// rooms default private because their publication intent was not persisted.
+[[nodiscard]] auto upgrade_room_directory_visibility_migration() -> MigrationStep
+{
+    return {18U,
+            "room_directory_visibility",
+            {{"add_room_directory_public_column",
+              "ALTER TABLE rooms ADD COLUMN directory_public TEXT NOT NULL DEFAULT 'false'",
+              {}}},
+            MigrationDirection::upgrade};
+}
+
+[[nodiscard]] auto downgrade_room_directory_visibility_migration() -> MigrationStep
+{
+    return {17U,
+            "drop_room_directory_visibility",
+            {{"drop_room_directory_public_column", "ALTER TABLE rooms DROP COLUMN directory_public", {}}},
+            MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -580,7 +600,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_user_deactivation_migration(),
             upgrade_event_graph_state_migration(),
             upgrade_media_legacy_endpoint_visibility_migration(),
-            upgrade_token_rotation_lineage_migration()};
+            upgrade_token_rotation_lineage_migration(),
+            upgrade_room_directory_visibility_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -731,7 +752,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_token_rotation_lineage_migration(),
+    return {downgrade_room_directory_visibility_migration(),
+            downgrade_token_rotation_lineage_migration(),
             downgrade_media_legacy_endpoint_visibility_migration(),
             downgrade_event_graph_state_migration(),
             downgrade_user_deactivation_migration(),

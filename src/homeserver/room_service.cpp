@@ -2680,8 +2680,8 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return make_operation_result(false, {}, "room alias in use", 400U);
     }
 
-    if (!database::store_room_with_membership(runtime.database.persistent_store, {room_id, *user_id},
-                                              {room_id, *user_id}))
+    if (!database::store_room_with_membership(runtime.database.persistent_store,
+                                              {room_id, *user_id, options.directory_public}, {room_id, *user_id}))
     {
         log_diagnostic("room.create.rejected", {
                                                    {"actor",   *user_id,                  false},
@@ -2691,7 +2691,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         });
         return make_operation_result(false, {}, "room persistence failed", 500U);
     }
-    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}});
+    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}, options.directory_public});
 
     auto emit_state = [&](std::string_view event_type, canonicaljson::Object content,
                           std::string_view state_key = std::string_view{}) -> bool {

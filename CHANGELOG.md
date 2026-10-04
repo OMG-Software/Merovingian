@@ -1,5 +1,27 @@
 ## 0.12.16
 
+- **Directory durability and authenticated lookup (CSAZ-5).** Schema 18 stores
+  publication independently of join rules and defaults previously unrecorded
+  publication to private. Creation persists it with initial membership; PUT
+  commits before updating memory. POST publicRooms runs after authentication
+  and account-state checks, including remote lookups. ADR-0099.
+
+- **Presence sharing and input bounds (CSAZ-8).** Sync presence is restricted
+  to current joined peers. PUT requires the specified presence enum and optional
+  string status, bounded locally to 1024 UTF-8 bytes before stream allocation.
+  Invalid updates preserve the stored row and sync watermark. ADR-0098.
+
+- **Atomic administrative media writes (DB-5, partial).** Quarantine, release
+  and removal commit metadata, optional blob changes and required audit rows
+  together before repository state or metrics change. Failed writes return 500.
+  Upload and authentication token/account write-failure paths remain open. ADR-0100.
+
+- **Large PostgreSQL room snapshots (DB-2, partial).** Scoped relation queries
+  join events using one room parameter rather than one parameter per event.
+  A real two-handle regression reproduces the old 128-parameter failure.
+  Generic failed worker reload handling remains open. This follow-up batch is
+  awaiting focused and combined verification.
+
 - **Outbound authority and socket pin agreement (OUT-1, OUT-2).**
   Matrix server names reject malformed authorities before discovery. Outbound
   and media-redirect URLs share libcurl's strict URL parser; every actual
@@ -43,7 +65,7 @@
   The report contains 31 distinct medium-severity findings, not 20.
   Their per-finding status is tracked in
   `docs/todos/capability-gaps.md`; this branch does not yet resolve
-  all of them. Current final focused checks pass 157 unit assertions in 16 cases,
+  all of them. The verified first batch passed 157 unit assertions in 16 cases,
   367 integration assertions in 10 cases, and 20,422 state/creator conformance
   assertions in 18 cases. The completed fresh full suite passes 54 targets,
   with 0 failures and 0 timeouts (exit 0). All new regression tags executed.

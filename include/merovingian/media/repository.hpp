@@ -20,6 +20,13 @@ enum class LocalMediaState
     removed,
 };
 
+enum class LocalMediaAdminAction
+{
+    quarantine,
+    release,
+    remove,
+};
+
 struct LocalMediaBlob final
 {
     std::string storage_id{};
@@ -187,6 +194,12 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 [[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
                                         std::string_view media_id,
                                         bool legacy_endpoint = false) -> LocalMediaDownloadResult;
+// Performs the same input and current-record checks as the moderation actions
+// without changing repository state, counters, or logs. Call before durable
+// moderation writes so persistence failure cannot leave a partial mutation.
+[[nodiscard]] auto validate_local_media_admin_action(LocalMediaRepository const& repository, std::string_view media_id,
+                                                     LocalMediaAdminAction action,
+                                                     std::string_view reason = {}) -> LocalMediaAdminResult;
 [[nodiscard]] auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                           std::string_view reason) -> LocalMediaAdminResult;
 [[nodiscard]] auto release_local_media(LocalMediaRepository& repository,
