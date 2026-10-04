@@ -103,9 +103,15 @@ auto constexpr remote_key_seed = "security-test-remote-seed";
     return req;
 }
 
+struct SignedJoinPdu final
+{
+    std::string body{};
+    std::string event_id{};
+};
+
 // Build a properly signed m.room.member join PDU from the remote server.
 [[nodiscard]] auto make_signed_join_pdu(std::string const& room_id, std::string const& sender,
-                                        std::vector<std::string> const& auth_events = {}) -> std::string
+                                        std::vector<std::string> const& auth_events = {}) -> SignedJoinPdu
 {
     // Build the unsigned event JSON (no hashes or signatures — sign_event_for_server
     // computes and attaches both).
@@ -125,8 +131,14 @@ auto constexpr remote_key_seed = "security-test-remote-seed";
                                "\",\"content\":{\"membership\":\"join\"},\"depth\":6,\"origin_server_ts\":2000," +
                                "\"prev_events\":[],\"auth_events\":" + auth_events_json + "}";
 
-    return merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
-                                                                 remote_key_seed, "12");
+    auto const body = merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
+                                                                          remote_key_seed, "12");
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+    auto const id = merovingian::events::make_reference_hash_event_id(parsed.value, *policy);
+    return {body, id.event_id};
 }
 
 // Build a properly signed m.room.member invite PDU from the remote server.
@@ -292,18 +304,16 @@ SCENARIO("send_join with valid PDU signature is accepted", "[security][federatio
 
         auto const room_id = std::string{"!room461b:example.org"};
         auto const sender = std::string{"@alice:"} + remote_origin;
-        auto const join_event_id = std::string{"$join461b:"} + remote_origin;
-
         // Build a PROPERLY signed join PDU.
         auto const signed_join = make_signed_join_pdu(room_id, sender);
-        REQUIRE_FALSE(signed_join.empty());
+        REQUIRE_FALSE(signed_join.body.empty());
 
-        auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_event_id;
+        auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + signed_join.event_id;
 
         WHEN(" the valid send_join is handled")
         {
             auto const response =
-                merovingian::federation::handle_inbound_federation_request(runtime, signed_put(target, signed_join));
+                merovingian::federation::handle_inbound_federation_request(runtime, signed_put(target, signed_join.body));
 
             THEN("the server accepts the PDU and calls the membership acceptor")
             {
@@ -348,8 +358,9 @@ SCENARIO("send_join with sender domain mismatch is rejected", "[security][federa
         auto const signed_join = merovingian::federation::test::make_signed_event_json(
             unsigned_json, remote_origin, remote_key_id, remote_key_seed, "12");
         REQUIRE_FALSE(signed_join.empty());
+        auto const derived_join_event_id = merovingian::federation::test::reference_hash_event_id(signed_join, "12");
 
-        auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + join_event_id;
+        auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" + derived_join_event_id;
 
         WHEN("the mismatched send_join is handled")
         {

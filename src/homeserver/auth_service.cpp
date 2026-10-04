@@ -948,6 +948,16 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
 
     if (registration.require_token)
     {
+        // AUTH-4: registration-token verification is Argon2id and must respect
+        // the same admission cap as /login. Shed load with 429 before doing any
+        // hash work.
+        auto const argon_slot = runtime.argon2id_admission->try_acquire();
+        if (!argon_slot)
+        {
+            auto throttled = make_operation_result(false, {}, "too many concurrent authentication attempts", 429U);
+            throttled.retry_after_ms = 1000U;
+            return throttled;
+        }
         auto const expected_hash = load_hashed_registration_token(registration);
         auto const token_ok = [expected_hash = expected_hash.value_or(std::string{}), registration_token]() {
             // AUTH-4: registration-token verification is also Argon2id; release
@@ -1034,8 +1044,17 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     }
 
     auto* user = find_user(runtime.database, user_id);
-    auto const password_hash =
-        std::string{user != nullptr ? user->password_hash : *dummy_password_hash()};
+    auto const password_hash = std::string{user != nullptr ? user->password_hash : *dummy_password_hash()};
+    // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
+    // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
+    // an admission-saturated pile-on does not also exhaust the lockout budget.
+    auto const argon_slot = runtime.argon2id_admission->try_acquire();
+    if (!argon_slot)
+    {
+        auto throttled = make_operation_result(false, {}, "too many concurrent authentication attempts", 429U);
+        throttled.retry_after_ms = 1000U;
+        return throttled;
+    }
     // AUTH-4: release the runtime mutex around Argon2id verification so a pile
     // of login attempts cannot serialise every other request. Snapshot the hash
     // by value first; then verify outside the lock.

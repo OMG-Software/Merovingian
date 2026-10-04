@@ -89,6 +89,9 @@
 * [0085 - An inbound invite for a room we hold leaves room state to the transaction path](0085-inbound-invite-leaves-room-state-to-the-transaction-path.md)
 * [0086 - Outbound federation calls own the signing secret](0086-outbound-federation-calls-own-the-signing-secret.md)
 * [0087 - Critical logs are written synchronously](0087-critical-logs-are-written-synchronously.md)
+* [0088 - Limit stripped invite and knock state to room summaries](0088-limit-stripped-state-to-room-summaries.md)
+* [0089 - Defer unsolicited PDUs during outbound joins in bounded transient queues](0089-defer-pdus-during-outbound-joins.md)
+* [0090 - Bound Argon2id work with a process-wide admission semaphore](0090-bound-argon2id-work-with-admission.md)
 
 ## Rejected Records
 

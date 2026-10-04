@@ -1050,11 +1050,33 @@ namespace
         auto envelope = parse_inbound_pdu_envelope(request.body, send_room_ver);
         if (!envelope.has_value())
         {
-            return {400U, "membership event body is not a valid PDU envelope"};
+            return {400U,
+                    homeserver::matrix_error("M_INVALID_PARAM", "membership event body is not a valid PDU envelope")};
         }
-        if (envelope->room_id != params->room_id)
+        // Spec v1.19 send_join/send_leave/send_knock: endpoint agreement and
+        // identity checks precede the acceptor, which may persist and fan out.
+        auto const expected_membership = [&]() -> std::string_view {
+            switch (route.endpoint)
+            {
+            case FederationEndpoint::send_join:
+                return "join";
+            case FederationEndpoint::send_leave:
+                return "leave";
+            case FederationEndpoint::send_knock:
+                return "knock";
+            default:
+                return {};
+            }
+        }();
+        auto const parsed_membership = canonicaljson::parse_lossless(envelope->json);
+        if (envelope->room_id != params->room_id || envelope->event_id != params->subject ||
+            envelope->event_type != "m.room.member" || expected_membership.empty() ||
+            sender_domain(envelope->sender) != request.origin || !envelope->state_key.has_value() ||
+            *envelope->state_key != envelope->sender || parsed_membership.error != canonicaljson::ParseError::none ||
+            events::extract_content_membership(parsed_membership.value) != expected_membership)
         {
-            return {400U, "membership event room_id does not match path"};
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM",
+                                                   "membership event does not match endpoint, path or origin")};
         }
         // Security (#461): verify the PDU's own Ed25519 signature, content hash,
         // and sender/origin consistency before accepting it. This mirrors the
@@ -2611,12 +2633,12 @@ namespace
         return forbidden_acl_response("server is denied by room ACL");
     }
 
-    // Extracts the room_id from EDU content for room-local EDU types that the
-    // spec says MUST be ACL-checked (typing and receipts).
-    [[nodiscard]] auto room_id_from_edu_content(EduType type, std::string_view content_json)
-        -> std::optional<std::string>
+    // Typing EDUs carry room_id at the top level. Receipts are keyed by room
+    // and are ACL-checked per room at the receipt sink (including worker relays).
+    [[nodiscard]] auto room_id_from_edu_content(EduType type,
+                                                std::string_view content_json) -> std::optional<std::string>
     {
-        if (type != EduType::typing && type != EduType::receipt)
+        if (type != EduType::typing)
         {
             return std::nullopt;
         }
@@ -3160,8 +3182,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             continue;
         }
 
-        // Server ACL enforcement (MSC4436): drop room-local EDUs (typing,
-        // receipts) when the transport origin is denied access to the room.
+        // Typing ACL enforcement (MSC4436). Receipt ACLs are applied per room
+        // at the mutation boundary, so denied rooms cannot discard allowed ones.
         if (auto const edu_room_id = room_id_from_edu_content(envelope->type, edu_content);
             edu_room_id.has_value() && !edu_room_id->empty() && runtime.room_server_acl_provider)
         {

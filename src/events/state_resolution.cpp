@@ -34,8 +34,8 @@ namespace
         observability::log_diagnostic("state_resolution", event, fields, severity);
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -48,8 +48,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -59,8 +59,8 @@ namespace
         return std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
+                                               std::string_view key) noexcept -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -75,8 +75,8 @@ namespace
         return std::get_if<canonicaljson::Object>(&value.storage());
     }
 
-    [[nodiscard]] auto array_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Array const*
+    [[nodiscard]] auto array_member(canonicaljson::Object const& object,
+                                    std::string_view key) noexcept -> canonicaljson::Array const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -352,8 +352,8 @@ namespace
     // event in the group's state. Spec: rooms/v10.md — Definitions, "Auth
     // difference": "the full auth chain for each state Si, that is the union
     // of the auth chains for each event in Si".
-    [[nodiscard]] auto full_auth_chain_of_group(StateGroup const& group, AuthChainEventSource& source, std::size_t cap)
-        -> std::optional<std::unordered_set<std::string>>
+    [[nodiscard]] auto full_auth_chain_of_group(StateGroup const& group, AuthChainEventSource& source,
+                                                std::size_t cap) -> std::optional<std::unordered_set<std::string>>
     {
         auto result = std::unordered_set<std::string>{};
         for (auto const& event : group.state)
@@ -495,8 +495,8 @@ namespace
     // third_party_invite are the only permitted auth event types), so `type`
     // and `state_key` are always expected; a malformed ancestor is treated as
     // a fetch failure (fail closed) rather than silently skipped.
-    [[nodiscard]] auto materialize_ref(std::string const& event_id, AuthChainEventSource& source)
-        -> std::optional<StateEventReference>
+    [[nodiscard]] auto materialize_ref(std::string const& event_id,
+                                       AuthChainEventSource& source) -> std::optional<StateEventReference>
     {
         auto const* json = source.find_required(event_id);
         if (json == nullptr)
@@ -556,7 +556,8 @@ namespace
     // skipping it could silently treat a real, unfetched power-levels
     // ancestor as absent, defaulting the sender's power in a way the actual
     // room state would not support.
-    [[nodiscard]] auto find_auth_ancestor_context(canonicaljson::Value const& event_json, AuthChainEventSource& source)
+    [[nodiscard]] auto find_auth_ancestor_context(canonicaljson::Value const& event_json, AuthChainEventSource& source,
+                                                  rooms::RoomVersionPolicy const& policy)
         -> std::optional<AuthAncestorContext>
     {
         auto result = AuthAncestorContext{};
@@ -564,6 +565,37 @@ namespace
         if (obj == nullptr)
         {
             return result;
+        }
+        // Room v12 treats the create event as an implicit auth event derived
+        // from room_id. Keep each candidate's explicit power-level ancestor,
+        // but resolve creator privileges from that room's immutable create.
+        if (policy.create_event_is_room_id)
+        {
+            if (auto const* room_id = string_member(*obj, "room_id"); room_id != nullptr)
+            {
+                if (room_id->size() < 2U || room_id->front() != '!')
+                {
+                    return std::nullopt;
+                }
+                auto const create_id = "$" + room_id->substr(1);
+                auto const* create = source.find_required(create_id);
+                if (create == nullptr)
+                {
+                    return std::nullopt;
+                }
+                auto const* create_obj = value_is_object(*create);
+                if (create_obj == nullptr)
+                {
+                    return std::nullopt;
+                }
+                auto const* type = string_member(*create_obj, "type");
+                auto const* state_key = string_member(*create_obj, "state_key");
+                if (type == nullptr || *type != "m.room.create" || state_key == nullptr || !state_key->empty())
+                {
+                    return std::nullopt;
+                }
+                result.create = *create;
+            }
         }
         auto const* auth = array_member(*obj, "auth_events");
         if (auth == nullptr)
@@ -608,7 +640,7 @@ namespace
     // ordering. Spec (rooms/v10.md — Definitions, "Reverse topological power
     // ordering", rule 1): "x's sender has greater power level than y's
     // sender, when looking at their respective auth_events" — the power MUST
-    // come from the power_levels (and, for v12, create) event in the
+    // come from the power_levels event in the
     // candidate's OWN auth_events, never from the candidate's own new
     // content (a self-elevating m.room.power_levels event would otherwise
     // rank itself by the level it grants itself, not the level it actually
@@ -617,15 +649,15 @@ namespace
     // whatever happens to be unconflicted at resolution time). Reuses
     // events::effective_sender_power (authorization.cpp) so this ordering
     // and the auth rules agree on every default: MSC4289 creator-infinite
-    // power (decided from the create event in the SAME auth_events, per
-    // MSC4289 — sender plus content.additional_creators), the pre-v12
+    // power (decided from the implicit create event derived from room_id,
+    // per MSC4289 — sender plus content.additional_creators), the pre-v12
     // content.creator default of 100, and 0 otherwise.
     // Returns nullopt (fail closed, per ADR-0063) when an auth_events entry
     // needed to answer the question could not be fetched.
     [[nodiscard]] auto power_level_from_event(StateEventReference const& event, AuthChainEventSource& source,
                                               rooms::RoomVersionPolicy const& policy) -> std::optional<std::int64_t>
     {
-        auto const context = find_auth_ancestor_context(event.event_json, source);
+        auto const context = find_auth_ancestor_context(event.event_json, source, policy);
         if (!context.has_value())
         {
             return std::nullopt;
@@ -1261,8 +1293,8 @@ auto mainline_order(std::vector<StateEventReference>& events, StateMap const& re
     std::stable_sort(events.begin(), events.end(), mainline_compare);
 }
 
-auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionPolicy const& policy)
-    -> StateResolutionResult
+auto resolve_state_v2(StateResolutionRequest const& request,
+                      rooms::RoomVersionPolicy const& policy) -> StateResolutionResult
 {
     if (auto error = validate_state_resolution_request(request); error.has_value())
     {

@@ -539,8 +539,10 @@ SCENARIO("Send_join auth_chain must not include message events", "[federation][m
             return result;
         };
 
+        auto const join_event_id = merovingian::federation::test::reference_hash_event_id(member_event_json, "12");
         auto const request = signed_put_request(
-            origin, key_id, token, "/_matrix/federation/v2/send_join/!room:local.example.org/$join:remote.example.org",
+            origin, key_id, token,
+            "/_matrix/federation/v2/send_join/!room:local.example.org/" + join_event_id,
             member_event_json);
 
         WHEN("the send_join response is parsed")
@@ -639,8 +641,10 @@ SCENARIO("Send_join auth_chain contains only state events", "[federation][member
             return result;
         };
 
+        auto const join_event_id = merovingian::federation::test::reference_hash_event_id(member_event_json, "12");
         auto const request = signed_put_request(
-            origin, key_id, token, "/_matrix/federation/v2/send_join/!room:local.example.org/$join:remote.example.org",
+            origin, key_id, token,
+            "/_matrix/federation/v2/send_join/!room:local.example.org/" + join_event_id,
             member_event_json);
 
         WHEN("the send_join request is handled")

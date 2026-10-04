@@ -132,6 +132,16 @@ Implemented now:
   store — the ordinary `/send` transaction path above and the membership
   acceptor here — must enforce this gate: a rule enforced on only one of two
   paths into the same store is not enforced at all
+- membership endpoint/content agreement (0.12.16, FED-6): `send_join`,
+  `send_leave`, and `send_knock` validate the membership value, event type,
+  authenticated-origin/sender relationship, sender/state-key equality, and
+  URL room/event identifiers before invoking the acceptor. The main-process
+  mutation sink repeats these structural checks before changing state and
+  derives the stored membership from the validated event, never the route
+- receipt EDU ACL enforcement (0.12.16, FED-8): the main-process mutation
+  sink checks the authenticated sending origin against each receipt room's
+  current server ACL. Denied rooms are skipped individually so a mixed EDU
+  still updates allowed rooms; this also guards direct worker-relay calls
 - room creator is implicitly treated as joined with power level 100 when
   no sender_member or power_levels event exists, enabling correct
   authorization of initial state events during room bootstrapping
@@ -306,6 +316,16 @@ topological power ordering for power events and the mainline ordering (based
 on the partially resolved power levels) for the remaining events. Room v12
 uses state-res v2.1: the same algorithm with three modifications (below).
 
+In room v12, reverse topological power ordering resolves the implicit
+`m.room.create` event from each candidate's `room_id` through the event index
+or `event_lookup`. It uses that create event to recognise both its sender
+and `content.additional_creators` as having infinite power, even though the
+create event is absent from explicit `auth_events`. Each candidate still
+uses its own explicit power-level ancestor, not the shared resolved state.
+An unavailable implicit create event, or one with the wrong type/state key,
+makes the ordering fail closed. The `[evt-8]` conformance regression covers
+creator ordering and unavailable create-event lookup.
+
 ### Auth difference, full conflicted set, and the v12 conflicted state subgraph
 
 Until 0.12.13, `resolve_state_v2` only ever considered power events that
@@ -463,6 +483,28 @@ were fixed after 0.12.14:
 
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
+
+### Unsolicited-room admission and pending outbound joins (ADR-0089)
+
+As of 0.12.16 (FED-11), common PDU ingestion checks current local
+join/invite/knock interest before allocating stream IDs, fetching missing history,
+mutating caches or writing events. Remote-only, malformed, departed and banned
+membership rows do not establish interest. Room metadata or a room-version
+resolver cannot authorize unsolicited storage. The rejection-storage rules below
+apply after this admission boundary, not to arbitrary unknown-room traffic.
+
+Outbound joins acquire a room-scoped RAII reservation before releasing the
+runtime mutex for the network exchange. Otherwise-uninterested rooms defer PDUs
+in transient queues capped at 32 rooms, 32 distinct event IDs and 512 KiB of JSON
+per room. Duplicates do not consume more capacity; overlaps and excess are
+refused. Failure or exception discards the queue without storing its PDUs.
+
+After verified initial state and local membership commit, queued PDUs pass
+through the existing common sink outside every global-lock recursion level,
+preserving stripe-then-global lock order. This is bounded best-effort deferral,
+not a durable transaction queue. Explicit verified join-state bootstrap and
+requested-backfill writers remain separate paths; an incoming PDU cannot claim
+those privileges through its content. See ADR-0089 for the policy and tradeoffs.
 
 ### Phase B1: state resolution wired into ingestion (ADR-0064)
 

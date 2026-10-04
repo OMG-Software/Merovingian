@@ -222,6 +222,13 @@
 | `GET` | `/_matrix/client/v3/publicRooms` | `getPublicRooms` | none | - | 200 |
 | `POST` | `/_matrix/client/v3/publicRooms` | `queryPublicRooms` | access token | required application/json | 200 |
 
+Implementation note (0.12.16, CSAZ-5): local public-room listings now require
+explicit directory publication; a public join rule alone does not publish a
+room. `createRoom` defaults to private directory visibility, and explicit
+public visibility publishes it. The existing public-join listing filter is
+retained. Directory publication is still in-memory, and POST authentication
+has not yet been enforced; both remain tracked gaps, not completed fixes.
+
 ## Room membership
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -237,6 +244,15 @@
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/kick` | `kick` | access token | required application/json | 200, 403 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/leave` | `leaveRoom` | access token | required application/json | 200, 429 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/unban` | `unban` | access token | required application/json | 200, 403 |
+
+Implementation note (0.12.16, CSAZ-7): invite and knock summaries expose only
+`sender`, `type`, `state_key`, and `content`. The disclosure policy permits the
+seven room-summary types recommended in the stripped-state specification plus
+the recipient's own membership, excluding other membership events, ACLs, power
+levels, and custom private state. Local invitations retain their invitation-time
+snapshot; historical and federated snapshots are re-pruned on client reads,
+including sliding-sync invite responses. Matrix permits additional event types;
+the restrictive allowlist is our policy (ADR-0088), not a protocol prohibition.
 
 ## Room participation
 

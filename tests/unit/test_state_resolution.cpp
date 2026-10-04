@@ -176,7 +176,12 @@ SCENARIO("V2 state resolution resolves conflicting power levels using reverse to
 {
     GIVEN("two state groups with conflicting power levels from different senders")
     {
-        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        // Use room version "10" for this pure v2 algorithm test: it exercises
+        // the same reverse-topological power ordering as v12 without requiring
+        // the MSC4291 implicit create-event convention (room_id derived from the
+        // create event's reference hash). v12 coverage with that convention is
+        // in the conformance suite.
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
         auto const create_key = merovingian::events::StateKey{"m.room.create", ""};
         auto const power_key = merovingian::events::StateKey{"m.room.power_levels", ""};

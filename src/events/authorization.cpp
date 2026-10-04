@@ -263,8 +263,7 @@ namespace
     // Room versions before v11 store the creator in content.creator. v11 removed
     // that property; the create event's sender is the creator. v12 (MSC4289)
     // privileges creators with infinite power and adds additional_creators.
-    [[nodiscard]] auto room_creator_user_id(canonicaljson::Value const& create_event,
-                                            rooms::RoomVersionPolicy const& policy) noexcept -> std::string_view
+    [[nodiscard]] auto room_creator_user_id(canonicaljson::Value const& create_event) noexcept -> std::string_view
     {
         if (auto const* creator = event_content_string(create_event, "creator"); creator != nullptr)
         {
@@ -815,7 +814,7 @@ auto effective_sender_power(canonicaljson::Value const& power_levels, std::strin
     }
     // EVT-7: v11+ rooms have no content.creator; the create event's sender is
     // the creator and retains the default creator power of 100.
-    auto const v11_creator = room_creator_user_id(create_event, policy);
+    auto const v11_creator = room_creator_user_id(create_event);
     if (!v11_creator.empty() && sender == v11_creator)
     {
         return 100;
@@ -1383,11 +1382,11 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     {
         // EVT-7: for v11+ rooms the create event has no content.creator; the
         // sender of the create event is the creator and is therefore joined.
-        auto const* create_obj = value_is_object(auth_events.create);
-        if (create_obj != nullptr)
+        auto const* bootstrap_create_obj = value_is_object(auth_events.create);
+        if (bootstrap_create_obj != nullptr)
         {
-            auto const* create_sender = string_member(*create_obj, "sender");
-            if (create_sender != nullptr && *sender == *create_sender)
+            auto const* bootstrap_create_sender = string_member(*bootstrap_create_obj, "sender");
+            if (bootstrap_create_sender != nullptr && *sender == *bootstrap_create_sender)
             {
                 sender_membership = MembershipState::join;
             }

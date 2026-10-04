@@ -121,16 +121,18 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
 // value from the groups. Returns two empty maps when the number of distinct
 // keys exceeds `max_conflicted_state_keys`.
 [[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>;
-// Each candidate's sender power is read from the m.room.power_levels (and,
-// for v12, m.room.create) event in THAT CANDIDATE'S OWN auth_events — never
+// Each candidate's sender power is read from the m.room.power_levels event
+// in THAT CANDIDATE'S OWN auth_events — never
 // from the candidate's own new content, and never from a shared
 // unconflicted/resolved state map. `known_events` supplies auth_events
 // ancestors already present in the submitted state groups; `event_lookup`
 // (may be empty) supplies anything else. `policy` additionally decides how a
 // sender's power level is read once the power_levels event is found: room
 // versions 1-9 accept a power level encoded as a JSON string, v10+ require a
-// real integer, and v12 gives room creators (found via the create event in
-// the same auth_events) an effectively infinite level (MSC4289). Returns
+// real integer, and v12 gives room creators an effectively infinite level
+// (MSC4289). The implicit v12 create event is fetched using the create-event
+// ID derived from the candidate's room_id, not from explicit auth_events.
+// Returns
 // nullopt when an auth_events entry needed to answer the question could not
 // be resolved — fail closed (ADR-0063), never order by a partially-known
 // chain.

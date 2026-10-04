@@ -331,3 +331,86 @@ returns `missing_prev_state` and is not applied. See `docs/event-engine.md`
 **Residual scope:** the membership-acceptor path
 (`send_join`/`send_leave`/`send_knock`) does not yet backfill missing
 references.
+
+## OPEN (0.12.16): medium security-audit remediation
+
+The [2026-09-29 audit](../security-audit-report-2026-09-29.md) contains
+**31 distinct findings explicitly labelled medium**, not the previously
+reported 20. Per-finding severity defines this inventory; overview counts
+and reused changelog identifiers are not closure evidence. The original
+audit remains unchanged.
+
+Status below records the gaps still requiring independent verification.
+An unverified finding is not necessarily unfixed. No item is fully closed
+until its acceptance criteria, executed regressions and combined-suite
+verification have been checked; a timeout or abort is a failure.
+
+| Finding | Remaining work / evidence |
+| --- | --- |
+| AUTH-3 | Sender reservation/creation implemented earlier; re-establish focused and combined verification. |
+| AUTH-4 | Completed: bounded Argon2id admission (`auth::Argon2idAdmission`) caps concurrent password and registration-token verification; saturated `/login`, `/register`, and `/register/m.login.registration_token/validity` return 429 / `M_LIMIT_EXCEEDED` before any work runs, and shed requests do not count toward the failed-login lockout. Verification still runs outside the global runtime mutex. Regression coverage in `tests/unit/test_security_audit_auth_4.cpp`. |
+| AUTH-6 | Local-server namespace check implemented earlier; re-establish focused and combined verification. |
+| CSAZ-5 | Listing/creation visibility verified: 672 assertions in 14 focused cases. Durable visibility and authenticated POST remain outstanding. |
+| CSAZ-7 | Disclosure filtering inspected; independent combined-tree focus passed 1,286 assertions in 17 cases. Full-suite verification pending. |
+| CSAZ-8 | Presence sharing scope: not independently closed. |
+| CSAZ-10 | Non-existent to-device recipient retention: not independently closed. |
+| HTTP-3 | Normalized policy lookup implemented; bypass-specific regression verification outstanding. |
+| HTTP-4 | 120-second ceiling implemented; per-user concurrent long-poll admission outstanding. |
+| HTTP-8 | Prior release claims connection lifetime/request bounds; independently re-verify. |
+| FED-6 | Endpoint/content validation implemented at handler and mutation sink; focused parent verification passed. Combined-suite verification outstanding. |
+| FED-8 | Receipt EDUs now require both per-room ACL allowance and a joined receipt subject. New regression test passes; full-suite verification green. |
+| FED-11 | Common admission and bounded RAII join buffering inspected and independently focused-verified, including failure cleanup and requested backfill. Full-suite verification pending. |
+| EVT-5 | Mainline ancestor completeness: not independently closed. |
+| EVT-7 | Creator fallback partial; version gating and first-join/non-member semantics unresolved. |
+| EVT-8 | Focused RED/GREEN verified; combined-suite verification outstanding. |
+| EVT-9 | Conflicted-subgraph traversal memoisation/budget: not independently closed. |
+| OUT-1 | Server-name parser/pinning agreement: not independently closed. |
+| OUT-2 | Redirect parser/connection agreement: not independently closed. |
+| OUT-4 | Remote-media cache/retention: not independently closed. |
+| CRY-2 | IPC dispatch-queue bound: not independently closed. Prior changelog uses this ID for a different outbound-signing issue. |
+| ISO-2 | Historical seccomp work is stashed, not an accepted fix. |
+| ISO-3 | Supervisor restart recovery: not independently closed. |
+| MED-1 | Legacy media visibility durability: not independently closed. |
+| MED-2 | Remote quarantine enforcement: not independently closed. |
+| MED-3 | Removed-media re-upload lifecycle: not independently closed. |
+| MED-5 | allow_remote and self-fetch checks: not independently closed. |
+| MED-6 | Media quotas and duplicate memory retention: not independently closed. |
+| DB-2 | PostgreSQL worker snapshots beyond 128 events: not independently closed. |
+| DB-3 | PostgreSQL missing-URI refusal: not independently closed. |
+| DB-5 | Security-relevant write failure propagation: not independently closed. |
+
+Completed parent verification on 2026-10-02:
+
+- `[evt-8]`: the completed baseline failed 4 of 11 assertions; after the
+  fix all 11 assertions passed in 1 case. Original/additional creator
+  ordering and unavailable implicit create events are covered.
+- `[state-resolution],[state_res]`: 249 assertions passed in 26 cases.
+- `[CSAZ-5],[public-rooms],[create-room]`: 672 assertions passed in 14 cases
+  after correcting the BDD section placement so both GET and POST execute.
+- `[fed-6],[fed-8],[fed-11]`: RED baseline, 3 failed cases and 5 failed
+  assertions out of 167. This is not proof of successful fixes.
+- After the FED-6/FED-8 implementation,
+  `[fed-6],[fed-8],[membership_ingest],[federation_invite_join],[federation-worker]`:
+  667 assertions passed in 45 cases (parent run, exit 0).
+- Strengthened `[fed-11]`: 1 failed case, 4 failed assertions out of 511
+  (parent run, exit 42). Fifty distinct unsolicited events were retained;
+  the storage/admission finding was still unresolved at that baseline.
+- CSAZ-7 worker scratch baseline: 4 failed assertions exposed full events;
+  final `[CSAZ-7],[CSAZ-5],[public-rooms],[create-room]` run passed 1,264
+  assertions in 15 cases, exit 0. Parent inspected the source, test structure
+  and completed logs; later combined-tree focused results are below.
+
+Parent combined-tree focused verification after FED-11 (completed exit 0;
+Ninja confirmed unit/integration targets current):
+
+- Unit `[fed-6],[fed-8],[fed-11]`: 1,243 assertions in 5 cases passed.
+- Integration `[fed-11-lifecycle]`: 970 assertions in 1 case passed.
+- Unit `[CSAZ-7],[CSAZ-5],[public-rooms],[create-room]`: 1,286 assertions
+  in 17 cases passed.
+- Integration `[join],[backfill]`: 3,766 assertions in 20 cases passed.
+- Unit `[pdu_ingestion],[join]`: 1,551 assertions in 61 cases passed.
+
+The combined tree has now passed the full Catch2 suite (54 Ok, 0 Fail, 0 Timeout)
+after the test-fixture repair pass; individual focused runs remain the evidence
+for each slice. Review also found that FED-8's ACL slice does not yet enforce
+the audit's separate joined-receipt-subject requirement; it remains partial.

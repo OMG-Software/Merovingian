@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 
 #include "merovingian/appservice/registration.hpp"
+#include "merovingian/auth/password.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -55,8 +56,8 @@ namespace
     }
 
     [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
-                                   std::string help,
-                                   std::vector<observability::MetricLabel> labels = {}) -> observability::MetricSample
+                                   std::string help, std::vector<observability::MetricLabel> labels = {})
+        -> observability::MetricSample
     {
         return {std::move(name), value, true, type, std::move(help), std::move(labels)};
     }
@@ -156,8 +157,8 @@ namespace
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -169,8 +170,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
@@ -316,6 +317,7 @@ auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 
 HomeserverRuntime::HomeserverRuntime()
     : audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
+    , argon2id_admission{std::make_unique<auth::Argon2idAdmission>(auth::default_argon2id_capacity())}
 {
 }
 
@@ -399,6 +401,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
     , client_outbound_budget(std::move(other.client_outbound_budget))
     , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
+    , argon2id_admission(std::move(other.argon2id_admission))
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
 {
@@ -443,13 +446,14 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     room_typing_stream_id = std::move(other.room_typing_stream_id);
     client_outbound_budget = std::move(other.client_outbound_budget);
     client_outbound_proxy_policy = other.client_outbound_proxy_policy;
+    argon2id_admission = std::move(other.argon2id_admission);
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
     return *this;
 }
 
-[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt,
-                                                std::string_view room_id) -> std::vector<std::string>
+[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
+    -> std::vector<std::string>
 {
     auto users = std::vector<std::string>{};
     for (auto const& entry : rt.typing_users)
@@ -843,10 +847,9 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         for (auto const& registration : runtime.appservices.all())
         {
             auto const sender_id = appservice::sender_user_id(registration, runtime.config.server().server_name);
-            auto const user_exists =
-                std::ranges::any_of(runtime.database.users, [&sender_id](LocalUser const& user) {
-                    return user.user_id == sender_id;
-                });
+            auto const user_exists = std::ranges::any_of(runtime.database.users, [&sender_id](LocalUser const& user) {
+                return user.user_id == sender_id;
+            });
             if (!user_exists)
             {
                 auto const result = register_appservice_user(runtime, registration.sender_localpart);
@@ -855,8 +858,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
                     log_diagnostic("start.appservice_sender_creation_failed",
                                    {
                                        {"appservice_id", registration.id, false},
-                                       {"sender", sender_id,                false},
-                                       {"reason", result.reason,            false}
+                                       {"sender",        sender_id,       false},
+                                       {"reason",        result.reason,   false}
                     },
                                    observability::LogEventSeverity::error);
                 }
@@ -865,7 +868,7 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
                     log_diagnostic("start.appservice_sender_created",
                                    {
                                        {"appservice_id", registration.id, false},
-                                       {"sender", sender_id,                false}
+                                       {"sender",        sender_id,       false}
                     },
                                    observability::LogEventSeverity::info);
                 }
@@ -1035,8 +1038,8 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
     return summary;
 }
 
-auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope,
-                      std::string_view entity) -> std::optional<database::PersistentPolicyRule>
+auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
+    -> std::optional<database::PersistentPolicyRule>
 {
     auto const& rules = runtime.database.persistent_store.policy_rules;
     auto const exact = std::ranges::find_if(rules, [scope, entity](database::PersistentPolicyRule const& rule) {

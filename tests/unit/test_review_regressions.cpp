@@ -507,10 +507,13 @@ SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id 
                                                remote_runtime(remote_origin, remote_key_id, remote_key_seed));
 
         // Receipt EDUs are only stored for rooms this server is in (0.12.5
-        // audit, finding 13), so the room needs a membership row before the
-        // event_ids shape behaviour under test can be reached.
+        // audit, finding 13), and the receipt subject must be a joined member
+        // of the room (FED-8), so seed both a local member and the remote
+        // receipt subject before testing event_ids shape behaviour.
         runtime.homeserver.database.persistent_store.memberships.push_back(
             {"!room:example.org", "@local:example.org", "join", 1U});
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@alice:remote.example.org", "join", 2U});
 
         auto const content =
             R"({"!room:example.org":{"m.read":{"@alice:remote.example.org":{"event_ids":["$event:remote.example.org"],"data":{"ts":42}}}}})";
@@ -560,6 +563,8 @@ SCENARIO("Inbound receipt EDUs keep only m.read receipts", "[homeserver][federat
                                                remote_runtime(remote_origin, remote_key_id, remote_key_seed));
         runtime.homeserver.database.persistent_store.memberships.push_back(
             {"!room:example.org", "@local:example.org", "join", 1U});
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@alice:remote.example.org", "join", 2U});
 
         auto const content =
             R"({"!room:example.org":{)"

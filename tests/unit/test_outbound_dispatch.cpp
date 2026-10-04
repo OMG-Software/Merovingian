@@ -446,6 +446,39 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
                 merovingian::database::update_forward_extremities(store, room_id_str, "$inbound_bob_member", {}, true));
         }
 
+        // FED-11 admission gate: the pdu_sink now rejects PDUs for rooms that
+        // have no local member. Seed a local join so the message PDU is admitted.
+        {
+            auto const local_user = std::string{"@alice:example.org"};
+            auto local_member_content = merovingian::canonicaljson::Object{};
+            local_member_content.push_back(merovingian::canonicaljson::make_member(
+                "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+            auto const local_member_json =
+                make_seed_event_json("m.room.member", local_user, local_user, room_id_str, std::move(local_member_content), 2, 3);
+            auto& store = homeserver.database.persistent_store;
+            store.events.push_back({.event_id = "$inbound_local_member",
+                                      .room_id = room_id_str,
+                                      .sender_user_id = local_user,
+                                      .json = local_member_json,
+                                      .depth = 2U});
+            store.state.push_back({.room_id = room_id_str,
+                                   .event_type = "m.room.member",
+                                   .state_key = local_user,
+                                   .event_id = "$inbound_local_member"});
+            store.memberships.push_back({.room_id = room_id_str, .user_id = local_user, .membership = "join"});
+            auto const local_state = std::vector<merovingian::database::PersistentStateGroupStateEntry>{
+                {"", "m.room.create", "",         "$inbound_create"    },
+                {"", "m.room.member", bob_sender, "$inbound_bob_member"},
+                {"", "m.room.member", local_user,  "$inbound_local_member"},
+            };
+            auto const group_id = merovingian::database::create_or_reuse_state_group(
+                store, room_id_str, room_id_str + ":local-member-group", std::nullopt, local_state);
+            REQUIRE(group_id.has_value());
+            REQUIRE(merovingian::database::set_event_state_group(store, "$inbound_local_member", *group_id));
+            REQUIRE(merovingian::database::update_forward_extremities(store, room_id_str, "$inbound_local_member",
+                                                                      {"$inbound_bob_member"}, false));
+        }
+
         WHEN("an inbound PDU is ingested through the pdu_sink")
         {
             auto envelope = merovingian::federation::InboundPduEnvelope{};

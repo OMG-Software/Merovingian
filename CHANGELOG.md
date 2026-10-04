@@ -1,8 +1,61 @@
 ## 0.12.16
 
 - **WIP: medium-severity findings from the 2026-09-29 security audit.**
-  Branch `fix/audit-medium-0.12.16` addresses the 20 medium-severity findings
-  not covered by the 0.12.15 critical/high fix pass.
+  The report contains 31 distinct medium-severity findings, not 20.
+  Their per-finding status is tracked in
+  `docs/todos/capability-gaps.md`; this branch does not yet resolve
+  all of them. The combined tree now passes the full Catch2 suite
+  after the recent test-fixture repair pass.
+
+- **FIXED: implicit v12 creator privileges in power ordering (EVT-8).**
+  The sorter resolves the room's implicit create event through the existing
+  event source and preserves candidate-specific power-level ancestors.
+  Both the original and additional creators sort at infinite power; missing
+  create events fail closed. A new BDD conformance regression failed before
+  the fix and passes afterward; the focused state-resolution suite passes.
+  Full-suite verification of the combined medium-fix branch is now green.
+
+- **PARTIAL: published directory visibility (CSAZ-5).**
+  `/publicRooms` excludes rooms not explicitly published, and public
+  `createRoom` visibility sets the directory flag. Focused directory and
+  creation tests pass (672 assertions in 14 cases). Durable visibility and
+  authentication on POST remain outstanding; CSAZ-5 is not yet closed.
+
+- **Stripped invite/knock room summaries (CSAZ-7).**
+  Generated invitation snapshots and client reads now retain only the four
+  stripped-state keys, seven room-summary types, and the recipient's own
+  membership. Legacy/federated snapshots are re-pruned and deduplicated on
+  read; invitation-time decoration is preserved. Sliding-sync invite reads
+  share the same protection. The restrictive allowlist is a disclosure
+  policy, not a protocol prohibition (ADR-0088). After the failing baseline,
+  independent combined-tree focused verification passed 1,286 assertions in
+  17 cases; full-suite verification is now green.
+
+- **Federation membership validation, receipt ACLs, and joined-subject admission
+  (FED-6, FED-8).**
+  `send_join`, `send_leave`, and `send_knock` reject events whose membership,
+  type, sender/origin, state key, or room/event identifiers do not agree with
+  the request. The mutation sink repeats the checks and derives persisted
+  membership from the event. Receipt EDUs check the authenticated origin
+  against each room's ACL independently, retaining allowed rooms in mixed
+  batches, and now also require the receipt subject to be a joined member of
+  that room. Parent verification passed 667 assertions in 45 focused federation
+  cases; the new joined-subject regression adds 67 assertions in 2 focused
+  cases; combined full-suite verification is now green.
+
+- **Unsolicited PDU admission and bounded pending joins (FED-11).**
+  The common sink refuses uninterested-room PDUs before stream allocation,
+  backfill, cache mutation or persistence. Current local join/invite/knock
+  membership permits normal processing; remote-only, departed and banned
+  memberships do not. Outbound joins establish RAII reservations and defer
+  concurrent PDUs in bounded transient queues (32 rooms, 32 PDUs and 512 KiB
+  JSON per room), deduplicating event IDs and refusing overlaps/excess.
+  Failed or throwing joins discard their queues. Successful joins drain
+  through the common sink after committing verified state and membership,
+  outside every global-lock recursion level. Solicited bootstrap/backfill
+  paths remain explicit (ADR-0089). Independent focused unit, lifecycle,
+  and existing join/backfill verification passed; full-suite verification
+  is now green.
 
 - **FIXED: restricted-join authorising-server signature verification (EVT-1).**
   The restricted/knock-restricted join authorization rule now requires a
@@ -21,18 +74,24 @@
   and ordinary `/register` and `/register/available` reject that localpart as
   reserved.
 
-- **FIXED: v11+ room creator detection (EVT-7).**
-  Rooms created elsewhere with v11 (no `content.creator`) now derive the creator
-  from the create event's sender, so bootstrap joins and power checks can be
-  re-authorised locally.
+- **PARTIAL: v11+ room creator detection (EVT-7).**
+  Create-sender fallback has been added. Version-gating, first-join
+  `prev_events` constraints and non-member creator rejection still need
+  conformance review and regression coverage; EVT-7 is not yet closed.
 
-- **FIXED: Argon2id verification under global lock, sync timeout cap, and
-  rate-limit key normalisation (AUTH-4, HTTP-3, HTTP-4).**
-  Password and registration-token verification now run without the runtime mutex.
-  `/v1/register/*` routes are `auth_sensitive` and the token-validity endpoint
-  refuses requests when registration is disabled. Rate-limit policy lookup uses
-  the normalised route so varying path/query segments share buckets. `/sync` and
-  sliding-sync long-poll timeouts are capped at 120 s.
+- **FIXED: bounded Argon2id admission (AUTH-4).**
+  A process-wide counting semaphore caps the number of concurrent password and
+  registration-token Argon2id verifications. When saturated, `/login`,
+  `/register`, and `/register/m.login.registration_token/validity` return
+  429 / `M_LIMIT_EXCEEDED` before any memory-hard work runs, and shed
+  requests do not count toward the failed-login lockout. Verification still
+  runs outside the global runtime mutex. ADR-0090.
+
+- **PARTIAL: sync timeout cap and rate-limit key normalisation (HTTP-3, HTTP-4).**
+  Rate-limit policy lookup uses the normalised route so varying path/query
+  segments share buckets. `/sync` and sliding-sync long-poll timeouts are
+  capped at 120 s. HTTP-4 still needs per-user long-poll admission. HTTP-3
+  needs dedicated bypass regression verification.
 
 ## 0.12.15
 

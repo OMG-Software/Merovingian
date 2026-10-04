@@ -240,6 +240,12 @@ SCENARIO("Federation version endpoint is served without authentication",
     }
 }
 
+struct SignedMemberPdu final
+{
+    std::string body{};
+    std::string event_id{};
+};
+
 // Build a properly signed m.room.member PDU from the remote server.
 // The event is signed with the same key_seed used by remote_for(), so
 // authorize_federation_pdu verifies the Ed25519 signature and
@@ -247,14 +253,20 @@ SCENARIO("Federation version endpoint is served without authentication",
 // "join", "leave", or "knock".
 [[nodiscard]] auto make_signed_member_pdu(std::string const& room_id_arg, std::string const& sender,
                                           std::string const& membership, std::string_view room_ver = "12")
-    -> std::string
+    -> SignedMemberPdu
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
                                "\",\"content\":{\"membership\":\"" + membership + "\"},\"depth\":1," +
                                "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
-    return merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed,
-                                                                 std::string{room_ver});
+    auto const body = merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed,
+                                                                            std::string{room_ver});
+    auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* policy = merovingian::rooms::find_room_version_policy(std::string{room_ver});
+    REQUIRE(policy != nullptr);
+    auto const id = merovingian::events::make_reference_hash_event_id(parsed.value, *policy);
+    return {body, id.event_id};
 }
 
 // Build a properly signed v2 invite body wrapping a signed m.room.member
@@ -433,10 +445,10 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
+        auto const join_pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
 
         auto accept_invoked = std::make_shared<bool>(false);
-        runtime.membership_acceptor = [accept_invoked, join_event_body](
+        runtime.membership_acceptor = [accept_invoked, join_pdu](
                                           merovingian::federation::FederationEndpoint endpoint,
                                           [[maybe_unused]] std::string_view target_room_id,
                                           [[maybe_unused]] std::string_view event_id,
@@ -449,15 +461,14 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
             result.status = 200U;
             result.room_version = "12";
             // Echo the event back so the handler can populate the "event" field.
-            result.signed_event_json = join_event_body;
+            result.signed_event_json = join_pdu.body;
             return result;
         };
 
         WHEN("a signed send_join request is dispatched")
         {
-            auto const event_id = std::string{"$join_event:"} + origin;
-            auto const target = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + event_id;
-            auto const request = signed_put_request(origin, key_id, key_seed, target, join_event_body);
+            auto const target = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + join_pdu.event_id;
+            auto const request = signed_put_request(origin, key_id, key_seed, target, join_pdu.body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the runtime returns 200 and the response body contains all required v2 fields")
@@ -527,12 +538,12 @@ SCENARIO("send_join passes the resolved room version to the membership acceptor 
             return "10";
         };
 
-        auto const join_event_body =
+        auto const join_pdu =
             make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", "10");
 
         auto captured_room_version = std::make_shared<std::string>();
         runtime.membership_acceptor = [captured_room_version,
-                                       join_event_body](merovingian::federation::FederationEndpoint /*endpoint*/,
+                                       join_pdu](merovingian::federation::FederationEndpoint /*endpoint*/,
                                                         [[maybe_unused]] std::string_view /*room_id*/,
                                                         [[maybe_unused]] std::string_view /*event_id*/,
                                                         merovingian::federation::InboundPduEnvelope const& envelope)
@@ -542,15 +553,14 @@ SCENARIO("send_join passes the resolved room version to the membership acceptor 
             result.accepted = true;
             result.status = 200U;
             result.room_version = "10";
-            result.signed_event_json = join_event_body;
+            result.signed_event_json = join_pdu.body;
             return result;
         };
 
         WHEN("a signed send_join request is dispatched for the room")
         {
-            auto const event_id = std::string{"$join_event:"} + origin;
-            auto const target = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + event_id;
-            auto const request = signed_put_request(origin, key_id, key_seed, target, join_event_body);
+            auto const target = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + join_pdu.event_id;
+            auto const request = signed_put_request(origin, key_id, key_seed, target, join_pdu.body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the membership acceptor receives an envelope with room_version 10, not hardcoded 12")
@@ -642,10 +652,9 @@ SCENARIO("send_leave processes departure and returns 200", "[federation][conform
 
         WHEN("a signed send_leave request is dispatched")
         {
-            auto const event_id = std::string{"$leave_event:"} + origin;
-            auto const target = "/_matrix/federation/v2/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "leave");
-            auto const request = signed_put_request(origin, key_id, key_seed, target, body);
+            auto const leave_pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "leave");
+            auto const target = "/_matrix/federation/v2/send_leave/" + std::string{room_id} + "/" + leave_pdu.event_id;
+            auto const request = signed_put_request(origin, key_id, key_seed, target, leave_pdu.body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the runtime returns 200 and the acceptor was invoked")
@@ -1772,11 +1781,10 @@ SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor 
 
         WHEN("a signed PUT /send_knock request is dispatched")
         {
-            auto const event_id = std::string{"$knock_event:"} + origin;
-            auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
-            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "knock");
+            auto const knock_pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "knock");
+            auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + knock_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, key_seed, target, body));
+                runtime, signed_put_request(origin, key_id, key_seed, target, knock_pdu.body));
 
             THEN("the runtime returns 200 and the acceptor was invoked")
             {
@@ -2448,27 +2456,26 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields", 
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
+        auto const join_pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
 
         runtime.membership_acceptor =
-            [join_event_body](
+            [join_pdu](
                 merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
                 merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             auto result = merovingian::federation::MembershipAcceptResult{};
             result.accepted = true;
             result.status = 200U;
             result.room_version = "12";
-            result.signed_event_json = join_event_body;
+            result.signed_event_json = join_pdu.body;
             return result;
         };
 
         WHEN("a signed send_join request is sent to the v1 path")
         {
-            auto const event_id = std::string{"$join_event:"} + origin;
             // v1 path — federation/v1/send_join (not v2)
-            auto const target = "/_matrix/federation/v1/send_join/" + std::string{room_id} + "/" + event_id;
+            auto const target = "/_matrix/federation/v1/send_join/" + std::string{room_id} + "/" + join_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, key_seed, target, join_event_body));
+                runtime, signed_put_request(origin, key_id, key_seed, target, join_pdu.body));
 
             THEN("the response is 200 with room_version, auth_chain, state, and event")
             {
@@ -2518,12 +2525,11 @@ SCENARIO("send_leave v1 endpoint returns 200 without event field", "[federation]
 
         WHEN("a signed send_leave request is sent to the v1 path")
         {
-            auto const event_id = std::string{"$leave_event:"} + origin;
             // v1 path — federation/v1/send_leave (not v2)
-            auto const target = "/_matrix/federation/v1/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "leave");
+            auto const leave_pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "leave");
+            auto const target = "/_matrix/federation/v1/send_leave/" + std::string{room_id} + "/" + leave_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, key_seed, target, body));
+                runtime, signed_put_request(origin, key_id, key_seed, target, leave_pdu.body));
 
             THEN("the response is 200 and does not contain an event field")
             {
@@ -2568,11 +2574,10 @@ SCENARIO("send_knock response contains the knock_room_state array", "[federation
 
         WHEN("a signed send_knock request is dispatched")
         {
-            auto const event_id = std::string{"$knock_event:"} + origin;
-            auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
-            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "knock");
+            auto const knock_pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "knock");
+            auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + knock_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, key_seed, target, body));
+                runtime, signed_put_request(origin, key_id, key_seed, target, knock_pdu.body));
 
             THEN("the response is 200 with knock_room_state array present")
             {
@@ -2830,10 +2835,10 @@ SCENARIO("parse_inbound_pdu_envelope accepts a signed member PDU for every stabl
         {
             WHEN("a member PDU signed for room version " << version << " is parsed with that version")
             {
-                auto const pdu_json =
+                auto const pdu =
                     make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", version);
 
-                auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, version);
+                auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu.body, version);
 
                 THEN("the envelope is accepted, the event ID is non-empty, and the room version is preserved")
                 {
@@ -2861,21 +2866,21 @@ SCENARIO("authorize_federation_pdu accepts a signed member PDU for every stable 
         {
             WHEN("a member PDU signed for room version " << version << " is authorised with that version")
             {
-                auto const pdu_json =
+                auto const pdu =
                     make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", version);
-                auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, version);
+                auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu.body, version);
                 REQUIRE(envelope.has_value());
 
-                auto pdu = merovingian::federation::FederationPdu{};
-                pdu.event_id = envelope->event_id;
-                pdu.room_id = envelope->room_id;
-                pdu.event_type = envelope->event_type;
-                pdu.sender = envelope->sender;
-                pdu.signatures = envelope->signatures;
-                pdu.json = envelope->json;
-                pdu.room_version = envelope->room_version;
+                auto pdu_out = merovingian::federation::FederationPdu{};
+                pdu_out.event_id = envelope->event_id;
+                pdu_out.room_id = envelope->room_id;
+                pdu_out.event_type = envelope->event_type;
+                pdu_out.sender = envelope->sender;
+                pdu_out.signatures = envelope->signatures;
+                pdu_out.json = envelope->json;
+                pdu_out.room_version = envelope->room_version;
 
-                auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key_record);
+                auto const decision = merovingian::federation::authorize_federation_pdu(pdu_out, origin, key_record);
 
                 THEN("the PDU is accepted")
                 {
@@ -2945,11 +2950,11 @@ SCENARIO("parse_inbound_pdu_envelope rejects a PDU with an unknown room version"
 {
     GIVEN("a member PDU signed for room version 12")
     {
-        auto const pdu_json = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", "12");
+        auto const pdu = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", "12");
 
         WHEN("it is parsed with an unsupported room version")
         {
-            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, "99");
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu.body, "99");
 
             THEN("the envelope is rejected")
             {

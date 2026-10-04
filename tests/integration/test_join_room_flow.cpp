@@ -41,6 +41,7 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/tls.hpp"
@@ -56,11 +57,13 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -253,7 +256,8 @@ struct FileDeleter final
 // thing distinguishing the two requests on the wire.
 auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
                          merovingian::homeserver::TlsServerContext& tls_context, std::string const& make_join_response,
-                         std::string const& send_join_response, std::vector<std::string>& captured_requests) noexcept
+                         std::string const& send_join_response, std::vector<std::string>& captured_requests,
+                         std::function<void(std::string const&)> const& before_send = {})
 {
     for (auto request_index = 0; request_index < 2; ++request_index)
     {
@@ -319,6 +323,10 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
         captured_requests.push_back(request_bytes);
         auto const is_send = request_bytes.find("/send_join/") != std::string::npos ||
                              request_bytes.find("/send_leave/") != std::string::npos;
+        if (is_send && before_send)
+        {
+            before_send(request_bytes);
+        }
         static_cast<void>(connection.write(is_send ? send_join_response : make_join_response));
     }
 }
@@ -336,8 +344,8 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
     return parsed.value;
 }
 
-[[nodiscard]] auto object_member_count(merovingian::canonicaljson::Value const& value, std::string_view key)
-    -> std::size_t
+[[nodiscard]] auto object_member_count(merovingian::canonicaljson::Value const& value,
+                                       std::string_view key) -> std::size_t
 {
     auto const* object = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
     REQUIRE(object != nullptr);
@@ -964,6 +972,329 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
 
                     auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
                     REQUIRE(ingest_result.status == merovingian::federation::PduIngestionStatus::accepted);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them on failure",
+         "[security][federation][fed-11][fed-11-lifecycle][join][integration]")
+{
+    GIVEN("a local user joining a real TLS resident with concurrent PDU delivery")
+    {
+        auto const failure = std::string{GENERATE("none", "response", "throw", "drain")};
+        auto const flood = std::string{GENERATE("single", "count", "bytes")};
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [failure](std::string_view server_name,
+                      std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            if (failure == "throw")
+            {
+                throw std::runtime_error{"join verification failed"};
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const room_id = std::string{"!seedroom:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+
+        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
+                                     R"(","room_id":")" + room_id + R"(","sender":")" + alice +
+                                     R"(","depth":3,"origin_server_ts":1000,)"
+                                     R"("prev_events":[],"auth_events":[],)"
+                                     R"("content":{"membership":"join"}})";
+        auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
+
+        auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
+                                  R"(","room_id":")" + room_id +
+                                  R"(","depth":1,"origin_server_ts":900,)"
+                                  R"("prev_events":[],"auth_events":[],)"
+                                  R"("content":{"room_version":"10","creator":")" +
+                                  creator + R"("}})";
+        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
+                                        creator + R"(","room_id":")" + room_id +
+                                        R"(","depth":2,"origin_server_ts":901,)"
+                                        R"("prev_events":[],"auth_events":[],"content":{"users":{")" +
+                                        creator + R"(":100}}})";
+
+        // The state array is the room's state BEFORE the join — create and
+        // power_levels only, no join event and no other members, matching
+        // spec (server-server-api.md#joining-rooms).
+        auto state_array = merovingian::canonicaljson::Array{};
+        state_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        state_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+
+        auto auth_chain_array = merovingian::canonicaljson::Array{};
+        auth_chain_array.push_back(
+            sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+        auth_chain_array.push_back(
+            sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+
+        auto const send_join_body = std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) +
+                                    R"(,"auth_chain":)" + canonicaljson_array_to_string(auth_chain_array) + "}";
+
+        auto const make_join_response = json_http_response("200 OK", make_join_body);
+        auto const send_join_response =
+            json_http_response(failure == "response" ? "500 Internal Server Error" : "200 OK", send_join_body);
+
+        WHEN("the resident delivers a PDU before completing send_join")
+        {
+            auto captured_requests = std::vector<std::string>{};
+            auto pending = merovingian::federation::InboundPduEnvelope{};
+            auto deferred = merovingian::federation::PduIngestionResult{};
+            auto events_unchanged = false;
+            auto ordering_unchanged = false;
+            auto sync_unchanged = false;
+            auto queue_size = std::size_t{0U};
+            auto queue_bytes = std::size_t{0U};
+            auto duplicate_unchanged = false;
+            auto refused_excess = false;
+            auto other_room_refused = false;
+            auto overlap_refused = false;
+            auto saturated_room_refused = false;
+            auto server_thread = std::jthread{[&]() {
+                run_resident_server(
+                    acceptor, *tls_context.context, make_join_response, send_join_response, captured_requests,
+                    [&](std::string const& request) {
+                        auto const join = event_from_send_request(request);
+                        auto const join_id = reference_event_id(join, policy);
+                        auto const create_id = reference_event_id(state_array[0], policy);
+                        auto const power_id = reference_event_id(state_array[1], policy);
+                        auto const message =
+                            std::string{R"({"type":"m.room.message","room_id":")"} + room_id + R"(","sender":")" +
+                            alice +
+                            R"(","content":{"body":"during join","msgtype":"m.text"},"depth":4,"origin_server_ts":2000,"prev_events":[")" +
+                            join_id + R"("],"auth_events":[")" + create_id + R"(",")" + power_id + R"(",")" + join_id +
+                            R"("]})";
+                        auto const lock = std::lock_guard{runtime.mutex};
+                        auto const with_hash = merovingian::canonicaljson::parse_lossless(message);
+                        auto const hash = merovingian::events::make_content_hash(with_hash.value);
+                        auto message_object = std::get<merovingian::canonicaljson::Object>(with_hash.value.storage());
+                        auto hashes = merovingian::canonicaljson::Object{};
+                        hashes.push_back(merovingian::canonicaljson::make_member(
+                            "sha256", merovingian::canonicaljson::Value{hash.sha256}));
+                        message_object.push_back(merovingian::canonicaljson::make_member(
+                            "hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
+                        auto const hash_json = merovingian::canonicaljson::serialize_canonical(
+                                                   merovingian::canonicaljson::Value{std::move(message_object)})
+                                                   .output;
+                        auto const signed_json = merovingian::canonicaljson::serialize_canonical(
+                                                     sign_with_local_server_key(runtime, hash_json, policy))
+                                                     .output;
+                        pending = *merovingian::federation::parse_inbound_pdu_envelope(signed_json, "10");
+                        // Direct validated-envelope receipt: origin is deliberately omitted
+                        // so the RED baseline cannot fetch the not-yet-committed join.
+                        // The post-commit drain still runs the full common auth pipeline.
+                        auto const events = runtime.database.persistent_store.events.size();
+                        auto const ordering = runtime.database.next_stream_ordering;
+                        auto const sync = runtime.database.persistent_store.next_sync_stream_id;
+                        deferred = runtime.federation.pdu_sink(pending);
+                        if (deferred.status == merovingian::federation::PduIngestionStatus::missing_prev_state &&
+                            runtime.pending_federated_joins.contains(room_id))
+                        {
+                            auto const initial_bytes = runtime.pending_federated_joins.at(room_id).json_bytes;
+                            std::ignore = runtime.federation.pdu_sink(pending);
+                            duplicate_unchanged =
+                                runtime.pending_federated_joins.at(room_id).pdus.size() == 1U &&
+                                runtime.pending_federated_joins.at(room_id).json_bytes == initial_bytes;
+                            auto other = pending;
+                            other.room_id = "!other:resident.example.org";
+                            other.event_id = "$unrelated";
+                            auto const other_result = runtime.federation.pdu_sink(other);
+                            other_room_refused =
+                                other_result.status == merovingian::federation::PduIngestionStatus::rejected_invalid;
+                            auto const overlap = merovingian::homeserver::join_room(runtime, login.value, room_id,
+                                                                                    {std::string{resident_server}});
+                            overlap_refused = !overlap.ok && overlap.status == 429U &&
+                                              runtime.pending_federated_joins.at(room_id).pdus.size() == 1U;
+                            // Saturate the global reservation bound while a REAL lease is
+                            // alive, then prove a new room fails before issuing make_join.
+                            for (auto index = 0U; index < 31U; ++index)
+                            {
+                                runtime.pending_federated_joins.try_emplace("!reserved" + std::to_string(index));
+                            }
+                            auto const saturated = merovingian::homeserver::join_room(
+                                runtime, login.value, "!overflow:resident.example.org", {std::string{resident_server}});
+                            saturated_room_refused = !saturated.ok && saturated.status == 429U &&
+                                                     runtime.pending_federated_joins.size() == 32U;
+                            for (auto index = 0U; index < 31U; ++index)
+                            {
+                                runtime.pending_federated_joins.erase("!reserved" + std::to_string(index));
+                            }
+                            if (flood != "single")
+                            {
+                                // Signed, format-valid v10 events, not manually invented
+                                // envelopes. Count and byte limits must be independent.
+                                for (auto index = 0U; index < 40U; ++index)
+                                {
+                                    auto const filler =
+                                        flood == "bytes" ? std::string(60U * 1024U, 'X') : std::string{"filler"};
+                                    auto const raw =
+                                        std::string{R"({"type":"m.room.message","room_id":")"} + room_id +
+                                        R"(","sender":"@creator:resident.example.org","content":{"body":")" + filler +
+                                        std::to_string(index) +
+                                        R"(","msgtype":"m.text"},"depth":1,"origin_server_ts":1000,"prev_events":[],"auth_events":[]})";
+                                    auto const json = merovingian::federation::test::make_signed_event_json(
+                                        raw, resident_server, resident_key_id, resident_key_seed, "10");
+                                    auto envelope = *merovingian::federation::parse_inbound_pdu_envelope(json, "10");
+                                    envelope.origin = resident_server;
+                                    auto const result = runtime.federation.pdu_sink(envelope);
+                                    if (result.status == merovingian::federation::PduIngestionStatus::main_overloaded)
+                                    {
+                                        refused_excess = true;
+                                    }
+                                }
+                            }
+                            queue_size = runtime.pending_federated_joins.at(room_id).pdus.size();
+                            queue_bytes = runtime.pending_federated_joins.at(room_id).json_bytes;
+                        }
+                        events_unchanged = runtime.database.persistent_store.events.size() == events;
+                        ordering_unchanged = runtime.database.next_stream_ordering == ordering;
+                        sync_unchanged = runtime.database.persistent_store.next_sync_stream_id == sync;
+                        if (failure == "drain")
+                        {
+                            runtime.federation.pdu_sink =
+                                [](auto const&) -> merovingian::federation::PduIngestionResult {
+                                throw std::runtime_error{"drain ingestion exception"};
+                            };
+                        }
+                    });
+            }};
+            auto result = merovingian::homeserver::OperationResult{};
+            auto threw = false;
+            auto outer_lock_restored = false;
+            try
+            {
+                auto outer_guard = std::unique_lock{runtime.mutex};
+                auto const request_scope = merovingian::homeserver::RequestLockScope{outer_guard};
+                result =
+                    merovingian::homeserver::join_room(runtime, login.value, room_id, {std::string{resident_server}});
+                outer_lock_restored = runtime.mutex.held_by_current_thread();
+            }
+            catch (std::runtime_error const&)
+            {
+                threw = true;
+            }
+            server_thread.join();
+            THEN("receipt is deferred without storage or stream allocation")
+            {
+                CHECK(deferred.status == merovingian::federation::PduIngestionStatus::missing_prev_state);
+                CHECK(events_unchanged);
+                CHECK(ordering_unchanged);
+                CHECK(sync_unchanged);
+                CHECK(duplicate_unchanged);
+                CHECK(other_room_refused);
+                CHECK(overlap_refused);
+                CHECK(saturated_room_refused);
+                CHECK(runtime.pending_federated_joins.empty());
+                CHECK(queue_bytes <= 512U * 1024U);
+                CHECK(queue_size <= 32U);
+                if (flood == "count")
+                {
+                    CHECK(queue_size == 32U);
+                    CHECK(refused_excess);
+                }
+                if (flood == "bytes")
+                {
+                    CHECK(queue_size < 32U);
+                    CHECK(refused_excess);
+                }
+                auto const stored =
+                    std::ranges::find_if(runtime.database.persistent_store.events, [&](auto const& event) {
+                        return event.event_id == pending.event_id;
+                    });
+                if (failure == "none" || failure == "drain")
+                {
+                    INFO(result.reason);
+                    REQUIRE(result.ok);
+                    REQUIRE_FALSE(threw);
+                    CHECK(outer_lock_restored);
+                    if (failure == "none")
+                    {
+                        REQUIRE(stored != runtime.database.persistent_store.events.end());
+                        CHECK(stored->status == "accepted");
+                    }
+                    else
+                    {
+                        CHECK(stored == runtime.database.persistent_store.events.end());
+                        CHECK(std::ranges::any_of(
+                            runtime.database.persistent_store.memberships, [&](auto const& membership) {
+                                return membership.room_id == room_id && membership.user_id == alice &&
+                                       membership.membership == "join";
+                            }));
+                    }
+                }
+                else
+                {
+                    CHECK_FALSE(result.ok);
+                    CHECK(threw == (failure == "throw"));
+                    CHECK(stored == runtime.database.persistent_store.events.end());
+                    CHECK(runtime.database.persistent_store.events.empty());
+                    auto const before = runtime.database.next_stream_ordering;
+                    std::ignore = runtime.federation.pdu_sink(pending);
+                    CHECK(runtime.database.persistent_store.events.empty());
+                    CHECK(runtime.database.next_stream_ordering == before);
+                    // Repeated failures cannot turn ephemeral queues into rejected rows.
+                    for (auto attempt = 0U; attempt < 2U; ++attempt)
+                    {
+                        auto const ordering = runtime.database.next_stream_ordering;
+                        auto const sync = runtime.database.persistent_store.next_sync_stream_id;
+                        auto repeated_requests = std::vector<std::string>{};
+                        auto repeated = std::jthread{[&]() {
+                            run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                                repeated_requests, [&](auto const&) {
+                                                    std::ignore = runtime.federation.pdu_sink(pending);
+                                                });
+                        }};
+                        try
+                        {
+                            auto const again = merovingian::homeserver::join_room(runtime, login.value, room_id,
+                                                                                  {std::string{resident_server}});
+                            CHECK_FALSE(again.ok);
+                        }
+                        catch (std::runtime_error const&)
+                        {
+                            CHECK(failure == "throw");
+                        }
+                        repeated.join();
+                        CHECK(runtime.pending_federated_joins.empty());
+                        CHECK(runtime.database.persistent_store.events.empty());
+                        CHECK(runtime.database.next_stream_ordering == ordering);
+                        CHECK(runtime.database.persistent_store.next_sync_stream_id == sync);
+                    }
                 }
             }
         }

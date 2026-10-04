@@ -45,6 +45,11 @@
 #include <utility>
 #include <vector>
 
+namespace merovingian::auth
+{
+class Argon2idAdmission;
+} // namespace merovingian::auth
+
 namespace merovingian::homeserver
 {
 
@@ -258,6 +263,18 @@ struct FailedLoginRecord final
     std::chrono::steady_clock::time_point last_failure{};
 };
 
+// FED-11: solicited outbound joins own bounded, transient receipt queues. These
+// are never database state. Guard every access with HomeserverRuntime::mutex.
+constexpr auto max_pending_join_rooms = std::size_t{32U};
+constexpr auto max_pending_join_pdus = std::size_t{32U};
+constexpr auto max_pending_join_json_bytes = std::size_t{512U * 1024U};
+
+struct PendingFederatedJoin final
+{
+    std::vector<federation::InboundPduEnvelope> pdus{};
+    std::size_t json_bytes{0U};
+};
+
 struct HomeserverRuntime final
 {
     HomeserverRuntime();
@@ -372,6 +389,10 @@ struct HomeserverRuntime final
     // through a unique_ptr so the address slots refer to survives a runtime move.
     std::unique_ptr<http::InFlightBudget> client_outbound_budget{std::make_unique<http::InFlightBudget>()};
     ClientOutboundProxyPolicy client_outbound_proxy_policy{default_client_outbound_proxy_policy()};
+    // Bounded admission semaphore for Argon2id password and registration-token
+    // verification (AUTH-4). Stored by unique_ptr so the runtime remains movable
+    // while the semaphore itself is not.
+    std::unique_ptr<auth::Argon2idAdmission> argon2id_admission{};
     // Failed-login counters keyed on the claimed user ID. See FailedLoginRecord.
     std::unordered_map<std::string, FailedLoginRecord> failed_logins{};
     std::uint64_t next_request_sequence{1U};
@@ -382,6 +403,9 @@ struct HomeserverRuntime final
     // recursive, and releasing a single level by hand is what produced the
     // deadlocks in 0.12.1, 0.12.3 and 0.12.6.
     mutable RuntimeMutex mutex{};
+    // Established only by the outbound join RAII lease, before releasing mutex.
+    // Same-room overlapping joins are refused; startup moves have no leases.
+    std::map<std::string, PendingFederatedJoin, std::less<>> pending_federated_joins{};
     // Per-room striped mutexes used by inbound PDU ingestion. Each room's events
     // are serialized on their own stripe so per-room ordering is preserved, while
     // events in different rooms can prepare/commit/apply in parallel. The global

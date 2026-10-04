@@ -1131,6 +1131,37 @@ namespace
         });
     }
 
+    // FED-8: a receipt's subject user must be joined to the room. Receipts for
+    // invited, knocked, left or banned users are dropped per-room, not per-EDU,
+    // because a transaction legitimately batches rooms with different member
+    // states. Spec: Matrix Server-Server API v1.19 §m.receipt — receipt updates
+    // are only meaningful for users who can actually see the room's events.
+    [[nodiscard]] auto user_is_joined_in_room(HomeserverRuntime const& runtime, std::string_view room_id,
+                                              std::string_view user_id) -> bool
+    {
+        auto const& memberships = runtime.database.persistent_store.memberships;
+        return std::ranges::any_of(memberships, [&](database::PersistentMembership const& membership) {
+            return membership.room_id == room_id && membership.user_id == user_id && membership.membership == "join";
+        });
+    }
+
+    // FED-11: a remote-only, departed or banned membership row does not make
+    // this server interested in further unsolicited PDUs. Room metadata and
+    // the room-version resolver are not admission signals either.
+    [[nodiscard]] auto room_has_current_local_interest(HomeserverRuntime const& runtime,
+                                                       std::string_view room_id) -> bool
+    {
+        return std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& membership) {
+            return membership.room_id == room_id && membership.user_id.starts_with('@') &&
+                   membership.user_id.find(':') > 1U && membership.user_id.find(':') != std::string::npos &&
+                   std::string_view{membership.user_id}.substr(membership.user_id.find(':') + 1U) ==
+                       runtime.config.server().server_name &&
+
+                   (membership.membership == "join" || membership.membership == "invite" ||
+                    membership.membership == "knock");
+        });
+    }
+
     // Outcome of a direct_to_device enqueue attempt. `targeted` counts every
     // per-device entry that was well-formed enough to attempt a store;
     // `stored` counts how many of those actually persisted. The two can
@@ -1493,19 +1524,24 @@ namespace
                 }
                 for (auto const& room_member : *root)
                 {
+                    // 0.12.5 audit, finding 13: skip rooms this server holds no
+                    // membership in. Skipping rather than rejecting the whole
+                    // EDU: a receipt transaction legitimately batches several
+                    // rooms, and one stale room_id must not discard the rest.
+                    if (!room_has_local_membership(*rt, room_member.key) ||
+                        !federation::room_server_acl_allows(rt->database.persistent_store, room_member.key,
+                                                            envelope.origin))
+                    {
+                        // FED-8: receipts are keyed by room, not a top-level
+                        // room_id. Check the authenticated origin before any
+                        // receipt or stream mutation, including worker relays.
+                        continue;
+                    }
                     auto const* receipt_types = std::get_if<canonicaljson::Object>(&room_member.value->storage());
                     if (receipt_types == nullptr)
                     {
                         return {federation::EduDispositionStatus::rejected_invalid,
                                 "receipt room entry must be an object"};
-                    }
-                    // 0.12.5 audit, finding 13: skip rooms this server holds no
-                    // membership in. Skipping rather than rejecting the whole
-                    // EDU: a receipt transaction legitimately batches several
-                    // rooms, and one stale room_id must not discard the rest.
-                    if (!room_has_local_membership(*rt, room_member.key))
-                    {
-                        continue;
                     }
                     for (auto const& receipt_type_member : *receipt_types)
                     {
@@ -1526,6 +1562,15 @@ namespace
                         }
                         for (auto const& user_member : *users)
                         {
+                            // FED-8: the receipt subject must be a joined member
+                            // of this room. Invited, knocked, left or banned users
+                            // cannot legitimately update read receipts, so this
+                            // per-subject drop prevents a peer from using a
+                            // receipt EDU to probe or influence non-member state.
+                            if (!user_is_joined_in_room(*rt, room_member.key, user_member.key))
+                            {
+                                continue;
+                            }
                             if (!user_belongs_to_origin(user_member.key, envelope.origin))
                             {
                                 return {federation::EduDispositionStatus::rejected_invalid,
@@ -1880,8 +1925,7 @@ namespace
         };
 
         runtime.federation.membership_acceptor =
-            [rt](federation::FederationEndpoint endpoint, std::string_view room_id,
-                 [[maybe_unused]] std::string_view event_id,
+            [rt](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
                  federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
             // Locking: this callback mutates store.rooms/state/events and the
             // stream-ordering/sync-stream-id counters, so it needs rt->mutex held.
@@ -1958,6 +2002,23 @@ namespace
                 if (pdu_parsed.error != canonicaljson::ParseError::none)
                 {
                     return {false, 400U, "invalid PDU JSON", {}, {}};
+                }
+                // FED-6: repeat endpoint agreement at the mutation boundary,
+                // including membership PDUs relayed by a federation worker.
+                // Origin authentication and event-ID computation belong to the
+                // callers; the relay has no URL event_id, so it passes empty.
+                auto const expected_membership = membership_for_endpoint(endpoint);
+                if (expected_membership.empty() || envelope.event_type != "m.room.member" ||
+                    envelope.room_id != room_id || (!event_id.empty() && envelope.event_id != event_id) ||
+                    !envelope.state_key.has_value() || *envelope.state_key != envelope.sender ||
+                    events::extract_content_membership(pdu_parsed.value) != expected_membership ||
+                    (!envelope.origin.empty() && server_name_from_user_id(envelope.sender) != envelope.origin))
+                {
+                    return {false,
+                            400U,
+                            matrix_error("M_INVALID_PARAM", "membership event does not match endpoint, path or origin"),
+                            {},
+                            {}};
                 }
                 // Prefer the room version recorded in m.room.create over the one
                 // the envelope claims: the sender does not get to choose which
@@ -2180,7 +2241,7 @@ namespace
             if (envelope.event_type == "m.room.member" && envelope.state_key.has_value() &&
                 outcome == MembershipReceiptOutcome::accepted)
             {
-                auto const membership = membership_for_endpoint(endpoint);
+                auto const membership = events::extract_content_membership(membership_effective_pdu);
                 if (!membership.empty())
                 {
                     if (!upsert_membership(store, room_id, *envelope.state_key, membership, event_stream_ordering))
@@ -3022,8 +3083,8 @@ namespace
     // Parses a JSON object response and returns the string array under `key`,
     // or nullopt when the key is missing or not an array of strings. Used for
     // /state_ids and /event_auth responses.
-    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::optional<std::vector<std::string>>
+    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object,
+                                           std::string_view key) noexcept -> std::optional<std::vector<std::string>>
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -3102,8 +3163,8 @@ namespace
     // /state_ids fallback to verify historical state events whose prev_events
     // have no recorded state groups (ADR-0069 option A).
     [[nodiscard]] auto fetch_event_auth(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
-                                        std::string_view event_id, std::size_t& snapshot_calls)
-        -> std::optional<std::vector<std::string>>
+                                        std::string_view event_id,
+                                        std::size_t& snapshot_calls) -> std::optional<std::vector<std::string>>
     {
         if (snapshot_calls >= k_max_snapshot_outbound_calls)
         {
@@ -3858,8 +3919,8 @@ namespace
 // main's own remote_key_resolver, for a PDU relayed by a federation worker
 // (ADR-0071). This function re-checks authorization and content-hash
 // integrity.
-auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
-    -> federation::PduIngestionResult
+auto ingest_pdu_event(HomeserverRuntime& runtime,
+                      federation::InboundPduEnvelope const& envelope) -> federation::PduIngestionResult
 {
     auto const room_id = envelope.room_id;
     if (room_id.empty())
@@ -3910,12 +3971,44 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // must not happen while a room stripe is also held — that would pin the
     // stripe for the whole database write and prevent concurrent progress on
     // unrelated rooms.
-    auto const [stream_ordering, sync_stream_id] = [&]() {
+    auto stream_ordering = std::uint64_t{0U};
+    auto sync_stream_id = std::uint64_t{0U};
+    {
         auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-        auto const ordering = allocate_stream_ordering(runtime.database);
-        auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
-        return std::make_pair(ordering, sync_id);
-    }();
+        // Admission and allocation are atomic under the runtime mutex. Nothing
+        // below (including missing-history fetches) runs for an unsolicited
+        // room. The explicit /send_join state bootstrap and verified, requested
+        // backfill writers are separate paths, not exceptions derived from PDU
+        // content, room IDs, event types or claimed membership.
+        if (!room_has_current_local_interest(runtime, room_id))
+        {
+            auto const pending = runtime.pending_federated_joins.find(room_id);
+            if (pending == runtime.pending_federated_joins.end())
+            {
+                return {federation::PduIngestionStatus::rejected_invalid, "unsolicited PDU for an uninterested room"};
+            }
+            auto& queue = pending->second;
+            if (std::ranges::any_of(queue.pdus, [&](auto const& pdu) {
+                    return pdu.event_id == envelope.event_id;
+                }))
+            {
+                return {federation::PduIngestionStatus::missing_prev_state, "PDU already deferred until join commits"};
+            }
+            if (queue.pdus.size() >= max_pending_join_pdus ||
+                stored_json.size() > max_pending_join_json_bytes - queue.json_bytes)
+            {
+                return {federation::PduIngestionStatus::main_overloaded, "pending join PDU capacity exhausted"};
+            }
+            auto deferred = envelope;
+            deferred.json = std::move(stored_json);
+            auto const bytes = deferred.json.size();
+            queue.pdus.push_back(std::move(deferred));
+            queue.json_bytes += bytes;
+            return {federation::PduIngestionStatus::missing_prev_state, "PDU deferred until outbound join commits"};
+        }
+        stream_ordering = allocate_stream_ordering(runtime.database);
+        sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+    }
 
     auto const stripe = std::hash<std::string>{}(room_id) % room_mutex_stripe_count;
     auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
@@ -3957,10 +4050,12 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
                 ScopedStripeReacquire(ScopedStripeReacquire const&) = delete;
                 auto operator=(ScopedStripeReacquire const&) -> ScopedStripeReacquire& = delete;
             };
-            auto const stripe_released = ScopedStripeReacquire{stripe_guard};
-            std::ignore = stripe_released;
+            // Restore stripe BEFORE global on scope exit, matching the
+            // ingestion lock order even when the backfill call throws.
             auto const global_released = RuntimeLockRelease{global_guard};
             std::ignore = global_released;
+            auto const stripe_released = ScopedStripeReacquire{stripe_guard};
+            std::ignore = stripe_released;
             std::ignore = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
         }
     }
@@ -4269,8 +4364,8 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
     }
 }
 
-auto effective_client_ip(LocalHttpRequest const& request, std::vector<std::string> const& trusted_proxies)
-    -> std::string
+auto effective_client_ip(LocalHttpRequest const& request,
+                         std::vector<std::string> const& trusted_proxies) -> std::string
 {
     auto const& raw = request.remote_addr;
     if (raw.empty())
@@ -4357,8 +4452,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     wire_federation_callbacks_impl(runtime);
 }
 
-[[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
-    -> LocalHttpResponse
+[[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime,
+                                             LocalHttpRequest const& request) -> LocalHttpResponse
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     // Publish the guard so a blocking network call further down the stack —
@@ -4774,8 +4869,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     return response(404U, "route not found");
 }
 
-[[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
-    -> LocalHttpResponse
+[[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime,
+                                                  LocalHttpRequest const& request) -> LocalHttpResponse
 {
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
     auto held_for_review = false;

@@ -325,7 +325,8 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
-        runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+        runtime,
+        {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat","visibility":"public"})"});
     REQUIRE(r.response.status == 200U);
     auto const body = parse_object(r.response.body);
     auto const* rid = string_member(body, "room_id");
@@ -14894,7 +14895,7 @@ SCENARIO("GET /publicRooms returns chunk array and total_room_count_estimate",
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     rt, {"POST", "/_matrix/client/v3/createRoom", token,
-                         R"({"preset":"public_chat","name":"Public Test"})"})
+                         R"({"preset":"public_chat","visibility":"public","name":"Public Test"})"})
                     .response.status == 200U);
 
         WHEN("GET /publicRooms is called")

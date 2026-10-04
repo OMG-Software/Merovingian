@@ -1033,6 +1033,43 @@ namespace
         return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
     }
 
+    // Matrix v1.19 #stripped-state permits only these four properties. Its suggested
+    // room-summary types plus the recipient's own membership are our disclosure policy;
+    // never pass persisted/federated snapshots through as full room state.
+    [[nodiscard]] auto stripped_state_event_value(std::string_view event_json, std::string_view user_id)
+        -> std::optional<canonicaljson::Value>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (event == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* type = string_member(*event, "type");
+        auto const* state_key = string_member(*event, "state_key");
+        auto const* sender = string_member(*event, "sender");
+        auto const* content = object_member(*event, "content");
+        if (type == nullptr || state_key == nullptr || sender == nullptr || content == nullptr ||
+            !std::holds_alternative<canonicaljson::Object>(content->storage()))
+        {
+            return std::nullopt;
+        }
+        auto const is_summary =
+            state_key->empty() && (*type == "m.room.create" || *type == "m.room.name" || *type == "m.room.avatar" ||
+                                   *type == "m.room.topic" || *type == "m.room.join_rules" ||
+                                   *type == "m.room.canonical_alias" || *type == "m.room.encryption");
+        if (!is_summary && !(*type == "m.room.member" && *state_key == user_id))
+        {
+            return std::nullopt;
+        }
+        return json_obj({json_member("sender", json_str(*sender)), json_member("type", json_str(*type)),
+                         json_member("state_key", json_str(*state_key)), json_member("content", *content)});
+    }
+
     [[nodiscard]] auto build_invite_state_events_array(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id) -> canonicaljson::Array
     {
@@ -1043,41 +1080,35 @@ namespace
             return result;
         }
 
-        auto seen_event_ids = std::vector<std::string>{};
+        auto seen_state = std::vector<std::pair<std::string, std::string>>{};
         auto append_event_json = [&](std::string const& event_json) {
-            auto parsed = canonicaljson::parse_lossless(event_json);
-            if (parsed.error != canonicaljson::ParseError::none)
+            auto stripped = stripped_state_event_value(event_json, user_id);
+            if (!stripped.has_value())
             {
                 return;
             }
-            auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (event == nullptr)
+            auto const& event = std::get<canonicaljson::Object>(stripped->storage());
+            auto const key = std::pair{*string_member(event, "type"), *string_member(event, "state_key")};
+            if (std::ranges::find(seen_state, key) != seen_state.end())
             {
                 return;
             }
-            if (auto const* event_id = string_member(*event, "event_id"); event_id != nullptr && !event_id->empty())
-            {
-                if (std::ranges::any_of(seen_event_ids, [event_id](std::string const& seen) {
-                        return seen == *event_id;
-                    }))
-                {
-                    return;
-                }
-                seen_event_ids.push_back(*event_id);
-            }
-            result.push_back(std::move(parsed.value));
+            seen_state.push_back(key);
+            result.push_back(std::move(*stripped));
         };
 
+        // The actual invitation takes precedence over a stale own-member entry in a
+        // snapshot. Deduplicate by state tuple: stripped events have no event_id.
+        append_event_json(invite->signed_event_json);
         for (auto const& state_event_json : invite->invite_state_events_json)
         {
             append_event_json(state_event_json);
         }
-        append_event_json(invite->signed_event_json);
         return result;
     }
 
-    [[nodiscard]] auto build_knock_state_events_array(database::PersistentStore const& store, std::string_view room_id)
-        -> canonicaljson::Array
+    [[nodiscard]] auto build_knock_state_events_array(database::PersistentStore const& store, std::string_view room_id,
+                                                      std::string_view user_id) -> canonicaljson::Array
     {
         auto result = canonicaljson::Array{};
         for (auto const& state : store.state)
@@ -1091,10 +1122,10 @@ namespace
             {
                 continue;
             }
-            auto const parsed = canonicaljson::parse_lossless(*event_json);
-            if (parsed.error == canonicaljson::ParseError::none)
+            auto stripped = stripped_state_event_value(*event_json, user_id);
+            if (stripped.has_value())
             {
-                result.push_back(parsed.value);
+                result.push_back(std::move(*stripped));
             }
         }
         return result;
@@ -2269,6 +2300,10 @@ namespace
         {
             return "M_FORBIDDEN";
         }
+        if (status == 429U)
+        {
+            return "M_LIMIT_EXCEEDED";
+        }
         return "M_UNKNOWN";
     }
 
@@ -2813,8 +2848,7 @@ namespace
                 user_key.append(norm);
             }
         }
-        auto const decision =
-            rt.rate_limit_engine->check(std::string_view{ip_key}, norm, std::string_view{user_key});
+        auto const decision = rt.rate_limit_engine->check(std::string_view{ip_key}, norm, std::string_view{user_key});
         if (!decision.allowed)
         {
             // Audit-routing: rate-limit denial is one of the five
@@ -3102,7 +3136,7 @@ namespace
         for (auto const& room : rt.homeserver.database.rooms)
         {
             auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
-            if (!join_rule.has_value() || *join_rule != "public")
+            if (!room.directory_public || !join_rule.has_value() || *join_rule != "public")
                 continue;
 
             auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
@@ -4052,11 +4086,12 @@ namespace
             {
                 if (knock_count < rt.limits.max_sync_rooms)
                 {
-                    knock_members.push_back(json_member(
-                        membership.room_id,
-                        json_obj({json_member("knock_state",
-                                              json_obj({json_member("events", json_arr(build_knock_state_events_array(
-                                                                                  store, membership.room_id)))}))})));
+                    auto knock_state_events = build_knock_state_events_array(store, membership.room_id, user);
+                    knock_members.push_back(
+                        json_member(membership.room_id,
+                                    json_obj({json_member(
+                                        "knock_state",
+                                        json_obj({json_member("events", json_arr(std::move(knock_state_events)))}))})));
                     ++knock_count;
                 }
             }
@@ -9445,7 +9480,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // the request path (matches /register).  Only the hash is consulted; a missing
         // or unreadable token file means no token is configured -> valid:false.
         // AUTH-4: route is now auth_sensitive, and verification runs without the
-        // runtime mutex so Argon2id work cannot block other requests.
+        // runtime mutex so Argon2id work cannot block other requests. Admission is
+        // checked first so an unauthenticated endpoint cannot be used to pile on
+        // memory-hard work.
+        auto const argon_slot = rt.homeserver.argon2id_admission->try_acquire();
+        if (!argon_slot)
+        {
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many concurrent authentication attempts",
+                                1000U);
+        }
         auto const expected_hash = load_hashed_registration_token(rt.homeserver.config.security().registration);
         auto const valid = [expected_hash = expected_hash.value_or(std::string{}), token = *token]() {
             auto const released = merovingian::homeserver::RuntimeLockRelease{};
@@ -12196,6 +12239,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, create_result.status, errcode, create_result.reason);
         }
         auto const& room_id = create_result.value;
+        if (visibility_value != nullptr && *visibility_value == "public")
+        {
+            auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](LocalRoom const& current) {
+                return current.room_id == room_id;
+            });
+            if (room != rt.homeserver.database.rooms.end())
+            {
+                room->directory_public = true;
+            }
+        }
 
         for (auto const& invitee : invitees)
         {

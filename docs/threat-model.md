@@ -83,6 +83,16 @@ flowchart TB
 Specific issues found and fixed, in the order they landed. Each entry names the
 threat it closes; the controls above are the standing defences these reinforce.
 
+- **Unsolicited unknown-room event retention (FED-11, 0.12.16):** valid
+  signatures no longer authorize unlimited rejected-event storage for rooms
+  with no current local join/invite/knock interest. Admission occurs before
+  stream allocation, history fetches and persistence. Active outbound joins
+  use bounded transient room queues, dropped on failure and drained only
+  after verified state and local membership commit (ADR-0089). Solicited
+  bootstrap/backfill paths remain explicit rather than privileges claimed by
+  incoming event content. Focused regression and lifecycle tests pass;
+  combined full-suite verification is pending.
+
 - **Production federation-listener auth confusion:** the production federation
   listener previously accepted a pipe-delimited fixture token format in
   addition to real `X-Matrix` authorization headers. A request path that is
