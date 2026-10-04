@@ -201,6 +201,7 @@ The one exception is `bootstrap/`, which is header-only.
 ├── subprojects/           #   Meson wrap dependencies
 ├── meson.build            #   Root build definition
 ├── meson.options           #   Build options
+├── mkdocs.yml             #   Documentation site (GitHub Pages); hooks in scripts/mkdocs_site_hooks.py
 └── build.py               #   Unified build CLI (Linux, BSD, WSL)
 ```
 
@@ -319,6 +320,10 @@ clang-format -i src/**/*.cpp include/merovingian/**/*.hpp
 
 # Full build via unified CLI (Linux/BSD/WSL)
 python build.py
+
+# Documentation site (see docs/dev-environment.md#documentation-site)
+pip install --require-hashes -r requirements-docs.txt
+mkdocs build --strict
 ```
 
 ## Naming Conventions

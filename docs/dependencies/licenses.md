@@ -26,6 +26,17 @@ sandboxed subprocess but are still required to build the feature.
 | libpng | libpng license | `Libpng` | Yes | PNG thumbnail decoding. |
 | libjpeg-turbo | BSD-3-Clause / IJG | `BSD-3-Clause` | Yes | JPEG thumbnail decoding. |
 
+## Documentation tooling
+
+These build the documentation site only. They are never linked into or shipped
+with a Merovingian binary or package. The full transitive set is hash-locked in
+`requirements-docs.txt`.
+
+| Dependency | License | SPDX | Compatible with GPL-3.0-or-later | Notes |
+| --- | --- | --- | --- | --- |
+| MkDocs | BSD 2-Clause | `BSD-2-Clause` | Yes | Static site generator for `docs/`. |
+| Material for MkDocs | MIT | `MIT` | Yes | Site theme, search, and Markdown extensions. |
+
 ## Policy
 
 - Runtime security and database libraries are resolved from OS packages so the

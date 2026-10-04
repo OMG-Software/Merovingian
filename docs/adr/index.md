@@ -89,6 +89,7 @@
 * [0085 - An inbound invite for a room we hold leaves room state to the transaction path](0085-inbound-invite-leaves-room-state-to-the-transaction-path.md)
 * [0086 - Outbound federation calls own the signing secret](0086-outbound-federation-calls-own-the-signing-secret.md)
 * [0087 - Critical logs are written synchronously](0087-critical-logs-are-written-synchronously.md)
+* [0101 - Build the documentation site on every branch, but publish only from main](0101-build-the-documentation-site-on-every-branch-but-publish-only-from-main.md)
 
 ## Rejected Records
 

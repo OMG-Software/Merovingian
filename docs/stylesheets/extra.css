@@ -1,0 +1,27 @@
+:root {
+  --md-primary-fg-color: #111827;
+  --md-accent-fg-color: #4f46e5;
+}
+
+.md-typeset .hero {
+  padding: 2.5rem 0 1.5rem;
+}
+
+.md-typeset .hero h1 {
+  margin-bottom: .25rem;
+}
+
+.md-typeset .hero h2 {
+  margin-top: 0;
+  font-weight: 500;
+  max-width: 44rem;
+}
+
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid.cards > li {
+  border-radius: .65rem;
+}
+
+.md-header {
+  box-shadow: 0 1px 0 rgba(255,255,255,.08);
+}

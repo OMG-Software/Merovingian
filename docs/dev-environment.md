@@ -298,6 +298,42 @@ test suite per pull request through `scripts/build-bsd.sh` on a CI VM. See
 [platform-support.md](platform-support.md) for the full support-tier matrix and
 per-platform hardening posture.
 
+## Documentation Site
+
+The documents under `docs/` are published to
+<https://omg-software.github.io/Merovingian/> with MkDocs Material, configured
+by `mkdocs.yml` in the repository root. The
+[documentation site workflow](../.github/workflows/pages.yml)
+builds the site with `--strict` on every branch and pull request and keeps the
+rendered site as the `docs-site` workflow artifact; only `main` deploys to
+Pages ([ADR-0101](adr/0101-build-the-documentation-site-on-every-branch-but-publish-only-from-main.md)).
+
+To build and preview it locally with the same pinned dependencies CI uses:
+
+```bash
+python3 -m venv .venv-docs
+.venv-docs/bin/pip install --require-hashes -r requirements-docs.txt
+.venv-docs/bin/mkdocs build --strict
+.venv-docs/bin/mkdocs serve
+```
+
+What the site expects of each branch:
+
+- **A new document needs a navigation entry.** Add it to `nav` in `mkdocs.yml`,
+  or to `exclude_docs` if it should not be published. `docs-site-tooling`
+  (`tests/tooling/test_docs_site.py`) fails otherwise. ADR records are the
+  exception: the ADR index links to them.
+- **Link as you would in the repository.** Relative links to files outside
+  `docs/` (source, workflows, module `AGENTS.md` files) are rewritten by
+  `scripts/mkdocs_site_hooks.py` to open on GitHub at the commit the site was
+  built from. Links into `docs/matrix-v1.19-spec/` open the same section of
+  the published v1.19 specification.
+- **Broken links fail the build.** A link whose target exists nowhere in the
+  repository, or an anchor that does not exist on the target page, is a
+  strict-mode warning.
+- **The changelog page is `CHANGELOG.md`.** The hooks publish it as
+  `changelog.md`; do not create that file under `docs/`.
+
 ## Security Posture
 
 The setup script does not weaken local package manager policy, add third-party package repositories, install Boost, or fetch dependencies outside the operating-system package manager. Use `--dry-run` during review to record the exact package command before running it on hardened hosts.

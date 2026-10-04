@@ -15,6 +15,7 @@ or tooling boundary so upstream APIs do not leak across the homeserver.
 | SQLite | Runtime/development embedded database | [sqlite.md](sqlite.md) |
 | yyjson | Canonical JSON parser adapter | [yyjson.md](yyjson.md) |
 | Catch2 | Test framework | [catch2.md](catch2.md) |
+| MkDocs and Material for MkDocs | Documentation site tooling | [mkdocs.md](mkdocs.md) |
 
 ## Review rules
 

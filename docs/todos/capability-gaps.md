@@ -1,4 +1,4 @@
-#Capability Gaps
+# Capability gaps
 
 Open work per capability area. Status column reflects the current level in the
 `not-started → planned → scaffolded → unit-covered → integrated → runtime-wired

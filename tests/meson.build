@@ -91,6 +91,12 @@ shell = find_program('sh')
   )
 
   test(
+    'docs-site-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_docs_site.py'],
+  )
+
+  test(
     'hook-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_hooks.py'],

@@ -1,4 +1,4 @@
-#Media Repository
+# Media repository
 
 This capability note describes the local media repository slice through the
 current in-process runtime path.
