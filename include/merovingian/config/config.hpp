@@ -251,6 +251,9 @@ enum class DatabaseBackend
 {
     postgresql,
     sqlite,
+    // Explicit programmatic backend for tests only. The config parser does not
+    // accept "memory"; deployed configuration must choose a durable backend.
+    memory,
 };
 
 enum class DatabaseRole

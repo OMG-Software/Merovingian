@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,8 +25,8 @@ namespace
 
     // ── canonicaljson accessor helpers ──────────────────────────────────────
 
-    [[nodiscard]] auto find_member(canonicaljson::Object const& obj, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto find_member(canonicaljson::Object const& obj,
+                                   std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& m : obj)
         {
@@ -564,7 +565,9 @@ auto parse_sliding_sync_timeout(std::string_view target) -> std::optional<std::u
         {
             return std::nullopt;
         }
-        value = value * 10U + static_cast<std::uint64_t>(ch - '0');
+        auto const digit = static_cast<std::uint64_t>(ch - '0');
+        auto constexpr maximum = std::numeric_limits<std::uint64_t>::max();
+        value = value > (maximum - digit) / 10U ? maximum : value * 10U + digit;
     }
     return value;
 }

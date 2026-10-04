@@ -35,6 +35,10 @@ struct EventAuthorizationDecision final
 struct AuthEventMap final
 {
     canonicaljson::Value create{};
+    // The event ID is stored separately from the signed PDU JSON. Callers that
+    // build this map from persistent state must preserve the authoritative ID
+    // for the create event so first-join authorization can verify prev_events.
+    std::string create_event_id{};
     canonicaljson::Value power_levels{};
     canonicaljson::Value join_rules{};
     canonicaljson::Value sender_member{};
@@ -67,8 +71,8 @@ struct AuthEventMap final
                                           canonicaljson::Value const& create_event,
                                           rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t;
 [[nodiscard]] auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,
-                                           std::int64_t default_value, bool allow_string_values = false) noexcept
-    -> std::int64_t;
+                                           std::int64_t default_value,
+                                           bool allow_string_values = false) noexcept -> std::int64_t;
 [[nodiscard]] auto domain_of(std::string_view matrix_id) noexcept -> std::string_view;
 [[nodiscard]] auto extract_content_membership(canonicaljson::Value const& event) noexcept -> std::string;
 

@@ -56,8 +56,12 @@ namespace
         {
             return;
         }
-        auto const* blob = media::find_local_media_blob(runtime.media_repository, record->storage_id);
-        if (blob == nullptr)
+        // Persistence also writes removal tombstones: its lookup must include
+        // the zero-reference row whose cleared bytes need to reach the database.
+        auto const blob = std::ranges::find_if(runtime.media_repository.blobs, [&record](auto const& candidate) {
+            return candidate.storage_id == record->storage_id;
+        });
+        if (blob == runtime.media_repository.blobs.end())
         {
             return;
         }
@@ -66,8 +70,8 @@ namespace
             {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
     }
 
-    [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime, std::string_view media_id)
-        -> trust_safety::PolicyDecision
+    [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime,
+                                             std::string_view media_id) -> trust_safety::PolicyDecision
     {
         auto const local_rule = find_policy_rule(runtime, "media", media_id);
         auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
@@ -109,8 +113,8 @@ namespace
 
     // HTTP header names are case-insensitive; scans linearly since responses
     // carry a small, bounded number of headers.
-    [[nodiscard]] auto find_header_ci(std::vector<http::OutboundHeader> const& headers, std::string_view name)
-        -> std::optional<std::string>
+    [[nodiscard]] auto find_header_ci(std::vector<http::OutboundHeader> const& headers,
+                                      std::string_view name) -> std::optional<std::string>
     {
         for (auto const& header : headers)
         {
@@ -135,79 +139,6 @@ namespace
             value.pop_back();
         }
         return value;
-    }
-
-    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-    {
-        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-    }
-
-    struct ParsedHttpsAuthority final
-    {
-        std::string host{};
-        std::uint16_t port{443U};
-    };
-
-    // Extracts host and port from an absolute https:// URL. Rejects URLs with
-    // userinfo, non-HTTPS schemes, or malformed IPv6/port syntax. The default
-    // port is 443. This is a strict parser intended for untrusted redirect
-    // URLs; it stops at the first '/', '?' or '#' so query strings and
-    // fragments do not pollute the authority.
-    [[nodiscard]] auto parse_https_authority(std::string_view url) -> std::optional<ParsedHttpsAuthority>
-    {
-        auto constexpr prefix = std::string_view{"https://"};
-        if (!starts_with(url, prefix))
-        {
-            return std::nullopt;
-        }
-        auto const authority_start = prefix.size();
-        auto const authority_end = url.find_first_of("/?#", authority_start);
-        auto const authority = url.substr(authority_start, authority_end - authority_start);
-        if (authority.empty() || authority.find('@') != std::string_view::npos)
-        {
-            return std::nullopt;
-        }
-
-        if (!authority.empty() && authority.front() == '[')
-        {
-            auto const close = authority.find(']');
-            if (close == std::string_view::npos || close == 1U)
-            {
-                return std::nullopt;
-            }
-            auto port = std::uint16_t{443U};
-            if (close + 1U < authority.size())
-            {
-                if (authority[close + 1U] != ':')
-                {
-                    return std::nullopt;
-                }
-                auto const* begin = authority.data() + close + 2U;
-                auto const* end = authority.data() + authority.size();
-                auto const parsed = std::from_chars(begin, end, port);
-                if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0U)
-                {
-                    return std::nullopt;
-                }
-            }
-            return ParsedHttpsAuthority{std::string{authority.substr(1U, close - 1U)}, port};
-        }
-
-        auto const colon = authority.rfind(':');
-        if (colon != std::string_view::npos && authority.find(':') == colon)
-        {
-            auto const* begin = authority.data() + colon + 1U;
-            auto const* end = authority.data() + authority.size();
-            auto port = std::uint16_t{443U};
-            auto const parsed = std::from_chars(begin, end, port);
-            if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0U)
-            {
-                return std::nullopt;
-            }
-            return ParsedHttpsAuthority{std::string{authority.substr(0U, colon)}, port};
-        }
-
-        return ParsedHttpsAuthority{std::string{authority}, 443U};
     }
 
     [[nodiscard]] auto extract_multipart_boundary(std::string_view content_type) -> std::string
@@ -270,8 +201,8 @@ namespace
         std::string_view body{};
     };
 
-    [[nodiscard]] auto find_raw_header_ci(RawMultipartPart const& part, std::string_view name)
-        -> std::optional<std::string>
+    [[nodiscard]] auto find_raw_header_ci(RawMultipartPart const& part,
+                                          std::string_view name) -> std::optional<std::string>
     {
         for (auto const& [key, value] : part.headers)
         {
@@ -389,8 +320,8 @@ namespace
 
     // Finds the next real boundary delimiter at or after `start`, using
     // boundary_at() so inner boundary-like byte sequences are ignored.
-    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary, std::size_t start)
-        -> std::size_t
+    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary,
+                                          std::size_t start) -> std::size_t
     {
         auto const max = body.size();
         if (start >= max)
@@ -412,8 +343,8 @@ namespace
     // Splits a multipart/mixed body on "--{boundary}" delimiters per RFC 2046.
     // Requires the opening delimiter to start on a line boundary and ignores
     // boundary-like strings that are not preceded by a line break.
-    [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary)
-        -> std::vector<RawMultipartPart>
+    [[nodiscard]] auto split_multipart_body(std::string_view body,
+                                            std::string_view boundary) -> std::vector<RawMultipartPart>
     {
         auto parts = std::vector<RawMultipartPart>{};
         if (boundary.empty())
@@ -462,8 +393,8 @@ namespace
     // unauthenticated client can trigger this, so it must not write a durable
     // row per request (ADR-0080).
     [[nodiscard]] auto remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
-                                            std::string_view media_id, RemoteMediaRequestContext const& remote)
-        -> std::optional<OperationResult>
+                                            std::string_view media_id,
+                                            RemoteMediaRequestContext const& remote) -> std::optional<OperationResult>
     {
         auto const enabled = runtime.media_repository.config.remote_fetch_enabled;
         if (enabled && remote.allow_remote)
@@ -521,7 +452,7 @@ namespace
         remote_req.decoder_marked_safe = true;
 
         auto const fetch_result = media::fetch_remote_media(runtime.media_repository, remote_req);
-        if (!fetch_result.ok)
+        if (!fetch_result.ok || fetch_result.quarantined || fetch_result.status != 200U)
         {
             log_diagnostic("remote_fetch.store_failed", {
                                                             {"origin_server", std::string{origin_server}, false},
@@ -530,7 +461,14 @@ namespace
             append_local_audit(runtime.database, observability::AuditCategory::moderation,
                                "media.remote_fetch_rejected", "server",
                                std::string{origin_server} + '/' + std::string{media_id}, fetch_result.reason);
-            return make_operation_result(false, {}, fetch_result.reason, fetch_result.status);
+            if (fetch_result.quarantined)
+            {
+                return make_operation_result(false, {}, "media is quarantined", 451U);
+            }
+            auto const unexpected_success = fetch_result.status >= 200U && fetch_result.status < 300U;
+            return make_operation_result(false, {},
+                                         unexpected_success ? "remote media was not admitted" : fetch_result.reason,
+                                         unexpected_success ? 502U : fetch_result.status);
         }
 
         log_diagnostic("remote_fetch.accepted", {
@@ -706,7 +644,7 @@ namespace
 
             auto redirect_req = http::OutboundRequest{};
             redirect_req.method = "GET";
-            redirect_req.url = std::string{parsed.location};
+            redirect_req.url = redirect_resolution.url;
             redirect_req.pinned_addresses = redirect_resolution.discovery.pinned_addresses;
             redirect_req.trusted_ca_pem = std::string{trusted_ca_pem};
             auto const redirect_budget = deadline.remaining_seconds();
@@ -760,8 +698,8 @@ namespace
     // back to remote_media_fetch_disabled() when federation infrastructure is
     // unavailable.
     [[nodiscard]] auto fetch_remote_media_live(HomeserverRuntime& runtime, std::string_view origin_server,
-                                               std::string_view media_id, RemoteMediaRequestContext const& remote)
-        -> OperationResult
+                                               std::string_view media_id,
+                                               RemoteMediaRequestContext const& remote) -> OperationResult
     {
         // OUT-7: every entry point has already asked, before its own policy
         // hook; asking again here means no future caller can reach discovery or
@@ -979,8 +917,8 @@ namespace
            "/_matrix/federation/v1/media/download/" + core::percent_encode_path_component(media_id);
 }
 
-[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
-    -> FederationMediaPart
+[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header,
+                                                    std::string_view body) -> FederationMediaPart
 {
     auto const boundary = extract_multipart_boundary(content_type_header);
     auto const parts = split_multipart_body(body, boundary);
@@ -1010,12 +948,11 @@ namespace
     return result;
 }
 
-[[nodiscard]] auto resolve_media_redirect_url(std::string_view location_url,
-                                              federation::ServerDiscoveryNetwork& network)
-    -> MediaRedirectResolutionResult
+[[nodiscard]] auto resolve_media_redirect_url(
+    std::string_view location_url, federation::ServerDiscoveryNetwork& network) -> MediaRedirectResolutionResult
 {
     auto result = MediaRedirectResolutionResult{};
-    auto const authority = parse_https_authority(location_url);
+    auto const authority = http::parse_outbound_url(location_url);
     if (!authority.has_value())
     {
         result.reason = "redirect URL is not a valid absolute https:// URL";
@@ -1030,6 +967,7 @@ namespace
         return result;
     }
 
+    result.url = authority->url;
     result.ok = true;
     return result;
 }
@@ -1169,8 +1107,12 @@ namespace
         // Fetch the remote media first, then resample it locally so a thumbnail
         // request never answers with the full-size original.
         auto const fetch_result = fetch_remote_media_live(runtime, server_name, media_id, remote);
-        if (!fetch_result.ok || fetch_result.status < 200U || fetch_result.status >= 300U)
+        if (!fetch_result.ok || fetch_result.status != 200U)
         {
+            if (fetch_result.status >= 200U && fetch_result.status < 300U)
+            {
+                return make_operation_result(false, {}, "remote media was not admitted", 502U);
+            }
             return fetch_result;
         }
         auto const separator = fetch_result.value.find('|');

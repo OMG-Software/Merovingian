@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         APPLICATION SERVICE API — as_token AUTH & MASQUERADING          |
@@ -13,8 +14,8 @@
 // |  covered elsewhere as they land.                                       |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -68,9 +69,12 @@ using namespace merovingian::tests;
     // see its own scenario for that path.
     merovingian::tests::enable_token_registration(security);
     auto config = merovingian::config::Config{
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
     config.appservice().registration_files = {registration_path.string()};
     return config;
@@ -287,9 +291,12 @@ SCENARIO("GET /login advertises m.login.application_service", "[appservice][conf
         auto security = merovingian::config::SecurityConfig{};
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         auto const config = merovingian::config::Config{
-            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},         security,
-            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::tests::in_memory_database_config(),
+            security,
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-#include "../support/master_key.hpp"
+#include "../support/in_memory_database_config.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -32,9 +32,12 @@ using namespace merovingian::tests;
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -70,8 +73,8 @@ using namespace merovingian::tests;
 }
 
 // Create a private room owned by token; returns the room_id.
-[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token)
-    -> std::string
+[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& rt,
+                               std::string const& token) -> std::string
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
         rt, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
@@ -85,8 +88,8 @@ using namespace merovingian::tests;
 // Issue a sliding sync POST; returns the DispatchResult (can_wait = false so it
 // never blocks on a long-poll — tests always prime events first).
 [[nodiscard]] auto sliding_sync(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                                std::string const& body, std::string const& pos = {})
-    -> merovingian::homeserver::DispatchResult
+                                std::string const& body,
+                                std::string const& pos = {}) -> merovingian::homeserver::DispatchResult
 {
     auto const target = pos.empty() ? std::string{"/_matrix/client/unstable/org.matrix.msc4186/sync"}
                                     : "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos;
@@ -106,8 +109,8 @@ using namespace merovingian::tests;
 // Extract the ops array for a named list from a 200 response body.
 // Returns a copy: parse_object is local and destroyed on return, so the caller
 // must not hold raw pointers into the original parse tree.
-[[nodiscard]] auto list_ops(std::string const& response_body, std::string_view list_name)
-    -> std::optional<merovingian::canonicaljson::Array>
+[[nodiscard]] auto list_ops(std::string const& response_body,
+                            std::string_view list_name) -> std::optional<merovingian::canonicaljson::Array>
 {
     auto const obj = parse_object(response_body);
     auto const* lists = object_member_as_object(obj, "lists");
@@ -229,8 +232,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // the serialized timeline array would find an ignored sender's event_id even
 // when their event object was withheld. Checking the per-event top-level
 // field is the only sound way to assert "this event was/was not delivered".
-[[nodiscard]] auto array_has_event_id(merovingian::canonicaljson::Array const& events, std::string const& event_id)
-    -> bool
+[[nodiscard]] auto array_has_event_id(merovingian::canonicaljson::Array const& events,
+                                      std::string const& event_id) -> bool
 {
     return std::ranges::any_of(events, [&](merovingian::canonicaljson::Value const& value) {
         auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
@@ -2129,7 +2132,10 @@ SCENARIO("MSC4186 sliding sync clamps an oversized timeline_limit",
 {
     GIVEN("a room with 110 messages")
     {
-        auto const config = sliding_sync_config();
+        auto config = sliding_sync_config();
+        // This fixture builds a 110-event history. Explicitly allow the burst
+        // now that transaction IDs share a rate-limit bucket (HTTP-3).
+        config.client_rate_limits().per_ip["/_matrix/client/v3/rooms/"] = {200U, 60U};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& rt = started.runtime;

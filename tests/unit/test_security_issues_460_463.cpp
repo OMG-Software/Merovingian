@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  SECURITY FIX TESTS — Issues #460-#463                                   |
@@ -46,9 +47,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -85,8 +89,8 @@ auto constexpr remote_key_seed = "security-test-remote-seed";
     return remote;
 }
 
-[[nodiscard]] auto signed_put(std::string const& target, std::string const& body)
-    -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_put(std::string const& target,
+                              std::string const& body) -> merovingian::federation::SignedFederationRequest
 {
     auto req = merovingian::federation::SignedFederationRequest{};
     req.method = "PUT";
@@ -132,7 +136,7 @@ struct SignedJoinPdu final
                                "\"prev_events\":[],\"auth_events\":" + auth_events_json + "}";
 
     auto const body = merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
-                                                                          remote_key_seed, "12");
+                                                                            remote_key_seed, "12");
     auto const parsed = merovingian::canonicaljson::parse_lossless(body);
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
     auto const* policy = merovingian::rooms::find_room_version_policy("12");
@@ -312,8 +316,8 @@ SCENARIO("send_join with valid PDU signature is accepted", "[security][federatio
 
         WHEN(" the valid send_join is handled")
         {
-            auto const response =
-                merovingian::federation::handle_inbound_federation_request(runtime, signed_put(target, signed_join.body));
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put(target, signed_join.body));
 
             THEN("the server accepts the PDU and calls the membership acceptor")
             {

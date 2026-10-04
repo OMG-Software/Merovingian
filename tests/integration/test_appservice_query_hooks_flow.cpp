@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |        APPLICATION SERVICE USER / ROOM-ALIAS QUERY HOOKS                 |
@@ -102,9 +103,12 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     enable_token_registration(security);
     auto config = merovingian::config::Config{
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
     config.appservice().registration_files = {registration_path.string()};
     return config;

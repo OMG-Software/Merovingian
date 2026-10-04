@@ -1,5 +1,12 @@
 # Event engine
 
+State resolution fetches required mainline power-level ancestors through the
+shared auth-event source, including external lookup. Missing, cyclic or
+truncated ancestry fails closed. Room-v12 conflicted subgraphs memoize distinct
+vertices, validate the reachable DAG, and compute the union of paths by reverse
+reachability; shared paths do not repeatedly consume the event budget. See
+[ADR-0095](adr/0095-bound-state-resolution-by-distinct-auth-events.md).
+
 This capability note describes the Matrix event-engine foundation on top of
 canonical JSON.
 
@@ -142,9 +149,16 @@ Implemented now:
   sink checks the authenticated sending origin against each receipt room's
   current server ACL. Denied rooms are skipped individually so a mixed EDU
   still updates allowed rooms; this also guards direct worker-relay calls
-- room creator is implicitly treated as joined with power level 100 when
-  no sender_member or power_levels event exists, enabling correct
-  authorization of initial state events during room bootstrapping
+- creator identity is room-version-aware: room versions v1-v10 use
+  `m.room.create.content.creator`, while v11+ use the create event's `sender`
+  and ignore a legacy `content.creator` field. Creator identity alone does not
+  grant room membership or permit ordinary event sends.
+- creator bootstrap joins are accepted only when `prev_events` contains exactly
+  the authoritative create event ID. Versions before v12 use the ID from
+  persisted room state; v12 derives the create event ID from the room ID.
+  Additional v12 creators receive the specified power privilege but not
+  implicit bootstrap membership. Locally-created v11+ create events remove a
+  client-supplied legacy `creator` property.
 - v2 state resolution algorithm: conflicted/unconflicted partition, power
   events (spec definition) sorted by reverse topological power ordering and
   auth-checked first, remaining events ordered by the mainline of the
@@ -480,6 +494,19 @@ were fixed after 0.12.14:
   dropping events. `mainline_order` is a plain sort on (mainline position,
   `origin_server_ts`, event id) by the spec's definition, and the iterative auth
   checks apply their input in the order given, so neither shared the defect.
+
+Two additional state-resolution properties are being closed on the 0.12.16
+security-audit branch (EVT-5 and EVT-9). For room versions 10–12, mainline
+ordering must fetch each power-level predecessor named by the prior event's
+`auth_events`, including events absent from submitted state groups. Missing,
+malformed, cyclic, or depth-truncated required ancestors now reject the
+resolution instead of silently shortening the mainline and falling back to
+timestamp ordering. For room v12, the conflicted state subgraph is computed
+from the auth graph reachable from conflicted roots: the result is the
+intersection of vertices reachable from those roots and vertices that can
+reach any root. The implementation processes distinct vertices and edges
+iteratively, rejects cycles and malformed/missing graph events, and uses the
+existing `max_auth_chain_walk_events` cap. Focused verification is pending.
 
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.

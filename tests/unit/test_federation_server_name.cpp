@@ -6,7 +6,7 @@
 // ranges, trust policy, and DNS rebinding).
 //
 // Coverage:
-//   - server_name_is_valid: valid domain, domain+port, empty, no-dot, >255,
+//   - server_name_is_valid: valid domain, domain+port, single-label, empty, >255,
 //                           space, control char (anomaly/boundary paths)
 //   - federation_discovery_policy: empty address set, unresolved host,
 //                                  invalid server name, TLS-not-required
@@ -48,9 +48,10 @@ SCENARIO("server_name_is_valid accepts domain names with at least one dot", "[fe
     }
 }
 
-SCENARIO("server_name_is_valid rejects empty and dot-free server names", "[federation][security][server-name][error]")
+SCENARIO("server_name_is_valid rejects empty and accepts single-label DNS server names",
+         "[federation][security][server-name]")
 {
-    GIVEN("server names that lack the minimum required structure")
+    GIVEN("empty and single-label server names")
     {
         WHEN("an empty string is tested")
         {
@@ -60,12 +61,12 @@ SCENARIO("server_name_is_valid rejects empty and dot-free server names", "[feder
             }
         }
 
-        WHEN("a single-label hostname with no dot is tested")
+        WHEN("single-label hostnames are tested")
         {
-            THEN("single-label names are rejected")
+            THEN("single-label DNS names are accepted by the Matrix grammar")
             {
-                REQUIRE_FALSE(merovingian::federation::server_name_is_valid("localhost"));
-                REQUIRE_FALSE(merovingian::federation::server_name_is_valid("homeserver"));
+                REQUIRE(merovingian::federation::server_name_is_valid("localhost"));
+                REQUIRE(merovingian::federation::server_name_is_valid("homeserver"));
             }
         }
     }
@@ -203,11 +204,11 @@ SCENARIO("federation_discovery_policy rejects a remote with an empty resolved ad
 SCENARIO("federation_discovery_policy rejects a remote whose server_name is invalid",
          "[federation][security][discovery][error]")
 {
-    GIVEN("a remote record whose server_name contains no dot")
+    GIVEN("a remote record whose server_name contains a forbidden userinfo delimiter")
     {
         auto remote = merovingian::federation::RemoteServerRecord{};
-        remote.server_name = "invalidhostname"; // no dot — fails server_name_is_valid
-        remote.resolved_host = "invalidhostname";
+        remote.server_name = "matrix.example.org@evil.org";
+        remote.resolved_host = "matrix.example.org";
         remote.resolved_addresses = {"203.0.113.10"};
         remote.tls_required = true;
 

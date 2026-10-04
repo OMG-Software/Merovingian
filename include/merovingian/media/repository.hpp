@@ -56,7 +56,7 @@ struct LocalMediaRecord final
     // New uploads are minted with false, so /_matrix/media/v3/download and
     // /thumbnail fail closed to 404 while /_matrix/client/v1/media/... remains
     // available (Matrix v1.19 authenticated media, security audit M05).
-    bool legacy_endpoint_visible{true};
+    bool legacy_endpoint_visible{false};
 };
 
 struct MediaRepositoryMetrics final
@@ -174,10 +174,10 @@ struct RemoteMediaDownloadResult final
 [[nodiscard]] auto media_repository_summary(LocalMediaRepository const& repository) -> std::string;
 [[nodiscard]] auto media_repository_metrics(LocalMediaRepository const& repository)
     -> std::vector<observability::MetricSample>;
-[[nodiscard]] auto find_local_media_record(LocalMediaRepository const& repository, std::string_view media_id) noexcept
-    -> LocalMediaRecord const*;
-[[nodiscard]] auto find_local_media_blob(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
-    -> LocalMediaBlob const*;
+[[nodiscard]] auto find_local_media_record(LocalMediaRepository const& repository,
+                                           std::string_view media_id) noexcept -> LocalMediaRecord const*;
+[[nodiscard]] auto find_local_media_blob(LocalMediaRepository const& repository,
+                                         std::string_view storage_id) noexcept -> LocalMediaBlob const*;
 [[nodiscard]] auto find_local_media_thumbnail(LocalMediaRepository const& repository,
                                               std::string_view media_id) noexcept -> LocalMediaThumbnail const*;
 auto restore_local_media_repository(LocalMediaRepository& repository, std::vector<LocalMediaRecord> records,
@@ -185,18 +185,18 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 [[nodiscard]] auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,
                                       LocalMediaUploadRequest const& request) -> LocalMediaUploadResult;
 [[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
-                                        std::string_view media_id, bool legacy_endpoint = false)
-    -> LocalMediaDownloadResult;
+                                        std::string_view media_id,
+                                        bool legacy_endpoint = false) -> LocalMediaDownloadResult;
 [[nodiscard]] auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                           std::string_view reason) -> LocalMediaAdminResult;
-[[nodiscard]] auto release_local_media(LocalMediaRepository& repository, std::string_view media_id)
-    -> LocalMediaAdminResult;
+[[nodiscard]] auto release_local_media(LocalMediaRepository& repository,
+                                       std::string_view media_id) -> LocalMediaAdminResult;
 [[nodiscard]] auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                       std::string_view reason) -> LocalMediaAdminResult;
 [[nodiscard]] auto fetch_remote_media_disabled(LocalMediaRepository& repository,
                                                RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
-[[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
-    -> RemoteMediaDownloadResult;
+[[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository,
+                                      RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
 
 // Body and outer Content-Type for a v1.19 federation media download response.
 // The body is a multipart/mixed envelope with an empty JSON metadata part and
@@ -209,7 +209,7 @@ struct FederationMediaDownloadBody final
 
 // Builds a Matrix v1.19 federation media download response body. Returns an
 // empty result if the multipart envelope could not be assembled.
-[[nodiscard]] auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
-    -> FederationMediaDownloadBody;
+[[nodiscard]] auto build_federation_media_download_body(std::string_view media_content_type,
+                                                        std::string_view bytes) -> FederationMediaDownloadBody;
 
 } // namespace merovingian::media

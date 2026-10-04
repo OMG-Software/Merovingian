@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  SECURITY AUDIT FED-6, FED-8, FED-11                                    |
@@ -56,7 +57,7 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        server,   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
         security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
@@ -501,13 +502,13 @@ SCENARIO("receipt EDU subject must be a joined member of the room", "[security][
         auto const target = std::string{"/_matrix/federation/v1/send/txn-fed8-not-joined"};
         auto const body =
             std::string{"{\"origin\":\""} + remote_origin +
-            "\",\"origin_server_ts\":1000,\"pdus\":[],\"edus\":[{\"edu_type\":\"m.receipt\",\"content\":" +
-            content + "}]}";
+            "\",\"origin_server_ts\":1000,\"pdus\":[],\"edus\":[{\"edu_type\":\"m.receipt\",\"content\":" + content +
+            "}]}";
 
         WHEN("the remote origin sends a receipt for a non-joined user")
         {
-            auto const response =
-                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_put(target, body));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime.federation,
+                                                                                             signed_put(target, body));
 
             THEN("the transaction succeeds but no receipt is stored")
             {

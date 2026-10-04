@@ -26,8 +26,8 @@ namespace merovingian::events
 namespace
 {
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -40,22 +40,22 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::int64_t const*
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object,
+                                      std::string_view key) noexcept -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
+                                               std::string_view key) noexcept -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -86,8 +86,8 @@ namespace
         return {true, {}, std::move(step), {}};
     }
 
-    [[nodiscard]] auto event_has_signature_from_server(canonicaljson::Value const& event, std::string_view server_name) noexcept
-        -> bool
+    [[nodiscard]] auto event_has_signature_from_server(canonicaljson::Value const& event,
+                                                       std::string_view server_name) noexcept -> bool
     {
         auto const* obj = value_is_object(event);
         if (obj == nullptr || server_name.empty())
@@ -127,8 +127,8 @@ namespace
         return false;
     }
 
-    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event,
+                                            std::string_view key) noexcept -> std::string const*
     {
         auto const* obj = value_is_object(event);
         if (obj == nullptr)
@@ -145,8 +145,8 @@ namespace
     // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — "Values in
     // m.room.power_levels events must be integers" (and, for v1-v9, v9's
     // "m.room.power_levels events accept values as strings").
-    [[nodiscard]] auto power_level_value(canonicaljson::Value const* value, bool allow_string_values) noexcept
-        -> std::optional<std::int64_t>
+    [[nodiscard]] auto power_level_value(canonicaljson::Value const* value,
+                                         bool allow_string_values) noexcept -> std::optional<std::int64_t>
     {
         if (value == nullptr)
         {
@@ -213,8 +213,8 @@ namespace
         return false;
     }
 
-    [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value, std::string_view needle) noexcept
-        -> bool
+    [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value,
+                                             std::string_view needle) noexcept -> bool
     {
         auto const* array = std::get_if<canonicaljson::Array>(&value.storage());
         if (array == nullptr)
@@ -261,13 +261,17 @@ namespace
     constexpr auto creator_power = std::numeric_limits<std::int64_t>::max();
 
     // Room versions before v11 store the creator in content.creator. v11 removed
-    // that property; the create event's sender is the creator. v12 (MSC4289)
-    // privileges creators with infinite power and adds additional_creators.
-    [[nodiscard]] auto room_creator_user_id(canonicaljson::Value const& create_event) noexcept -> std::string_view
+    // that property; the create event's sender is the creator. Do not fall back
+    // between these formats: an untrusted legacy field in v11+ must not change
+    // the creator, and a malformed legacy create event must not gain a sender
+    // fallback.
+    [[nodiscard]] auto room_creator_user_id(canonicaljson::Value const& create_event,
+                                            rooms::RoomVersionPolicy const& policy) noexcept -> std::string_view
     {
-        if (auto const* creator = event_content_string(create_event, "creator"); creator != nullptr)
+        if (policy.redaction_rules != rooms::RedactionRules::room_v11_plus)
         {
-            return *creator;
+            auto const* creator = event_content_string(create_event, "creator");
+            return creator == nullptr ? std::string_view{} : std::string_view{*creator};
         }
         auto const* obj = value_is_object(create_event);
         if (obj == nullptr)
@@ -280,6 +284,36 @@ namespace
             return *sender;
         }
         return {};
+    }
+
+    [[nodiscard]] auto sole_prev_event_is_create(canonicaljson::Value const& event, AuthEventMap const& auth_events,
+                                                 rooms::RoomVersionPolicy const& policy) noexcept -> bool
+    {
+        auto const* obj = value_is_object(event);
+        auto const* prev_events_value = obj == nullptr ? nullptr : object_member(*obj, "prev_events");
+        auto const* prev_events =
+            prev_events_value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&prev_events_value->storage());
+        if (prev_events == nullptr || prev_events->size() != 1U)
+        {
+            return false;
+        }
+        auto const* prev_event = std::get_if<std::string>(&prev_events->front().storage());
+        if (prev_event == nullptr || prev_event->empty())
+        {
+            return false;
+        }
+        if (policy.create_event_is_room_id)
+        {
+            auto const* room_id = string_member(*obj, "room_id");
+            if (room_id == nullptr || room_id->size() < 2U || room_id->front() != '!')
+            {
+                return false;
+            }
+            return prev_event->front() == '$' &&
+                   std::string_view{*prev_event}.substr(1U) == std::string_view{*room_id}.substr(1U);
+        }
+        auto const create_event_id = std::string_view{auth_events.create_event_id};
+        return !create_event_id.empty() && *prev_event == create_event_id;
     }
 
     // Every candidate public key a third-party invite's "signed" blob may be
@@ -325,9 +359,8 @@ namespace
     // public key in the m.room.third_party_invite event, allow." The signed blob
     // ({mxid, sender, token, signatures}) is signed like any other Matrix signed
     // JSON object: canonical JSON with "signatures" (and "unsigned") stripped.
-    [[nodiscard]] auto third_party_invite_signature_is_valid(canonicaljson::Object const& signed_obj,
-                                                             canonicaljson::Value const& third_party_invite_event)
-        -> bool
+    [[nodiscard]] auto third_party_invite_signature_is_valid(
+        canonicaljson::Object const& signed_obj, canonicaljson::Value const& third_party_invite_event) -> bool
     {
         auto const* signatures_value = object_member(signed_obj, "signatures");
         auto const* signatures = signatures_value == nullptr ? nullptr : value_is_object(*signatures_value);
@@ -388,11 +421,10 @@ namespace
     // "If content has a third_party_invite property" — a fully self-contained
     // decision tree that replaces the normal invite checks (target-not-joined,
     // sender-joined, invite-power) for invites accepted via a 3PID token.
-    [[nodiscard]] auto authorize_third_party_invite(canonicaljson::Value const& third_party_invite_content,
-                                                    std::string_view state_key, std::string_view sender,
-                                                    MembershipState target_current_membership,
-                                                    canonicaljson::Value const& third_party_invite_event)
-        -> EventAuthorizationDecision
+    [[nodiscard]] auto authorize_third_party_invite(
+        canonicaljson::Value const& third_party_invite_content, std::string_view state_key, std::string_view sender,
+        MembershipState target_current_membership,
+        canonicaljson::Value const& third_party_invite_event) -> EventAuthorizationDecision
     {
         // 4.3.1.1: target user banned -> reject.
         if (target_current_membership == MembershipState::ban)
@@ -598,8 +630,8 @@ namespace
     // users_default, ban, kick, redact and invite without bound (#487).
     [[nodiscard]] auto scalar_power_level_rejection_reason(canonicaljson::Object const& old_content,
                                                            canonicaljson::Object const& new_content,
-                                                           std::int64_t sender_power, bool allow_string_values)
-        -> std::string
+                                                           std::int64_t sender_power,
+                                                           bool allow_string_values) -> std::string
     {
         for (auto const& key : scalar_power_level_keys)
         {
@@ -796,8 +828,8 @@ namespace
 // rule 1 ("x's sender has greater power level than y's sender, when
 // looking at their respective auth_events").
 auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
-                            canonicaljson::Value const& create_event, rooms::RoomVersionPolicy const& policy) noexcept
-    -> std::int64_t
+                            canonicaljson::Value const& create_event,
+                            rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
 {
     if (user_is_room_creator(create_event, sender, policy))
     {
@@ -807,15 +839,8 @@ auto effective_sender_power(canonicaljson::Value const& power_levels, std::strin
     {
         return extract_user_power_level(power_levels, sender, !policy.power_levels_require_integers);
     }
-    auto const* creator = event_content_string(create_event, "creator");
-    if (creator != nullptr && sender == *creator)
-    {
-        return 100;
-    }
-    // EVT-7: v11+ rooms have no content.creator; the create event's sender is
-    // the creator and retains the default creator power of 100.
-    auto const v11_creator = room_creator_user_id(create_event);
-    if (!v11_creator.empty() && sender == v11_creator)
+    auto const creator = room_creator_user_id(create_event, policy);
+    if (!creator.empty() && sender == creator)
     {
         return 100;
     }
@@ -1001,27 +1026,14 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     if (is_non_federated)
     {
         auto const sender_domain = domain_of(*sender);
-        // v6–v10 rooms store the creator in content.creator; v11+ rooms (including v12)
-        // removed content.creator — use the create event's sender field as the fallback.
-        auto const* content_creator = event_content_string(auth_events.create, "creator");
-        std::string_view creator_domain_src;
-        if (content_creator != nullptr)
-        {
-            creator_domain_src = *content_creator;
-        }
-        else if (create_obj != nullptr)
-        {
-            auto const* create_sender = string_member(*create_obj, "sender");
-            if (create_sender != nullptr)
-            {
-                creator_domain_src = *create_sender;
-            }
-        }
-        if (creator_domain_src.empty())
+        // Spec: for every room version, compare with the sender of the create
+        // event. content.creator is not authoritative for this rule.
+        auto const* create_sender = create_obj == nullptr ? nullptr : string_member(*create_obj, "sender");
+        if (create_sender == nullptr || create_sender->empty())
         {
             return make_denied("3", "create event has no identifiable creator");
         }
-        if (sender_domain != domain_of(creator_domain_src))
+        if (sender_domain != domain_of(*create_sender))
         {
             return make_denied("3", "sender domain does not match creator domain");
         }
@@ -1043,6 +1055,19 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             return make_denied("4", "membership value is unrecognized");
         }
         auto const requested = *requested_opt;
+
+        // Room-version rules 4.3.1.1 (v10) and 4.3.1.1 / 5.3.1 (v11/v12)
+        // allow the creator bootstrap before the sender/state_key equality
+        // check. It is narrowly bound to the create event as the sole previous
+        // event; v12 additional creators do not receive bootstrap membership.
+        if (requested == MembershipState::join && sole_prev_event_is_create(event, auth_events, policy))
+        {
+            auto const creator = room_creator_user_id(auth_events.create, policy);
+            if (!creator.empty() && *state_key == creator)
+            {
+                return make_allowed("5");
+            }
+        }
 
         auto const target_is_sender = *sender == *state_key;
 
@@ -1077,19 +1102,6 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             if (target_current_membership == MembershipState::ban)
             {
                 return make_denied("5", "banned user cannot join");
-            }
-
-            // Matrix auth rule: the room creator's initial join is allowed when
-            // the only prior state is m.room.create — i.e. they have no existing
-            // membership event yet. This bootstraps every room before join rules
-            // or power levels exist.
-            if (!value_has_content(auth_events.sender_member) && !value_has_content(auth_events.target_member))
-            {
-                auto const* creator = event_content_string(auth_events.create, "creator");
-                if (creator != nullptr && *creator == *sender)
-                {
-                    return make_allowed("5");
-                }
             }
 
             // Check join rules
@@ -1157,7 +1169,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 auto const authorising_server = domain_of(*authorising_user);
                 if (!event_has_signature_from_server(event, authorising_server))
                 {
-                    return make_denied("5", "restricted join event lacks a signature from the authorising user's server");
+                    return make_denied("5",
+                                       "restricted join event lacks a signature from the authorising user's server");
                 }
 
                 auto const* authorising_member_obj = value_is_object(auth_events.authorising_user_member);
@@ -1377,20 +1390,6 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     {
         sender_membership = parse_membership_state(extract_content_membership(auth_events.sender_member))
                                 .value_or(MembershipState::leave);
-    }
-    else
-    {
-        // EVT-7: for v11+ rooms the create event has no content.creator; the
-        // sender of the create event is the creator and is therefore joined.
-        auto const* bootstrap_create_obj = value_is_object(auth_events.create);
-        if (bootstrap_create_obj != nullptr)
-        {
-            auto const* bootstrap_create_sender = string_member(*bootstrap_create_obj, "sender");
-            if (bootstrap_create_sender != nullptr && *sender == *bootstrap_create_sender)
-            {
-                sender_membership = MembershipState::join;
-            }
-        }
     }
     if (sender_membership != MembershipState::join)
     {

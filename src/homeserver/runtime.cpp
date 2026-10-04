@@ -56,8 +56,8 @@ namespace
     }
 
     [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
-                                   std::string help, std::vector<observability::MetricLabel> labels = {})
-        -> observability::MetricSample
+                                   std::string help,
+                                   std::vector<observability::MetricLabel> labels = {}) -> observability::MetricSample
     {
         return {std::move(name), value, true, type, std::move(help), std::move(labels)};
     }
@@ -144,6 +144,7 @@ namespace
                                              : (media_row.quarantined ? media::LocalMediaState::quarantined
                                                                       : media::LocalMediaState::available);
             record.quarantine_reason = media_row.quarantined ? "persisted quarantine" : std::string{};
+            record.legacy_endpoint_visible = media_row.legacy_endpoint_visible;
             records.push_back(std::move(record));
         }
 
@@ -157,8 +158,8 @@ namespace
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -170,8 +171,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
@@ -452,8 +453,8 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     return *this;
 }
 
-[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
-    -> std::vector<std::string>
+[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt,
+                                                std::string_view room_id) -> std::vector<std::string>
 {
     auto users = std::vector<std::string>{};
     for (auto const& entry : rt.typing_users)
@@ -597,12 +598,15 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
 {
     auto database = LocalDatabase{};
     auto opened = database::PersistentStoreOpenResult{};
-    if (config.database().backend == config::DatabaseBackend::sqlite)
+    switch (config.database().backend)
     {
+    case config::DatabaseBackend::sqlite:
         opened = database::open_sqlite_persistent_store(config.database().sqlite_path);
-    }
-    else
-    {
+        break;
+    case config::DatabaseBackend::memory:
+        opened = database::open_persistent_store(std::move(existing_state));
+        break;
+    case config::DatabaseBackend::postgresql: {
         // ADR-0062 part 2: the federation worker never reads database.uri_file
         // itself. When federation_worker::apply_worker_database_uri has set
         // worker_conninfo_override on this process's own Config copy (from
@@ -613,9 +617,14 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
                                   ? config.database().worker_conninfo_override
                                   : read_database_uri_file(config.database().uri_file);
         opened = conninfo.empty()
-                     ? database::open_persistent_store(std::move(existing_state))
+                     ? database::PersistentStoreOpenResult{false, "PostgreSQL connection URI is missing or empty", {}}
                      : database::open_postgresql_persistent_store(conninfo, config.database().runtime_role,
                                                                   config.database().migration_role, profile);
+        break;
+    }
+    default:
+        opened = {false, "unsupported database backend", {}};
+        break;
     }
     if (!opened.ok)
     {
@@ -1038,8 +1047,8 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
     return summary;
 }
 
-auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
-    -> std::optional<database::PersistentPolicyRule>
+auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope,
+                      std::string_view entity) -> std::optional<database::PersistentPolicyRule>
 {
     auto const& rules = runtime.database.persistent_store.policy_rules;
     auto const exact = std::ranges::find_if(rules, [scope, entity](database::PersistentPolicyRule const& rule) {

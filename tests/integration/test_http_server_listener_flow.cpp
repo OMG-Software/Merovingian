@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-
+#include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
+#include "merovingian/sync/stream_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -32,6 +34,7 @@
 #include <thread>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -57,9 +60,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -1240,7 +1246,7 @@ SCENARIO("merovingian-server rate limits a route per IP, answers 429 on the kept
         auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
+            merovingian::tests::in_memory_database_config(),
             security,
             std::move(rate_limits),
             merovingian::config::LogModulesConfig{},
@@ -1726,6 +1732,115 @@ SCENARIO("merovingian-server drops a client that stalls part-way through a reque
 // for as long as it keeps trickling, which for the Content-Length below is
 // hours. This is the scenario that actually covers the new deadline, so it is
 // worth the wall-clock time it costs.
+SCENARIO("sync admission bounds one account across devices without holding the request worker",
+         "[http-4][sync][admission]")
+{
+    GIVEN("two accounts and a live 32-thread sync pool")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+        runtime.rate_limit_engine.reset(); // Isolate concurrent admission from rate counters.
+        auto const alice = merovingian::homeserver::register_local_user(
+            runtime.homeserver, "poll_alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const bob = merovingian::homeserver::register_local_user(runtime.homeserver, "poll_bob", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(alice.ok);
+        REQUIRE(bob.ok);
+        auto tokens = std::vector<std::string>{};
+        for (auto device = 0U; device < 5U; ++device)
+        {
+            auto const login = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, alice.value,
+                                                                               "DEVICE" + std::to_string(device));
+            REQUIRE(login.ok);
+            tokens.push_back(login.value);
+        }
+        auto const bob_login = merovingian::homeserver::login_local_user_by_id(runtime.homeserver, bob.value, "BOB");
+        REQUIRE(bob_login.ok);
+        auto const since =
+            merovingian::sync::encode_stream_token({runtime.homeserver.database.next_stream_ordering - 1U, 0U,
+                                                    runtime.homeserver.database.persistent_store.next_sync_stream_id});
+        auto pool = merovingian::net::ThreadPool{32U};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto clients = std::vector<merovingian::core::FileDescriptor>{};
+        auto refused = std::vector<std::string>{};
+        auto poll_count = std::size_t{0U};
+        auto const request_poll = [&](std::string const& token) {
+            auto sockets = std::array<int, 2>{-1, -1};
+            REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets.data()) == 0);
+            auto server = merovingian::core::FileDescriptor{sockets[0]};
+            auto client = merovingian::core::FileDescriptor{sockets[1]};
+            auto const sliding = (poll_count++ % 2U) != 0U;
+            auto const request =
+                (sliding ? "POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos="
+                         : "GET /_matrix/client/v3/sync?since=") +
+                since + "&timeout=1500 HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token +
+                (sliding ? "\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}" : "\r\nConnection: close\r\n\r\n");
+            REQUIRE(send_all(client.get(), request));
+            auto const transferred = merovingian::homeserver::serve_one_http_connection(
+                server.get(), runtime, stats, merovingian::homeserver::HttpDispatchMode::client_server, &pool);
+            if (transferred)
+            {
+                std::ignore = server.release();
+                clients.push_back(std::move(client));
+            }
+            else
+            {
+                server.reset();
+                refused.push_back(receive_until_close(client.get()));
+            }
+            return transferred;
+        };
+
+        WHEN("one device opens three mixed-protocol polls and the account attempts forty across five devices")
+        {
+            CHECK(request_poll(tokens[0]));
+            CHECK(request_poll(tokens[0]));
+            auto const device_overflow = request_poll(tokens[0]);
+            for (auto i = 3U; i < 40U; ++i)
+            {
+                std::ignore = request_poll(tokens[i % tokens.size()]);
+            }
+            auto const alice_admitted = clients.size();
+            auto const bob_admitted = request_poll(bob_login.value);
+            clients.clear(); // Disconnect every admitted poll before stopping the pool.
+            pool.request_stop();
+
+            THEN("the device has two slots, the account has four, and another account is admitted")
+            {
+                CHECK_FALSE(device_overflow);
+                CHECK(alice_admitted == 4U);
+                CHECK(bob_admitted);
+                CHECK(runtime.sync_user_budget->active() == 0U);
+                CHECK(runtime.sync_device_budget->active() == 0U);
+                REQUIRE(refused.size() == 36U);
+                for (auto const& response : refused)
+                {
+                    CHECK(response.starts_with("HTTP/1.1 429"));
+                    CHECK(response.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                    CHECK(response.find("retry_after_ms") != std::string::npos);
+                }
+            }
+        }
+        WHEN("the sync pool refuses a handoff")
+        {
+            pool.request_stop();
+            auto const began = std::chrono::steady_clock::now();
+            auto const transferred = request_poll(tokens[0]);
+            auto const elapsed = std::chrono::steady_clock::now() - began;
+            THEN("the request gets immediate backpressure and both admission slots are released")
+            {
+                CHECK_FALSE(transferred);
+                CHECK(elapsed < std::chrono::milliseconds{500});
+                REQUIRE(refused.size() == 1U);
+                CHECK(refused.front().starts_with("HTTP/1.1 429"));
+                CHECK(runtime.sync_user_budget->active() == 0U);
+                CHECK(runtime.sync_device_budget->active() == 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("merovingian-server bounds a client that trickles a body indefinitely under the inter-byte cap",
          "[homeserver][http][listener][integration][security][m06][slow]")
 {

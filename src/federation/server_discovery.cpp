@@ -150,8 +150,8 @@ namespace
         return parse_host_port(authority, port);
     }
 
-    [[nodiscard]] auto canonical_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto canonical_object_member(canonicaljson::Object const& object,
+                                               std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -301,8 +301,8 @@ namespace
     class SystemServerDiscoveryNetwork final : public ServerDiscoveryNetwork
     {
     public:
-        [[nodiscard]] auto fetch_well_known(std::string_view server_name, std::uint32_t timeout_seconds)
-            -> WellKnownServerResult override
+        [[nodiscard]] auto fetch_well_known(std::string_view server_name,
+                                            std::uint32_t timeout_seconds) -> WellKnownServerResult override
         {
             auto const host_port = parse_host_port(server_name, default_https_port);
             if (!host_port.has_value())
@@ -471,8 +471,8 @@ auto parse_srv_records(unsigned char const* message, int message_length) -> std:
     return records;
 }
 
-auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name, std::string_view well_known_server)
-    -> ServerDiscoveryResult
+auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name,
+                     std::string_view well_known_server) -> ServerDiscoveryResult
 {
     auto result = ServerDiscoveryResult{};
     result.server_name = server_name;
@@ -486,8 +486,7 @@ auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name, std::s
         return result;
     }
     auto direct_host_port = parse_host_port(server_name, default_federation_port);
-    if (!direct_host_port.has_value() ||
-        (!server_name_is_valid(direct_host_port->host) && !host_is_numeric_ip(direct_host_port->host)))
+    if (!direct_host_port.has_value() || !server_name_is_valid(server_name))
     {
         result.reason = "server name is invalid";
         log_diagnostic("discovery.rejected", {
@@ -527,8 +526,8 @@ auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name, std::s
     return result;
 }
 
-auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds)
-    -> ServerDiscoveryResult
+auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network,
+                     std::uint32_t timeout_seconds) -> ServerDiscoveryResult
 {
     auto result = ServerDiscoveryResult{};
     result.server_name = server_name;
@@ -542,8 +541,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
         return result;
     }
     auto direct_host_port = parse_host_port(server_name, default_federation_port);
-    if (!direct_host_port.has_value() ||
-        (!server_name_is_valid(direct_host_port->host) && !host_is_numeric_ip(direct_host_port->host)))
+    if (!direct_host_port.has_value() || !server_name_is_valid(server_name))
     {
         result.reason = "server name is invalid";
         log_diagnostic("discovery.rejected", {
@@ -574,8 +572,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
         auto const delegated = extract_m_server(well_known.body);
         auto delegated_host_port =
             delegated.has_value() ? parse_host_port(*delegated, default_federation_port) : std::nullopt;
-        if (delegated_host_port.has_value() &&
-            (server_name_is_valid(delegated_host_port->host) || host_is_numeric_ip(delegated_host_port->host)))
+        if (delegated_host_port.has_value() && server_name_is_valid(*delegated))
         {
             log_diagnostic("discovery.well_known",
                            {
@@ -659,8 +656,8 @@ auto make_system_server_discovery_network() -> std::unique_ptr<ServerDiscoveryNe
     return std::make_unique<SystemServerDiscoveryNetwork>();
 }
 
-auto validate_federation_tls_origin(std::string_view server_name, ServerDiscoveryResult const& discovery) noexcept
-    -> FederationTlsOriginDecision
+auto validate_federation_tls_origin(std::string_view server_name,
+                                    ServerDiscoveryResult const& discovery) noexcept -> FederationTlsOriginDecision
 {
     if (!server_name_is_valid(server_name) && !host_is_numeric_ip(server_name))
     {
@@ -716,8 +713,8 @@ auto validate_federation_tls_origin(std::string_view server_name, ServerDiscover
     return {true, {}};
 }
 
-auto resolve_federation_destination(std::string_view host, std::uint16_t port, ServerDiscoveryNetwork& network)
-    -> ServerDiscoveryResult
+auto resolve_federation_destination(std::string_view host, std::uint16_t port,
+                                    ServerDiscoveryNetwork& network) -> ServerDiscoveryResult
 {
     auto result = ServerDiscoveryResult{};
     result.resolved_host = std::string{host};

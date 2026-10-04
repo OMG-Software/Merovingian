@@ -1273,6 +1273,7 @@ namespace
             if (state.event_type == "m.room.create" && state.state_key.empty())
             {
                 result.create = find_event_json(store, state.event_id);
+                result.create_event_id = state.event_id;
             }
             if (state.event_type == "m.room.power_levels" && state.state_key.empty())
             {
@@ -2552,11 +2553,24 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     // reference hash of the create event (MSC4291), so the create event must be
     // composed before a room ID exists; earlier versions use a server-scoped ID.
     auto create_content = options.creation_content;
-    upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
+    auto const* version_policy = rooms::find_room_version_policy(options.room_version);
+    auto const create_sender_replaces_legacy_creator =
+        version_policy != nullptr && version_policy->redaction_rules == rooms::RedactionRules::room_v11_plus;
+    if (create_sender_replaces_legacy_creator)
+    {
+        // Room v11 removed content.creator. Strip client-supplied values too;
+        // they must not survive into the signed create event as misleading data.
+        std::erase_if(create_content, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "creator";
+        });
+    }
+    else
+    {
+        upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
+    }
     upsert_object_member(create_content,
                          canonicaljson::make_member("room_version", canonicaljson::Value{options.room_version}));
 
-    auto const* version_policy = rooms::find_room_version_policy(options.room_version);
     auto const create_defines_room_id = version_policy != nullptr && version_policy->create_event_is_room_id;
     auto const supports_additional_creators = version_policy != nullptr && version_policy->privilege_room_creators;
 

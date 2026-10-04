@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iterator>
+#include <list>
 #include <optional>
 #include <span>
 #include <string>
@@ -165,10 +167,11 @@ struct RateLimitDecision final
 // The engine. Templated on the clock so tests can supply a
 // std::chrono::steady_clock::time_point-producing callable. In
 // production the clock is a thin wrapper over std::chrono::steady_clock.
-template <typename Clock>
+template <typename Clock, std::size_t MaxBuckets = 100'000U>
 class RateLimitEngine final
 {
 public:
+    static_assert(MaxBuckets > 0U);
     using TimePoint = std::chrono::steady_clock::time_point;
 
     // The clock is borrowed, not owned. The caller must keep the
@@ -183,6 +186,11 @@ public:
     {
     }
 
+    RateLimitEngine(RateLimitEngine const&) = delete;
+    auto operator=(RateLimitEngine const&) -> RateLimitEngine& = delete;
+    RateLimitEngine(RateLimitEngine&&) = delete;
+    auto operator=(RateLimitEngine&&) -> RateLimitEngine& = delete;
+
     // Per-IP policy resolution, most specific first:
     //   1. operator `per_ip` entry (longest target-prefix match),
     //   2. operator `tier` override for the route's tier,
@@ -192,14 +200,15 @@ public:
     // An invalid policy at whichever level matched resolves to std::nullopt
     // so check() can fail closed (issue #412) — a misconfigured entry must
     // never be treated as "no limit".
-    [[nodiscard]] auto resolve_per_ip_policy(std::string_view target) const -> std::optional<RateLimitPolicy>
+    [[nodiscard]] auto resolve_per_ip_policy(std::string_view target, std::string_view policy_target = {}) const
+        -> std::optional<RateLimitPolicy>
     {
-        auto const* operator_prefix = lookup_policy(m_config.per_ip, target);
+        auto const* operator_prefix = lookup_policy(m_config.per_ip, target, policy_target);
         if (operator_prefix != nullptr)
         {
             return valid_or_nullopt(*operator_prefix);
         }
-        auto const tier = rate_limit_tier_for(target);
+        auto const tier = rate_limit_tier_for(policy_target.empty() ? target : policy_target);
         auto const tier_name = rate_limit_tier_name(tier);
         if (auto const it = m_config.tier.find(std::string{tier_name}); it != m_config.tier.end())
         {
@@ -219,9 +228,10 @@ public:
     // Per-user policy resolution: operator `per_user` entry first, then the
     // built-in per-user login cap. Unlisted routes resolve to std::nullopt
     // and the per-user tier is skipped for them.
-    [[nodiscard]] auto resolve_per_user_policy(std::string_view target) const -> std::optional<RateLimitPolicy>
+    [[nodiscard]] auto resolve_per_user_policy(std::string_view target, std::string_view policy_target = {}) const
+        -> std::optional<RateLimitPolicy>
     {
-        auto const* policy = lookup_policy(m_config.per_user, target);
+        auto const* policy = lookup_policy(m_config.per_user, target, policy_target);
         if (policy == nullptr)
         {
             policy = lookup_policy(m_config.builtin_per_user, target);
@@ -239,11 +249,12 @@ public:
     // rolls over on the wall-clock seconds set by the resolved
     // policy. Returns a RateLimitDecision with all count fields
     // populated for the audit row.
-    auto check(std::string_view ip_bucket, std::string_view target, std::string_view user_bucket) -> RateLimitDecision
+    auto check(std::string_view ip_bucket, std::string_view target, std::string_view user_bucket,
+               std::string_view policy_target = {}) -> RateLimitDecision
     {
         auto const now = (*m_clock)();
-        auto const per_ip = resolve_per_ip_policy(target);
-        auto const per_user = resolve_per_user_policy(target);
+        auto const per_ip = resolve_per_ip_policy(target, policy_target);
+        auto const per_user = resolve_per_user_policy(target, policy_target);
 
         if (!per_ip.has_value())
         {
@@ -259,9 +270,10 @@ public:
         }
 
         auto const ip_decision = ip_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""}
-                                                   : check_bucket(m_ip_buckets, ip_bucket, per_ip, now);
-        auto const user_decision = user_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""}
-                                                       : check_bucket(m_user_buckets, user_bucket, per_user, now);
+                                                   : check_bucket(m_ip_buckets, ip_bucket, m_ip_lru, per_ip, now);
+        auto const user_decision = user_bucket.empty()
+                                       ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""}
+                                       : check_bucket(m_user_buckets, user_bucket, m_user_lru, per_user, now);
 
         if (!user_decision.allowed)
         {
@@ -299,6 +311,8 @@ public:
     {
         m_ip_buckets.clear();
         m_user_buckets.clear();
+        m_ip_lru.clear();
+        m_user_lru.clear();
     }
 
     // Exposes bucket-table sizes so tests can assert the bound in #427 holds
@@ -315,16 +329,17 @@ public:
     }
 
 private:
+    using LruList = std::list<std::string>;
+
     struct Bucket final
     {
         std::uint32_t count{0U};
         // The window length in force when this bucket was created/reset.
-        // Stored per-bucket (not just looked up from the caller's current
-        // policy) because entries in the same table can belong to different
-        // routes with different configured windows, and eviction sweeps need
-        // to judge staleness without re-resolving each bucket's policy.
+        // Stored per-bucket because entries in the same table can belong to
+        // different routes with different configured windows.
         std::uint32_t window_seconds{0U};
         TimePoint window_start{};
+        LruList::iterator recency{};
     };
 
     using BucketTable = std::unordered_map<std::string, Bucket, BucketKeyHash>;
@@ -332,47 +347,20 @@ private:
     // Bounds each bucket table so an attacker who can force many distinct keys
     // (e.g. rotating a client-supplied X-Forwarded-For value through a trusted
     // proxy) cannot grow memory or per-check scan cost without bound. Set well
-    // above any plausible legitimate concurrent-key count; the eviction sweep
-    // below only runs when a brand-new key arrives while a table is already at
-    // capacity, not on every check().
-    static constexpr std::size_t kMaxBucketsPerTable = 100'000U;
+    // above any plausible legitimate concurrent-key count. An O(1) LRU entry
+    // is evicted only when a new key arrives at capacity.
+    static constexpr std::size_t kMaxBucketsPerTable = MaxBuckets;
 
-    // Makes room in `table` for a new key: first evicts entries whose window
-    // is clearly expired (more than twice its own window length old, safely
-    // stale under any clock skew or missed sweep), then — if still at
-    // capacity — evicts the single least-recently-touched entry. This bounds
-    // table growth under sustained distinct-key pressure (see #427).
-    static auto evict_to_make_room(BucketTable& table, TimePoint now) -> void
+    // Makes room in `table` for a new key by evicting the least-recently-used
+    // bucket. List splice and the corresponding map erase keep admission cost
+    // constant even when an attacker supplies a fresh key on every request.
+    static auto evict_to_make_room(BucketTable& table, LruList& lru) -> void
     {
-        if (table.size() < kMaxBucketsPerTable)
+        if (table.size() >= kMaxBucketsPerTable)
         {
-            return;
+            table.erase(lru.front());
+            lru.pop_front();
         }
-        for (auto it = table.begin(); it != table.end();)
-        {
-            auto const stale_after = std::chrono::seconds{static_cast<std::int64_t>(it->second.window_seconds) * 2};
-            if (now - it->second.window_start >= stale_after)
-            {
-                it = table.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-        }
-        if (table.size() < kMaxBucketsPerTable)
-        {
-            return;
-        }
-        auto oldest = table.begin();
-        for (auto it = table.begin(); it != table.end(); ++it)
-        {
-            if (it->second.window_start < oldest->second.window_start)
-            {
-                oldest = it;
-            }
-        }
-        table.erase(oldest);
     }
 
     // Shared fail-closed shim for policy resolution: an entry that fails
@@ -388,15 +376,20 @@ private:
     }
 
     [[nodiscard]] static auto lookup_policy(std::unordered_map<std::string, RateLimitPolicy> const& table,
-                                            std::string_view target) -> RateLimitPolicy const*
+                                            std::string_view target,
+                                            std::string_view policy_target = {}) -> RateLimitPolicy const*
     {
-        // Find the longest matching prefix. This lets a config entry
-        // for "/_matrix/client/v3/login" match "/_matrix/client/v3/login/foo".
+        // Match both the normalized template and original path. The former
+        // allows route-wide configuration; the latter preserves existing
+        // operator prefixes for paths that normalize to the shared fallback.
         auto best = static_cast<RateLimitPolicy const*>(nullptr);
         auto best_len = std::size_t{0U};
         for (auto const& [key, policy] : table)
         {
-            if (target.size() >= key.size() && target.substr(0U, key.size()) == key && key.size() > best_len)
+            auto const matches = [&](std::string_view candidate) {
+                return candidate.size() >= key.size() && candidate.substr(0U, key.size()) == key;
+            };
+            if ((matches(target) || matches(policy_target)) && key.size() > best_len)
             {
                 best = &policy;
                 best_len = key.size();
@@ -414,7 +407,7 @@ private:
         return static_cast<std::uint32_t>(remaining_ms);
     }
 
-    [[nodiscard]] auto check_bucket(BucketTable& table, std::string_view bucket_key,
+    [[nodiscard]] auto check_bucket(BucketTable& table, std::string_view bucket_key, LruList& lru,
                                     std::optional<RateLimitPolicy> const& policy, TimePoint now) -> RateLimitDecision
     {
         if (!policy.has_value() || bucket_key.empty())
@@ -425,11 +418,23 @@ private:
         auto it = table.find(key);
         if (it == table.end())
         {
-            evict_to_make_room(table, now);
-            it = table.emplace(key, Bucket{1U, policy->window_seconds, now}).first;
+            evict_to_make_room(table, lru);
+            lru.push_back(key);
+            auto const recency = std::prev(lru.end());
+            try
+            {
+                it = table.emplace(key, Bucket{1U, policy->window_seconds, now, recency}).first;
+            }
+            catch (...)
+            {
+                lru.erase(recency);
+                throw;
+            }
             return RateLimitDecision{true, policy->max_requests, policy->window_seconds, 1U, 1U, 0U, 0U, 0U, ""};
         }
         auto& bucket = it->second;
+        lru.splice(lru.end(), lru, bucket.recency);
+        bucket.recency = std::prev(lru.end());
         bucket.window_seconds = policy->window_seconds;
         if (now - bucket.window_start >= std::chrono::seconds{policy->window_seconds})
         {
@@ -452,6 +457,8 @@ private:
     Clock* m_clock{nullptr};
     BucketTable m_ip_buckets{};
     BucketTable m_user_buckets{};
+    LruList m_ip_lru{};
+    LruList m_user_lru{};
 };
 
 } // namespace merovingian::http

@@ -34,6 +34,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace
@@ -58,6 +59,20 @@ using merovingian::events::StateResolutionRequest;
     auto parsed = merovingian::canonicaljson::parse_lossless(json);
     if (parsed.error == merovingian::canonicaljson::ParseError::none)
     {
+        // These fixtures model already accepted state references without
+        // historical ancestry unless a scenario supplies it explicitly.
+        // auth_events is still a required event field: omitting it must not
+        // make malformed input pass the mainline completeness check.
+        auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+        if (object != nullptr && !std::ranges::any_of(*object, [](auto const& member) {
+                return member.key == "auth_events";
+            }))
+        {
+            auto complete = *object;
+            complete.push_back(merovingian::canonicaljson::make_member(
+                "auth_events", merovingian::canonicaljson::Value{merovingian::canonicaljson::Array{}}));
+            parsed.value = merovingian::canonicaljson::Value{std::move(complete)};
+        }
         ref.event_json = std::move(parsed.value);
     }
     return ref;
@@ -1564,28 +1579,33 @@ SCENARIO("Room v12: state resolution derives the create event from room_id, not 
         auto const create =
             make_event_ref("m.room.create", "", "$createconf:example.org", "@alice:example.org", 1, 0, create_json);
 
-        auto const power_levels = make_power_levels_event("@alice:example.org", "$power_levels:example.org", 2, 1);
+        auto const alice_join = make_event_ref(
+            "m.room.member", "@alice:example.org", "$creator_join:example.org", "@alice:example.org", 2, 1,
+            R"({"type":"m.room.member","state_key":"@alice:example.org","sender":"@alice:example.org","prev_events":["$createconf:example.org"],"auth_events":[],"content":{"membership":"join"}})");
+        auto const power_levels = make_event_ref(
+            "m.room.power_levels", "", "$power_levels:example.org", "@alice:example.org", 3, 2,
+            R"({"type":"m.room.power_levels","state_key":"","sender":"@alice:example.org","auth_events":["$creator_join:example.org"],"content":{"users":{},"users_default":0,"state_default":50}})");
         auto const topic_a_json =
             std::string{"{\"type\":\"m.room.topic\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
                         "\"event_id\":\"$topic_a:example.org\",\"origin_server_ts\":100,\"content\":{\"topic\":"
-                        "\"a\"}}"};
+                        "\"a\"},\"auth_events\":[\"$power_levels:example.org\",\"$creator_join:example.org\"]}"};
         auto const topic_a =
             make_event_ref("m.room.topic", "", "$topic_a:example.org", "@alice:example.org", 100, 2, topic_a_json);
         auto const topic_b_json =
             std::string{"{\"type\":\"m.room.topic\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
                         "\"event_id\":\"$topic_b:example.org\",\"origin_server_ts\":200,\"content\":{\"topic\":"
-                        "\"b\"}}"};
+                        "\"b\"},\"auth_events\":[\"$power_levels:example.org\",\"$creator_join:example.org\"]}"};
         auto const topic_b =
             make_event_ref("m.room.topic", "", "$topic_b:example.org", "@alice:example.org", 200, 2, topic_b_json);
 
         // Neither state group lists the create event at all.
         auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
-        group_a.state = {power_levels, topic_a};
+        group_a.state = {power_levels, alice_join, topic_a};
 
         auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";
-        group_b.state = {power_levels, topic_b};
+        group_b.state = {power_levels, alice_join, topic_b};
 
         auto request = merovingian::events::StateResolutionRequest{};
         request.room_version = "12";

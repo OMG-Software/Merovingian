@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |            PUSH GATEWAY DELIVERY — END-TO-END INTEGRATION TESTS         |
@@ -62,9 +63,12 @@ using namespace merovingian::tests;
     // push.enabled defaults to false; scenarios that need delivery flip it on
     // explicitly against started.runtime.homeserver.config.
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -177,8 +181,8 @@ auto register_http_pusher_with_extra_data(merovingian::homeserver::ClientServerR
 
 // PUT /rooms/{roomId}/send/m.room.message/{txnId} — a plain text message.
 [[nodiscard]] auto send_text_message(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
-                                     std::string const& room_id, std::string const& txn_id, std::string const& body)
-    -> merovingian::homeserver::DispatchResult
+                                     std::string const& room_id, std::string const& txn_id,
+                                     std::string const& body) -> merovingian::homeserver::DispatchResult
 {
     return merovingian::homeserver::handle_client_server_request(
         runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn_id, token,
@@ -222,8 +226,8 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
     }
 }
 
-[[nodiscard]] auto pusher_count(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
-    -> std::size_t
+[[nodiscard]] auto pusher_count(merovingian::homeserver::ClientServerRuntime& runtime,
+                                std::string const& token) -> std::size_t
 {
     auto const response = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
@@ -237,8 +241,8 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
 // Creates a private_chat room with only alice as a member — deliberately
 // does NOT invite bob, so the room's membership state (and LocalRoom::members)
 // never includes him until the WHEN clause invites him. Returns the room ID.
-[[nodiscard]] auto room_with_alice_only(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& alice)
-    -> std::string
+[[nodiscard]] auto room_with_alice_only(merovingian::homeserver::ClientServerRuntime& runtime,
+                                        std::string const& alice) -> std::string
 {
     auto const create = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/createRoom", alice, R"({"preset":"private_chat"})"});
@@ -253,8 +257,8 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
 // Named _via_http to avoid any ambiguity with merovingian::homeserver::invite_user
 // (the room_service.cpp entry point this HTTP call ultimately dispatches to).
 [[nodiscard]] auto invite_user_via_http(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
-                                        std::string const& room_id, std::string const& user_id)
-    -> merovingian::homeserver::DispatchResult
+                                        std::string const& room_id,
+                                        std::string const& user_id) -> merovingian::homeserver::DispatchResult
 {
     return merovingian::homeserver::handle_client_server_request(
         runtime,
@@ -276,8 +280,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, st
 }
 
 // GET /_matrix/client/v3/notifications, parsed into an object.
-[[nodiscard]] auto get_notifications(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
-    -> merovingian::canonicaljson::Object
+[[nodiscard]] auto get_notifications(merovingian::homeserver::ClientServerRuntime& runtime,
+                                     std::string const& token) -> merovingian::canonicaljson::Object
 {
     auto const response = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
@@ -464,11 +468,10 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
 // NOT named: this room is v12 (MSC4291, create_room's default), where the
 // create event is implicit in the room ID and naming it is itself a
 // selection violation; ingest_pdu_event resolves it separately for v12.
-[[nodiscard]] auto make_federation_message_envelope(merovingian::homeserver::ClientServerRuntime const& runtime,
-                                                    std::string const& room_id, std::string const& sender,
-                                                    std::string const& remote_member_event_id, std::string const& body,
-                                                    std::string const& event_id)
-    -> merovingian::federation::InboundPduEnvelope
+[[nodiscard]] auto make_federation_message_envelope(
+    merovingian::homeserver::ClientServerRuntime const& runtime, std::string const& room_id, std::string const& sender,
+    std::string const& remote_member_event_id, std::string const& body,
+    std::string const& event_id) -> merovingian::federation::InboundPduEnvelope
 {
     namespace canonicaljson = merovingian::canonicaljson;
     auto const& store = runtime.homeserver.database.persistent_store;

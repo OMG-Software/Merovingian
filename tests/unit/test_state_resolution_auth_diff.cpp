@@ -32,7 +32,7 @@ using merovingian::events::StateResolutionRequest;
 
 [[nodiscard]] auto make_ref(std::string const& event_type, std::string const& state_key, std::string const& event_id,
                             std::string const& sender, std::int64_t ts, std::vector<std::string> const& auth_ids,
-                            std::string const& content_json) -> StateEventReference
+                            std::string const& content_json, std::string const& prev_json = "[]") -> StateEventReference
 {
     auto auth = std::string{"["};
     for (auto const& id : auth_ids)
@@ -47,7 +47,7 @@ using merovingian::events::StateResolutionRequest;
     auto const json = std::string{"{\"type\":\""} + event_type + "\",\"state_key\":\"" + state_key +
                       "\",\"sender\":\"" + sender + "\",\"event_id\":\"" + event_id +
                       "\",\"origin_server_ts\":" + std::to_string(ts) + ",\"auth_events\":" + auth +
-                      ",\"content\":" + content_json + "}";
+                      ",\"prev_events\":" + prev_json + ",\"content\":" + content_json + "}";
     auto ref = StateEventReference{};
     ref.key = StateKey{event_type, state_key};
     ref.event_id = event_id;
@@ -110,8 +110,8 @@ private:
 };
 
 [[nodiscard]] auto result_event_for(merovingian::events::StateResolutionResult const& result,
-                                    std::string const& event_type, std::string const& state_key)
-    -> StateEventReference const*
+                                    std::string const& event_type,
+                                    std::string const& state_key) -> StateEventReference const*
 {
     for (auto const& r : result.resolved_state)
     {
@@ -866,16 +866,17 @@ SCENARIO("Room v12: a fork resolves when the create event is reachable only by r
         // "$roomcreate:example.org" (rooms/v12.md rule 2's sigil swap).
         auto const create = dag.add(make_ref("m.room.create", "", "$roomcreate:example.org", "@alice:example.org", 1,
                                              {}, R"({"creator":"@alice:example.org","room_version":"12"})"));
-        auto const pl0 = dag.add(make_ref("m.room.power_levels", "", "$pl0", "@alice:example.org", 10,
-                                          {
-        },
-                                          pl_content({{"@alice:example.org", 100}}, 0)));
-        auto const alice_join = dag.add(make_ref("m.room.member", "@alice:example.org", "$alice_join",
-                                                 "@alice:example.org", 30, {}, R"({"membership":"join"})"));
-        auto const topic_a =
-            dag.add(make_ref("m.room.topic", "", "$topic_a", "@alice:example.org", 100, {}, R"({"topic":"a"})"));
-        auto const topic_b =
-            dag.add(make_ref("m.room.topic", "", "$topic_b", "@alice:example.org", 200, {}, R"({"topic":"b"})"));
+        // The creator's initial join cites only create as its predecessor.
+        // Creator power is implicit in v12 and never supplies membership.
+        auto const alice_join =
+            dag.add(make_ref("m.room.member", "@alice:example.org", "$alice_join", "@alice:example.org", 2, {},
+                             R"({"membership":"join"})", R"(["$roomcreate:example.org"])"));
+        auto const pl0 = dag.add(
+            make_ref("m.room.power_levels", "", "$pl0", "@alice:example.org", 10, {"$alice_join"}, pl_content({}, 0)));
+        auto const topic_a = dag.add(make_ref("m.room.topic", "", "$topic_a", "@alice:example.org", 100,
+                                              {"$pl0", "$alice_join"}, R"({"topic":"a"})"));
+        auto const topic_b = dag.add(make_ref("m.room.topic", "", "$topic_b", "@alice:example.org", 200,
+                                              {"$pl0", "$alice_join"}, R"({"topic":"b"})"));
         std::ignore = create; // reachable only via dag.lookup(), never added to a StateGroup below
 
         // Neither fork's own state lists the create event at all — only

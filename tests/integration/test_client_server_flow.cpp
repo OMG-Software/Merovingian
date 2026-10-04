@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
+#include "../support/in_memory_database_config.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -29,9 +29,12 @@ using namespace merovingian::tests;
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -117,8 +120,8 @@ auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, 
     return response_string_field(body, "next_batch");
 }
 
-[[nodiscard]] auto typing_user_ids_from_sync(std::string const& body, std::string const& room_id)
-    -> std::vector<std::string>
+[[nodiscard]] auto typing_user_ids_from_sync(std::string const& body,
+                                             std::string const& room_id) -> std::vector<std::string>
 {
     auto const root = parse_object(body);
     auto const* rooms = object_member_as_object(root, "rooms");
@@ -788,9 +791,12 @@ SCENARIO("Integrated client-server flow fails closed on invalid config", "[homes
         auto listeners = merovingian::config::ListenersConfig{};
         listeners.client.bind = "0.0.0.0:not-a-port";
         auto const config = merovingian::config::Config{
-            merovingian::config::ServerConfig{},           listeners,
-            merovingian::config::DatabaseConfig{},         merovingian::config::SecurityConfig{},
-            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},
+            listeners,
+            merovingian::tests::in_memory_database_config(),
+            merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
 
         WHEN("the client-server flow is run")

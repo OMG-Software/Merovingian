@@ -315,6 +315,15 @@ posture:
 - `CURLOPT_RESOLVE` populated from `pinned_addresses` so the connection
   is locked to addresses validated by the federation security policy
 
+Transport and media redirects use libcurl's URL API with path normalization
+disabled. Credentials, fragments, authority escapes, controls, backslashes and
+IPv6 zones are refused. The same URL handle supplies the transfer authority and
+pin key; one resolve entry retains every approved address. An open-socket
+callback checks the actual numeric peer and port before opening a socket.
+Environment proxies and socket reuse are disabled so each request checks its
+own pin set; deployments need direct outbound access. TLS session caching
+remains. See [ADR-0097](adr/0097-check-outbound-socket-peers-against-request-pins.md).
+
 The response body is captured up to `max_response_body_bytes`. The write
 callback guards against unsigned underflow: it checks `body.size() >= cap`
 before evaluating `bytes > cap - body.size()`, preventing wrap-around when
@@ -642,10 +651,21 @@ exists, because the per-IP bucket is the only defense on unauthenticated
 routes. A misconfigured policy must never silently disable rate limiting.
 
 **Bounded bucket tables (issue #427):** `m_ip_buckets`/`m_user_buckets` are
-hash maps capped at 100,000 entries each, with stale-entry and
-least-recently-touched eviction, so a client rotating a spoofable
-`X-Forwarded-For` value (see below) cannot grow the table or the per-check
-cost without bound.
+hash maps capped at 100,000 entries each, so a client rotating a spoofable
+`X-Forwarded-For` value (see below) cannot grow the table. Each bucket also
+has an engine-owned recency-list entry; an existing bucket moves to the tail,
+and a new key at capacity evicts the head and corresponding map entry. This
+keeps admission eviction expected O(1) instead of scanning all 100,000 entries.
+
+`normalized_target()` normalizes only recognized route shapes and preserves
+their action names. It coalesces variable room, event, transaction, media,
+directory-alias, device, and user-data components into route templates. All
+unmatched paths share one fallback bucket, while known static endpoints keep
+separate keys. Policy lookup checks both the normalized template and the
+original query-free target: operators can configure route-wide template
+prefixes without losing existing prefixes written against the original path.
+The route matcher must be extended when a new dynamic endpoint needs its own
+bucket.
 
 ### Inbound federation
 
@@ -725,6 +745,16 @@ starving federation and other short-lived requests. See
 [`docs/architecture.md`](architecture.md) "Runtime model" for the full pool
 layout and [`src/sync/AGENTS.md`](../src/sync/AGENTS.md) for sync-specific
 conventions.
+
+Both v3 and sliding-sync waits share admission budgets keyed by authenticated
+account and device, rather than bearer token or IP address: four waits per
+account and two per device. Global admission is at most the sync pool's worker
+count, capped at 32; smaller pools also reduce the account cap to one quarter of
+their size (minimum one). Queued tasks count against these limits. Excess
+waits get 429 `M_LIMIT_EXCEEDED` with `retry_after_ms`, and a refused sync-pool
+submission also returns 429 immediately instead of waiting on a main worker.
+Slots are released on response, disconnect, exception and failed handoff.
+Timeouts are capped at 120 seconds. See [ADR-0091](adr/0091-bound-sync-waits-with-admission.md).
 
 ## Request lock and blocking network calls
 

@@ -92,6 +92,13 @@
 * [0088 - Limit stripped invite and knock state to room summaries](0088-limit-stripped-state-to-room-summaries.md)
 * [0089 - Defer unsolicited PDUs during outbound joins in bounded transient queues](0089-defer-pdus-during-outbound-joins.md)
 * [0090 - Bound Argon2id work with a process-wide admission semaphore](0090-bound-argon2id-work-with-admission.md)
+* [0091 - Bound sync waits before handing off the connection](0091-bound-sync-waits-with-admission.md)
+* [0092 - Normalize known rate-limit routes and evict least-recently-used buckets](0092-normalize-rate-limit-routes-and-evict-lru.md)
+* [0093 - Require explicit selection of the test-only memory database](0093-require-explicit-test-memory-database.md)
+* [0094 - Revive removed media storage identities](0094-revive-removed-media-storage-identities.md)
+* [0095 - Bound conflicted state traversal by distinct auth events](0095-bound-state-resolution-by-distinct-auth-events.md)
+* [0096 - Retry worker spawn failures without waiting on unrelated children](0096-retry-worker-spawn-failures-with-owned-child-waits.md)
+* [0097 - Check outbound socket peers against each request's approved pins](0097-check-outbound-socket-peers-against-request-pins.md)
 
 ## Rejected Records
 

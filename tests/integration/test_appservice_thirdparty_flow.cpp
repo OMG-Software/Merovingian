@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |          THIRD-PARTY LOOKUPS — END-TO-END APPSERVICE INTEGRATION        |
@@ -22,8 +23,8 @@
 // |  can still answer.                                                     |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
@@ -91,9 +92,12 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -113,8 +117,8 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
 // loopback mock appservice, and returns a Config wired to load it.
 [[nodiscard]] auto config_with_appservice(std::filesystem::path const& registration_path, std::string const& id,
                                           std::string const& as_token, std::string const& hs_token,
-                                          std::uint16_t mock_port, std::vector<std::string> const& protocols)
-    -> merovingian::config::Config
+                                          std::uint16_t mock_port,
+                                          std::vector<std::string> const& protocols) -> merovingian::config::Config
 {
     auto protocols_json = std::string{"["};
     for (auto index = std::size_t{0U}; index < protocols.size(); ++index)

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MEROVINGIAN HOMESERVER INTEGRATION TESTS                        |
@@ -61,9 +62,12 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -75,9 +79,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -90,9 +97,12 @@ namespace
     merovingian::tests::enable_token_registration(security);
     security.access_token_lifetime_ms = 50LL;
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -106,9 +116,12 @@ namespace
     merovingian::tests::enable_token_registration(security);
     security.secrets.master_key_file = std::move(master_key_path);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -155,8 +168,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host,
+                                        std::uint16_t port) -> merovingian::federation::ResolvedAddressSet override
     {
         auto result = merovingian::federation::ResolvedAddressSet{};
         result.ok = true;
@@ -1429,10 +1442,10 @@ SCENARIO("start_runtime pre-warms the key server response cache", "[homeserver][
             REQUIRE(runtime.database.key_server_cache != nullptr);
 
             // load() returns an optional - must be populated by the startup pre-warm.
-            auto const cached = runtime.database.key_server_cache->load(static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                    .count()));
+            auto const cached = runtime.database.key_server_cache->load(
+                static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                               std::chrono::system_clock::now().time_since_epoch())
+                                               .count()));
             REQUIRE(cached.has_value());
             REQUIRE_FALSE(cached->empty());
 
@@ -1489,8 +1502,8 @@ SCENARIO("ensure_runtime_server_signing_key refreshes a lapsed derived signing k
             {
                 REQUIRE(key.has_value());
                 REQUIRE(runtime.crypto_provider != nullptr);
-                auto const signed_payload = runtime.crypto_provider->sign(
-                    merovingian::crypto::Ed25519SecretKeyHandle{key->key_id}, "payload");
+                auto const signed_payload =
+                    runtime.crypto_provider->sign(merovingian::crypto::Ed25519SecretKeyHandle{key->key_id}, "payload");
                 REQUIRE(signed_payload.error.empty());
             }
         }

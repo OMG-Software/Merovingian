@@ -14,6 +14,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -91,8 +92,8 @@ WorkerSupervisor::~WorkerSupervisor()
     stop();
 }
 
-auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int const> reserved_fds)
-    -> core::FileDescriptor
+auto make_worker_secret_pipe(std::span<std::uint8_t const> secret,
+                             std::span<int const> reserved_fds) -> core::FileDescriptor
 {
     if (secret.empty())
     {
@@ -458,47 +459,59 @@ auto WorkerSupervisor::supervisor_loop() -> void
 {
     auto backoff_ms = std::uint32_t{1000U};
     constexpr auto kMaxBackoffMs = std::uint32_t{30000U};
+    constexpr auto stable_uptime = std::chrono::seconds{30};
+    auto healthy_since = std::optional<std::chrono::steady_clock::time_point>{};
 
     while (running_.load())
     {
-        auto status = int{0};
-        auto const waited = ::waitpid(worker_pid_.load(), &status, WNOHANG);
-
-        if (waited == 0)
+        auto const pid = worker_pid_.load();
+        if (pid > 0)
         {
-            // Child is still running; poll again so a concurrent stop() can
-            // exit this loop promptly instead of blocking forever in waitpid().
-            std::this_thread::sleep_for(std::chrono::milliseconds{100});
-            continue;
-        }
-
-        if (waited < 0)
-        {
-            if (errno == EINTR)
+            auto status = int{0};
+            auto const waited = ::waitpid(pid, &status, WNOHANG);
+            if (waited == 0)
             {
+                auto const now = std::chrono::steady_clock::now();
+                if (healthy())
+                {
+                    if (!healthy_since.has_value())
+                    {
+                        healthy_since = now;
+                    }
+                    if (now - *healthy_since >= stable_uptime)
+                    {
+                        backoff_ms = 1000U;
+                    }
+                }
+                else
+                {
+                    healthy_since.reset();
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{100});
                 continue;
             }
-            if (errno == ECHILD)
+            if (waited < 0)
             {
-                // The child has already been reaped (e.g. by stop()); nothing
-                // more for this supervisor to do.
-                worker_pid_.store(-1);
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                if (errno != ECHILD)
+                {
+                    healthy_.store(false);
+                    LOG_WARNING("Federation worker waitpid failed: " + std::string{::strerror(errno)});
+                    break; // Preserve the owned PID for stop() to reap.
+                }
+            }
+            if (!running_.load())
+            {
                 break;
             }
-            healthy_.store(false);
-            LOG_WARNING("Federation worker waitpid failed: " + std::string{::strerror(errno)});
-            break;
+            auto const exit_code = waited > 0 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            LOG_WARNING("Federation worker exited: pid=" + std::to_string(pid) +
+                        " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
+            worker_pid_.store(-1);
         }
-
-        // waited == worker_pid_: the child exited.
-        if (!running_.load())
-        {
-            break;
-        }
-
-        auto const exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_.load()) +
-                    " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
 
         // Mark unhealthy and take ownership of channel_ under the mutex so
         // WorkerPool::handle() can never dereference a channel_ that is being
@@ -508,6 +521,7 @@ auto WorkerSupervisor::supervisor_loop() -> void
         // supervisor's channel_snapshot() (via notify_room_changed()) and
         // deadlock against this thread holding the lock.
         healthy_.store(false);
+        healthy_since.reset();
         auto old_channel = std::shared_ptr<ipc::IpcChannel>{}; // SHARED_PTR: reviewed — ref-counted snapshot keeps
                                                                // IpcChannel alive across concurrent supervisor restarts
         {
@@ -518,9 +532,15 @@ auto WorkerSupervisor::supervisor_loop() -> void
         {
             old_channel->stop();
         }
-        worker_pid_.store(-1);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds{backoff_ms});
+        // A failed spawn leaves no owned child. Never waitpid(-1): that can
+        // reap another shard, or turn ECHILD into permanent loss of supervision.
+        // Sleep in bounded steps so shutdown can interrupt even maximum backoff.
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{backoff_ms};
+        while (running_.load() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::min(std::chrono::steady_clock::duration{std::chrono::milliseconds{100}},
+                                                 deadline - std::chrono::steady_clock::now()));
+        }
         backoff_ms = std::min(backoff_ms * 2U, kMaxBackoffMs);
 
         if (!running_.load())
@@ -531,7 +551,8 @@ auto WorkerSupervisor::supervisor_loop() -> void
         try
         {
             spawn_and_connect();
-            backoff_ms = 1000U;
+            // A successful spawn is not evidence of stability. Reset backoff
+            // only after the child and its IPC channel stay healthy for 30s.
             // Restart succeeded — restore the healthy flag so the pool
             // routes new requests to this worker again.
             healthy_.store(true);

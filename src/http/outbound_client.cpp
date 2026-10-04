@@ -3,6 +3,8 @@
 
 #include "merovingian/http/outbound_client.hpp"
 
+#include "merovingian/core/not_null.hpp"
+#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -15,12 +17,17 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 namespace merovingian::http
 {
@@ -38,8 +45,6 @@ namespace
 
     constexpr auto https_scheme = "https://"sv;
     constexpr auto http_scheme = "http://"sv;
-    constexpr auto default_https_port = std::uint16_t{443U};
-    constexpr auto default_http_port = std::uint16_t{80U};
 
     // libcurl global init/cleanup guard. Constructed once on first use via a
     // function-local static (thread-safe per C++11+ magic statics) and torn
@@ -118,7 +123,8 @@ namespace
     // use. Because every perform() resets the handle before configuring it, the
     // handle can be reused across calls — and across OutboundClient instances on
     // the same thread — without leaking state between requests, while still
-    // benefiting from libcurl's per-handle connection and TLS-session reuse.
+    // benefiting from libcurl's per-handle TLS-session cache. Socket reuse is
+    // disabled so every request checks its actual peer against its own pins.
     [[nodiscard]] auto thread_curl_handle() noexcept -> CURL*
     {
         thread_local ThreadCurlHandle handle{};
@@ -160,66 +166,182 @@ namespace
         return 0U;
     }
 
-    [[nodiscard]] auto url_host_segment_present(std::string_view url, bool allow_cleartext_http) noexcept -> bool
+    struct CurlUrlDeleter final
     {
-        auto const scheme_length = permitted_scheme_length(url, allow_cleartext_http);
-        if (scheme_length == 0U)
+        auto operator()(CURLU* value) const noexcept -> void
         {
-            return false;
+            curl_url_cleanup(value);
         }
-        auto const after_scheme = url.substr(scheme_length);
-        if (after_scheme.empty())
-        {
-            return false;
-        }
-        auto const first = after_scheme.front();
-        // Reject leading '/', ':', or '@' — these would mean the URL is missing
-        // a host or carries credentials in the authority segment.
-        return first != '/' && first != ':' && first != '@';
-    }
-
-    struct HostPort final
-    {
-        std::string host{};
-        std::uint16_t port{default_https_port};
     };
 
-    [[nodiscard]] auto parse_request_host_port(std::string_view url, bool allow_cleartext_http)
-        -> std::optional<HostPort>
+    struct CurlTextDeleter final
+    {
+        auto operator()(char* value) const noexcept -> void
+        {
+            curl_free(value);
+        }
+    };
+
+    class CurlRequestReset final
+    {
+    public:
+        explicit CurlRequestReset(core::not_null<CURL*> handle) noexcept
+            : handle_{handle}
+        {
+        }
+        ~CurlRequestReset()
+        {
+            curl_easy_reset(handle_.get());
+        }
+        CurlRequestReset(CurlRequestReset const&) = delete;
+        auto operator=(CurlRequestReset const&) -> CurlRequestReset& = delete;
+
+    private:
+        core::not_null<CURL*> handle_; // Borrowed C API handle, owned by ThreadCurlHandle.
+    };
+
+    struct ParsedCurlUrl final
+    {
+        std::unique_ptr<CURLU, CurlUrlDeleter> handle{};
+        ParsedOutboundUrl fields{};
+    };
+
+    [[nodiscard]] auto url_part(CURLU* handle, CURLUPart part, unsigned flags = 0U) -> std::optional<std::string>
+    {
+        auto* buffer = static_cast<char*>(nullptr); // Borrowed C API output, immediately adopted by RAII.
+        auto const result = curl_url_get(handle, part, &buffer, flags);
+        auto text = std::unique_ptr<char, CurlTextDeleter>{buffer};
+        return result == CURLUE_OK ? std::optional<std::string>{std::string{text.get()}} : std::nullopt;
+    }
+
+    [[nodiscard]] auto parse_curl_url(std::string_view url, bool allow_cleartext_http) -> std::optional<ParsedCurlUrl>
     {
         auto const scheme_length = permitted_scheme_length(url, allow_cleartext_http);
-        if (scheme_length == 0U)
+        if (!ensure_curl_initialized() || scheme_length == 0U || std::ranges::any_of(url, [](unsigned char value) {
+                return value <= 0x20U || value == 0x7fU || value == '\\' || value == '#';
+            }))
         {
             return std::nullopt;
         }
-        auto const default_port = starts_with_https(url) ? default_https_port : default_http_port;
-        auto const after_scheme = url.substr(scheme_length);
-        auto const slash_pos = after_scheme.find('/');
-        auto const authority = slash_pos == std::string_view::npos ? after_scheme : after_scheme.substr(0U, slash_pos);
-        if (authority.empty())
+        auto const authority_end = url.find_first_of("/?", scheme_length);
+        auto const authority = url.substr(scheme_length, authority_end - scheme_length);
+        if (authority.empty() || authority.find_first_of("@%") != std::string_view::npos)
         {
             return std::nullopt;
         }
-        auto const colon_pos = authority.find(':');
-        if (colon_pos == std::string_view::npos)
-        {
-            return HostPort{std::string{authority}, default_port};
-        }
-        auto const host = authority.substr(0U, colon_pos);
-        auto const port_str = authority.substr(colon_pos + 1U);
-        if (host.empty() || port_str.empty())
+        auto parsed = ParsedCurlUrl{};
+        parsed.handle.reset(curl_url());
+        auto const input = std::string{url};
+        if (!parsed.handle ||
+            curl_url_set(parsed.handle.get(), CURLUPART_URL, input.c_str(), CURLU_PATH_AS_IS) != CURLUE_OK)
         {
             return std::nullopt;
         }
-        auto port = std::uint16_t{0U};
-        auto const* begin = port_str.data();
-        auto const* end = port_str.data() + port_str.size();
-        auto const conv = std::from_chars(begin, end, port);
-        if (conv.ec != std::errc{} || conv.ptr != end || port == 0U)
+        auto host = url_part(parsed.handle.get(), CURLUPART_HOST);
+        auto scheme = url_part(parsed.handle.get(), CURLUPART_SCHEME);
+        auto port = url_part(parsed.handle.get(), CURLUPART_PORT, CURLU_DEFAULT_PORT);
+        auto canonical = url_part(parsed.handle.get(), CURLUPART_URL);
+        if (!host || host->empty() || !scheme || !port || !canonical || url_part(parsed.handle.get(), CURLUPART_USER) ||
+            url_part(parsed.handle.get(), CURLUPART_PASSWORD) || url_part(parsed.handle.get(), CURLUPART_OPTIONS) ||
+            url_part(parsed.handle.get(), CURLUPART_ZONEID))
         {
             return std::nullopt;
         }
-        return HostPort{std::string{host}, port};
+        auto port_value = std::uint16_t{0U};
+        auto const conv = std::from_chars(port->data(), port->data() + port->size(), port_value);
+        if (conv.ec != std::errc{} || conv.ptr != port->data() + port->size() || port_value == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const ipv6 = host->front() == '[';
+        if (ipv6)
+        {
+            if (host->back() != ']')
+            {
+                return std::nullopt;
+            }
+            *host = host->substr(1U, host->size() - 2U);
+            auto address = in6_addr{};
+            if (::inet_pton(AF_INET6, host->c_str(), &address) != 1)
+            {
+                return std::nullopt;
+            }
+        }
+        parsed.fields = {std::move(*scheme),
+                         std::move(*host),
+                         port_value,
+                         url_part(parsed.handle.get(), CURLUPART_PATH).value_or("/"),
+                         url_part(parsed.handle.get(), CURLUPART_QUERY).value_or(""),
+                         std::move(*canonical),
+                         ipv6};
+        return parsed;
+    }
+
+    struct ApprovedPeer final
+    {
+        int family{AF_UNSPEC};
+        in_addr ipv4{};
+        in6_addr ipv6{};
+    };
+
+    struct PeerPins final
+    {
+        std::uint16_t port{0U};
+        std::vector<ApprovedPeer> addresses{};
+    };
+
+    [[nodiscard]] auto approved_peer(std::string const& address) -> std::optional<ApprovedPeer>
+    {
+        if (address.find('\0') != std::string::npos)
+        {
+            return std::nullopt;
+        }
+        auto peer = ApprovedPeer{};
+        if (::inet_pton(AF_INET, address.c_str(), &peer.ipv4) == 1)
+        {
+            peer.family = AF_INET;
+        }
+        else if (::inet_pton(AF_INET6, address.c_str(), &peer.ipv6) == 1)
+        {
+            peer.family = AF_INET6;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+        return peer;
+    }
+
+    // Borrowed libcurl callback arguments. The callback transfers one RAII-owned
+    // descriptor to libcurl only after checking the actual numeric destination.
+    extern "C" auto mero_curl_open_pinned_socket(void* data, curlsocktype purpose,
+                                                 curl_sockaddr* target) noexcept -> curl_socket_t
+    {
+        if (data == nullptr || target == nullptr || purpose != CURLSOCKTYPE_IPCXN)
+        {
+            return CURL_SOCKET_BAD;
+        }
+        auto const& pins = *static_cast<PeerPins const*>(data);
+        auto const allowed = std::ranges::any_of(pins.addresses, [&](ApprovedPeer const& peer) {
+            if (target->family == AF_INET && peer.family == AF_INET && target->addrlen >= sizeof(sockaddr_in))
+            {
+                auto const& address = *reinterpret_cast<sockaddr_in const*>(&target->addr);
+                return ntohs(address.sin_port) == pins.port && address.sin_addr.s_addr == peer.ipv4.s_addr;
+            }
+            if (target->family == AF_INET6 && peer.family == AF_INET6 && target->addrlen >= sizeof(sockaddr_in6))
+            {
+                auto const& address = *reinterpret_cast<sockaddr_in6 const*>(&target->addr);
+                return ntohs(address.sin6_port) == pins.port &&
+                       std::ranges::equal(address.sin6_addr.s6_addr, peer.ipv6.s6_addr);
+            }
+            return false;
+        });
+        if (!allowed)
+        {
+            return CURL_SOCKET_BAD;
+        }
+        auto socket = core::SocketHandle{::socket(target->family, target->socktype | SOCK_CLOEXEC, target->protocol)};
+        return socket.valid() ? socket.release() : CURL_SOCKET_BAD;
     }
 
     // RAII wrapper for a curl_slist*. The list is freed in the destructor so
@@ -278,8 +400,8 @@ namespace
         bool headers_too_large{false};
     };
 
-    extern "C" auto mero_curl_write_body(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) noexcept
-        -> std::size_t
+    extern "C" auto mero_curl_write_body(char* ptr, std::size_t size, std::size_t nmemb,
+                                         void* userdata) noexcept -> std::size_t
     {
         auto* sink = static_cast<ResponseSink*>(userdata);
         if (sink == nullptr)
@@ -298,8 +420,8 @@ namespace
         return bytes;
     }
 
-    extern "C" auto mero_curl_write_header(char* buffer, std::size_t size, std::size_t nitems, void* userdata) noexcept
-        -> std::size_t
+    extern "C" auto mero_curl_write_header(char* buffer, std::size_t size, std::size_t nitems,
+                                           void* userdata) noexcept -> std::size_t
     {
         auto* sink = static_cast<ResponseSink*>(userdata);
         if (sink == nullptr)
@@ -435,6 +557,14 @@ namespace
         // Disable signal-driven DNS resolution so timeouts behave safely when
         // multiple OutboundClient instances run on different threads.
         if (curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L) != CURLE_OK)
+        {
+            return false;
+        }
+        // A proxy socket is not the approved origin peer. Reused connections
+        // likewise bypass the open-socket callback and its current pin set.
+        if (curl_easy_setopt(handle, CURLOPT_PROXY, "") != CURLE_OK ||
+            curl_easy_setopt(handle, CURLOPT_FRESH_CONNECT, 1L) != CURLE_OK ||
+            curl_easy_setopt(handle, CURLOPT_FORBID_REUSE, 1L) != CURLE_OK)
         {
             return false;
         }
@@ -582,15 +712,30 @@ auto validate_outbound_request(OutboundRequest const& request) noexcept -> Outbo
     {
         return OutboundError::https_required;
     }
-    if (!url_host_segment_present(request.url, request.allow_cleartext_http))
+    try
+    {
+        if (!parse_curl_url(request.url, request.allow_cleartext_http))
+        {
+            return OutboundError::invalid_url;
+        }
+        if (request.pinned_addresses.empty() || std::ranges::any_of(request.pinned_addresses, [](auto const& address) {
+                return !approved_peer(address).has_value();
+            }))
+        {
+            return OutboundError::unresolved_host;
+        }
+    }
+    catch (...)
     {
         return OutboundError::invalid_url;
     }
-    if (request.pinned_addresses.empty())
-    {
-        return OutboundError::unresolved_host;
-    }
     return OutboundError::none;
+}
+
+auto parse_outbound_url(std::string_view url, bool allow_cleartext_http) -> std::optional<ParsedOutboundUrl>
+{
+    auto parsed = parse_curl_url(url, allow_cleartext_http);
+    return parsed ? std::optional<ParsedOutboundUrl>{std::move(parsed->fields)} : std::nullopt;
 }
 
 OutboundClient::OutboundClient() = default;
@@ -599,10 +744,36 @@ OutboundClient::~OutboundClient() = default;
 
 auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
 {
-    auto const validation = validate_outbound_request(request);
-    if (validation != OutboundError::none)
+    if (!is_known_method(request.method))
     {
-        return fail(validation, std::string{outbound_error_name(validation)});
+        return fail(OutboundError::invalid_method, "invalid_method");
+    }
+    if (request.url.empty())
+    {
+        return fail(OutboundError::invalid_url, "invalid_url");
+    }
+    if (permitted_scheme_length(request.url, request.allow_cleartext_http) == 0U)
+    {
+        return fail(OutboundError::https_required, "https_required");
+    }
+    auto parsed = parse_curl_url(request.url, request.allow_cleartext_http);
+    if (!parsed)
+    {
+        return fail(OutboundError::invalid_url, "invalid_url");
+    }
+    auto pins = PeerPins{parsed->fields.port, {}};
+    for (auto const& address : request.pinned_addresses)
+    {
+        auto peer = approved_peer(address);
+        if (!peer)
+        {
+            return fail(OutboundError::unresolved_host, "invalid numeric pin");
+        }
+        pins.addresses.push_back(*peer);
+    }
+    if (pins.addresses.empty())
+    {
+        return fail(OutboundError::unresolved_host, "unresolved_host");
     }
 
     // Each thread drives its own easy handle; a single OutboundClient instance
@@ -614,13 +785,8 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         return fail(OutboundError::network_error, "curl handle unavailable");
     }
 
-    auto const host_port = parse_request_host_port(request.url, request.allow_cleartext_http);
-    if (!host_port.has_value())
-    {
-        return fail(OutboundError::invalid_url, std::string{outbound_error_name(OutboundError::invalid_url)});
-    }
-
     curl_easy_reset(handle);
+    auto const reset_on_exit = CurlRequestReset{core::not_null{handle}};
 
     if (!configure_security_options(handle, request.allow_cleartext_http))
     {
@@ -630,8 +796,10 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     if (curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, static_cast<long>(request.connect_timeout_seconds)) !=
             CURLE_OK ||
         curl_easy_setopt(handle, CURLOPT_TIMEOUT, static_cast<long>(request.total_timeout_seconds)) != CURLE_OK ||
-        curl_easy_setopt(handle, CURLOPT_URL, request.url.c_str()) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_CURLU, parsed->handle.get()) != CURLE_OK ||
         curl_easy_setopt(handle, CURLOPT_PATH_AS_IS, 1L) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_OPENSOCKETFUNCTION, &mero_curl_open_pinned_socket) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_OPENSOCKETDATA, &pins) != CURLE_OK ||
         curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, request.method.c_str()) != CURLE_OK)
     {
         return fail(OutboundError::network_error, "failed to configure curl request");
@@ -711,17 +879,22 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     // connection to the address set validated by the federation security
     // policy.
     auto resolve = CurlSlistGuard{};
-    for (auto const& address : request.pinned_addresses)
+    auto entry = parsed->fields.ipv6_literal ? "[" + parsed->fields.host + "]" : parsed->fields.host;
+    entry += ':';
+    entry += std::to_string(parsed->fields.port);
+    entry += ':';
+    for (std::size_t i = 0U; i < request.pinned_addresses.size(); ++i)
     {
-        auto entry = host_port->host;
-        entry += ':';
-        entry += std::to_string(host_port->port);
-        entry += ':';
-        entry += address;
-        if (!resolve.append(entry))
+        if (i != 0U)
         {
-            return fail(OutboundError::network_error, "resolve allocation failed");
+            entry += ',';
         }
+        auto const& address = request.pinned_addresses[i];
+        entry += pins.addresses[i].family == AF_INET6 ? "[" + address + "]" : address;
+    }
+    if (!resolve.append(entry))
+    {
+        return fail(OutboundError::network_error, "resolve allocation failed");
     }
     if (curl_easy_setopt(handle, CURLOPT_RESOLVE, resolve.get()) != CURLE_OK)
     {

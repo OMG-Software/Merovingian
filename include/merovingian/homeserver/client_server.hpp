@@ -145,6 +145,10 @@ struct ClientServerRuntime final
     // instance the first time something sync-relevant happens, so legacy
     // callers that never touch /sync are unaffected.
     std::unique_ptr<sync::SyncNotifier> sync_notifier{};
+    // HTTP-4: shared admission for v3 and sliding-sync waits. Slots outlive the
+    // initial dispatch and are released on completion, disconnect or failed handoff.
+    std::unique_ptr<http::InFlightBudget> sync_user_budget{std::make_unique<http::InFlightBudget>()};
+    std::unique_ptr<http::InFlightBudget> sync_device_budget{std::make_unique<http::InFlightBudget>()};
     // Enabled only by the server's --debug startup argument. When enabled,
     // Sliding Sync emits request-shape diagnostics without request bodies,
     // connection IDs, tokens, or event content.

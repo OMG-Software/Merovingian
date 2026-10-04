@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX FEDERATION INBOUND FLOW CONFORMANCE TESTS                |
@@ -65,14 +66,17 @@ namespace
     security.federation.max_transaction_size = "1MiB";
     security.federation.remote_timeout = "30s";
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
+                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -157,8 +161,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&, std::string_view message)
-        -> merovingian::crypto::SignatureResult override
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&,
+                            std::string_view message) -> merovingian::crypto::SignatureResult override
     {
         auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
         auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -187,8 +191,8 @@ private:
     std::string key_material_{};
 };
 
-[[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
-    -> std::string
+[[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id,
+                                   std::string const& token) -> std::string
 {
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -219,8 +223,8 @@ private:
     return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + pdu_json + "]}";
 }
 
-[[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
-    -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object,
+                                 std::string_view key) noexcept -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -232,15 +236,15 @@ private:
     return nullptr;
 }
 
-[[nodiscard]] auto string_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
-    -> std::string const*
+[[nodiscard]] auto string_member(merovingian::canonicaljson::Object const& object,
+                                 std::string_view key) noexcept -> std::string const*
 {
     auto const* value = object_member(object, key);
     return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
 }
 
-[[nodiscard]] auto integer_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
-    -> std::int64_t const*
+[[nodiscard]] auto integer_member(merovingian::canonicaljson::Object const& object,
+                                  std::string_view key) noexcept -> std::int64_t const*
 {
     auto const* value = object_member(object, key);
     return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());

@@ -347,8 +347,8 @@ namespace
 
         // A slot when fewer than `cap` are held; nullopt at the cap. A cap of
         // 0 means unbounded.
-        [[nodiscard]] static auto try_acquire(Counter const& counter, std::uint32_t cap)
-            -> std::optional<ParkingReservation>
+        [[nodiscard]] static auto try_acquire(Counter const& counter,
+                                              std::uint32_t cap) -> std::optional<ParkingReservation>
         {
             auto current = counter->load(std::memory_order_relaxed);
             while (cap == 0U || current < cap)
@@ -499,8 +499,8 @@ namespace
     // client_address_key and refused once that key holds
     // server.http.max_connections_per_ip connections. The same key (and the
     // same exemption) is the connection's per-client worker share (ADR-0077).
-    [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime, std::string const& peer_addr)
-        -> ConnectionAdmission
+    [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime,
+                                        std::string const& peer_addr) -> ConnectionAdmission
     {
         auto const& server = runtime.homeserver.config.server();
         if (std::ranges::find(server.trusted_proxies, peer_addr) != server.trusted_proxies.end())
@@ -664,8 +664,8 @@ namespace
     // returned without touching the socket. The slowloris clocks restart per
     // call, i.e. per request — a keep-alive connection parked between
     // requests is not charged for its idle time.
-    [[nodiscard]] auto read_request_head(ConnectionStream& stream, std::string buffered, std::size_t cap)
-        -> std::pair<std::string, std::size_t>
+    [[nodiscard]] auto read_request_head(ConnectionStream& stream, std::string buffered,
+                                         std::size_t cap) -> std::pair<std::string, std::size_t>
     {
         auto buffer = std::move(buffered);
         // Pipelined head already fully buffered: no recv needed. This check
@@ -997,8 +997,8 @@ namespace
         return std::string{authorization.substr(prefix.size())};
     }
 
-    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body, std::string_view peer_addr)
-        -> LocalHttpRequest
+    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body,
+                                           std::string_view peer_addr) -> LocalHttpRequest
     {
         auto request = LocalHttpRequest{};
         request.method = head.method;
@@ -1258,8 +1258,8 @@ namespace
     // slot (in the connection) until the connection is next dispatched, so
     // the Keep-Alive header is never a promise the dispatcher cannot keep.
     [[nodiscard]] auto decide_connection(ConnectionContext const& ctx, HttpConnection& connection,
-                                         http::HttpVersion version, std::string_view connection_header)
-        -> http::ConnectionPreference
+                                         http::HttpVersion version,
+                                         std::string_view connection_header) -> http::ConnectionPreference
     {
         ++connection.requests_served;
         auto const policy = keep_alive_policy_for(ctx);
@@ -1311,6 +1311,8 @@ namespace
         sync::SyncNotifier& notifier;
         http::HttpVersion version;
         std::string connection_header;
+        http::InFlightBudget::Slot user_slot;
+        http::InFlightBudget::Slot device_slot;
     };
 
     auto run_sync_handoff(SyncHandoff& handoff) -> void
@@ -1422,8 +1424,8 @@ namespace
     // Returns close_connection / continue_keep_alive, or transferred when a
     // long-poll was handed to the sync pool, which then owns the connection
     // (`owner` is empty on return).
-    [[nodiscard]] auto serve_request_round(ConnectionContext& ctx, HttpConnection& connection, ConnectionOwner& owner)
-        -> RoundOutcome
+    [[nodiscard]] auto serve_request_round(ConnectionContext& ctx, HttpConnection& connection,
+                                           ConnectionOwner& owner) -> RoundOutcome
     {
         auto stream = make_connection_stream(connection);
         if (stream == nullptr)
@@ -1593,28 +1595,52 @@ namespace
                 return RoundOutcome::close_connection;
             }
 
+            // Admit before submitting: queued waits count too. One account must
+            // not occupy the sync pool, even across tokens, devices and protocols.
+            auto const global_cap =
+                ctx.sync_pool == nullptr
+                    ? 32U
+                    : static_cast<std::uint32_t>(std::min(ctx.sync_pool->worker_count(), std::size_t{32U}));
+            auto const user_cap = std::min(4U, std::max(1U, global_cap / 4U));
+            auto user_slot = ctx.runtime.sync_user_budget->try_acquire(result.wait.user_id, global_cap, user_cap);
+            auto const device_key =
+                std::to_string(result.wait.user_id.size()) + ":" + result.wait.user_id + result.wait.device_id;
+            auto device_slot = user_slot.has_value()
+                                   ? ctx.runtime.sync_device_budget->try_acquire(device_key, global_cap, 2U)
+                                   : std::nullopt;
+            if (result.wait.user_id.empty() || !user_slot.has_value() || !device_slot.has_value())
+            {
+                write_error_response(*stream, 429U,
+                                     matrix_error("M_LIMIT_EXCEEDED", "too many concurrent sync waits", 1000U),
+                                     transport_cors_headers(ctx, find_header_value(parse.request, "origin")));
+                return RoundOutcome::close_connection;
+            }
+
             if (ctx.sync_pool != nullptr)
             {
                 // Hand off to the dedicated sync pool: this main-pool worker is
                 // freed at once, and the sync task owns the connection from
                 // here (closing it, or handing it back to the dispatcher for
                 // the next keep-alive round).
-                auto handoff =
-                    std::make_shared<SyncHandoff>(SyncHandoff{// SHARED_PTR: reviewed — copyable pool task
-                                                              std::move(owner), ctx, local_request, result.wait,
-                                                              *notifier, parse.request.version, connection_header});
+                auto handoff = std::make_shared<SyncHandoff>(
+                    SyncHandoff{// SHARED_PTR: reviewed — copyable pool task
+                                std::move(owner), ctx, local_request, result.wait, *notifier, parse.request.version,
+                                connection_header, std::move(*user_slot), std::move(*device_slot)});
                 if (ctx.sync_pool->submit([handoff] {
                         run_sync_handoff(*handoff);
                     }))
                 {
                     return RoundOutcome::transferred;
                 }
-                // The sync pool is stopping: take the connection back and wait
-                // here instead.
+                // A refused handoff is backpressure, never a reason to wait on
+                // a main request worker. Take ownership back before answering.
                 owner = std::move(handoff->connection);
+                write_error_response(*stream, 429U, matrix_error("M_LIMIT_EXCEEDED", "sync pool unavailable", 1000U),
+                                     transport_cors_headers(ctx, find_header_value(parse.request, "origin")));
+                return RoundOutcome::close_connection;
             }
 
-            // No sync pool (tests, pool stopping): block this thread until new
+            // No sync pool (embedded callers and tests): wait until new
             // events arrive or the timeout expires. The re-wait loop mirrors
             // the sync-pool path.
             {
@@ -1856,8 +1882,8 @@ auto HttpConnectionDispatcher::impl() noexcept -> Impl&
     return *m_impl;
 }
 
-auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
-    -> LocalHttpResponse
+auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                 HttpDispatchMode mode) -> LocalHttpResponse
 {
     // This public API preserves its original blocking behaviour for backward
     // compatibility (tests, one-off callers). The server's hot path uses
@@ -1922,8 +1948,8 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool, std::string_view peer_addr)
-    -> bool
+                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
+                               std::string_view peer_addr) -> bool
 {
     // Direct callers (tests, one-off embeds) keep the historical one-request-
     // per-call contract: with no dispatcher there is nowhere to park the

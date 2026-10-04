@@ -64,8 +64,8 @@ namespace
         return iterator == repository.blobs.end() ? nullptr : &(*iterator);
     }
 
-    [[nodiscard]] auto find_blob(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
-        -> LocalMediaBlob const*
+    [[nodiscard]] auto find_blob(LocalMediaRepository const& repository,
+                                 std::string_view storage_id) noexcept -> LocalMediaBlob const*
     {
         auto const iterator = std::ranges::find_if(repository.blobs, [storage_id](LocalMediaBlob const& blob) {
             return blob.storage_id == storage_id && blob.ref_count > 0U;
@@ -73,8 +73,8 @@ namespace
         return iterator == repository.blobs.end() ? nullptr : &(*iterator);
     }
 
-    [[nodiscard]] auto find_record(LocalMediaRepository& repository, std::string_view media_id) noexcept
-        -> LocalMediaRecord*
+    [[nodiscard]] auto find_record(LocalMediaRepository& repository,
+                                   std::string_view media_id) noexcept -> LocalMediaRecord*
     {
         auto const iterator = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record) {
             return record.media_id == media_id;
@@ -168,8 +168,8 @@ namespace
 
     [[nodiscard]] auto decoder_request(RuntimeMediaConfig const& config, std::uint64_t size_bytes,
                                        std::uint64_t decoded_size_bytes, std::uint64_t pixel_count,
-                                       std::uint64_t animation_frame_count, bool decoder_marked_safe)
-        -> DecoderSafetyRequest
+                                       std::uint64_t animation_frame_count,
+                                       bool decoder_marked_safe) -> DecoderSafetyRequest
     {
         auto const output_bytes = decoded_size_bytes == 0U ? size_bytes : decoded_size_bytes;
         auto const pixels =
@@ -374,8 +374,8 @@ auto media_repository_metrics(LocalMediaRepository const& repository) -> std::ve
     };
 }
 
-auto find_local_media_record(LocalMediaRepository const& repository, std::string_view media_id) noexcept
-    -> LocalMediaRecord const*
+auto find_local_media_record(LocalMediaRepository const& repository,
+                             std::string_view media_id) noexcept -> LocalMediaRecord const*
 {
     auto const iterator = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record) {
         return record.media_id == media_id;
@@ -383,17 +383,17 @@ auto find_local_media_record(LocalMediaRepository const& repository, std::string
     return iterator == repository.records.end() ? nullptr : &(*iterator);
 }
 
-auto find_local_media_blob(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
-    -> LocalMediaBlob const*
+auto find_local_media_blob(LocalMediaRepository const& repository,
+                           std::string_view storage_id) noexcept -> LocalMediaBlob const*
 {
     auto const iterator = std::ranges::find_if(repository.blobs, [storage_id](LocalMediaBlob const& blob) {
-        return blob.storage_id == storage_id;
+        return blob.storage_id == storage_id && blob.ref_count > 0U;
     });
     return iterator == repository.blobs.end() ? nullptr : &(*iterator);
 }
 
-auto find_local_media_thumbnail(LocalMediaRepository const& repository, std::string_view media_id) noexcept
-    -> LocalMediaThumbnail const*
+auto find_local_media_thumbnail(LocalMediaRepository const& repository,
+                                std::string_view media_id) noexcept -> LocalMediaThumbnail const*
 {
     auto const iterator = std::ranges::find_if(repository.thumbnails, [media_id](LocalMediaThumbnail const& thumb) {
         return thumb.media_id == media_id;
@@ -531,8 +531,22 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         new_blob.size_bytes = size_bytes;
         new_blob.bytes = request.bytes;
         new_blob.ref_count = 1U;
-        repository.blobs.push_back(std::move(new_blob));
-        blob = &repository.blobs.back();
+        // Storage IDs are durable primary keys. Revive the emptied row rather
+        // than appending a second identity that persistence or removal could
+        // mistake for the live bytes.
+        auto const dead = std::ranges::find_if(repository.blobs, [&new_blob](LocalMediaBlob const& existing) {
+            return existing.storage_id == new_blob.storage_id;
+        });
+        if (dead == repository.blobs.end())
+        {
+            repository.blobs.push_back(std::move(new_blob));
+            blob = &repository.blobs.back();
+        }
+        else
+        {
+            *dead = std::move(new_blob);
+            blob = &*dead;
+        }
     }
     else
     {
@@ -682,8 +696,8 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     return id.has_value() ? "mrv_" + *id : "mrv_boundary_fallback";
 }
 
-auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
-    -> FederationMediaDownloadBody
+auto build_federation_media_download_body(std::string_view media_content_type,
+                                          std::string_view bytes) -> FederationMediaDownloadBody
 {
     auto const canonical_type =
         media_content_type.empty() ? std::string_view{"application/octet-stream"} : media_content_type;
@@ -711,8 +725,8 @@ auto build_federation_media_download_body(std::string_view media_content_type, s
     return {std::move(body), "multipart/mixed; boundary=" + boundary};
 }
 
-auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id, std::string_view reason)
-    -> LocalMediaAdminResult
+auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
+                            std::string_view reason) -> LocalMediaAdminResult
 {
     if (!media_id_is_safe(media_id))
     {
@@ -760,8 +774,8 @@ auto release_local_media(LocalMediaRepository& repository, std::string_view medi
     return {true, 200U, record->media_id, record->state, "released"};
 }
 
-auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id, std::string_view reason)
-    -> LocalMediaAdminResult
+auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
+                        std::string_view reason) -> LocalMediaAdminResult
 {
     if (!media_id_is_safe(media_id))
     {
@@ -781,7 +795,7 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     record->state = LocalMediaState::removed;
     record->quarantine_reason = std::string{reason};
     auto const iterator = std::ranges::find_if(repository.blobs, [&storage_id](LocalMediaBlob const& blob) {
-        return blob.storage_id == storage_id;
+        return blob.storage_id == storage_id && blob.ref_count > 0U;
     });
     if (iterator != repository.blobs.end() && iterator->ref_count > 0U)
     {
@@ -801,8 +815,8 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     return {true, 200U, record->media_id, record->state, "removed"};
 }
 
-auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
-    -> RemoteMediaDownloadResult
+auto fetch_remote_media_disabled(LocalMediaRepository& repository,
+                                 RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult
 {
     if (!repository.config.remote_fetch_enabled)
     {
@@ -821,8 +835,8 @@ auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDo
     return {false, 501U, "remote media fetch is not implemented in this milestone"};
 }
 
-auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
-    -> RemoteMediaDownloadResult
+auto fetch_remote_media(LocalMediaRepository& repository,
+                        RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult
 {
     if (!repository.config.remote_fetch_enabled)
     {
@@ -861,7 +875,24 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
     auto const result = upload_local_media(repository, request.origin_server, upload);
     if (!result.ok)
     {
+        ++repository.metrics.remote_fetch_rejections;
         return {false, result.status, result.reason};
+    }
+    if (result.quarantined)
+    {
+        ++repository.metrics.remote_fetch_rejections;
+        // The held record remains available for moderation, but admission to
+        // storage is not permission to disclose its bytes to the requester.
+        return {false,
+                451U,
+                "media is quarantined",
+                result.content_type,
+                {},
+                result.size_bytes,
+                result.hash_algorithm,
+                result.digest,
+                make_storage_id(result.digest, result.size_bytes),
+                true};
     }
     ++repository.metrics.remote_fetches_accepted;
     return {true,

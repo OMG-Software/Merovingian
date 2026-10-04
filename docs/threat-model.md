@@ -93,6 +93,13 @@ threat it closes; the controls above are the standing defences these reinforce.
   incoming event content. Focused regression and lifecycle tests pass;
   combined full-suite verification is pending.
 
+- **Database credentials absent at startup (DB-3, 0.12.16):** PostgreSQL is
+  the production default, so silently replacing an unavailable connection with
+  an in-memory store could acknowledge security-sensitive state that disappears
+  on restart. PostgreSQL startup now fails when the URI file cannot be read or
+  is empty. Tests select a separate programmatic in-memory backend explicitly;
+  the config parser still accepts only PostgreSQL and SQLite.
+
 - **Production federation-listener auth confusion:** the production federation
   listener previously accepted a pipe-delimited fixture token format in
   addition to real `X-Matrix` authorization headers. A request path that is
@@ -943,6 +950,38 @@ threat it closes; the controls above are the standing defences these reinforce.
   `/sync`), an exhausted thread pool is not. This is the same "bound all
   resources, fail closed toward availability" trade-off as the `via`-list
   bound above.
+
+- **Sync pool exhaustion by one account (audit HTTP-4, 0.12.16):**
+  v3 and sliding sync share transport admission: four live waits per account,
+  two per device, and at most 32 globally. Smaller pools reduce those limits.
+  Queued work holds a slot until response or disconnect, and failed pool
+  submission returns 429 rather than blocking the main request pool. The
+  120-second timeout ceiling also saturates oversized decimal inputs safely.
+  See [ADR-0091](adr/0091-bound-sync-waits-with-admission.md).
+
+- **Forged room creator identity (audit EVT-7, 0.12.16):**
+  Room versions through v10 use create `content.creator`; v11 and later use
+  the create sender and ignore a legacy creator field. Bootstrap membership
+  must reference the create event as its sole predecessor. Creator power
+  cannot substitute for joined membership on ordinary events.
+
+- **Media privacy and removal across restart (audit MED-1/MED-3, 0.12.16):**
+  Hydration preserves the persisted legacy-access flag; records default to
+  private. Re-uploads revive one storage identity rather than duplicating it,
+  and removal writes cleared bytes to the durable tombstone. These controls
+  prevent restart from exposing private uploads or losing moderation state.
+
+- **Remote quarantine bypass (audit MED-2, 0.12.16):**
+  Held remote records cannot be served or passed to thumbnail processing.
+  Their download result contains no bytes and returns 451; only admitted
+  200 results can be converted to payload responses. Unexpected internal
+  success statuses return a fixed error rather than serializing their body.
+
+- **Lost worker supervision after a failed restart (audit ISO-3, 0.12.16):**
+  Supervisors wait only on their own positive child PID and keep retrying
+  failed spawns. Restart delay remains exponential until 30 seconds of
+  sustained child and IPC health, with interruptible waits during shutdown.
+  See [ADR-0096](adr/0096-retry-worker-spawn-failures-with-owned-child-waits.md).
 
 - **Membership transitions never reached push delivery (v0.11.11, fixed):**
   delivery previously fired only from `send_event()` (`/send` and `/state`
@@ -1946,6 +1985,28 @@ until the refresh).
   `query_room_alias`, identity-server `requestToken`) are not under the budget. DNS lookups
   inside server discovery are bounded by the resolver, not by the deadline. Clients behind a
   shared address that is not a configured trusted proxy share one per-client slot.
+
+### Outbound destination agreement (OUT-1, OUT-2)
+
+Malformed Matrix server authorities are rejected before discovery. Media
+redirects and the outbound transport share libcurl's URL parser and preserve
+encoded paths and queries. Userinfo, fragments, encoded authority bytes and
+IPv6 zone identifiers are refused. Every newly opened socket must match one
+approved numeric IP address and the parsed destination port. Environment
+proxies and connection reuse are disabled because they could bypass that
+request's peer check (ADR-0097). Parent real-TLS regressions cover IPv6,
+multiple pins and requests refused before connection. This does not replace
+the discovery layer's private-address policy or TLS hostname verification.
+
+### State-resolution completeness and work bounds (EVT-5, EVT-9)
+
+Missing power-level ancestors no longer silently truncate mainline ordering:
+the shared event source loads them, and missing, malformed or cyclic ancestry
+rejects resolution. For room v12, the conflicted auth subgraph is built once
+and bounded by distinct vertices, with cycle checks and reverse reachability
+instead of repeated path enumeration (ADR-0095). A legal shared DAG therefore
+does not exhaust the budget merely by having many paths. Over-budget graphs
+still fail closed and require operational handling of the rejected resolution.
 
 ## Security principles
 

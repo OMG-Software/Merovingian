@@ -64,8 +64,8 @@ namespace merovingian::homeserver
 
 // Forward declaration — the definition lives outside the anonymous namespace so
 // it can be exported in the header, but it is called from lambdas inside it.
-[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
-    -> federation::PduIngestionResult;
+[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime,
+                                    federation::InboundPduEnvelope const& envelope) -> federation::PduIngestionResult;
 
 // Forward declaration — lives in src/homeserver/room_service.cpp and is reused
 // here for ADR-0064 phase C outbound backfill request signing.
@@ -105,10 +105,10 @@ namespace
     // namespace (string_member alongside content_membership;
     // object_member_as_object alongside the local-router query helpers) but
     // are needed by the auth_events-selection machinery below.
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*;
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
-        -> canonicaljson::Object const*;
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*;
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
+                                               std::string_view key) -> canonicaljson::Object const*;
 
     // Builds the auth-event map for an inbound federated PDU from an
     // arbitrary flat state snapshot (current state, the state before an
@@ -143,6 +143,7 @@ namespace
             if (entry.event_type == "m.room.create" && entry.state_key.empty())
             {
                 result.create = load(entry.event_id);
+                result.create_event_id = entry.event_id;
             }
             else if (entry.event_type == "m.room.power_levels" && entry.state_key.empty())
             {
@@ -255,11 +256,10 @@ namespace
 
     // The (type, state_key) pairs a PDU's auth_events MAY name, per spec
     // "Auth events selection" (server-server-api.md, ~line 1792).
-    [[nodiscard]] auto permitted_auth_event_keys(canonicaljson::Value const& pdu,
-                                                 rooms::RoomVersionPolicy const& policy, std::string_view event_type,
-                                                 std::string_view sender, std::optional<std::string> const& state_key,
-                                                 std::string_view third_party_invite_token)
-        -> std::vector<std::pair<std::string, std::string>>
+    [[nodiscard]] auto permitted_auth_event_keys(
+        canonicaljson::Value const& pdu, rooms::RoomVersionPolicy const& policy, std::string_view event_type,
+        std::string_view sender, std::optional<std::string> const& state_key,
+        std::string_view third_party_invite_token) -> std::vector<std::pair<std::string, std::string>>
     {
         auto permitted = std::vector<std::pair<std::string, std::string>>{};
         // "The auth_events for the m.room.create event in a room is empty."
@@ -323,8 +323,8 @@ namespace
     // event implicit in the room ID and forbids naming it in auth_events, so
     // both receipt paths must fill the auth map's create slot from the room's
     // own state rather than from the event's named auth_events.
-    [[nodiscard]] auto create_event_json_for_room(database::PersistentStore const& store, std::string_view room_id)
-        -> canonicaljson::Value
+    [[nodiscard]] auto create_event_json_for_room(database::PersistentStore const& store,
+                                                  std::string_view room_id) -> canonicaljson::Value
     {
         for (auto const& state : store.state)
         {
@@ -359,7 +359,15 @@ namespace
     {
         if (std::holds_alternative<std::nullptr_t>(map.create.storage()))
         {
-            map.create = create_event_json_for_room(store, room_id);
+            auto const create_state =
+                std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+                    return state.room_id == room_id && state.event_type == "m.room.create" && state.state_key.empty();
+                });
+            if (create_state != store.state.end())
+            {
+                map.create = create_event_json_for_room(store, room_id);
+                map.create_event_id = create_state->event_id;
+            }
         }
     }
 
@@ -416,8 +424,8 @@ namespace
         return {status, std::move(body), std::move(headers)};
     }
 
-    [[nodiscard]] auto response_from_operation(OperationResult const& result, std::uint16_t ok_status = 200U)
-        -> LocalHttpResponse
+    [[nodiscard]] auto response_from_operation(OperationResult const& result,
+                                               std::uint16_t ok_status = 200U) -> LocalHttpResponse
     {
         return result.ok ? response(ok_status, result.value) : response(result.status, result.reason);
     }
@@ -523,8 +531,8 @@ namespace
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -536,8 +544,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
@@ -652,8 +660,8 @@ namespace
 
     // Returns the room_version string from the room's m.room.create state event,
     // falling back to "10" for rooms that pre-date version tracking.
-    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store, std::string_view room_id)
-        -> std::string
+    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store,
+                                               std::string_view room_id) -> std::string
     {
         for (auto const& state : store.state)
         {
@@ -1055,8 +1063,8 @@ namespace
     // (rate_limit_client_key, so trusted_proxies applies) and whether the caller
     // set allow_remote=false. Only a literal `false` opts out, matching the
     // spec's boolean; anything else leaves the default (true).
-    [[nodiscard]] auto remote_media_context(LocalHttpRequest const& request, HomeserverRuntime const& runtime)
-        -> RemoteMediaRequestContext
+    [[nodiscard]] auto remote_media_context(LocalHttpRequest const& request,
+                                            HomeserverRuntime const& runtime) -> RemoteMediaRequestContext
     {
         auto context = RemoteMediaRequestContext{};
         context.client_key = rate_limit_client_key(request, runtime.config.server());
@@ -1074,29 +1082,29 @@ namespace
         return context;
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
+                                               std::string_view key) -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_string(canonicaljson::Object const& object, std::string_view key)
-        -> std::string const*
+    [[nodiscard]] auto object_member_as_string(canonicaljson::Object const& object,
+                                               std::string_view key) -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_array(canonicaljson::Object const& object, std::string_view key)
-        -> canonicaljson::Array const*
+    [[nodiscard]] auto object_member_as_array(canonicaljson::Object const& object,
+                                              std::string_view key) -> canonicaljson::Array const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_int(canonicaljson::Object const& object, std::string_view key)
-        -> std::int64_t const*
+    [[nodiscard]] auto object_member_as_int(canonicaljson::Object const& object,
+                                            std::string_view key) -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
@@ -2789,8 +2797,8 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto array_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Array const*
+    [[nodiscard]] auto array_member(canonicaljson::Object const& object,
+                                    std::string_view key) noexcept -> canonicaljson::Array const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
@@ -2844,8 +2852,8 @@ namespace
     // "events" array on success. Must be called with runtime.mutex released.
     [[nodiscard]] auto fetch_get_missing_events(HomeserverRuntime& runtime, std::string_view room_id,
                                                 std::string_view origin, std::vector<std::string> const& latest_events,
-                                                std::vector<std::string> const& earliest_events, std::size_t limit)
-        -> std::optional<std::vector<std::string>>
+                                                std::vector<std::string> const& earliest_events,
+                                                std::size_t limit) -> std::optional<std::vector<std::string>>
     {
         auto [key_id, secret_key] = signing_material_for_backfill(runtime);
         if (secret_key.bytes().empty())
@@ -3054,8 +3062,8 @@ namespace
     // budget (ADR-0069 option A) instead of the general PDU backfill budget.
     [[nodiscard]] auto fetch_snapshot_event_by_id(HomeserverRuntime& runtime, std::string_view room_id,
                                                   std::string_view origin, std::string_view event_id,
-                                                  rooms::RoomVersionPolicy const& policy, std::size_t& snapshot_calls)
-        -> std::optional<std::string>
+                                                  rooms::RoomVersionPolicy const& policy,
+                                                  std::size_t& snapshot_calls) -> std::optional<std::string>
     {
         if (snapshot_calls >= k_max_snapshot_outbound_calls)
         {

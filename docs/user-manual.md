@@ -603,7 +603,7 @@ federation port `8448`.
 
 | Key | Default | When to change |
 |---|---|---|
-| `database.backend` | `postgresql` | Set to `sqlite` for development/evaluation. Only one backend line is allowed. |
+| `database.backend` | `postgresql` | Set to `sqlite` for development/evaluation. Only `postgresql` and `sqlite` are accepted; only one backend line is allowed. |
 | `database.uri_file` | `/etc/merovingian/db-uri` | Path to an owner-only file containing the PostgreSQL URI. |
 | `database.role` | `runtime` | Use `migration` only with `merovingian-db-migrate`. |
 | `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
@@ -1245,7 +1245,10 @@ database.pool_size=16
 ```
 
 Use `database.role=migration` only with the offline migration tool. The live
-server requires `database.role=runtime`.
+server requires `database.role=runtime`. Startup fails closed if the URI file
+is missing, unreadable, or empty; the server never falls back to an ephemeral
+in-memory database. The programmatic-only in-memory backend exists for tests
+and cannot be selected in the config file.
 
 ### Offline migration planning
 

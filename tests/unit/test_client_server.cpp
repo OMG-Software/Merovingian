@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
@@ -66,9 +67,12 @@ struct ModuleLogLevelGuard final
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -85,8 +89,12 @@ struct ModuleLogLevelGuard final
     server.turn.password = "testpass";
     server.turn.ttl_seconds = 3600U;
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -105,8 +113,12 @@ struct ModuleLogLevelGuard final
     server.oidc.registration_endpoint = "https://account.example.com/oauth2/clients/register";
     server.oidc.revocation_endpoint = "https://account.example.com/oauth2/revoke";
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -123,8 +135,12 @@ struct ModuleLogLevelGuard final
     server.sso.redirect_url_allowlist = {"https://client.example.com/"};
     server.sso.identity_providers.push_back({"com.example.idp.github", "GitHub", "mxc://example.com/abc123", "github"});
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -283,8 +299,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                     std::string_view event_type, std::string_view state_key = {})
-    -> merovingian::canonicaljson::Object
+                                     std::string_view event_type,
+                                     std::string_view state_key = {}) -> merovingian::canonicaljson::Object
 {
     auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
     auto const* content = object_member_as_object(event, "content");
@@ -4029,8 +4045,8 @@ namespace
 // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
 // header value or empty string when the header is absent. Case-sensitive
 // because the wire emitter writes the canonical header name.
-[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response, std::string_view name)
-    -> std::string
+[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response,
+                                   std::string_view name) -> std::string
 {
     for (auto const& [key, value] : response.headers)
     {
@@ -4235,7 +4251,8 @@ SCENARIO("OPTIONS preflight echoes back an explicit single origin from the allow
         // (0.12.5 audit, finding 1), so every fixture needs a master key.
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         // Configure the allow-list via the runtime's CORS snapshot. (The
         // config-parser key is wired in commit 3; here we exercise the
         // runtime surface directly so the test is independent of the
@@ -4353,7 +4370,8 @@ SCENARIO("A wildcard allow-origin is never paired with allow-credentials",
         auto security = merovingian::config::SecurityConfig{};
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         config.server().cors.allowed_origins = {"*"};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -4394,7 +4412,8 @@ SCENARIO("An explicitly allowed origin still receives allow-credentials",
         auto security = merovingian::config::SecurityConfig{};
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         config.server().cors.allowed_origins = {"https://app.example.com"};
         config.server().cors.allow_credentials = true;
         auto started = merovingian::homeserver::start_client_server(config);
@@ -4431,7 +4450,8 @@ SCENARIO("OPTIONS preflight from an origin not in the allow-list omits Allow-Ori
         // (0.12.5 audit, finding 1), so every fixture needs a master key.
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         config.server().cors.allowed_origins = {"https://app.example.com"};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -4580,7 +4600,8 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
         // (0.12.5 audit, finding 1), so every fixture needs a master key.
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
@@ -5289,8 +5310,12 @@ SCENARIO("GET /login advertises m.login.sso with identity_providers when SSO is 
     // Deliberately no trailing slash: this is the shape the bypass needs.
     server.sso.redirect_url_allowlist = {"https://client.example.com"};
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -8807,8 +8832,8 @@ namespace
 // One /register request from `remote_addr` with the given X-Forwarded-For
 // headers (each a separate header line); returns the HTTP status.
 [[nodiscard]] auto register_status(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view username,
-                                   std::string remote_addr, std::vector<std::string> const& forwarded_for)
-    -> std::uint16_t
+                                   std::string remote_addr,
+                                   std::vector<std::string> const& forwarded_for) -> std::uint16_t
 {
     auto request = merovingian::homeserver::LocalHttpRequest{"POST",
                                                              "/_matrix/client/v3/register",

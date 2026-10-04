@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  SECURITY AUDIT AUTH-4                                                  |
@@ -39,7 +40,7 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        server,   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
         security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }

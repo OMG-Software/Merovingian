@@ -483,6 +483,13 @@ Implemented endpoints: `PUT /send/{txnId}`, `GET/PUT /make_join`, `GET/PUT /make
 
 **Server ACLs** (`federation/server_acl.hpp`, `server_acl.cpp`): per-room `m.room.server_acl` enforcement (MSC4436). `evaluate_server_acl()` strips ports, checks `allow_ip_literals`, applies deny-then-allow glob lists case-insensitively, and fail-closes to deny when an allow list exists and the server does not match. `room_server_acl_allows()` loads the current ACL from the persistent store. `FederationRuntimeState` carries a `room_server_acl_provider` hook so the inbound path can reject protected endpoints, per-PDU transaction entries, and room-local EDUs (`m.typing`, `m.receipt`) before they reach room state.
 
+Worker supervision retries temporary spawn failures rather than ending its loop
+with no child. Each supervisor waits only on its owned positive PID. Retry delay
+doubles from one second to 30 seconds and resets after 30 seconds of continuous
+child and IPC health; shutdown interrupts the delay within a 100-millisecond
+poll interval. The old channel is stopped outside the channel ownership mutex
+before retrying. See [ADR-0096](adr/0096-retry-worker-spawn-failures-with-owned-child-waits.md).
+
 ## Client-server API
 
 Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in [Client Authentication](matrix-v1.19-spec/client-server-api.md#client-authentication), [Room event format](matrix-v1.19-spec/client-server-api.md#room-event-format), [Rooms](matrix-v1.19-spec/client-server-api.md#rooms), [Syncing](matrix-v1.19-spec/client-server-api.md#syncing), and the media endpoints under the [Client-Server API](matrix-v1.19-spec/client-server-api.md).

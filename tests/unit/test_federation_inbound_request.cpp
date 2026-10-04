@@ -46,8 +46,8 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
+                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -202,8 +202,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&, std::string_view message)
-        -> merovingian::crypto::SignatureResult override
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&,
+                            std::string_view message) -> merovingian::crypto::SignatureResult override
     {
         auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
         auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -263,8 +263,8 @@ private:
     return merovingian::canonicaljson::Value{std::move(new_root)};
 }
 
-[[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
-    -> std::string
+[[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id,
+                                   std::string const& token) -> std::string
 {
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -295,8 +295,8 @@ private:
 // redaction rules.  v10 preserves "origin" in the signing payload; v11+ strips
 // it.  A PDU signed here will only verify correctly when the authorising side
 // uses a v10 (or earlier) room-version policy.
-[[nodiscard]] auto signed_v10_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
-    -> std::string
+[[nodiscard]] auto signed_v10_pdu(std::string const& origin, std::string const& key_id,
+                                  std::string const& token) -> std::string
 {
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -350,8 +350,8 @@ private:
            "\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto auth_member_event(std::string_view sender, std::string_view state_key, std::string_view membership)
-    -> std::string
+[[nodiscard]] auto auth_member_event(std::string_view sender, std::string_view state_key,
+                                     std::string_view membership) -> std::string
 {
     return "{\"type\":\"m.room.member\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
            std::string{sender} + "\",\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"" +
@@ -368,8 +368,8 @@ private:
            "\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto auth_state_event(std::string_view sender, std::string_view type, std::string_view state_key)
-    -> std::string
+[[nodiscard]] auto auth_state_event(std::string_view sender, std::string_view type,
+                                    std::string_view state_key) -> std::string
 {
     return "{\"type\":\"" + std::string{type} + "\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
            std::string{sender} +
@@ -2623,9 +2623,10 @@ SCENARIO("A malformed origin is rejected without reaching the resolver",
 
         WHEN("origins that are not valid server names are presented")
         {
-            // No dot; and longer than the 255-byte server-name limit.
+            // An embedded space violates the Matrix server-name grammar;
+            // single-label DNS names such as "localhost" are valid.
             std::ignore = merovingian::federation::handle_inbound_federation_request(
-                runtime, key_resolution_request("nodothere", "198.51.100.68"));
+                runtime, key_resolution_request("matrix.example.org invalid", "198.51.100.68"));
             std::ignore = merovingian::federation::handle_inbound_federation_request(
                 runtime, key_resolution_request(std::string(300U, 'a') + ".example", "198.51.100.68"));
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-
+#include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
 #include "../support/registration_token.hpp"
@@ -43,9 +43,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -453,23 +456,23 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
             auto local_member_content = merovingian::canonicaljson::Object{};
             local_member_content.push_back(merovingian::canonicaljson::make_member(
                 "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
-            auto const local_member_json =
-                make_seed_event_json("m.room.member", local_user, local_user, room_id_str, std::move(local_member_content), 2, 3);
+            auto const local_member_json = make_seed_event_json("m.room.member", local_user, local_user, room_id_str,
+                                                                std::move(local_member_content), 2, 3);
             auto& store = homeserver.database.persistent_store;
             store.events.push_back({.event_id = "$inbound_local_member",
-                                      .room_id = room_id_str,
-                                      .sender_user_id = local_user,
-                                      .json = local_member_json,
-                                      .depth = 2U});
+                                    .room_id = room_id_str,
+                                    .sender_user_id = local_user,
+                                    .json = local_member_json,
+                                    .depth = 2U});
             store.state.push_back({.room_id = room_id_str,
                                    .event_type = "m.room.member",
                                    .state_key = local_user,
                                    .event_id = "$inbound_local_member"});
             store.memberships.push_back({.room_id = room_id_str, .user_id = local_user, .membership = "join"});
             auto const local_state = std::vector<merovingian::database::PersistentStateGroupStateEntry>{
-                {"", "m.room.create", "",         "$inbound_create"    },
-                {"", "m.room.member", bob_sender, "$inbound_bob_member"},
-                {"", "m.room.member", local_user,  "$inbound_local_member"},
+                {"", "m.room.create", "",         "$inbound_create"      },
+                {"", "m.room.member", bob_sender, "$inbound_bob_member"  },
+                {"", "m.room.member", local_user, "$inbound_local_member"},
             };
             auto const group_id = merovingian::database::create_or_reuse_state_group(
                 store, room_id_str, room_id_str + ":local-member-group", std::nullopt, local_state);
@@ -774,12 +777,11 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
             auto const& fx_store = runtime.homeserver.database.persistent_store;
             envelope.prev_event_ids = merovingian::tests::fixture_prev_event_ids(fx_store, id);
             envelope.auth_event_ids = merovingian::tests::fixture_auth_event_ids(fx_store, id, remote_user, true);
-            envelope.json =
-                "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
-                ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
-                "\"prev_events\":" + fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" +
-                id + "\",\"sender\":\"" + remote_user + "\",\"state_key\":\"" + remote_user +
-                "\",\"type\":\"m.room.member\"}";
+            envelope.json = "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
+                            ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
+                            "\"prev_events\":" +
+                            fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" + id + "\",\"sender\":\"" +
+                            remote_user + "\",\"state_key\":\"" + remote_user + "\",\"type\":\"m.room.member\"}";
 
             auto const txns_before =
                 device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org").size();
@@ -891,12 +893,11 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
             auto const& fx_store = runtime.homeserver.database.persistent_store;
             envelope.prev_event_ids = merovingian::tests::fixture_prev_event_ids(fx_store, id);
             envelope.auth_event_ids = merovingian::tests::fixture_auth_event_ids(fx_store, id, remote_user, true);
-            envelope.json =
-                "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
-                ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
-                "\"prev_events\":" + fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" +
-                id + "\",\"sender\":\"" + remote_user + "\",\"state_key\":\"" + remote_user +
-                "\",\"type\":\"m.room.member\"}";
+            envelope.json = "{\"auth_events\":" + fx_ids(envelope.auth_event_ids) +
+                            ",\"content\":{\"membership\":\"join\"},\"depth\":10,\"origin_server_ts\":1,"
+                            "\"prev_events\":" +
+                            fx_ids(envelope.prev_event_ids) + ",\"room_id\":\"" + id + "\",\"sender\":\"" +
+                            remote_user + "\",\"state_key\":\"" + remote_user + "\",\"type\":\"m.room.member\"}";
 
             auto const txns_before =
                 device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org").size();

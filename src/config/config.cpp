@@ -148,7 +148,16 @@ auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bo
 
 auto database_backend_name(DatabaseBackend backend) noexcept -> std::string_view
 {
-    return backend == DatabaseBackend::sqlite ? "sqlite" : "postgresql";
+    switch (backend)
+    {
+    case DatabaseBackend::memory:
+        return "memory";
+    case DatabaseBackend::postgresql:
+        return "postgresql";
+    case DatabaseBackend::sqlite:
+        return "sqlite";
+    }
+    return "unknown";
 }
 
 auto parse_database_backend(std::string_view value) noexcept -> std::optional<DatabaseBackend>
@@ -166,10 +175,12 @@ auto parse_database_backend(std::string_view value) noexcept -> std::optional<Da
 
 auto database_backend_performance_warning(DatabaseBackend backend) noexcept -> std::string_view
 {
-    return backend == DatabaseBackend::sqlite
-               ? "SQLite is intended only for small installations and development; PostgreSQL is recommended for "
-                 "production or high-throughput deployments."
-               : std::string_view{};
+    if (backend == DatabaseBackend::sqlite)
+    {
+        return "SQLite is intended only for small installations and development; PostgreSQL is recommended for "
+               "production or high-throughput deployments.";
+    }
+    return {};
 }
 
 auto database_role_name(DatabaseRole role) noexcept -> std::string_view

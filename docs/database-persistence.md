@@ -4,6 +4,13 @@ This capability note describes the project-owned database persistence boundary,
 the SQLite runtime backend, the initial PostgreSQL/libpq boundary, and the
 remaining work before PostgreSQL-backed production operation.
 
+The deployed configuration parser accepts only `postgresql` and `sqlite`.
+PostgreSQL startup fails when its URI file is missing, unreadable, or empty; it
+never substitutes a process-local store. `DatabaseBackend::memory` is an
+explicit programmatic backend for tests only and is not a valid config-file
+value. Test fixtures that do not exercise persistence select it through
+`tests/support/in_memory_database_config.hpp`.
+
 ## Included now
 
 - Prepared statement representation.

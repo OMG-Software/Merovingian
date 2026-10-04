@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-
+#include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
@@ -33,9 +33,12 @@ namespace
     security.media.max_upload_size = "8B";
     security.media.quarantine_unknown_mime = false;
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -86,6 +89,70 @@ namespace
 }
 
 } // namespace
+
+SCENARIO("Removed media can be re-uploaded durably and erased again", "[med-3][media][database][restart]")
+{
+    GIVEN("a SQLite repository with removed and then re-uploaded content")
+    {
+        auto const path = unique_sqlite_path();
+        auto const config = sqlite_media_test_config(path);
+        auto token = std::string{};
+        auto media_id = std::string{};
+        {
+            auto started = merovingian::homeserver::start_runtime(config);
+            REQUIRE(started.started);
+            token = register_and_login_admin(started.runtime);
+            auto const first = merovingian::homeserver::handle_local_http_request(
+                started.runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
+            REQUIRE(first.status == 200U);
+            auto const first_id = media_id_from_upload_response(first.body);
+            auto const removed = merovingian::homeserver::handle_local_http_request(
+                started.runtime, {"POST", "/_merovingian/admin/media/remove/" + first_id, token, "remove first copy"});
+            REQUIRE(removed.status == 200U);
+            auto const second = merovingian::homeserver::handle_local_http_request(
+                started.runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
+            REQUIRE(second.status == 200U);
+            media_id = media_id_from_upload_response(second.body);
+        }
+        WHEN("the repository restarts and the re-upload is removed")
+        {
+            {
+                auto restarted = merovingian::homeserver::start_runtime(config);
+                REQUIRE(restarted.started);
+                auto const downloaded = merovingian::homeserver::handle_local_http_request(
+                    restarted.runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + media_id, token, {}});
+                auto const removed = merovingian::homeserver::handle_local_http_request(
+                    restarted.runtime,
+                    {"POST", "/_merovingian/admin/media/remove/" + media_id, token, "remove re-upload"});
+                THEN("the original bytes survived restart and removal clears every stored copy")
+                {
+                    CHECK(downloaded.status == 200U);
+                    CHECK(downloaded.body == "text/plain|hello");
+                    CHECK(removed.status == 200U);
+                    CHECK(restarted.runtime.media_repository.blobs.size() == 1U);
+                    for (auto const& blob : restarted.runtime.media_repository.blobs)
+                    {
+                        CHECK(blob.ref_count == 0U);
+                        CHECK(blob.bytes.empty());
+                    }
+                    for (auto const& blob : restarted.runtime.database.persistent_store.media_blobs)
+                    {
+                        CHECK(blob.ref_count == 0U);
+                        CHECK(blob.bytes.empty());
+                    }
+                }
+            }
+            auto reopened = merovingian::homeserver::start_runtime(config);
+            REQUIRE(reopened.started);
+            for (auto const& blob : reopened.runtime.media_repository.blobs)
+            {
+                CHECK(blob.ref_count == 0U);
+                CHECK(blob.bytes.empty());
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
 
 SCENARIO("Integrated local media repository flow covers upload download dedupe quarantine release "
          "remove and metrics",

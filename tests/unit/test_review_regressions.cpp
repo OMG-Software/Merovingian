@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-
 #include "../federation_signing_test_support.hpp"
+#include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
@@ -81,9 +81,12 @@ private:
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -98,9 +101,12 @@ private:
     security.registration.require_token = true;
     security.registration.token_file = token_file.string();
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -128,8 +134,8 @@ private:
     return body.substr(value_start, value_end - value_start);
 }
 
-[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id,
+                                  std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -163,8 +169,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
-        -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view,
+                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
     {
         {
             auto lock = std::scoped_lock<std::mutex>{mutex_};
@@ -180,8 +186,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view,
+                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
     {
         return {false, {}, "address lookup blocked for regression test"};
     }

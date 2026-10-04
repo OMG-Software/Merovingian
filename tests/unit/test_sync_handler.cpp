@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |              MATRIX /SYNC HANDLER CONFORMANCE TESTS                     |
@@ -58,9 +59,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -79,9 +83,12 @@ namespace
     security.federation.max_transaction_size = "1MiB";
     security.federation.remote_timeout = "30s";
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -115,8 +122,8 @@ namespace
     return body.substr(value_start, value_end - value_start);
 }
 
-[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object, std::string_view key)
-    -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object,
+                               std::string_view key) -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -160,8 +167,8 @@ namespace
 
 // Returns the most-recently-added device for `user`. Registration now creates
 // a device first; callers want the login device which is always added last.
-[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt, std::string_view user)
-    -> std::string
+[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt,
+                                       std::string_view user) -> std::string
 {
     // Track the last matching device with a portable loop: std::ranges::find_last_if
     // is C++23 and is not yet provided by every Tier 1 platform's standard library.
@@ -1071,8 +1078,8 @@ namespace
 [[nodiscard]] auto make_topic_fork_pdu(std::string const& room_id, std::string const& event_id,
                                        std::string const& sender, std::string const& topic,
                                        std::vector<std::string> const& prev_event_ids,
-                                       std::vector<std::string> const& auth_event_ids, std::int64_t ts)
-    -> merovingian::federation::InboundPduEnvelope
+                                       std::vector<std::string> const& auth_event_ids,
+                                       std::int64_t ts) -> merovingian::federation::InboundPduEnvelope
 {
     using namespace merovingian;
 
@@ -1178,7 +1185,8 @@ SCENARIO("Sync sees a state-resolution-driven current_state change, including a 
             auto ids = std::vector<std::string>{};
             for (auto const& s : hs.database.persistent_store.state)
             {
-                if (s.room_id == room_id && s.event_type == "m.room.power_levels" && s.state_key.empty())
+                if (s.room_id == room_id && ((s.event_type == "m.room.power_levels" && s.state_key.empty()) ||
+                                             (s.event_type == "m.room.member" && s.state_key == alice_id)))
                 {
                     ids.push_back(s.event_id);
                 }

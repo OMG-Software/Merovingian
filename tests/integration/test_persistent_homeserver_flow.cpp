@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -35,9 +37,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -51,9 +56,12 @@ namespace
     merovingian::tests::enable_token_registration(security);
     security.secrets.master_key_file = std::move(master_key_path);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -105,6 +113,119 @@ namespace
 }
 
 } // namespace
+
+SCENARIO("Programmatic in-memory backend starts an explicitly selected test runtime", "[db-3][database][startup]")
+{
+    GIVEN("a runtime config with the explicit in-memory test backend")
+    {
+        auto const baseline = registration_enabled_config();
+        auto const config = merovingian::config::Config{
+            baseline.server(),   baseline.listeners(),          merovingian::tests::in_memory_database_config(),
+            baseline.security(), baseline.client_rate_limits(), baseline.log_modules(),
+        };
+
+        WHEN("the homeserver starts")
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+
+            THEN("the runtime uses a validated in-memory store")
+            {
+                REQUIRE(started.started);
+                CHECK(started.runtime.homeserver.database.opened);
+                CHECK(started.runtime.homeserver.database.persistent_store.backend ==
+                      merovingian::database::PersistentStoreBackend::memory);
+                CHECK(started.runtime.homeserver.database.schema_validated);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL startup refuses missing or empty connection credentials", "[db-3][database][startup]")
+{
+    GIVEN("PostgreSQL is selected and the credentials file is absent")
+    {
+        auto const path = unique_sqlite_path().string() + ".uri";
+        auto database = merovingian::config::DatabaseConfig{};
+        database.uri_file = path;
+        auto const baseline = registration_enabled_config();
+        auto const config =
+            merovingian::config::Config{baseline.server(),   baseline.listeners(),          database,
+                                        baseline.security(), baseline.client_rate_limits(), baseline.log_modules()};
+        WHEN("the runtime starts with the missing file")
+        {
+            auto const started = merovingian::homeserver::start_client_server(config);
+            THEN("startup fails rather than silently storing security state in memory")
+            {
+                CHECK_FALSE(started.started);
+                CHECK_FALSE(started.runtime.homeserver.database.opened);
+            }
+        }
+        WHEN("the runtime starts with an empty credentials file")
+        {
+            {
+                auto file = std::ofstream{path};
+                REQUIRE(file.is_open());
+            }
+            auto const started = merovingian::homeserver::start_client_server(config);
+            THEN("startup still fails")
+            {
+                CHECK_FALSE(started.started);
+                CHECK_FALSE(started.runtime.homeserver.database.opened);
+            }
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+SCENARIO("media uploaded after the legacy endpoint freeze stays private across restart", "[med-1][media][restart]")
+{
+    GIVEN("a SQLite-backed runtime and an authenticated media upload")
+    {
+        auto const path = unique_sqlite_path();
+        auto const config = sqlite_registration_enabled_config(path);
+        auto token = std::string{};
+        auto media_id = std::string{};
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+            REQUIRE(started.started);
+            auto const registered = merovingian::homeserver::register_local_user(
+                started.runtime.homeserver, "media_restart", "CorrectHorse7!", merovingian::tests::registration_token);
+            REQUIRE(registered.ok);
+            auto const logged =
+                merovingian::homeserver::login_local_user_by_id(started.runtime.homeserver, registered.value, "MEDIA");
+            REQUIRE(logged.ok);
+            token = logged.value;
+            auto const uploaded = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST",
+                                  "/_matrix/client/v1/media/upload",
+                                  token,
+                                  "media-restart-bytes",
+                                  {{"Content-Type", "text/plain"}}});
+            REQUIRE(uploaded.response.status == 200U);
+            auto const& rows = started.runtime.homeserver.database.persistent_store.local_media;
+            REQUIRE(rows.size() == 1U);
+            REQUIRE_FALSE(rows.front().legacy_endpoint_visible);
+            REQUIRE_FALSE(rows.front().quarantined);
+            media_id = rows.front().media_id;
+        }
+        WHEN("the runtime is reopened and both media endpoints are requested")
+        {
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            auto const legacy = merovingian::homeserver::handle_client_server_request(
+                restarted.runtime, {"GET", "/_matrix/media/v3/download/example.org/" + media_id, {}, {}});
+            auto const authenticated = merovingian::homeserver::handle_client_server_request(
+                restarted.runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + media_id, token, {}});
+            THEN("the unauthenticated endpoint stays frozen and authenticated bytes survive")
+            {
+                CHECK(legacy.response.status == 404U);
+                CHECK(authenticated.response.status == 200U);
+                CHECK(authenticated.response.body == "media-restart-bytes");
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
 
 SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions rooms and events",
          "[database][sqlite][homeserver][integration]")

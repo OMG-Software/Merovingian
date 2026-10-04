@@ -1,11 +1,52 @@
 ## 0.12.16
 
+- **Outbound authority and socket pin agreement (OUT-1, OUT-2).**
+  Matrix server names reject malformed authorities before discovery. Outbound
+  and media-redirect URLs share libcurl's strict URL parser; every actual
+  socket destination must match an approved numeric address and port.
+  Proxies and connection reuse cannot bypass the check. Real TLS tests cover
+  multiple pins, IPv6, encoded paths and refused authorities. ADR-0097.
+
+- **Complete mainline ancestry and bounded auth graphs (EVT-5, EVT-9).**
+  State resolution loads power-level ancestors through the event source and
+  refuses incomplete or cyclic ancestry. Room-v12 conflicted-subgraph work
+  counts distinct events and traverses the shared DAG once. Corrected
+  conformance fixtures reproduce both old defects; the combined authorization
+  and state-resolution checks pass 20,994 assertions in 129 cases. ADR-0095.
+
+- **Remote quarantine enforcement (MED-2).** Held remote media returns 451
+  without payload bytes and cannot enter thumbnail processing. Storage
+  admission no longer counts as successful delivery; response conversion
+  refuses unexpected internal success statuses. Repository and real-HTTPS
+  regressions failed before the fix and pass afterward in the parent checks.
+
+- **Worker restart recovery (ISO-3).** A failed spawn no longer ends
+  supervision or calls `waitpid(-1)`. Retries retain exponential backoff,
+  reset it only after sustained child/IPC health, and remain interruptible
+  during shutdown. A real-child regression reproduced permanent loss of
+  recovery before the fix; the focused case passes 28 assertions. ADR-0096.
+
+- **Sync long-poll admission and overflow-safe timeouts (HTTP-4).**
+  v3 and sliding sync share per-account and per-device admission, including
+  queued waits. Excess requests and refused handoffs return 429 instead of
+  occupying the main request pool. Oversized decimal timeouts saturate before
+  applying the existing 120-second ceiling. The transport regression passes
+  224 assertions in one focused case; the combined suite also passes.
+
+- **Durable media privacy and re-upload removal (MED-1, MED-3).**
+  Restart restores legacy endpoint visibility instead of exposing new uploads.
+  Re-uploading removed bytes revives their single storage identity, so live
+  lookup, persistence and later removal address the same blob. Restart
+  regressions reproduced both defects before the fixes and pass afterward.
+
 - **WIP: medium-severity findings from the 2026-09-29 security audit.**
   The report contains 31 distinct medium-severity findings, not 20.
   Their per-finding status is tracked in
   `docs/todos/capability-gaps.md`; this branch does not yet resolve
-  all of them. The combined tree now passes the full Catch2 suite
-  after the recent test-fixture repair pass.
+  all of them. Current final focused checks pass 157 unit assertions in 16 cases,
+  367 integration assertions in 10 cases, and 20,422 state/creator conformance
+  assertions in 18 cases. The completed fresh full suite passes 54 targets,
+  with 0 failures and 0 timeouts (exit 0). All new regression tags executed.
 
 - **FIXED: implicit v12 creator privileges in power ordering (EVT-8).**
   The sorter resolves the room's implicit create event through the existing
@@ -74,10 +115,23 @@
   and ordinary `/register` and `/register/available` reject that localpart as
   reserved.
 
-- **PARTIAL: v11+ room creator detection (EVT-7).**
-  Create-sender fallback has been added. Version-gating, first-join
-  `prev_events` constraints and non-member creator rejection still need
-  conformance review and regression coverage; EVT-7 is not yet closed.
+- **FIXED: room-version-aware creator authorization (EVT-7).**
+  v1-v10 creator identity comes from `content.creator`; v11+ uses only the
+  create event sender, strips client-supplied legacy creator content on local
+  room creation, and no longer treats the create sender as joined for ordinary
+  sends or power edits. Creator bootstrap joins require exactly the
+  authoritative create event as their sole predecessor; v12 derives that ID
+  from the room ID, and additional creators do not receive implicit
+  membership. EVT-7 conformance passed 108 assertions in 9 cases; related auth
+  conformance passed 467 assertions in 97 cases.
+
+- **WIP: complete state-resolution mainlines and bounded v12 conflicted
+  subgraphs (EVT-5, EVT-9).** Mainline ordering now fetches each required
+  power-level ancestor through the shared event source and fails closed on
+  missing, malformed, cyclic, or depth-truncated chains. The v12 subgraph walk
+  processes each distinct reachable auth event once, rejects cycles and
+  malformed/missing nodes, and applies the existing auth-chain event cap.
+  Focused conformance verification is pending.
 
 - **FIXED: bounded Argon2id admission (AUTH-4).**
   A process-wide counting semaphore caps the number of concurrent password and
@@ -92,6 +146,21 @@
   segments share buckets. `/sync` and sliding-sync long-poll timeouts are
   capped at 120 s. HTTP-4 still needs per-user long-poll admission. HTTP-3
   needs dedicated bypass regression verification.
+
+- **HTTP-3 route-bucket normalization and bounded eviction.** Known dynamic
+  Matrix paths use finite route templates, unknown paths share one fallback
+  bucket, and policy lookup still honors original operator prefixes. The
+  bounded bucket tables now evict the least-recently-used entry in O(1)
+  expected time. BDD regressions cover media, directory, room event/state,
+  relations, to-device, account-data, unknown paths, and LRU behavior. Focused
+  verification is pending.
+
+- **DB-3 explicit database selection.** PostgreSQL startup now fails when its
+  URI file is missing, unreadable, or empty instead of silently opening an
+  ephemeral store. A programmatic-only memory backend is available to test
+  fixtures and is not accepted by config parsing; non-persistence fixtures
+  explicitly select it through the shared helper. Database-related focused
+  verification is pending.
 
 ## 0.12.15
 

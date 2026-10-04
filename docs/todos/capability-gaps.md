@@ -347,36 +347,36 @@ verification have been checked; a timeout or abort is a failure.
 
 | Finding | Remaining work / evidence |
 | --- | --- |
-| AUTH-3 | Sender reservation/creation implemented earlier; re-establish focused and combined verification. |
+| AUTH-3 | Sender reservation/creation inspected; exact focused regression and fresh combined suite pass. |
 | AUTH-4 | Completed: bounded Argon2id admission (`auth::Argon2idAdmission`) caps concurrent password and registration-token verification; saturated `/login`, `/register`, and `/register/m.login.registration_token/validity` return 429 / `M_LIMIT_EXCEEDED` before any work runs, and shed requests do not count toward the failed-login lockout. Verification still runs outside the global runtime mutex. Regression coverage in `tests/unit/test_security_audit_auth_4.cpp`. |
-| AUTH-6 | Local-server namespace check implemented earlier; re-establish focused and combined verification. |
+| AUTH-6 | Local-server namespace check inspected; exact focused regression and fresh combined suite pass. |
 | CSAZ-5 | Listing/creation visibility verified: 672 assertions in 14 focused cases. Durable visibility and authenticated POST remain outstanding. |
-| CSAZ-7 | Disclosure filtering inspected; independent combined-tree focus passed 1,286 assertions in 17 cases. Full-suite verification pending. |
+| CSAZ-7 | Disclosure filtering inspected; independent combined-tree focus passed 1,286 assertions in 17 cases. Fresh full suite passes. |
 | CSAZ-8 | Presence sharing scope: not independently closed. |
 | CSAZ-10 | Non-existent to-device recipient retention: not independently closed. |
-| HTTP-3 | Normalized policy lookup implemented; bypass-specific regression verification outstanding. |
-| HTTP-4 | 120-second ceiling implemented; per-user concurrent long-poll admission outstanding. |
-| HTTP-8 | Prior release claims connection lifetime/request bounds; independently re-verify. |
-| FED-6 | Endpoint/content validation implemented at handler and mutation sink; focused parent verification passed. Combined-suite verification outstanding. |
+| HTTP-3 | Finite route templates, original-prefix policy selection and O(1) bounded LRU eviction implemented; bypass regressions passed in the parent unit batch. Fresh combined suite passes. |
+| HTTP-4 | Shared account/device/global RAII admission implemented for v3/sliding sync, with 429 on saturation or refused submission. Parent focus passed 224 assertions; timeout-overflow regression passed. Fresh combined suite passes. |
+| HTTP-8 | Exact connection lifetime/request-bound checks pass 22 assertions in 2 cases; fresh combined suite passes. |
+| FED-6 | Endpoint/content validation implemented at handler and mutation sink; focused parent verification passed. Fresh combined suite passes. |
 | FED-8 | Receipt EDUs now require both per-room ACL allowance and a joined receipt subject. New regression test passes; full-suite verification green. |
-| FED-11 | Common admission and bounded RAII join buffering inspected and independently focused-verified, including failure cleanup and requested backfill. Full-suite verification pending. |
-| EVT-5 | Mainline ancestor completeness: not independently closed. |
-| EVT-7 | Creator fallback partial; version gating and first-join/non-member semantics unresolved. |
-| EVT-8 | Focused RED/GREEN verified; combined-suite verification outstanding. |
-| EVT-9 | Conflicted-subgraph traversal memoisation/budget: not independently closed. |
-| OUT-1 | Server-name parser/pinning agreement: not independently closed. |
-| OUT-2 | Redirect parser/connection agreement: not independently closed. |
+| FED-11 | Common admission and bounded RAII join buffering inspected and independently focused-verified, including failure cleanup and requested backfill. Fresh full suite passes. |
+| EVT-5 | Complete mainline ancestry now uses the event source and fails closed on missing/cyclic references. Corrected counterfactual baseline fails; parent conformance checks pass. Fresh full suite passes. |
+| EVT-7 | Version-gated creator identity and authoritative first-join predecessor implemented; parent inspected the source and completed conformance logs (108 assertions in 9 cases, related auth 467 in 97). Fresh combined suite passes. |
+| EVT-8 | Focused RED/GREEN verified; fresh combined suite passes. |
+| EVT-9 | Distinct-event graph budget and linear shared-DAG traversal implemented. Corrected legal shared-DAG regression fails against the old implementation and passes currently. Fresh full suite passes. |
+| OUT-1 | Strict Matrix authority validation and shared curl URL parsing implemented. Actual socket IP/port checked against numeric pins; parent real-TLS checks cover multiple pins and IPv6. Fresh full suite passes. |
+| OUT-2 | Media redirects use the transport URL parser and canonical URL; fragments/userinfo/encoded authorities rejected before resolution. Socket peer guard applies to redirect requests. Parent unit/integration checks pass; fresh full suite passes. |
 | OUT-4 | Remote-media cache/retention: not independently closed. |
 | CRY-2 | IPC dispatch-queue bound: not independently closed. Prior changelog uses this ID for a different outbound-signing issue. |
 | ISO-2 | Historical seccomp work is stashed, not an accepted fix. |
-| ISO-3 | Supervisor restart recovery: not independently closed. |
-| MED-1 | Legacy media visibility durability: not independently closed. |
-| MED-2 | Remote quarantine enforcement: not independently closed. |
-| MED-3 | Removed-media re-upload lifecycle: not independently closed. |
+| ISO-3 | Retry after spawn failure, owned-PID waits, sustained-health backoff and interruptible shutdown implemented. Parent real-child regression passed; fresh combined suite passes. |
+| MED-1 | Hydration retains persisted legacy visibility and defaults new records private. Parent SQLite restart regression passed; fresh combined suite passes. |
+| MED-2 | Quarantine returns 451 without payload and cannot enter thumbnail processing; successful storage is not successful delivery. Parent repository and real-HTTPS regressions pass after a genuine failing baseline. Fresh full suite passes. |
+| MED-3 | Re-upload revives one storage identity, serving ignores dead blobs and final removal clears durable bytes. Parent unit and SQLite restart/removal regressions passed; fresh combined suite passes. |
 | MED-5 | allow_remote and self-fetch checks: not independently closed. |
 | MED-6 | Media quotas and duplicate memory retention: not independently closed. |
 | DB-2 | PostgreSQL worker snapshots beyond 128 events: not independently closed. |
-| DB-3 | PostgreSQL missing-URI refusal: not independently closed. |
+| DB-3 | PostgreSQL missing/empty URI startup now refuses; tests explicitly select a programmatic-only memory backend. Parent startup and exact config-parser regressions passed; current fresh full suite passes. |
 | DB-5 | Security-relevant write failure propagation: not independently closed. |
 
 Completed parent verification on 2026-10-02:
@@ -410,7 +410,35 @@ Ninja confirmed unit/integration targets current):
 - Integration `[join],[backfill]`: 3,766 assertions in 20 cases passed.
 - Unit `[pdu_ingestion],[join]`: 1,551 assertions in 61 cases passed.
 
-The combined tree has now passed the full Catch2 suite (54 Ok, 0 Fail, 0 Timeout)
+The earlier combined tree passed the full Catch2 suite (54 Ok, 0 Fail, 0 Timeout)
 after the test-fixture repair pass; individual focused runs remain the evidence
 for each slice. Review also found that FED-8's ACL slice does not yet enforce
-the audit's separate joined-receipt-subject requirement; it remains partial.
+the audit's separate joined-receipt-subject requirement; that requirement was
+subsequently implemented and verified as recorded in the FED-8 row above.
+The subsequent 2026-10-04 changes were verified separately in the fresh run
+recorded below.
+
+Parent verification on 2026-10-04 (completed exit 0):
+
+- Current audit unit batch: 149 assertions in 14 cases.
+- Current audit integration batch: 367 assertions in 10 cases.
+- State-resolution, creator and neighboring authorization conformance: 20,994
+  assertions in 129 cases.
+- Exact worker-recovery case: 28 assertions; exact memory-backend parser
+  rejection: 2 assertions.
+- A separately linked counterfactual state-resolution binary reproduces both
+  EVT-5 and EVT-9 with the corrected legal fixtures; its two failures are
+  evidence of the old defects, not a passing result.
+
+Final parent verification of this batch on 2026-10-04:
+
+- Full `python build.py wsl`: exit 0, 54 Ok, 0 Fail, 0 Timeout. The parent
+  inspected `build-wsl/meson-logs/testlog.txt` and all 54 JSON results; copies
+  are preserved as `build-wsl/audit-full-suite-retry-testlog.txt` and `.json`.
+- Final unit focus including AUTH-3/AUTH-6: 157 assertions in 16 cases, exit 0.
+- Exact HTTP-8 integration focus: 22 assertions in 2 cases, exit 0.
+- Final state/creator/v12 conformance focus: 20,422 assertions in 18 cases,
+  exit 0. Earlier neighboring authorization focus also completed successfully.
+- Numeric IPv4 authorities with leading zeros still need decimal canonicalization
+  for discovery/transport agreement; peer pin enforcement is verified, but this
+  compatibility edge is not closed by the authority tests.
