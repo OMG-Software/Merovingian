@@ -1094,6 +1094,6 @@ objects, not part of any one database's schema, so — consistent with
 separate, operator-run provisioning script, never a file under
 `migrations/`.
 
-### Security audit follow-up (0.12.16)
+### Security audit follow-up (0.12.17)
 
 Schema 18 adds `rooms.directory_public` as TEXT NOT NULL DEFAULT false. It is independent of room join rules; existing rooms remain unpublished because their prior publication intent was not durable (ADR-0099). Creation persists publication with the room and initial membership. Visibility changes commit before updating the store and runtime mirrors. PostgreSQL scoped snapshots bind one room ID and join relation tables to events, avoiding the 128-parameter ceiling for large rooms. Media moderation commits flags, removal blob state and required administrative audit rows together; mirrors change only after commit (ADR-0100).

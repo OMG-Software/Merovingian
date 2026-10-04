@@ -55,5 +55,5 @@ access.
 
 ## Links
 
-* [HTTP-3 audit finding](../security-audit-report-2026-09-29.md#http-3--rate-limit-buckets-are-keyed-on-the-raw-path-so-varying-a-path-segment-bypasses-them)
+* [HTTP-3 audit finding](../security-audit-report-2026-09-29.md#http-3-rate-limit-buckets-are-keyed-on-the-raw-path-so-varying-a-path-segment-bypasses-them)
 * [HTTP transport rate-limit policy](../http-transport.md#rate-limit-policy)

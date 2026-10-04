@@ -1,4 +1,4 @@
-#Capability Gaps
+# Capability gaps
 
 Open work per capability area. Status column reflects the current level in the
 `not-started → planned → scaffolded → unit-covered → integrated → runtime-wired
@@ -350,9 +350,9 @@ verification have been checked; a timeout or abort is a failure.
 | AUTH-3 | Sender reservation/creation inspected; exact focused regression and fresh combined suite pass. |
 | AUTH-4 | Completed: bounded Argon2id admission (`auth::Argon2idAdmission`) caps concurrent password and registration-token verification; saturated `/login`, `/register`, and `/register/m.login.registration_token/validity` return 429 / `M_LIMIT_EXCEEDED` before any work runs, and shed requests do not count toward the failed-login lockout. Verification still runs outside the global runtime mutex. Regression coverage in `tests/unit/test_security_audit_auth_4.cpp`. |
 | AUTH-6 | Local-server namespace check inspected; exact focused regression and fresh combined suite pass. |
-| CSAZ-5 | Listing/creation visibility verified: 672 assertions in 14 focused cases. Durable visibility and authenticated POST remain outstanding. |
+| CSAZ-5 | Schema 18 persists publication independently of join rules; defaults unrecorded legacy publication private. POST requires authentication before local/remote lookup. Parent SQLite restart, failed-write, populated migration and published invite-only room regressions pass; pre-Pages full suite passes. |
 | CSAZ-7 | Disclosure filtering inspected; independent combined-tree focus passed 1,286 assertions in 17 cases. Fresh full suite passes. |
-| CSAZ-8 | Presence sharing scope: not independently closed. |
+| CSAZ-8 | Presence sync is limited to current joined peers. Invalid states, non-string status and more than 1024 UTF-8 bytes are refused before mutation or stream allocation. Parent real-SQLite regressions and pre-Pages full suite pass. |
 | CSAZ-10 | Non-existent to-device recipient retention: not independently closed. |
 | HTTP-3 | Finite route templates, original-prefix policy selection and O(1) bounded LRU eviction implemented; bypass regressions passed in the parent unit batch. Fresh combined suite passes. |
 | HTTP-4 | Shared account/device/global RAII admission implemented for v3/sliding sync, with 429 on saturation or refused submission. Parent focus passed 224 assertions; timeout-overflow regression passed. Fresh combined suite passes. |
@@ -375,9 +375,9 @@ verification have been checked; a timeout or abort is a failure.
 | MED-3 | Re-upload revives one storage identity, serving ignores dead blobs and final removal clears durable bytes. Parent unit and SQLite restart/removal regressions passed; fresh combined suite passes. |
 | MED-5 | allow_remote and self-fetch checks: not independently closed. |
 | MED-6 | Media quotas and duplicate memory retention: not independently closed. |
-| DB-2 | PostgreSQL worker snapshots beyond 128 events: not independently closed. |
+| DB-2 | Partial: room-scoped relation joins use one parameter; real two-handle PostgreSQL reload beyond 200 events preserves relations and latest denying ACL. Failed worker reload still retains a stale snapshot; protocol recovery remains open. |
 | DB-3 | PostgreSQL missing/empty URI startup now refuses; tests explicitly select a programmatic-only memory backend. Parent startup and exact config-parser regressions passed; current fresh full suite passes. |
-| DB-5 | Security-relevant write failure propagation: not independently closed. |
+| DB-5 | Partial: media quarantine/release/removal commit flags, blob reference changes and required audit rows together before memory changes. Real SQLite late-statement failures and PostgreSQL shared/final blob removal pass. Upload and authentication write failures remain open. |
 
 Completed parent verification on 2026-10-02:
 
@@ -442,3 +442,28 @@ Final parent verification of this batch on 2026-10-04:
 - Numeric IPv4 authorities with leading zeros still need decimal canonicalization
   for discovery/transport agreement; peer pin enforcement is verified, but this
   compatibility edge is not closed by the authority tests.
+
+Additional parent verification on 2026-10-04, before the Pages integration:
+
+- Full python build.py wsl: completed exit 0, 54 Ok, 0 Fail, 0 Timeout;
+  all 54 JSON results inspected. Evidence is preserved in
+  uild-wsl/audit-full-suite-second-retry-testlog.txt and .json.
+- Exact directory, presence and media-write regression tags: 491 assertions
+  in 13 cases, exit 0. Revised directory conformance: 184 assertions in 8 cases.
+- Fixture and security integration focus: 760 assertions in 30 cases, exit 0.
+- Real isolated PostgreSQL reload and media moderation: 256 assertions in
+  2 cases, exit 0, including upgrade from populated schema 17 to 18.
+- Database, presence and public-room unit neighbors: 17,912 assertions in
+  158 cases, exit 0. Initial full-suite failures were stale migration-name and
+  unauthenticated positive POST fixtures; behavioral assertions were preserved.
+
+Pages integration and version 0.12.17 verification on 2026-10-04:
+
+- Full python build.py wsl: completed exit 0, 55 Ok, 0 Fail, 0 Timeout;
+  all 55 JSON results inspected. Copies are preserved as
+  uild-wsl/audit-full-suite-pages-testlog.txt and .json.
+- Updated directory flow uses real system discovery with a call counter,
+  and a numeric loopback destination; exact tag passes 174 assertions in 4 cases.
+- Package version checks: 8 tests passed. Pages tooling: 20 tests passed.
+- Hash-locked workspace-local dependencies installed successfully;
+  mkdocs build --strict completed exit 0 after correcting four ADR anchors.

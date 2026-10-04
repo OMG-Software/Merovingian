@@ -2217,6 +2217,6 @@ For the complete security architecture and threat model, see
 [`docs/threat-model.md`](threat-model.md) and
 [`docs/hardening.md`](hardening.md).
 
-### Security audit follow-up (0.12.16)
+### Security audit follow-up (0.12.17)
 
 Public directory publication survives restart. Schema 18 leaves older rooms unpublished; an authorized joined user can republish them through the directory visibility endpoint. POST /_matrix/client/v3/publicRooms requires client authentication; GET remains public. Presence status messages accept at most 1024 UTF-8 bytes; invalid or oversized updates return 400 without changing presence state.

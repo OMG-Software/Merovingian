@@ -2017,6 +2017,6 @@ still fail closed and require operational handling of the rejected resolution.
 - Separate privileges where practical.
 - Prefer simple auditable code.
 
-### Security audit follow-up (0.12.16)
+### Security audit follow-up (0.12.17)
 
 Presence disclosure is restricted to current joined peers. Invite, departed, banned and unrelated users do not receive another user's presence. Required presence enum/type checks and a 1024 UTF-8 byte status limit precede stream allocation. Directory POST authentication precedes any remote discovery; publication persists independently of join rules. Media moderation refuses failed transactions before changing flags, bytes or audit projections. The PostgreSQL large-room query ceiling is removed; generic failed worker reload handling is still outstanding.

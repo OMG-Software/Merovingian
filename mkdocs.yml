@@ -1,0 +1,146 @@
+site_name: Merovingian
+site_description: Security-first Matrix homeserver written in modern C++26
+site_url: https://omg-software.github.io/Merovingian/
+repo_url: https://github.com/OMG-Software/Merovingian
+repo_name: OMG-Software/Merovingian
+edit_uri: edit/main/docs/
+
+# docs/ is written to be read in the repository. Agent instruction files, the
+# vendored Matrix spec mirrors (links into the v1.19 mirror are sent to
+# spec.matrix.org by the hooks), superseded generated references, duplicate
+# report renderings and working notes are not published.
+exclude_docs: |
+  AGENTS.md
+  CLAUDE.md
+  /matrix-v1.18-spec/
+  /matrix-v1.19-spec/
+  /matrix-v1.18-client-server-api*.md
+  /security-audit-report-*.html
+  /todos/audit-*-handover.md
+  /adr/template.md
+
+# ADR records are reached from the ADR index, not listed in the navigation.
+not_in_nav: |
+  /adr/0*.md
+
+# Every broken link fails the strict build. Links to files outside docs/ are
+# rewritten to GitHub by the hooks before validation runs.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+
+hooks:
+  - scripts/mkdocs_site_hooks.py
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - toc.follow
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - User guide: user-manual.md
+  - Architecture:
+      - Overview: architecture.md
+      - Event engine: event-engine.md
+      - HTTP transport: http-transport.md
+      - Authentication and identity: auth-identity.md
+      - Canonical JSON: canonical-json.md
+      - Media repository: media-repository.md
+      - Database persistence: database-persistence.md
+      - Decision records: adr/index.md
+  - Security:
+      - Threat model: threat-model.md
+      - Runtime hardening: hardening.md
+      - Cryptographic boundary: crypto-boundary.md
+      - Security coding rules: security-coding-rules.md
+      - Security review checklist: security-review-checklist.md
+      - Audit report (29 September 2026): security-audit-report-2026-09-29.md
+      - Audit report (September 2026): security-audit-report-2026-09.md
+  - Operations:
+      - Platform support: platform-support.md
+      - Trust and safety: trust-safety.md
+      - Observability and audit: observability-audit.md
+      - Log filtering: log-filtering.md
+      - Debug logging: debug-logging.md
+  - Development:
+      - Development environment: dev-environment.md
+      - Coding rules: coding-rules.md
+      - Testing standards: testing-standards.md
+      - Build and warning policy: build-warning-policy.md
+      - Release process: release-process.md
+      - Versioning: versioning.md
+      - Dependencies:
+          - dependencies/index.md
+          - Licenses: dependencies/licenses.md
+          - LibSodium: dependencies/libsodium.md
+          - OpenSSL: dependencies/openssl.md
+          - libcurl: dependencies/libcurl.md
+          - PostgreSQL libpq: dependencies/postgresql-libpq.md
+          - SQLite: dependencies/sqlite.md
+          - yyjson: dependencies/yyjson.md
+          - Catch2: dependencies/catch2.md
+          - MkDocs: dependencies/mkdocs.md
+  - Reference:
+      - Matrix v1.19 Client-Server API: matrix-v1.19-client-server-api.md
+      - Changelog: changelog.md
+  - Road to 1.0:
+      - Production milestone: todos/production-milestone.md
+      - Capability gaps: todos/capability-gaps.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; OMG Software contributors — GPL-3.0-or-later

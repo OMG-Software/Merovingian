@@ -47,6 +47,10 @@ Repository changes are additionally covered by:
   history scanning
 - [dependency-vulnerability-triage.yml](../.github/workflows/dependency-vulnerability-triage.yml)
   for PR dependency review and SBOM-backed vulnerability triage
+- [pages.yml](../.github/workflows/pages.yml), which builds the documentation
+  site with `mkdocs build --strict` on every branch and pull request and
+  deploys it to <https://omg-software.github.io/Merovingian/> from `main`, so
+  the published documentation always matches the latest merged release line
 
 The packaged tarballs include:
 

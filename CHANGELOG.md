@@ -1,4 +1,10 @@
-## 0.12.16
+## 0.12.17
+
+- **Pages integration and release version.** Preserve the merged 0.12.16
+  documentation site and update all live binary/package versions to 0.12.17.
+  Four audit ADR links now use the actual published anchors. The merged full
+  suite passes 55 groups with no failures or timeouts; strict Pages build,
+  8 package checks and 20 documentation-tooling checks pass.
 
 - **Directory durability and authenticated lookup (CSAZ-5).** Schema 18 stores
   publication independently of join rules and defaults previously unrecorded
@@ -19,8 +25,10 @@
 - **Large PostgreSQL room snapshots (DB-2, partial).** Scoped relation queries
   join events using one room parameter rather than one parameter per event.
   A real two-handle regression reproduces the old 128-parameter failure.
-  Generic failed worker reload handling remains open. This follow-up batch is
-  awaiting focused and combined verification.
+  Generic failed worker reload handling remains open. Before Pages integration,
+  the completed full suite passed 54 groups (0 failures/timeouts); focused
+  security flows passed 491 assertions in 13 cases, and real PostgreSQL
+  regressions passed 256 assertions in 2 cases.
 
 - **Outbound authority and socket pin agreement (OUT-1, OUT-2).**
   Matrix server names reject malformed authorities before discovery. Outbound
@@ -182,7 +190,55 @@
   ephemeral store. A programmatic-only memory backend is available to test
   fixtures and is not accepted by config parsing; non-persistence fixtures
   explicitly select it through the shared helper. Database-related focused
-  verification is pending.
+  verification and the pre-Pages combined suite passed.
+
+## 0.12.16
+
+- **NEW: documentation site on GitHub Pages.** The documents under `docs/`
+  are published with MkDocs Material at
+  <https://omg-software.github.io/Merovingian/>, configured by `mkdocs.yml`.
+  The navigation now covers every published document: architecture and
+  module design docs, the ADR register, security docs and audit reports,
+  operations, development and dependency reviews, the Matrix v1.19
+  Client-Server API reference, the road to 1.0, and this changelog. Agent
+  instruction files, the vendored Matrix spec mirrors, superseded generated
+  references and working notes are excluded. The landing page's Material
+  icons now render (`pymdownx.emoji` was missing). ADR-0101.
+
+- **NEW: the site is built on every branch and deployed from `main`.**
+  `.github/workflows/pages.yml` runs on every push and pull request with no
+  path filter. It runs `tests/tooling/test_docs_site.py`, then
+  `mkdocs build --strict` with link and anchor validation, and uploads the
+  rendered site as the `docs-site` artifact. Only a push or manual run on
+  `main` deploys to Pages, and only the deploy job holds `pages: write` and
+  `id-token: write`.
+
+- **NEW: repository links work on the site.** `scripts/mkdocs_site_hooks.py`
+  rewrites links to files the site does not publish (source, workflows,
+  module `AGENTS.md` files) so they open on GitHub at the commit the site was
+  built from, and links into `docs/matrix-v1.19-spec/` so they open the same
+  section of `https://spec.matrix.org/v1.19/`. It also publishes
+  `CHANGELOG.md` as the changelog page and stamps the footer with the
+  `meson.build` version. Before this the strict build failed with 42
+  broken-link warnings.
+
+- **SECURITY: documentation dependencies are hash-locked and patched.**
+  `mkdocs-material` moves from 9.6.20 to 9.7.7, fixing the search-suggestion
+  DOM XSS GHSA-xvg9-69gf-fjrf that failed the dependency triage gate.
+  `requirements-docs.txt` is now a hash-locked resolution of
+  `requirements-docs.in` covering every transitive package, and CI installs
+  it with `pip --require-hashes`. New dependency review:
+  `docs/dependencies/mkdocs.md`.
+
+- **FIXED: malformed headings.** `docs/media-repository.md` and
+  `docs/todos/capability-gaps.md` began with `#Title`, which is not an ATX
+  heading, so neither had a title.
+
+- **TESTS: new `docs-site-tooling` suite** (`tests/tooling/test_docs_site.py`):
+  workflow triggers, deploy gating and permissions; hash-locked dependencies
+  and the minimum safe `mkdocs-material`; every published document having a
+  navigation entry; exclusion of agent and spec-mirror files; and the link
+  rewriting hook.
 
 ## 0.12.15
 

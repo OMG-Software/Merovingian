@@ -1,4 +1,4 @@
-#Media Repository
+# Media repository
 
 This capability note describes the local media repository slice through the
 current in-process runtime path.
@@ -322,6 +322,6 @@ rows after a SQLite/PostgreSQL restart.
 
 Media moderation events are persisted with the `moderation` audit category so operator filtering can distinguish media policy and admin moderation events from auth or generic admin activity.
 
-### Security audit follow-up (0.12.16)
+### Security audit follow-up (0.12.17)
 
 Administrative quarantine, release and removal validate without changing repository state. Metadata, optional blob reference-count/byte clearing, admin_actions and audit_log commit atomically before repository state or metrics change. Any required write failure returns 500 and preserves the prior state across restart (ADR-0100).

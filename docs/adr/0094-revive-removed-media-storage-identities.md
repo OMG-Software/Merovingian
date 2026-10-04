@@ -37,4 +37,4 @@ represent them; upload-specific storage IDs would discard content deduplication.
 ## Links
 
 * [Media repository](../media-repository.md)
-* [Audit MED-3](../security-audit-report-2026-09-29.md#med-3--re-uploading-content-an-admin-removed-corrupts-its-database-row-and-a-later-removal-does-not-erase-it)
+* [Audit MED-3](../security-audit-report-2026-09-29.md#med-3-re-uploading-content-an-admin-removed-corrupts-its-database-row-and-a-later-removal-does-not-erase-it)

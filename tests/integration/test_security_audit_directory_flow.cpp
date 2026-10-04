@@ -88,28 +88,31 @@ public:
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+    [[nodiscard]] auto fetch_well_known(std::string_view server_name, std::uint32_t timeout)
         -> merovingian::federation::WellKnownServerResult override
     {
         calls_->fetch_add(1U);
-        return {};
+        return delegate_->fetch_well_known(server_name, timeout);
     }
 
-    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    [[nodiscard]] auto lookup_srv(std::string_view service_name)
+        -> std::vector<merovingian::federation::SrvRecord> override
     {
         calls_->fetch_add(1U);
-        return {};
+        return delegate_->lookup_srv(service_name);
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host,
+                                        std::uint16_t port) -> merovingian::federation::ResolvedAddressSet override
     {
         calls_->fetch_add(1U);
-        return {false, {}, "test discovery refused the lookup"};
+        return delegate_->lookup_addresses(host, port);
     }
 
 private:
     SharedCallCounter calls_;
+    std::unique_ptr<merovingian::federation::ServerDiscoveryNetwork> delegate_{
+        merovingian::federation::make_system_server_discovery_network()};
 };
 
 class TemporarySqliteDatabase final
@@ -201,8 +204,8 @@ private:
     return *value;
 }
 
-[[nodiscard]] auto public_room_ids(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view token)
-    -> std::vector<std::string>
+[[nodiscard]] auto public_room_ids(merovingian::homeserver::ClientServerRuntime& runtime,
+                                   std::string_view token) -> std::vector<std::string>
 {
     auto const response = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/publicRooms", std::string{token}, {}});
@@ -223,8 +226,8 @@ private:
     return result;
 }
 
-[[nodiscard]] auto join_rule(merovingian::homeserver::ClientServerRuntime const& runtime, std::string_view room_id)
-    -> std::string
+[[nodiscard]] auto join_rule(merovingian::homeserver::ClientServerRuntime const& runtime,
+                             std::string_view room_id) -> std::string
 {
     auto const& store = runtime.homeserver.database.persistent_store;
     auto const state = std::ranges::find_if(store.state, [room_id](auto const& candidate) {
@@ -320,10 +323,9 @@ SCENARIO("public room listing enforces POST authentication while keeping GET pub
             auto const invalid_post = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/publicRooms", "not-a-session-token", "{}"});
             auto const remote_missing_post = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/publicRooms?server=remote.example.org", {}, "{}"});
+                runtime, {"POST", "/_matrix/client/v3/publicRooms?server=127.0.0.1:8448", {}, "{}"});
             auto const remote_invalid_post = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/publicRooms?server=remote.example.org", "not-a-session-token", "{}"});
+                runtime, {"POST", "/_matrix/client/v3/publicRooms?server=127.0.0.1:8448", "not-a-session-token", "{}"});
             auto const public_get = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/publicRooms", {}, {}});
 

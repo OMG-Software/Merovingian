@@ -47,5 +47,5 @@ production secret into silent loss of durable writes.
 
 ## Links
 
-* [DB-3 audit finding](../security-audit-report-2026-09-29.md#db-3--the-postgresql-backend-silently-runs-on-an-in-memory-store-when-databaseuri_file-is-missing-or-empty)
+* [DB-3 audit finding](../security-audit-report-2026-09-29.md#db-3-the-postgresql-backend-silently-runs-on-an-in-memory-store-when-databaseuri_file-is-missing-or-empty)
 * [Database persistence](../database-persistence.md)

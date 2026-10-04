@@ -102,6 +102,7 @@
 * [0098 - Limit presence status messages by UTF-8 byte length](0098-limit-presence-status-by-utf8-bytes.md)
 * [0099 - Default unrecorded directory publication to private](0099-default-unrecorded-directory-publication-private.md)
 * [0100 - Commit media moderation with audit and blob state](0100-commit-media-moderation-with-audit-and-blob-state.md)
+* [0101 - Build the documentation site on every branch, but publish only from main](0101-build-the-documentation-site-on-every-branch-but-publish-only-from-main.md)
 
 ## Rejected Records
 

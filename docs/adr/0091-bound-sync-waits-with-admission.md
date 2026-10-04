@@ -49,4 +49,4 @@ existing legitimate waits intact and gives clients explicit backpressure.
 
 ## Links
 
-* [Audit HTTP-4](../security-audit-report-2026-09-29.md#http-4--sync-timeout-has-no-upper-bound-and-there-is-no-per-user-cap-on-long-polls)
+* [Audit HTTP-4](../security-audit-report-2026-09-29.md#http-4-sync-timeout-has-no-upper-bound-and-there-is-no-per-user-cap-on-long-polls)
