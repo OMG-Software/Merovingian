@@ -90,6 +90,7 @@
 * [0086 - Outbound federation calls own the signing secret](0086-outbound-federation-calls-own-the-signing-secret.md)
 * [0087 - Critical logs are written synchronously](0087-critical-logs-are-written-synchronously.md)
 * [0101 - Build the documentation site on every branch, but publish only from main](0101-build-the-documentation-site-on-every-branch-but-publish-only-from-main.md)
+* [0103 - Locate SBOM scan findings from the SBOM, not by rescanning the checkout](0103-locate-sbom-scan-findings-from-the-sbom-not-by-rescanning.md)
 
 ## Rejected Records
 

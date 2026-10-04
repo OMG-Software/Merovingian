@@ -1,3 +1,24 @@
+## 0.12.18
+
+- **FIX: dependency-triage findings reach code scanning.** Grype scans the
+  SPDX SBOM, which records no file locations, so every result it reported
+  carried `physicalLocation.artifactLocation.uri: ""`. Code scanning rejects a
+  SARIF file containing any such result ("locationFromSarifResult: expected
+  artifact location"), so the first real finding failed the
+  `dependency-triage` job as a configuration error and no finding was ever
+  recorded. Run 37116890711 failed this way for GHSA-xvg9-69gf-fjrf in
+  mkdocs-material. The new `scripts/fill_sarif_artifact_locations.py` step
+  runs between the scan and the upload. It locates each result at the
+  manifest that declared the package, found through the SBOM's `evident-by`
+  relationships: `requirements-docs.txt` for a Python package, or the
+  workflow file for a GitHub Action. A package used in several manifests gets
+  the first one, in sorted order, as its primary location, so the alert does
+  not move between runs; the others become related locations. A package with
+  no manifest is located at the SBOM file. SBOM file names that are not plain
+  repository-relative paths are never used as locations. The gate is
+  unchanged: only fixable findings, `high` cutoff, `fail-build: false`. The
+  raw Grype SARIF is archived next to the uploaded copy. ADR-0103.
+
 ## 0.12.16
 
 - **NEW: documentation site on GitHub Pages.** The documents under `docs/`

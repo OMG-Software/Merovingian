@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.16
+Version:        0.12.18
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Oct 04 2026 James Chapman <claude@ping.me.uk> - 0.12.18-1
+- ci: locate dependency-triage SARIF results so code scanning accepts them; see CHANGELOG.md 0.12.18
+
 * Sun Oct 04 2026 James Chapman <claude@ping.me.uk> - 0.12.16-1
 - docs: publish the documentation site to GitHub Pages; see CHANGELOG.md 0.12.16
 

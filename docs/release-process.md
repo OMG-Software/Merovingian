@@ -46,7 +46,15 @@ Repository changes are additionally covered by:
 - [secret-scan.yml](../.github/workflows/secret-scan.yml) for Gitleaks-based
   history scanning
 - [dependency-vulnerability-triage.yml](../.github/workflows/dependency-vulnerability-triage.yml)
-  for PR dependency review and SBOM-backed vulnerability triage
+  for PR dependency review and SBOM-backed vulnerability triage. Grype scans
+  the SPDX SBOM and reports only findings that have a fix, with `high` as the
+  cutoff and without failing the build. SBOM-sourced results have no file
+  location, so
+  [`scripts/fill_sarif_artifact_locations.py`](../scripts/fill_sarif_artifact_locations.py)
+  locates each one at the manifest that declared the package (for example
+  `requirements-docs.txt` or a workflow file) before the SARIF is uploaded to
+  code scanning (ADR-0103). Each run archives the SBOM, the raw Grype SARIF,
+  and the uploaded copy as `dependency-triage-<sha>`
 - [pages.yml](../.github/workflows/pages.yml), which builds the documentation
   site with `mkdocs build --strict` on every branch and pull request and
   deploys it to <https://omg-software.github.io/Merovingian/> from `main`, so
