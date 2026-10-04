@@ -1,3 +1,51 @@
+## 0.12.16
+
+- **NEW: documentation site on GitHub Pages.** The documents under `docs/`
+  are published with MkDocs Material at
+  <https://omg-software.github.io/Merovingian/>, configured by `mkdocs.yml`.
+  The navigation now covers every published document: architecture and
+  module design docs, the ADR register, security docs and audit reports,
+  operations, development and dependency reviews, the Matrix v1.19
+  Client-Server API reference, the road to 1.0, and this changelog. Agent
+  instruction files, the vendored Matrix spec mirrors, superseded generated
+  references and working notes are excluded. The landing page's Material
+  icons now render (`pymdownx.emoji` was missing). ADR-0101.
+
+- **NEW: the site is built on every branch and deployed from `main`.**
+  `.github/workflows/pages.yml` runs on every push and pull request with no
+  path filter. It runs `tests/tooling/test_docs_site.py`, then
+  `mkdocs build --strict` with link and anchor validation, and uploads the
+  rendered site as the `docs-site` artifact. Only a push or manual run on
+  `main` deploys to Pages, and only the deploy job holds `pages: write` and
+  `id-token: write`.
+
+- **NEW: repository links work on the site.** `scripts/mkdocs_site_hooks.py`
+  rewrites links to files the site does not publish (source, workflows,
+  module `AGENTS.md` files) so they open on GitHub at the commit the site was
+  built from, and links into `docs/matrix-v1.19-spec/` so they open the same
+  section of `https://spec.matrix.org/v1.19/`. It also publishes
+  `CHANGELOG.md` as the changelog page and stamps the footer with the
+  `meson.build` version. Before this the strict build failed with 42
+  broken-link warnings.
+
+- **SECURITY: documentation dependencies are hash-locked and patched.**
+  `mkdocs-material` moves from 9.6.20 to 9.7.7, fixing the search-suggestion
+  DOM XSS GHSA-xvg9-69gf-fjrf that failed the dependency triage gate.
+  `requirements-docs.txt` is now a hash-locked resolution of
+  `requirements-docs.in` covering every transitive package, and CI installs
+  it with `pip --require-hashes`. New dependency review:
+  `docs/dependencies/mkdocs.md`.
+
+- **FIXED: malformed headings.** `docs/media-repository.md` and
+  `docs/todos/capability-gaps.md` began with `#Title`, which is not an ATX
+  heading, so neither had a title.
+
+- **TESTS: new `docs-site-tooling` suite** (`tests/tooling/test_docs_site.py`):
+  workflow triggers, deploy gating and permissions; hash-locked dependencies
+  and the minimum safe `mkdocs-material`; every published document having a
+  navigation entry; exclusion of agent and spec-mirror files; and the link
+  rewriting hook.
+
 ## 0.12.15
 
 - **FIXED: critical logs lost when the process exits after hardening refusal

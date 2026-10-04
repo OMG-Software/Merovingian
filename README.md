@@ -1,6 +1,6 @@
 # Merovingian
 
-**Latest release: [latest](https://github.com/OMG-Software/Merovingian/releases/tag/latest)**
+**Latest release: [latest](https://github.com/OMG-Software/Merovingian/releases/tag/latest)** · **Documentation: [omg-software.github.io/Merovingian](https://omg-software.github.io/Merovingian/)**
 
 **Note: Merovingian is now in beta. It is suitable for evaluation and testing, but is not yet ready for production use. Do not deploy it as a production Matrix homeserver.**
 
@@ -8,6 +8,7 @@
 [![CodeQL](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml)
 [![Static analysis](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml)
 [![Sanitizers](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml)
+[![Documentation](https://github.com/OMG-Software/Merovingian/actions/workflows/pages.yml/badge.svg)](https://omg-software.github.io/Merovingian/)
 [![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
 [![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/OMG-Software/Merovingian/security/code-scanning)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
