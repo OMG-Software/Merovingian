@@ -857,7 +857,7 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         // claimable by ordinary registration (AUTH-3). Registration is
         // passwordless — the bridge authenticates by as_token and masquerades
         // by user_id.
-        for (auto const& registration : runtime.appservices.all())
+        for (auto const& registration : loaded.registry.all())
         {
             auto const sender_id = appservice::sender_user_id(registration, runtime.config.server().server_name);
             auto const user_exists = std::ranges::any_of(runtime.database.users, [&sender_id](LocalUser const& user) {

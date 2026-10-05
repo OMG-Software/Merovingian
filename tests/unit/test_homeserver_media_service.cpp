@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/in_memory_database_config.hpp"
+#include "../support/master_key.hpp"
+#include "../support/registration_token.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/media/repository.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include <sodium.h>
 
 namespace
 {
@@ -17,8 +26,8 @@ namespace
 class FakeDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
 {
 public:
-    [[nodiscard]] auto fetch_well_known(std::string_view,
-                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
     {
         return {};
     }
@@ -28,8 +37,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view host,
-                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         auto found = addresses.find(std::string{host});
         if (found == addresses.end())
@@ -562,6 +571,101 @@ SCENARIO("resolve_media_redirect_url validates and resolves federation media red
             {
                 REQUIRE_FALSE(result.ok);
                 REQUIRE_FALSE(result.discovery.discovery_allowed);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto media_runtime_config(std::string server_name = "example.org") -> merovingian::config::Config
+{
+    auto server = merovingian::config::ServerConfig{};
+    server.server_name = std::move(server_name);
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    return {
+        server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
+        security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+} // namespace
+
+// MED-5: a server name can be written with different case or with the default
+// federation port. The media download/thumbnail paths must treat all of these
+// as the local server rather than trying to fetch them remotely.
+SCENARIO("media download canonicalises the local server name before routing", "[homeserver][media][security][med-5]")
+{
+    GIVEN("a runtime whose server name is example.org and an available local media record")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(media_runtime_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const media_id = std::string{"med5-local"};
+        auto const storage_id = std::string{"med5-storage"};
+        runtime.media_repository.records.push_back(
+            merovingian::media::LocalMediaRecord{media_id,
+                                                 "@owner:example.org",
+                                                 "image/png",
+                                                 12U,
+                                                 "sha256",
+                                                 "digest",
+                                                 storage_id,
+                                                 merovingian::media::LocalMediaState::available,
+                                                 {},
+                                                 false});
+        runtime.media_repository.blobs.push_back(
+            merovingian::media::LocalMediaBlob{storage_id, "sha256", "digest", 12U, "local-bytes-here", 1U});
+
+        WHEN("download is requested with a case-variant of the local server name")
+        {
+            auto const result = merovingian::homeserver::download_local_media(runtime, "EXAMPLE.org", media_id);
+
+            THEN("the local record is served")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.status == 200U);
+            }
+        }
+
+        WHEN("download is requested with the local server name and default federation port")
+        {
+            auto const result = merovingian::homeserver::download_local_media(runtime, "example.org:8448", media_id);
+
+            THEN("the local record is served")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.status == 200U);
+            }
+        }
+
+        WHEN("download is requested with a truly remote server name")
+        {
+            auto const result = merovingian::homeserver::download_local_media(runtime, "remote.example.org", media_id);
+
+            THEN("the request is refused as remote media")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 404U);
+            }
+        }
+
+        WHEN("thumbnail is requested with a case-variant of the local server name")
+        {
+            auto const rejections_before = runtime.media_repository.metrics.remote_fetch_rejections;
+            auto const result = merovingian::homeserver::download_local_media_thumbnail(
+                runtime, "EXAMPLE.org", media_id, 32U, 32U, merovingian::media::ThumbnailMethod::scale);
+
+            THEN("the local record is used")
+            {
+                // No thumbnail worker is wired in this test, but the request must
+                // have reached the local path, not the remote refusal path.
+                REQUIRE(runtime.media_repository.metrics.remote_fetch_rejections == rejections_before);
             }
         }
     }

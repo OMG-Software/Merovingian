@@ -8,6 +8,7 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/server_acl.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
@@ -43,6 +44,24 @@ namespace
         observability::log_diagnostic("media_service", event, fields, severity);
     }
 
+    // MED-5: media requests identify a server by name. The same logical server
+    // can be written in many ways (case, default port) and must be recognised
+    // as local so it is not bounced through remote fetching.
+    [[nodiscard]] auto canonical_media_server_name(std::string_view server_name) -> std::string
+    {
+        auto stripped = federation::strip_server_port(server_name);
+        std::ranges::transform(stripped, stripped.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return stripped;
+    }
+
+    [[nodiscard]] auto is_local_media_server(HomeserverRuntime const& runtime, std::string_view server_name) -> bool
+    {
+        return canonical_media_server_name(server_name) ==
+               canonical_media_server_name(runtime.config.server().server_name);
+    }
+
     [[nodiscard]] auto admin_result_to_operation(media::LocalMediaAdminResult const& result) -> OperationResult
     {
         return make_operation_result(result.ok, result.media_id + "|" + media::local_media_state_name(result.state),
@@ -70,8 +89,8 @@ namespace
             {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
     }
 
-    [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime,
-                                             std::string_view media_id) -> trust_safety::PolicyDecision
+    [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime, std::string_view media_id)
+        -> trust_safety::PolicyDecision
     {
         auto const local_rule = find_policy_rule(runtime, "media", media_id);
         auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
@@ -113,8 +132,8 @@ namespace
 
     // HTTP header names are case-insensitive; scans linearly since responses
     // carry a small, bounded number of headers.
-    [[nodiscard]] auto find_header_ci(std::vector<http::OutboundHeader> const& headers,
-                                      std::string_view name) -> std::optional<std::string>
+    [[nodiscard]] auto find_header_ci(std::vector<http::OutboundHeader> const& headers, std::string_view name)
+        -> std::optional<std::string>
     {
         for (auto const& header : headers)
         {
@@ -201,8 +220,8 @@ namespace
         std::string_view body{};
     };
 
-    [[nodiscard]] auto find_raw_header_ci(RawMultipartPart const& part,
-                                          std::string_view name) -> std::optional<std::string>
+    [[nodiscard]] auto find_raw_header_ci(RawMultipartPart const& part, std::string_view name)
+        -> std::optional<std::string>
     {
         for (auto const& [key, value] : part.headers)
         {
@@ -320,8 +339,8 @@ namespace
 
     // Finds the next real boundary delimiter at or after `start`, using
     // boundary_at() so inner boundary-like byte sequences are ignored.
-    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary,
-                                          std::size_t start) -> std::size_t
+    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary, std::size_t start)
+        -> std::size_t
     {
         auto const max = body.size();
         if (start >= max)
@@ -343,8 +362,8 @@ namespace
     // Splits a multipart/mixed body on "--{boundary}" delimiters per RFC 2046.
     // Requires the opening delimiter to start on a line boundary and ignores
     // boundary-like strings that are not preceded by a line break.
-    [[nodiscard]] auto split_multipart_body(std::string_view body,
-                                            std::string_view boundary) -> std::vector<RawMultipartPart>
+    [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary)
+        -> std::vector<RawMultipartPart>
     {
         auto parts = std::vector<RawMultipartPart>{};
         if (boundary.empty())
@@ -393,8 +412,8 @@ namespace
     // unauthenticated client can trigger this, so it must not write a durable
     // row per request (ADR-0080).
     [[nodiscard]] auto remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
-                                            std::string_view media_id,
-                                            RemoteMediaRequestContext const& remote) -> std::optional<OperationResult>
+                                            std::string_view media_id, RemoteMediaRequestContext const& remote)
+        -> std::optional<OperationResult>
     {
         auto const enabled = runtime.media_repository.config.remote_fetch_enabled;
         if (enabled && remote.allow_remote)
@@ -698,8 +717,8 @@ namespace
     // back to remote_media_fetch_disabled() when federation infrastructure is
     // unavailable.
     [[nodiscard]] auto fetch_remote_media_live(HomeserverRuntime& runtime, std::string_view origin_server,
-                                               std::string_view media_id,
-                                               RemoteMediaRequestContext const& remote) -> OperationResult
+                                               std::string_view media_id, RemoteMediaRequestContext const& remote)
+        -> OperationResult
     {
         // OUT-7: every entry point has already asked, before its own policy
         // hook; asking again here means no future caller can reach discovery or
@@ -917,8 +936,8 @@ namespace
            "/_matrix/federation/v1/media/download/" + core::percent_encode_path_component(media_id);
 }
 
-[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header,
-                                                    std::string_view body) -> FederationMediaPart
+[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
+    -> FederationMediaPart
 {
     auto const boundary = extract_multipart_boundary(content_type_header);
     auto const parts = split_multipart_body(body, boundary);
@@ -948,8 +967,9 @@ namespace
     return result;
 }
 
-[[nodiscard]] auto resolve_media_redirect_url(
-    std::string_view location_url, federation::ServerDiscoveryNetwork& network) -> MediaRedirectResolutionResult
+[[nodiscard]] auto resolve_media_redirect_url(std::string_view location_url,
+                                              federation::ServerDiscoveryNetwork& network)
+    -> MediaRedirectResolutionResult
 {
     auto result = MediaRedirectResolutionResult{};
     auto const authority = http::parse_outbound_url(location_url);
@@ -1039,7 +1059,7 @@ namespace
                                         RemoteMediaRequestContext const& remote) -> OperationResult
 {
     // OUT-7: before the policy hook, which can itself make a network call.
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
         {
@@ -1052,7 +1072,7 @@ namespace
         return make_operation_result(false, {}, policy.reason.code, 403U);
     }
 
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         log_diagnostic("download.remote", {
                                               {"origin_server", std::string{server_name}, false},
@@ -1085,7 +1105,7 @@ namespace
                                                   RemoteMediaRequestContext const& remote) -> OperationResult
 {
     // OUT-7: as in download_local_media.
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
         {
@@ -1098,7 +1118,7 @@ namespace
         return make_operation_result(false, {}, policy.reason.code, 403U);
     }
 
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         log_diagnostic("thumbnail.remote", {
                                                {"origin_server", std::string{server_name}, false},

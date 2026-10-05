@@ -115,6 +115,7 @@
 * [0112 - Restrict worker signals and resource limits](0112-restrict-worker-signals-and-resource-limits.md)
 * [0113 - Default media quotas and a single in-memory blob copy](0113-default-media-quotas-and-single-blob-copy.md)
 * [0114 - Cache remote media by origin server and media ID](0114-cache-remote-media-by-origin-and-media-id.md)
+* [0115 - Canonicalise media server-name comparisons](0115-canonicalise-media-server-name-comparisons.md)
 
 ## Rejected Records
 
