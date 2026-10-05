@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/http/request.hpp"
@@ -29,11 +30,12 @@ namespace
     auto server_end = merovingian::core::FileDescriptor{fds[0]};
     auto client_end = merovingian::core::FileDescriptor{fds[1]};
     auto stats = merovingian::homeserver::HttpServeStats{};
-    auto server = std::jthread{[&runtime, &stats, fd = std::move(server_end)]() mutable {
+    auto server = merovingian::tests::JoiningThreads{};
+    server.emplace_back([&runtime, &stats, fd = std::move(server_end)]() mutable {
         std::ignore =
             merovingian::homeserver::serve_one_http_connection(fd.get(), runtime, stats, HttpDispatchMode::federation);
         fd.reset();
-    }};
+    });
 
     auto request = std::string{"PUT /_matrix/federation/v1/send/txn HTTP/1.1\r\nHost: local\r\nContent-Length: "};
     request.append(std::to_string(body_bytes));

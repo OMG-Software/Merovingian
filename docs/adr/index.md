@@ -3,7 +3,6 @@
 
 ## Accepted Records
 
-* [0109 - Configure operational budgets with shared recovery bounds](0109-configure-operational-budgets-with-shared-recovery-bounds.md)
 * [0000 - Record architecture decisions](0000-record-architecture-decisions.md)
 * [0001 - Use Markdown Architectural Decision Records](0001-use-markdown-architectural-decision-records.md)
 * [0002 - Use an owner-tracking mutex for the runtime lock](0002-use-an-owner-tracking-mutex-for-the-runtime-lock.md)
@@ -110,6 +109,7 @@
 * [0106 - to_device next_batch is the last included stream ID](0106-to-device-next-batch-is-last-included-stream-id.md)
 * [0107 - Filter inbound federation direct-to-device EDUs by known local devices](0107-filter-federated-direct-to-device-by-known-devices.md)
 * [0108 - Federation worker stale snapshot fallback to main](0108-federation-worker-stale-snapshot-fallback-to-main.md)
+* [0109 - Configure operational budgets with shared recovery bounds](0109-configure-operational-budgets-with-shared-recovery-bounds.md)
 * [0110 - Federation worker trusts the main-process verified identity for room-scoped reads](0110-federation-worker-trusts-main-verified-identity.md)
 
 ## Rejected Records

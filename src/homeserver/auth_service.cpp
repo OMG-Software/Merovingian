@@ -1047,9 +1047,21 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     // pointer itself must not outlive the RuntimeLockRelease below: the vector
     // may be reallocated while runtime.mutex is dropped around Argon2id.
     auto const verified_user_id = std::string{user_id};
-    auto* initial_user = find_user(runtime.database, verified_user_id);
-    auto const password_hash =
-        std::string{initial_user != nullptr ? initial_user->password_hash : *dummy_password_hash()};
+    // An unknown user is verified against the dummy hash so the response time
+    // does not reveal which accounts exist. The dummy is absent only if hashing
+    // it failed at first use; there is then nothing to verify against and the
+    // login is refused like any other bad credential.
+    auto const password_hash = [&]() -> std::optional<std::string> {
+        if (auto const* initial_user = find_user(runtime.database, verified_user_id); initial_user != nullptr)
+        {
+            return initial_user->password_hash;
+        }
+        if (auto const* dummy = dummy_password_hash(); dummy != nullptr)
+        {
+            return *dummy;
+        }
+        return std::nullopt;
+    }();
     // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
     // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
     // an admission-saturated pile-on does not also exhaust the lockout budget.
@@ -1066,14 +1078,14 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     auto password_valid = false;
     {
         auto const released = merovingian::homeserver::RuntimeLockRelease{};
-        password_valid = auth::password_matches(password_hash, password);
+        password_valid = password_hash.has_value() && auth::password_matches(*password_hash, password);
     }
     // RuntimeLockRelease has re-acquired the lock. Re-find the user and insist
     // the stored password hash is still the one we just verified. A concurrent
     // password change (or account deletion) during Argon2id must not issue a
     // session against the old credentials.
     auto* user = find_user(runtime.database, verified_user_id);
-    if (user == nullptr || user->password_hash != password_hash || !password_valid)
+    if (user == nullptr || !password_valid || user->password_hash != *password_hash)
     {
         // Counted against the *claimed* user_id whether or not it exists, so the
         // lockout cannot be used to probe which accounts are real.

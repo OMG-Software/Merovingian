@@ -26,6 +26,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/joining_threads.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -1089,7 +1090,8 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
             auto other_room_refused = false;
             auto overlap_refused = false;
             auto saturated_room_refused = false;
-            auto server_thread = std::jthread{[&]() {
+            auto server_thread = merovingian::tests::JoiningThreads{};
+            server_thread.emplace_back([&]() {
                 run_resident_server(
                     acceptor, *tls_context.context, make_join_response, send_join_response, captured_requests,
                     [&](std::string const& request) {
@@ -1196,7 +1198,7 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                             };
                         }
                     });
-            }};
+            });
             auto result = merovingian::homeserver::OperationResult{};
             auto threw = false;
             auto outer_lock_restored = false;
@@ -1277,12 +1279,13 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                         auto const ordering = runtime.database.next_stream_ordering;
                         auto const sync = runtime.database.persistent_store.next_sync_stream_id;
                         auto repeated_requests = std::vector<std::string>{};
-                        auto repeated = std::jthread{[&]() {
+                        auto repeated = merovingian::tests::JoiningThreads{};
+                        repeated.emplace_back([&]() {
                             run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
                                                 repeated_requests, [&](auto const&) {
                                                     std::ignore = runtime.federation.pdu_sink(pending);
                                                 });
-                        }};
+                        });
                         try
                         {
                             auto const again = merovingian::homeserver::join_room(runtime, login.value, room_id,

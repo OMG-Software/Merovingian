@@ -633,7 +633,7 @@ non-`POST` hits on `/login`/`/register`, which previously fell into the 90/60s
 generic fallback.
 
 Different thumbnail media IDs normalize to the same per-IP action bucket.
-The 60/minute refinement accommodates ordinary room-rendering bursts while
+The 240/minute refinement accommodates ordinary room-rendering bursts while
 uploads and full media downloads retain the 20/minute tier default. Prefer a
 thumbnail-prefix override over raising the whole media tier if local usage
 still needs a higher cap; the [user manual](user-manual.md) provides an

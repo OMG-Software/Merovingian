@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
@@ -119,14 +120,15 @@ SCENARIO("a login cannot use a password invalidated during Argon2id verification
         auto login_started = std::binary_semaphore{0};
         auto login_done = std::atomic<bool>{false};
         auto raced_login = merovingian::homeserver::OperationResult{};
-        auto login_thread = std::jthread{[&] {
+        auto login_thread = merovingian::tests::JoiningThreads{};
+        login_thread.emplace_back([&] {
             auto guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.mutex};
             auto const request_lock = merovingian::homeserver::RequestLockScope{guard};
             login_started.release();
             raced_login = merovingian::homeserver::login_local_user(runtime, alice_user_id, old_password,
                                                                     "ALICE_DURING_PASSWORD_CHANGE");
             login_done.store(true, std::memory_order_release);
-        }};
+        });
 
         login_started.acquire();
         {

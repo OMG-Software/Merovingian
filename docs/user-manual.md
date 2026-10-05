@@ -1187,7 +1187,7 @@ client_rate_limits.default_per_ip=600/60s
 
 Client startup or opening a large room can request many different thumbnails
 in a short burst. Those requests share a per-IP thumbnail bucket, whose
-60/minute default accommodates ordinary browsing without widening upload or
+240/minute default accommodates ordinary browsing without widening upload or
 full-download limits. For installations still seeing thumbnail HTTP 429
 responses, increase the thumbnail prefixes only, for example:
 

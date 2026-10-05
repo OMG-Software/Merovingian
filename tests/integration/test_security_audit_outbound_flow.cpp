@@ -8,6 +8,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <thread>
 
@@ -16,6 +18,14 @@
 
 namespace
 {
+
+[[nodiscard]] auto lowercase_ascii(std::string text) -> std::string
+{
+    std::ranges::transform(text, text.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return text;
+}
 
 [[nodiscard]] auto accepted_connection_count(merovingian::net::TcpAcceptor& acceptor) -> int
 {
@@ -68,7 +78,12 @@ SCENARIO("OutboundClient retains every approved address and supports IPv6 socket
                 thread.join();
                 REQUIRE(result.ok);
                 REQUIRE(result.response.body == "ok");
-                REQUIRE(captured.find("GET /%2e%2e/item?x=1 HTTP/") != std::string::npos);
+                // The encoded dot segment must reach the peer rather than be
+                // resolved away. libcurl 8.20 and later upper-case
+                // percent-encoding hex digits (equivalent under RFC 3986
+                // §6.2.2.1), so compare the request line case-insensitively.
+                auto const request_line = lowercase_ascii(captured.substr(0U, captured.find("\r\n")));
+                REQUIRE(request_line.starts_with("get /%2e%2e/item?x=1 http/"));
             }
         }
         WHEN("the approved peer is an IPv6 address")

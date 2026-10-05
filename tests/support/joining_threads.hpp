@@ -21,13 +21,7 @@ public:
 
     ~JoiningThreads()
     {
-        for (auto& thread : threads_)
-        {
-            if (thread.joinable())
-            {
-                thread.join();
-            }
-        }
+        join();
     }
 
     JoiningThreads(JoiningThreads const&) = delete;
@@ -39,6 +33,19 @@ public:
     auto emplace_back(Function&& function) -> void
     {
         threads_.emplace_back(std::forward<Function>(function));
+    }
+
+    // Joins every thread now, for a scenario that must assert on what the
+    // threads did before leaving scope. Safe to call more than once.
+    auto join() -> void
+    {
+        for (auto& thread : threads_)
+        {
+            if (thread.joinable())
+            {
+                thread.join();
+            }
+        }
     }
 
 private:
