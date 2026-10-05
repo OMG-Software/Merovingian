@@ -1,3 +1,7 @@
+## 0.12.18
+
+- Remove the retired September 2026 audit report and its documentation navigation entry; retain the later 29 September report and remediation ADRs.
+
 ## 0.12.17
 
 - **Pages integration and release version.** Preserve the merged 0.12.16
