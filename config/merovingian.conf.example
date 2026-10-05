@@ -592,9 +592,9 @@ server.client_api.max_messages_page_size=500
 server.client_api.max_context_events=100
 server.client_api.max_search_page_size=100
 server.client_api.max_search_context_events=100
-server.client_api.sliding_sync_max_timeline_limit=500
-server.client_api.sliding_sync_max_room_subscriptions=1024
-server.client_api.sliding_sync_max_required_state_entries=1024
+server.client_api.sliding_sync_max_timeline_limit=100
+server.client_api.sliding_sync_max_room_subscriptions=256
+server.client_api.sliding_sync_max_required_state_entries=256
 server.client_api.sliding_sync_connections_per_device=16
 server.client_api.max_registration_validation_sessions=1024
 server.client_api.max_registration_validation_sessions_per_remote=16
@@ -611,8 +611,8 @@ server.client_api.max_body_size=1MiB
 # server.http
 server.http.sync_threads=128
 server.http.sync_max_in_flight=128
-server.http.sync_max_per_user=8
-server.http.sync_max_per_device=4
+server.http.sync_max_per_user=4
+server.http.sync_max_per_device=2
 server.http.max_start_line_bytes=8192
 server.http.max_header_bytes=32768
 server.http.max_header_count=100
@@ -639,10 +639,10 @@ security.federation.audit_event_cache_entries=10000
 security.federation.key_resolution_cache_entries=16384
 security.federation.bad_signature_cache_entries=4096
 security.federation.pending_join_max_rooms=32
-security.federation.pending_join_max_pdus=256
+security.federation.pending_join_max_pdus=32
 security.federation.outbound_queue_capacity=4096
 security.federation.outbound_max_retries=32
-security.federation.pending_join_max_size=4MiB
+security.federation.pending_join_max_size=512KiB
 security.federation.bad_signature_per_ip_rate=30/60s
 
 # security.federation.query

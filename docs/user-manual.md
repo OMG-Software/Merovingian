@@ -471,9 +471,9 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_context_events` | `100` | 1..1,000 |
 | `max_search_page_size` | `100` | 1..1,000 |
 | `max_search_context_events` | `100` | 1..1,000 |
-| `sliding_sync_max_timeline_limit` | `500` | 1..1,000 |
-| `sliding_sync_max_room_subscriptions` | `1024` | 1..4,096 |
-| `sliding_sync_max_required_state_entries` | `1024` | 1..4,096 |
+| `sliding_sync_max_timeline_limit` | `100` | 1..1,000 |
+| `sliding_sync_max_room_subscriptions` | `256` | 1..4,096 |
+| `sliding_sync_max_required_state_entries` | `256` | 1..4,096 |
 | `sliding_sync_connections_per_device` | `16` | 1..64 |
 | `max_registration_validation_sessions` | `1024` | 1..65,536 |
 | `max_registration_validation_sessions_per_remote` | `16` | 1..256 |
@@ -493,8 +493,8 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 |---|---|---|
 | `sync_threads` | `128` | 4..512 |
 | `sync_max_in_flight` | `128` | 1..512 |
-| `sync_max_per_user` | `8` | 1..64 |
-| `sync_max_per_device` | `4` | 1..16 |
+| `sync_max_per_user` | `4` | 1..64 |
+| `sync_max_per_device` | `2` | 1..16 |
 | `max_start_line_bytes` | `8192` | 1..8,192 |
 | `max_header_bytes` | `32768` | 1..65,536 |
 | `max_header_count` | `100` | 1..200 |
@@ -530,10 +530,10 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `key_resolution_cache_entries` | `16384` | 1..1,000,000 |
 | `bad_signature_cache_entries` | `4096` | 1..1,000,000 |
 | `pending_join_max_rooms` | `32` | 1..256 |
-| `pending_join_max_pdus` | `256` | 1..4,096 |
+| `pending_join_max_pdus` | `32` | 1..4,096 |
 | `outbound_queue_capacity` | `4096` | 1..65,536 |
 | `outbound_max_retries` | `32` | 1..256 |
-| `pending_join_max_size` | `4MiB` | 1 byte..16MiB |
+| `pending_join_max_size` | `512KiB` | 1 byte..16MiB |
 | `bad_signature_per_ip_rate` | `30/60s` | Positive N/Ws |
 
 `security.federation.query.*`:
