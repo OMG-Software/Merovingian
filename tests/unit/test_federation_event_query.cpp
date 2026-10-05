@@ -556,6 +556,34 @@ SCENARIO("Federation backfill refuses a server that is not in the room",
     }
 }
 
+SCENARIO("Federation backfill response enforces the configured PDU cap at the provider boundary",
+         "[federation][events][backfill][limits]")
+{
+    GIVEN("a room chain and an injected request asking for more PDUs than configured")
+    {
+        auto const store = store_with_chain(40U);
+        auto request = merovingian::federation::BackfillRequest{};
+        request.room_id = std::string{room_id_under_test};
+        request.event_ids = {"$c39"};
+        request.limit = 20U;
+        request.origin = std::string{member_origin};
+        auto const policy = merovingian::federation::FederationQueryPolicy{
+            .max_backfill_pdus = 3U,
+        };
+
+        WHEN("the room-scoped backfill provider builds a response")
+        {
+            auto const result = merovingian::federation::build_backfill_response(store, request, policy);
+
+            THEN("it does not trust the request's pre-parsed limit")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(result.pdus_json.size() == 3U);
+            }
+        }
+    }
+}
+
 // Spec: SS API v1.19, POST /_matrix/federation/v1/get_missing_events/{roomId}:
 // "a breadth-first walk of the `prev_events` for the `latest_events`, ignoring any
 // events in `earliest_events` and stopping at the `limit`"; the 200 response is
@@ -657,13 +685,13 @@ SCENARIO("Federation get_missing_events never returns more than the server-side 
             auto const result = merovingian::federation::build_get_missing_events_response(
                 store, room_id_under_test, "{" + latest + R"(,"earliest_events":[],"limit":1000})", member_origin);
 
-            THEN("at most 20 events come back, the nearest ones, never the latest itself")
+            THEN("at most 100 events come back, the nearest ones, never the latest itself")
             {
                 REQUIRE(result.status == RoomReadStatus::ok);
-                REQUIRE(count_occurrences(result.body, "m.room.message") == 20U);
+                REQUIRE(count_occurrences(result.body, "m.room.message") == 39U);
                 REQUIRE(result.body.find(R"("body":"c38")") != std::string::npos);
                 REQUIRE(result.body.find(R"("body":"c19")") != std::string::npos);
-                REQUIRE(result.body.find(R"("body":"c18")") == std::string::npos);
+                REQUIRE(result.body.find(R"("body":"c1")") != std::string::npos);
                 REQUIRE(result.body.find(R"("body":"c39")") == std::string::npos);
             }
         }
@@ -741,6 +769,49 @@ SCENARIO("Federation get_missing_events never returns more than the server-side 
                                                                                            body, member_origin);
 
             THEN("the request is rejected instead of walking the store once per entry")
+            {
+                REQUIRE(result.status == RoomReadStatus::malformed);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation get_missing_events honors configured work and response caps",
+         "[federation][events][missing][limits]")
+{
+    GIVEN("a room with a chain of 40 events and deliberately tight query policy")
+    {
+        auto const store = store_with_chain(40U);
+        auto const policy = merovingian::federation::FederationQueryPolicy{
+            .max_backfill_pdus = 100U,
+            .max_missing_events_pdus = 3U,
+            .max_missing_events_latest = 2U,
+            .max_missing_events_traversal = 2U,
+        };
+        auto const latest = std::string{R"("latest_events":["$c39"] )"};
+
+        WHEN("a request asks for more events than the configured response cap")
+        {
+            auto const result = merovingian::federation::build_get_missing_events_response(
+                store, room_id_under_test, "{" + latest + R"(,"earliest_events":[],"limit":100})", member_origin,
+                policy);
+
+            THEN("the event count stays within the configured traversal and result caps")
+            {
+                REQUIRE(result.status == RoomReadStatus::ok);
+                REQUIRE(count_occurrences(result.body, "m.room.message") <= 3U);
+                REQUIRE(count_occurrences(result.body, "m.room.message") == 1U);
+                REQUIRE(result.body.find(R"("body":"c38")") != std::string::npos);
+            }
+        }
+
+        WHEN("the latest event list exceeds the configured entry cap")
+        {
+            auto const result = merovingian::federation::build_get_missing_events_response(
+                store, room_id_under_test, R"({"latest_events":["$c39","$c38","$c37"],"earliest_events":[],"limit":3})",
+                member_origin, policy);
+
+            THEN("the request is rejected before any graph traversal")
             {
                 REQUIRE(result.status == RoomReadStatus::malformed);
             }

@@ -3596,7 +3596,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return result;
 }
 
-[[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification) -> bool
+[[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification,
+                                      std::size_t max_per_user) -> bool
 {
     if (notification.user_id.empty() || notification.room_id.empty() || notification.event_id.empty())
     {
@@ -3629,14 +3630,9 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         store.notifications.push_back(notification);
     }
 
-    // Retention: bound this user's notification history so it cannot grow
-    // without limit under sustained message volume. 200 covers many
-    // multiples of a typical /notifications page (the spec leaves `limit`
-    // optional; clients page in small batches) while keeping even a very
-    // active user's history table small. Chosen independently of
-    // room_service.cpp's k_max_in_flight_push_deliveries -- that bounds
-    // concurrent background threads; this bounds persisted rows.
-    constexpr auto k_max_notifications_per_user = std::size_t{200U};
+    // Bound this user's notification history so it cannot grow without limit
+    // under sustained message volume. The caller supplies the operational
+    // retention policy; direct callers use the API's documented default.
     auto user_row_count = std::size_t{0U};
     for (auto const& row : store.notifications)
     {
@@ -3645,7 +3641,7 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
             ++user_row_count;
         }
     }
-    if (user_row_count > k_max_notifications_per_user)
+    if (user_row_count > max_per_user)
     {
         auto user_rows = std::vector<PersistentNotification const*>{};
         user_rows.reserve(user_row_count);
@@ -3662,7 +3658,7 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         // Copy the event ids of the oldest rows to delete before mutating
         // store.notifications -- erasing invalidates the pointers in
         // user_rows, but not these already-copied strings.
-        auto const excess = user_row_count - k_max_notifications_per_user;
+        auto const excess = user_row_count - max_per_user;
         auto to_delete = std::vector<std::string>{};
         to_delete.reserve(excess);
         for (auto i = std::size_t{0U}; i < excess; ++i)

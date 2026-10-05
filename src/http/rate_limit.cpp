@@ -35,7 +35,7 @@ namespace
     {
         if (starts_with(target, "/_matrix/client/v3/keys/") || starts_with(target, "/_matrix/client/v3/devices"))
         {
-            return RateLimitPolicy{30U, 60U};
+            return RateLimitPolicy{120U, 60U};
         }
         if (starts_with(target, "/_matrix/client/v3/search"))
         {
@@ -44,7 +44,7 @@ namespace
         if (starts_with(target, "/_matrix/client/v1/media/thumbnail/") ||
             starts_with(target, "/_matrix/media/v3/thumbnail/"))
         {
-            return RateLimitPolicy{60U, 60U};
+            return RateLimitPolicy{240U, 60U};
         }
         return std::nullopt;
     }
@@ -139,13 +139,14 @@ auto rate_limit_tier_default(RateLimitTier tier) noexcept -> RateLimitPolicy
     switch (tier)
     {
     case RateLimitTier::auth_sensitive:
-    case RateLimitTier::media:
         return {20U, 60U};
-    case RateLimitTier::sync:
-    case RateLimitTier::generic:
-        return {90U, 60U};
-    case RateLimitTier::federation:
+    case RateLimitTier::media:
         return {120U, 60U};
+    case RateLimitTier::sync:
+    case RateLimitTier::federation:
+        return {3000U, 60U};
+    case RateLimitTier::generic:
+        return {600U, 60U};
     case RateLimitTier::admin:
         return {30U, 60U};
     }
@@ -190,7 +191,7 @@ auto endpoint_default_rate_limit(std::string_view method, std::string_view targe
 {
     // `method` is retained for source compatibility; classification is
     // method-agnostic (see rate_limit_tier_for). Built-in refinements win
-    // over the tier default so keys/devices keep 30/min and search 20/min.
+    // over the tier default so keys/devices keep 120/min and search 20/min.
     std::ignore = method;
     if (auto const refinement = builtin_per_ip_refinement(target); refinement.has_value())
     {
@@ -201,15 +202,15 @@ auto endpoint_default_rate_limit(std::string_view method, std::string_view targe
 
 auto default_client_rate_limit_config() noexcept -> RateLimitConfig
 {
-    // Design-doc defaults (0.5.0), now expressed through tiers: 20/min per IP
-    // for the auth-sensitive tier (login/register/refresh/requestToken), 5/min
-    // per user for login, 30/min for keys/devices, 20/min for media and
-    // search, and 60/min for thumbnail bursts. Federation routes on the
-    // client listener use 120/min, sync and everything else use 90/min, and
-    // /_merovingian/admin/* uses 30/min —
+    // Operational defaults, expressed through tiers: 20/min per IP for the
+    // auth-sensitive tier (login/register/refresh/requestToken), 5/min per
+    // user for login, 120/min for keys/devices and media, 20/min for search,
+    // and 240/min for thumbnail bursts. Federation routes on the client
+    // listener and sync use 3,000/min, generic routes use 600/min, and
+    // /_merovingian/admin/* remains 30/min —
     // operator-only, low-volume, but still throttled against brute-force
-    // token guessing. Search gets the same 20/min-per-IP tier as media: like
-    // media, each request can do real work (a bounded in-memory scan of the
+    // token guessing. Search remains at 20/min per IP: each request can do
+    // real work (a bounded in-memory scan of the
     // caller's joined-room events, capped by
     // ClientApiLimits::max_search_events_scanned) rather than a cheap lookup,
     // so it is throttled tighter than the generic fallback. The tier defaults
@@ -218,17 +219,17 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
     return RateLimitConfig{
         .builtin_per_ip =
             {
-                             {"/_matrix/client/v3/keys/", {30U, 60U}},
-                             {"/_matrix/client/v3/devices", {30U, 60U}},
+                             {"/_matrix/client/v3/keys/", {120U, 60U}},
+                             {"/_matrix/client/v3/devices", {120U, 60U}},
                              {"/_matrix/client/v3/search", {20U, 60U}},
-                             {"/_matrix/client/v1/media/thumbnail/", {60U, 60U}},
-                             {"/_matrix/media/v3/thumbnail/", {60U, 60U}},
+                             {"/_matrix/client/v1/media/thumbnail/", {240U, 60U}},
+                             {"/_matrix/media/v3/thumbnail/", {240U, 60U}},
                              },
         .builtin_per_user =
             {
                              {"/_matrix/client/v3/login", {5U, 60U}},
                              },
-        .default_per_ip = {90U, 60U},
+        .default_per_ip = {600U, 60U},
     };
 }
 

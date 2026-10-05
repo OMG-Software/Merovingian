@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/http/rate_limit.hpp"
 
 #include <cstdint>
@@ -25,14 +26,14 @@ struct RuntimeFederationConfig final
     std::uint64_t max_transaction_bytes{0U};
     std::uint32_t max_transaction_pdus{50U};
     std::uint32_t max_transaction_edus{100U};
-    http::RateLimitPolicy per_origin_transaction_rate{120U, 60U};
-    http::RateLimitPolicy per_origin_pdu_rate{600U, 60U};
-    http::RateLimitPolicy per_origin_edu_rate{1200U, 60U};
+    http::RateLimitPolicy per_origin_transaction_rate{600U, 60U};
+    http::RateLimitPolicy per_origin_pdu_rate{6000U, 60U};
+    http::RateLimitPolicy per_origin_edu_rate{12000U, 60U};
     // Per-origin cap on inbound federation requests OUTSIDE /send (query,
     // backfill, membership, key and state endpoints). /send keeps its own
     // weighted transaction/PDU/EDU trio and is exempt so a transaction and
     // its contents are never double-counted.
-    http::RateLimitPolicy per_origin_request_rate{600U, 60U};
+    http::RateLimitPolicy per_origin_request_rate{3000U, 60U};
     std::uint32_t remote_timeout_seconds{0U};
     // Separate budget for make_join/send_join/make_leave/send_leave (default 180s).
     std::uint32_t join_timeout_seconds{0U};
@@ -60,9 +61,9 @@ struct RuntimeFederationConfig final
     // key is for, so the resolution path is reachable by unauthenticated
     // senders and has to be budgeted rather than ordered away. Keyed on source
     // IP, not origin: the origin is the attacker-controlled field.
-    http::RateLimitPolicy key_resolution_per_ip_rate{10U, 60U};
-    std::uint32_t key_resolution_max_in_flight{8U};
-    std::uint32_t key_resolution_failure_ttl_seconds{300U};
+    http::RateLimitPolicy key_resolution_per_ip_rate{30U, 60U};
+    std::uint32_t key_resolution_max_in_flight{16U};
+    std::uint32_t key_resolution_failure_ttl_seconds{60U};
     // Bad X-Matrix signatures tolerated per source address per window (FED-4,
     // ADR-0081). The claimed origin of a request whose signature fails is
     // unauthenticated, so the failure is charged here, to the address the
@@ -71,6 +72,19 @@ struct RuntimeFederationConfig final
     // Fixed at this default: not an operator setting, so a misconfiguration
     // cannot switch the bound off.
     http::RateLimitPolicy bad_signature_per_ip_rate{30U, 60U};
+    config::FederationBackfillConfig backfill{};
+    FederationQueryPolicy query_policy{};
+    std::uint32_t backfill_timeout_seconds{45U};
+    std::uint64_t backfill_response_max_bytes{16U * 1024U * 1024U};
+    std::uint32_t accepted_transaction_cache_entries{50000U};
+    std::uint32_t audit_event_cache_entries{10000U};
+    std::uint32_t key_resolution_cache_entries{16384U};
+    std::uint32_t bad_signature_cache_entries{4096U};
+    std::uint32_t pending_join_max_rooms{32U};
+    std::uint32_t pending_join_max_pdus{256U};
+    std::uint64_t pending_join_max_bytes{4U * 1024U * 1024U};
+    std::uint32_t outbound_queue_capacity{4096U};
+    std::uint32_t outbound_max_retries{32U};
 };
 
 struct FederationServerPolicyDecision final

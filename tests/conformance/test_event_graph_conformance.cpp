@@ -444,12 +444,16 @@ SCENARIO("get_missing_events walks prev_events from latest_events, excluding ear
 
         WHEN("the request asks for limit 1000 with the walk starting at e29")
         {
+            auto const query_policy = merovingian::federation::FederationQueryPolicy{
+                .max_missing_events_pdus = 20U,
+            };
             auto const result = merovingian::federation::build_get_missing_events_response(
-                store, room, R"({"latest_events":["$e29"],"earliest_events":[],"limit":1000})", "example.org");
+                store, room, R"({"latest_events":["$e29"],"earliest_events":[],"limit":1000})", "example.org",
+                query_policy);
 
             THEN("at most 20 previous events come back and e29 itself is not among them")
             {
-                // Spec: "stopping at the limit"; this server caps the limit at 20.
+                // Spec: "stopping at the limit"; this test supplies a 20-event server policy.
                 REQUIRE(events_in(result) == 20U);
                 // Spec: "The previous events for latest_events" - not latest_events.
                 REQUIRE(result.body.find("\"$e29\"") == std::string::npos);

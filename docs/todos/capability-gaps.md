@@ -321,12 +321,14 @@ Phase C has shipped. `ingest_pdu_event` now attempts a bounded backfill from
 an inbound PDU's origin when `prev_events` or `auth_events` are missing:
 `POST /_matrix/federation/v1/get_missing_events/{roomId}` (up to 20 events),
 then `GET /_matrix/federation/v1/event/{eventId}` for individual references,
-capped at 5 outbound calls per PDU. Each returned event is verified
+capped at a configurable 16 general outbound calls per PDU by default (0.12.18), with a shared recovery call/deadline budget. Each returned event is verified
 independently (content hash, signature, auth-events selection, auth against
 its own `auth_events`) and stored as an outlier with a recorded after-state
 group. If references remain missing after the capped attempt, the PDU still
 returns `missing_prev_state` and is not applied. See `docs/event-engine.md`
 "Phase C" and `docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md`.
+
+**Unresolved ordinary-PDU retention:** if missing history/state cannot be recovered, ingestion returns `missing_prev_state` before storing the original PDU. The `/send` transaction can still be acknowledged and deduplicated, so there is no durable retry queue for this event. Raising the recovery caps in 0.12.18 reduces avoidable rejection but does not close this gap or prove missing-message recovery. Track durable retention, retry and client visibility as separate data-integrity work.
 
 **Residual scope:** the membership-acceptor path
 (`send_join`/`send_leave`/`send_knock`) does not yet backfill missing

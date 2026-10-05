@@ -1750,8 +1750,6 @@ namespace
     }
 
     auto constexpr registration_validation_session_ttl_ms = std::uint64_t{15U * 60U * 1000U};
-    auto constexpr registration_validation_max_sessions_per_remote = std::size_t{4U};
-    auto constexpr registration_validation_max_sessions_global = std::size_t{256U};
 
     [[nodiscard]] auto wall_clock_milliseconds() -> std::uint64_t
     {
@@ -1784,7 +1782,6 @@ namespace
     // means adding persisted completed-stage tracking; see ADR-0057.
     auto constexpr uia_session_ttl_ms = std::uint64_t{10U * 60U * 1000U};
     // Bounds what an unauthenticated caller can grow: every 401 mints an entry.
-    auto constexpr uia_max_sessions = std::size_t{512U};
 
     [[nodiscard]] auto issue_uia_session(ClientServerRuntime& rt, std::string_view purpose) -> std::string
     {
@@ -1794,7 +1791,7 @@ namespace
         });
         // Oldest-first eviction keeps the newest challenges usable under a
         // flood; an evicted client simply receives a fresh challenge on retry.
-        while (rt.uia_sessions.size() >= uia_max_sessions && !rt.uia_sessions.empty())
+        while (rt.uia_sessions.size() >= rt.limits.max_uia_sessions && !rt.uia_sessions.empty())
         {
             rt.uia_sessions.erase(rt.uia_sessions.begin());
         }
@@ -1906,8 +1903,8 @@ namespace
                 rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
                     return session.client_ip == client_ip;
                 }));
-            if (per_remote_sessions >= registration_validation_max_sessions_per_remote ||
-                rt.registration_validation_sessions.size() >= registration_validation_max_sessions_global)
+            if (per_remote_sessions >= rt.limits.max_registration_validation_sessions_per_remote ||
+                rt.registration_validation_sessions.size() >= rt.limits.max_registration_validation_sessions)
             {
                 return nullptr;
             }
@@ -1934,8 +1931,8 @@ namespace
             rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
                 return session.client_ip == client_ip;
             }));
-        if (per_remote_sessions >= registration_validation_max_sessions_per_remote ||
-            rt.registration_validation_sessions.size() >= registration_validation_max_sessions_global)
+        if (per_remote_sessions >= rt.limits.max_registration_validation_sessions_per_remote ||
+            rt.registration_validation_sessions.size() >= rt.limits.max_registration_validation_sessions)
         {
             return nullptr;
         }
@@ -3597,11 +3594,6 @@ namespace
         return json_serialize(json_obj(std::move(response)));
     }
 
-    [[nodiscard]] auto public_rooms_json(ClientServerRuntime const& rt) -> std::string
-    {
-        return public_rooms_filtered_json(rt, {}, std::nullopt, 0U);
-    }
-
     // Builds the federation target path for /_matrix/federation/v1/publicRooms,
     // appending limit and since as query parameters when present.
     [[nodiscard]] auto public_rooms_fed_target(std::optional<std::size_t> limit, std::optional<std::string_view> since)
@@ -4286,9 +4278,10 @@ namespace
             {
                 continue;
             }
-            auto const timeline_cap = filter.room.timeline.limit != 0U
-                                          ? std::min(filter.room.timeline.limit, rt.limits.max_sync_events_per_room)
-                                          : rt.limits.max_sync_events_per_room;
+            auto const timeline_cap =
+                filter.room.timeline.limit != 0U
+                    ? std::min(filter.room.timeline.limit, static_cast<std::size_t>(rt.limits.max_sync_events_per_room))
+                    : static_cast<std::size_t>(rt.limits.max_sync_events_per_room);
 
             // Collect this room's timeline-eligible events that are newer than
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
@@ -4802,8 +4795,6 @@ namespace
     // in practice hold one or two (matrix-rust-sdk uses "room-list" and
     // "encryption"); this leaves generous headroom while bounding what a client
     // minting fresh conn_ids can retain.
-    constexpr auto sliding_sync_connections_per_device = std::size_t{8U};
-
     // Evicts idle sliding-sync connection state, then bounds how many connections
     // one user/device may hold, discarding least-recently-used first. See the
     // call site in sliding_sync_json for why this is required (#487).
@@ -4825,7 +4816,7 @@ namespace
     }
 
     auto prune_sliding_sync_connections(HomeserverRuntime& runtime, std::string_view user, std::string_view device_id,
-                                        std::string const& conn_key) -> void
+                                        std::string const& conn_key, std::uint32_t max_per_device) -> void
     {
         auto const now = std::chrono::steady_clock::now();
         auto& connections = runtime.sliding_sync_connections;
@@ -4853,7 +4844,8 @@ namespace
         {
             owned.push_back(it);
         }
-        if (owned.size() < sliding_sync_connections_per_device)
+        auto const cap = static_cast<std::size_t>(std::max(1U, max_per_device));
+        if (owned.size() < cap)
         {
             return;
         }
@@ -4862,7 +4854,7 @@ namespace
         std::ranges::sort(owned, [](auto const& left, auto const& right) {
             return left->second.last_used < right->second.last_used;
         });
-        auto const to_evict = owned.size() - (sliding_sync_connections_per_device - 1U);
+        auto const to_evict = owned.size() - (cap - 1U);
         for (auto index = std::size_t{0U}; index < to_evict; ++index)
         {
             connections.erase(owned[index]);
@@ -4936,7 +4928,8 @@ namespace
         //
         // Pruned before taking the reference below, so the reference cannot be to
         // an entry this sweep then erases.
-        prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key);
+        prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key,
+                                       rt.limits.sliding_sync_connections_per_device);
 
         auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
         conn.last_used = std::chrono::steady_clock::now();
@@ -7183,10 +7176,11 @@ namespace
         auto const backwards = dir != "f"; // both default and "b" walk backward
         auto const from_text = messages_query_value(target, "from");
         auto const from_token = parse_u64(from_text);
-        auto limit = std::size_t{10U};
+        auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_messages_page_size));
         if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
         {
-            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
+            limit = static_cast<std::size_t>(
+                std::min<std::uint64_t>(*parsed, static_cast<std::uint64_t>(rt.limits.max_messages_page_size)));
         }
         // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
         // #ignoring-users). Resolved once for this request. Events from an
@@ -7456,15 +7450,7 @@ namespace
     // corners deliberately left out (rooms the caller has left; the MSC3765
     // `content['m.topic']` extensible-topic representation).
 
-    // Page-size and event-context bounds. `kSearchMaxPageLimit` is smaller
-    // than /messages'/context's 100-event ceiling because each result also
-    // pays for its own event-context scan (see build_search_event_context),
-    // so the worst case per request is roughly
-    // kSearchMaxPageLimit * (kSearchMaxEventContextLimit * 2) context events
-    // on top of the `max_search_events_scanned` matching budget.
     constexpr std::size_t kSearchDefaultPageLimit = 10U;
-    constexpr std::size_t kSearchMaxPageLimit = 25U;
-    constexpr std::size_t kSearchMaxEventContextLimit = 50U;
 
     struct SearchMatch final
     {
@@ -7568,9 +7554,15 @@ namespace
     // responds 400 M_BAD_JSON) -- distinct from an empty/missing
     // `search_term`, which the caller checks separately so it can return the
     // more specific 400 M_MISSING_PARAM.
-    [[nodiscard]] auto parse_search_request(canonicaljson::Object const& room_events) -> std::optional<SearchRequest>
+    [[nodiscard]] auto parse_search_request(canonicaljson::Object const& room_events, ClientApiLimits const& limits)
+        -> std::optional<SearchRequest>
     {
         auto out = SearchRequest{};
+        out.page_limit = std::min(kSearchDefaultPageLimit, static_cast<std::size_t>(limits.max_search_page_size));
+        out.before_limit =
+            std::min<std::size_t>(out.before_limit, static_cast<std::size_t>(limits.max_search_context_events));
+        out.after_limit =
+            std::min<std::size_t>(out.after_limit, static_cast<std::size_t>(limits.max_search_context_events));
         if (auto const* term = string_member(room_events, "search_term"); term != nullptr)
         {
             out.search_term = *term;
@@ -7604,7 +7596,8 @@ namespace
             }
             if (out.filter.timeline.limit > 0U)
             {
-                out.page_limit = std::min(out.filter.timeline.limit, kSearchMaxPageLimit);
+                out.page_limit =
+                    std::min(out.filter.timeline.limit, static_cast<std::size_t>(limits.max_search_page_size));
             }
         }
         if (auto const* ec = object_member(room_events, "event_context"); ec != nullptr)
@@ -7616,11 +7609,13 @@ namespace
             }
             if (auto const* bl = integer_member(*ec_obj, "before_limit"); bl != nullptr && *bl >= 0)
             {
-                out.before_limit = std::min<std::size_t>(static_cast<std::size_t>(*bl), kSearchMaxEventContextLimit);
+                out.before_limit = std::min<std::size_t>(static_cast<std::size_t>(*bl),
+                                                         static_cast<std::size_t>(limits.max_search_context_events));
             }
             if (auto const* al = integer_member(*ec_obj, "after_limit"); al != nullptr && *al >= 0)
             {
-                out.after_limit = std::min<std::size_t>(static_cast<std::size_t>(*al), kSearchMaxEventContextLimit);
+                out.after_limit = std::min<std::size_t>(static_cast<std::size_t>(*al),
+                                                        static_cast<std::size_t>(limits.max_search_context_events));
             }
             if (auto const* ip = boolean_member(*ec_obj, "include_profile"); ip != nullptr)
             {
@@ -8988,9 +8983,6 @@ namespace
         return err(404U, "M_UNRECOGNIZED", "route not found");
     }
 
-    // Most audit rows the admin safety-report listing returns (newest kept).
-    constexpr auto max_safety_report_rows = std::size_t{1000U};
-
     [[nodiscard]] auto safety_reports_json(ClientServerRuntime const& rt) -> std::string
     {
         auto reports = canonicaljson::Array{};
@@ -8998,8 +8990,8 @@ namespace
         // lost when later audit rows push it out of the window (AUTH-1). The query
         // returns the newest `max_safety_report_rows` rows newest first; list them
         // oldest first, as this endpoint always has.
-        auto const events = database::load_audit_events_by_type_prefix(rt.homeserver.database.persistent_store,
-                                                                       "trust_safety.", max_safety_report_rows);
+        auto const events = database::load_audit_events_by_type_prefix(
+            rt.homeserver.database.persistent_store, "trust_safety.", rt.limits.max_safety_report_rows);
         for (auto const& event : std::views::reverse(events))
         {
             reports.push_back(json_obj({
@@ -9310,6 +9302,34 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     auto rt = ClientServerRuntime{};
     rt.homeserver = std::move(started.runtime);
     rt.sliding_sync_debug_diagnostics_enabled = options.debug_startup_enabled;
+    auto const& client_api = config.server().client_api;
+    auto const configured_body_limit = config::parse_size_limit(client_api.max_body_size);
+    if (configured_body_limit.valid)
+    {
+        rt.limits.max_body_bytes = static_cast<std::size_t>(
+            std::min<std::uint64_t>(configured_body_limit.bytes, std::numeric_limits<std::size_t>::max()));
+    }
+    rt.limits.max_sync_rooms = client_api.max_sync_rooms;
+    rt.limits.max_sync_events_per_room = client_api.max_sync_events_per_room;
+    rt.limits.max_search_events_scanned = client_api.max_search_events_scanned;
+    rt.limits.max_messages_events_examined = client_api.max_messages_events_examined;
+    rt.limits.max_messages_page_size = client_api.max_messages_page_size;
+    rt.limits.max_context_events = client_api.max_context_events;
+    rt.limits.max_search_page_size = client_api.max_search_page_size;
+    rt.limits.max_search_context_events = client_api.max_search_context_events;
+    rt.limits.max_registration_validation_sessions = client_api.max_registration_validation_sessions;
+    rt.limits.max_registration_validation_sessions_per_remote =
+        client_api.max_registration_validation_sessions_per_remote;
+    rt.limits.max_uia_sessions = client_api.max_uia_sessions;
+    rt.limits.max_safety_report_rows = client_api.max_safety_report_rows;
+    rt.limits.max_notifications_page_size = client_api.max_notifications_page_size;
+    rt.limits.max_relations_page_size = client_api.max_relations_page_size;
+    rt.limits.max_public_rooms_page_size = client_api.max_public_rooms_page_size;
+    rt.limits.max_hierarchy_rooms = client_api.max_hierarchy_rooms;
+    rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
+                              client_api.sliding_sync_max_room_subscriptions,
+                              client_api.sliding_sync_max_required_state_entries};
+    rt.limits.sliding_sync_connections_per_device = client_api.sliding_sync_connections_per_device;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
@@ -9642,6 +9662,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // GET /_matrix/federation/v1/publicRooms on that server.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/publicRooms")
     {
+        auto limit = std::optional<std::size_t>{rt.limits.max_public_rooms_page_size};
+        if (auto const value = query_param_value(req.target, "limit"); value.has_value() && !value->empty())
+        {
+            auto parsed = std::size_t{0U};
+            auto const [ptr, ec] = std::from_chars(value->data(), value->data() + value->size(), parsed);
+            if (ec == std::errc{} && ptr == value->data() + value->size() && parsed > 0U)
+            {
+                limit = std::min(parsed, static_cast<std::size_t>(rt.limits.max_public_rooms_page_size));
+            }
+        }
+        auto since_offset = std::size_t{0U};
+        if (auto const since = query_param_value(req.target, "since"); since.has_value() && !since->empty())
+        {
+            auto const [ptr, ec] = std::from_chars(since->data(), since->data() + since->size(), since_offset);
+            if (ec != std::errc{} || ptr != since->data() + since->size())
+            {
+                since_offset = 0U;
+            }
+        }
         auto const server_param = query_param_value(req.target, "server");
         auto const& our_server = rt.homeserver.config.server().server_name;
         if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
@@ -9659,18 +9698,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
-            auto limit = std::optional<std::size_t>{};
+            auto remote_limit = limit;
             if (auto const lv = query_param_value(req.target, "limit"); lv.has_value() && !lv->empty())
             {
                 auto result = std::size_t{0U};
                 auto const [ptr, ec] = std::from_chars(lv->data(), lv->data() + lv->size(), result);
                 if (ec == std::errc{} && result > 0U)
-                    limit = result;
+                    remote_limit = std::min(result, static_cast<std::size_t>(rt.limits.max_public_rooms_page_size));
             }
             auto const since = query_param_value(req.target, "since");
             auto const since_sv = since.has_value() ? std::optional<std::string_view>{*since} : std::nullopt;
             auto const tx = federation::make_outbound_transaction(
-                *server_param, "GET", public_rooms_fed_target(limit, since_sv), our_server, {});
+                *server_param, "GET", public_rooms_fed_target(remote_limit, since_sv), our_server, {});
             auto const [ok, body] = [&] {
                 // Re-acquire before returning: dispatch_resp/dispatch_err read
                 // reloadable runtime state (rt.cors), and every other return path
@@ -9683,7 +9722,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
         }
-        return dispatch_resp(req, rt, 200U, public_rooms_json(rt));
+        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, {}, limit, since_offset));
     }
     auto constexpr directory_room_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
     auto constexpr directory_list_room_prefix = std::string_view{"/_matrix/client/v3/directory/list/room/"};
@@ -9747,7 +9786,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         continue;
                     }
-                    auto client = appservice::AppserviceClient{*alias_outbound, *alias_discovery};
+                    auto client = appservice::AppserviceClient{*alias_outbound, *alias_discovery,
+                                                               rt.homeserver.config.appservice()};
                     auto const query = [&] {
                         auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
                         return client.query_room_alias(registration, room_alias);
@@ -10568,7 +10608,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         continue;
                     }
-                    auto client = appservice::AppserviceClient{*user_outbound, *user_discovery};
+                    auto client = appservice::AppserviceClient{*user_outbound, *user_discovery,
+                                                               rt.homeserver.config.appservice()};
                     auto const query = [&] {
                         auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
                         return client.query_user(registration, target_user);
@@ -10923,6 +10964,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     since_offset = result;
             }
         }
+
+        limit = std::min(limit.value_or(rt.limits.max_public_rooms_page_size),
+                         static_cast<std::size_t>(rt.limits.max_public_rooms_page_size));
 
         auto const server_param = query_param_value(req.target, "server");
         auto const& our_server = rt.homeserver.config.server().server_name;
@@ -11830,10 +11874,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // Spec leaves the default unspecified; 50 balances a useful first
         // page against response size, clamped to bound a hostile/careless
         // limit= value the same way GET /messages clamps its own.
-        auto limit = std::size_t{50U};
+        auto limit = std::min<std::size_t>(50U, rt.limits.max_notifications_page_size);
         if (auto const parsed = parse_u64(messages_query_value(req.target, "limit")); parsed.has_value())
         {
-            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{1000U}));
+            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, rt.limits.max_notifications_page_size));
         }
 
         // Memoizes read_receipt_ordering per room_id: a user can have many
@@ -11969,7 +12013,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto protocols_obj = canonicaljson::Object{};
             if (can_call_appservices)
             {
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -12018,7 +12063,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
             }
-            auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+            auto client =
+                appservice::AppserviceClient{*outbound_client, *cached_discovery, rt.homeserver.config.appservice()};
             auto const* owner_ptr = owner;
             auto const result = [&] {
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
@@ -12054,7 +12100,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (can_call_appservices)
             {
                 auto const fields = thirdparty_query_fields(req.target);
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -12090,7 +12137,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto locations = canonicaljson::Array{};
             if (can_call_appservices)
             {
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -12138,7 +12186,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (can_call_appservices)
             {
                 auto const fields = thirdparty_query_fields(req.target);
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -12174,7 +12223,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto users = canonicaljson::Array{};
             if (can_call_appservices)
             {
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -12858,13 +12908,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto const session_4186 = authenticated_session(rt.homeserver, req.access_token);
         auto const device_id_4186 = session_4186.has_value() ? session_4186->device_id : std::string{};
-        auto const sliding_req = sync::parse_sliding_sync_request(req.body);
+        auto const sliding_req = sync::parse_sliding_sync_request(req.body, rt.limits.sliding_sync);
         if (!sliding_req.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invalid sliding sync request body");
         }
         // CSAZ-1: bound what one request may ask for (each named room costs an event-store scan).
-        if (auto const violation = sync::sliding_sync_request_limit_violation(*sliding_req); violation.has_value())
+        if (auto const violation = sync::sliding_sync_request_limit_violation(*sliding_req, rt.limits.sliding_sync);
+            violation.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{*violation});
         }
@@ -12917,6 +12968,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const path = room_relations_path_parts(req.target); path.has_value())
         {
+            auto const requested_limit = parse_query_uint(query_param_value(req.target, "limit"));
+            auto const relations_limit =
+                std::min<std::uint64_t>(requested_limit.value_or(100U), rt.limits.max_relations_page_size);
             auto const request = FetchRelationsRequest{
                 path->room_id,
                 path->event_id,
@@ -12924,7 +12978,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 path->event_type,
                 query_param_value(req.target, "dir"),
                 query_param_value(req.target, "from"),
-                parse_query_uint(query_param_value(req.target, "limit")),
+                relations_limit,
                 parse_query_bool(query_param_value(req.target, "recurse")),
                 query_param_value(req.target, "to"),
             };
@@ -13212,11 +13266,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // Spec: limit applies to the sum of events_before and
                 // events_after; defaults to 10. Clamp to the same maximum
                 // GET /messages uses to bound resource usage.
-                auto limit = std::size_t{10U};
+                auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_context_events));
                 if (auto const parsed_limit = parse_u64(messages_query_value(req.target, "limit"));
                     parsed_limit.has_value())
                 {
-                    limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed_limit, std::uint64_t{100U}));
+                    limit = static_cast<std::size_t>(std::min<std::uint64_t>(
+                        *parsed_limit, static_cast<std::uint64_t>(rt.limits.max_context_events)));
                 }
 
                 return dispatch_resp(req, rt, 200U,
@@ -14405,7 +14460,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "search_categories.room_events is required");
         }
-        auto const parsed_request = parse_search_request(*room_events_obj);
+        auto const parsed_request = parse_search_request(*room_events_obj, rt.limits);
         if (!parsed_request.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "search_categories.room_events is malformed");
@@ -14968,6 +15023,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
             };
             request.limit = parse_size(query_param_value(req.target, "limit"));
+            request.max_rooms = rt.limits.max_hierarchy_rooms;
             request.max_depth = parse_size(query_param_value(req.target, "max_depth"));
             if (auto const suggested = query_param_value(req.target, "suggested_only"); suggested == "true")
             {

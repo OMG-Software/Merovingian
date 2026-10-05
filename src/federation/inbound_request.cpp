@@ -72,11 +72,6 @@ namespace
     // above any plausible legitimate transaction volume between dedup entries
     // aging out; a sustained flood of distinct transaction ids evicts the
     // oldest entries instead of growing memory without bound.
-    constexpr auto kMaxAcceptedTransactions = std::size_t{10'000U};
-    // Cap for the federation audit ring (#423) — same rationale as the
-    // accepted-transaction dedup ring: sustained traffic must not grow
-    // main-process memory without bound.
-    constexpr auto kMaxAuditEvents = std::size_t{10'000U};
 
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
@@ -279,8 +274,6 @@ namespace
 
     // Pre-auth containers must be bounded: they are reachable before any
     // identity is verified, so an attacker chooses how many distinct keys go in.
-    constexpr auto kMaxKeyResolutionBuckets = std::size_t{4'096U};
-    constexpr auto kMaxKeyResolutionFailures = std::size_t{4'096U};
 
     // Result of the pre-authentication key-resolution budget check.
     struct KeyResolutionAdmission final
@@ -326,7 +319,7 @@ namespace
         // FIFO eviction, mirroring accepted_transactions: entries are appended
         // in expiry order because the TTL is constant, so the oldest is always
         // at the front and pop_front is O(1).
-        if (runtime.key_resolution_failures.size() >= kMaxKeyResolutionFailures)
+        if (runtime.key_resolution_failures.size() >= runtime.config.key_resolution_cache_entries)
         {
             runtime.key_resolution_failures.pop_front();
         }
@@ -396,7 +389,7 @@ namespace
         });
         if (iterator == runtime.key_resolution_buckets.end())
         {
-            if (runtime.key_resolution_buckets.size() >= kMaxKeyResolutionBuckets)
+            if (runtime.key_resolution_buckets.size() >= runtime.config.key_resolution_cache_entries)
             {
                 runtime.key_resolution_buckets.pop_front();
             }
@@ -461,7 +454,6 @@ namespace
     // hands every unauthenticated sender a switch that refuses a real peer. The
     // container is pre-authentication and therefore capped, like the
     // key-resolution buckets above.
-    constexpr auto kMaxBadSignatureBuckets = std::size_t{4'096U};
 
     // An empty source (tests, and paths that never reach the network) shares one
     // bucket rather than bypassing the bound, as for key resolution.
@@ -506,7 +498,7 @@ namespace
         });
         if (iterator == runtime.bad_signature_buckets.end())
         {
-            if (runtime.bad_signature_buckets.size() >= kMaxBadSignatureBuckets)
+            if (runtime.bad_signature_buckets.size() >= runtime.config.bad_signature_cache_entries)
             {
                 runtime.bad_signature_buckets.pop_front();
             }
@@ -707,7 +699,7 @@ namespace
         // Bounded ring (#423): a remote sending sustained traffic (accepted or
         // rejected) must not grow the audit log without bound. Entries are
         // appended in order, so FIFO eviction drops the oldest first.
-        if (runtime.audit_events.size() >= kMaxAuditEvents)
+        if (runtime.audit_events.size() >= runtime.config.audit_event_cache_entries)
         {
             if (audit_reason_is_unsafe(runtime.audit_events.front().reason_code) && runtime.unsafe_audit_events > 0U)
             {
@@ -1375,7 +1367,7 @@ namespace
         {
             return {501U, "backfill not implemented"};
         }
-        auto parsed = parse_backfill_query(request.target);
+        auto parsed = parse_backfill_query(request.target, runtime.config.query_policy);
         if (!parsed.has_value())
         {
             return {400U, "backfill query is malformed"};
@@ -2177,9 +2169,10 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     return auth_user_text->substr(colon + 1);
 }
 
-[[nodiscard]] auto verify_event_signature_for_server(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
-                                                    std::string_view server_name, FederationKeyRecord const& key,
-                                                    crypto::Ed25519Provider& provider) -> FederationDecision
+[[nodiscard]] auto verify_event_signature_for_server(canonicaljson::Value const& event,
+                                                     rooms::RoomVersionPolicy const& room_version,
+                                                     std::string_view server_name, FederationKeyRecord const& key,
+                                                     crypto::Ed25519Provider& provider) -> FederationDecision
 {
     auto const validity = check_signing_key_valid_for_event(key, event, room_version);
     if (!validity.accepted)
@@ -2206,7 +2199,8 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
         return sender_decision;
     }
 
-    auto const* room_version = rooms::find_room_version_policy(pdu.room_version.empty() ? std::string{"12"} : pdu.room_version);
+    auto const* room_version =
+        rooms::find_room_version_policy(pdu.room_version.empty() ? std::string{"12"} : pdu.room_version);
     if (room_version == nullptr)
     {
         return make_decision(false, 500U, "room version policy is unavailable");
@@ -2360,6 +2354,36 @@ namespace
             return {
                 .accepted = false, .error = {404U, route_match.reason}
             };
+        }
+        // #323 / ADR-0110: when the main process has already verified the X-Matrix
+        // signature and forwarded only the verified identity over the authenticated
+        // IPC channel, the worker does not need its own remote resolver for read
+        // endpoints that never consume the remote's signing key. Build a minimal
+        // remote record from the verified identity so those endpoints can be
+        // dispatched without requiring the worker to rediscover the peer. Server,
+        // discovery and trust policy were already applied in main. Endpoints that
+        // need the remote's signing key (membership accepts, invites, /send PDUs
+        // where origin equals sender domain) keep the full resolution path.
+        if (request.signature_verified)
+        {
+            switch (route_match.route.endpoint)
+            {
+            case FederationEndpoint::transaction:
+            case FederationEndpoint::send_join:
+            case FederationEndpoint::send_leave:
+            case FederationEndpoint::send_knock:
+            case FederationEndpoint::invite:
+                break;
+            default: {
+                auto synthetic_remote = FederationRemoteRuntime{};
+                synthetic_remote.server_name = request.origin;
+                synthetic_remote.signing_key = {request.origin, request.key_id, 0U, std::string{}};
+                return {.accepted = true,
+                        .route_match = route_match,
+                        .remote = std::move(synthetic_remote),
+                        .error = FederationResponse{}};
+            }
+            }
         }
         // No TLS-peer-name-vs-X-Matrix-origin cross-check here: inbound Matrix
         // federation TLS is one-way (the originating server presents no client
@@ -2574,7 +2598,8 @@ namespace
     // Returns the room_id for federation endpoints that the Matrix v1.19 spec
     // says MUST be protected by server ACLs. Endpoints without a room scope
     // (e.g. query/profile, query_keys) are not included here.
-    [[nodiscard]] auto protected_endpoint_room_id(FederationEndpoint endpoint, std::string_view target)
+    [[nodiscard]] auto protected_endpoint_room_id(FederationEndpoint endpoint, std::string_view target,
+                                                  FederationQueryPolicy const& query_policy)
         -> std::optional<std::string>
     {
         switch (endpoint)
@@ -2590,7 +2615,7 @@ namespace
             return params.has_value() ? std::optional<std::string>{std::move(params->room_id)} : std::nullopt;
         }
         case FederationEndpoint::backfill: {
-            auto const parsed = parse_backfill_query(target);
+            auto const parsed = parse_backfill_query(target, query_policy);
             return parsed.has_value() ? std::optional<std::string>{std::move(parsed->room_id)} : std::nullopt;
         }
         case FederationEndpoint::query_state:
@@ -2621,7 +2646,7 @@ namespace
         {
             return std::nullopt;
         }
-        auto const room_id = protected_endpoint_room_id(route.endpoint, request.target);
+        auto const room_id = protected_endpoint_room_id(route.endpoint, request.target, runtime.config.query_policy);
         if (!room_id.has_value() || room_id->empty())
         {
             return std::nullopt;
@@ -2635,8 +2660,8 @@ namespace
 
     // Typing EDUs carry room_id at the top level. Receipts are keyed by room
     // and are ACL-checked per room at the receipt sink (including worker relays).
-    [[nodiscard]] auto room_id_from_edu_content(EduType type,
-                                                std::string_view content_json) -> std::optional<std::string>
+    [[nodiscard]] auto room_id_from_edu_content(EduType type, std::string_view content_json)
+        -> std::optional<std::string>
     {
         if (type != EduType::typing)
         {
@@ -3068,8 +3093,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // Signature verification (Ed25519 + key validity). For restricted joins
         // the authorising user's homeserver signature is also verified (EVT-1).
         auto verifier = FederationEd25519Verifier{};
-        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu,
-                                                            runtime.remote_key_resolver, verifier);
+        auto const pdu_decision =
+            authorize_federation_pdu(pdu, request.origin, key_for_pdu, runtime.remote_key_resolver, verifier);
         if (!pdu_decision.accepted)
         {
             record_remote_trust_failure(remote.trust);
@@ -3237,7 +3262,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // of many) cannot grow the main process's memory without bound.
         // Entries are appended in acceptance order, so the front is always
         // the oldest.
-        if (runtime.accepted_transactions.size() >= kMaxAcceptedTransactions)
+        if (runtime.accepted_transactions.size() >= runtime.config.accepted_transaction_cache_entries)
         {
             runtime.accepted_transactions.pop_front();
         }

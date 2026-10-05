@@ -113,15 +113,15 @@ enum class RateLimitTier // no `final`: clang <= 18 rejects `final` on enums (C+
 
 [[nodiscard]] auto rate_limit_policy_is_valid(RateLimitPolicy const& policy) noexcept -> bool;
 [[nodiscard]] auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) -> bool;
-[[nodiscard]] auto endpoint_default_rate_limit(std::string_view method,
-                                               std::string_view target) noexcept -> RateLimitPolicy;
+[[nodiscard]] auto endpoint_default_rate_limit(std::string_view method, std::string_view target) noexcept
+    -> RateLimitPolicy;
 [[nodiscard]] auto rate_limit_summary(RateLimitPolicy const& policy) -> std::string;
 
 struct RateLimitConfig final
 {
     // Built-in per-endpoint refinements WITHIN a tier, seeded by
-    // `default_client_rate_limit_config()` (keys/devices at 30/60s, search at
-    // 20/60s, thumbnails at 60/60s) plus the built-in per-user login cap.
+    // `default_client_rate_limit_config()` (keys/devices at 120/60s, search at
+    // 20/60s, thumbnails at 240/60s) plus the built-in per-user login cap.
     // These are the secure defaults; operators do not write them directly.
     std::unordered_map<std::string, RateLimitPolicy> builtin_per_ip{};
     std::unordered_map<std::string, RateLimitPolicy> builtin_per_user{};
@@ -140,7 +140,7 @@ struct RateLimitConfig final
     std::unordered_map<std::string, RateLimitPolicy> tier{};
     // Operator-tunable policy for routes in the generic tier
     // (`client_rate_limits.default_per_ip`). Also the ultimate fallback.
-    RateLimitPolicy default_per_ip{90U, 60U};
+    RateLimitPolicy default_per_ip{600U, 60U};
 };
 
 [[nodiscard]] auto default_client_rate_limit_config() noexcept -> RateLimitConfig;
@@ -376,8 +376,8 @@ private:
     }
 
     [[nodiscard]] static auto lookup_policy(std::unordered_map<std::string, RateLimitPolicy> const& table,
-                                            std::string_view target,
-                                            std::string_view policy_target = {}) -> RateLimitPolicy const*
+                                            std::string_view target, std::string_view policy_target = {})
+        -> RateLimitPolicy const*
     {
         // Match both the normalized template and original path. The former
         // allows route-wide configuration; the latter preserves existing
@@ -398,8 +398,8 @@ private:
         return best;
     }
 
-    [[nodiscard]] auto remaining_window_ms(TimePoint window_start, RateLimitPolicy const& policy,
-                                           TimePoint now) const -> std::uint32_t
+    [[nodiscard]] auto remaining_window_ms(TimePoint window_start, RateLimitPolicy const& policy, TimePoint now) const
+        -> std::uint32_t
     {
         auto const elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start).count();
         auto const window_ms = static_cast<std::int64_t>(policy.window_seconds) * 1000LL;

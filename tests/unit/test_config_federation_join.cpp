@@ -258,7 +258,7 @@ SCENARIO("Federation join state key parallelism rejects zero", "[config][federat
     }
 }
 
-SCENARIO("Federation join timeout changes are reloadable", "[config][federation][join][reload]")
+SCENARIO("Federation join timeout changes require restart", "[config][federation][join][reload]")
 {
     GIVEN("current and next configs with different join timeouts")
     {
@@ -282,17 +282,17 @@ SCENARIO("Federation join timeout changes are reloadable", "[config][federation]
         {
             auto const plan = merovingian::config::build_reload_plan(current, next);
 
-            THEN("the join timeout change is marked reloadable")
+            THEN("the join timeout change is marked restart required")
             {
                 REQUIRE(plan.changes().size() == 1U);
                 REQUIRE(plan.changes()[0].key == "security.federation.join_timeout");
-                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }
 }
 
-SCENARIO("Federation join parallelism changes are reloadable", "[config][federation][join][reload]")
+SCENARIO("Federation join parallelism changes require restart", "[config][federation][join][reload]")
 {
     GIVEN("current and next configs with different join parallelism")
     {
@@ -316,17 +316,17 @@ SCENARIO("Federation join parallelism changes are reloadable", "[config][federat
         {
             auto const plan = merovingian::config::build_reload_plan(current, next);
 
-            THEN("the join parallelism change is marked reloadable")
+            THEN("the join parallelism change is marked restart required")
             {
                 REQUIRE(plan.changes().size() == 1U);
                 REQUIRE(plan.changes()[0].key == "security.federation.join_parallelism");
-                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }
 }
 
-SCENARIO("Federation join race deadline changes are reloadable", "[config][federation][join][reload]")
+SCENARIO("Federation join race deadline changes require restart", "[config][federation][join][reload]")
 {
     GIVEN("current and next configs with different join race deadlines")
     {
@@ -350,17 +350,17 @@ SCENARIO("Federation join race deadline changes are reloadable", "[config][feder
         {
             auto const plan = merovingian::config::build_reload_plan(current, next);
 
-            THEN("the join race deadline change is marked reloadable")
+            THEN("the join race deadline change is marked restart required")
             {
                 REQUIRE(plan.changes().size() == 1U);
                 REQUIRE(plan.changes()[0].key == "security.federation.join_race_deadline");
-                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }
 }
 
-SCENARIO("Federation join max candidates changes are reloadable", "[config][federation][join][reload]")
+SCENARIO("Federation join max candidates changes require restart", "[config][federation][join][reload]")
 {
     GIVEN("current and next configs with different join max candidates")
     {
@@ -384,17 +384,17 @@ SCENARIO("Federation join max candidates changes are reloadable", "[config][fede
         {
             auto const plan = merovingian::config::build_reload_plan(current, next);
 
-            THEN("the join max candidates change is marked reloadable")
+            THEN("the join max candidates change is marked restart required")
             {
                 REQUIRE(plan.changes().size() == 1U);
                 REQUIRE(plan.changes()[0].key == "security.federation.join_max_candidates");
-                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }
 }
 
-SCENARIO("Federation join state key parallelism changes are reloadable", "[config][federation][join][reload]")
+SCENARIO("Federation join state key parallelism changes require restart", "[config][federation][join][reload]")
 {
     GIVEN("current and next configs with different join state key parallelism")
     {
@@ -418,11 +418,11 @@ SCENARIO("Federation join state key parallelism changes are reloadable", "[confi
         {
             auto const plan = merovingian::config::build_reload_plan(current, next);
 
-            THEN("the join state key parallelism change is marked reloadable")
+            THEN("the join state key parallelism change is marked restart required")
             {
                 REQUIRE(plan.changes().size() == 1U);
                 REQUIRE(plan.changes()[0].key == "security.federation.join_state_key_parallelism");
-                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }

@@ -145,10 +145,10 @@ All foundation modules depend on `core` (RAII utilities, `not_null`,
 
 ```text
 merovingian-server
-  - main pool (`server.http.request_threads`, default 16): all non-sync
+  - main pool (`server.http.request_threads`, default 32): all non-sync
     requests; a worker is given a connection only once it is readable, and one
     client address may hold at most a quarter of the pool (ADR-0077)
-  - sync pool (32 threads): `/sync` long-polls only
+  - sync pool (`server.http.sync_threads`, default 128): `/sync` long-polls only
   - connection dispatcher thread: holds every connection that is not being
     served (before its first byte, between keep-alive requests) in one
     `poll(2)` set and hands readable ones to the main pool (ADR-0077)
@@ -274,8 +274,8 @@ unboundedly over the runtime's lifetime. Push delivery additionally bounds
 *concurrent* tasks — not just the vector's steady-state size — via
 `HomeserverRuntime::push_delivery_in_flight_`, a `std::atomic<std::size_t>`
 (tracked separately from the make_join race's use of the same vector so the
-two do not starve each other) checked against a fixed cap
-(`k_max_in_flight_push_deliveries`, 128) before a task is spawned; at
+two do not starve each other) checked against
+`server.push.max_in_flight_deliveries` (default 256) before a task is spawned; at
 capacity the delivery is dropped and logged rather than spawned, since a
 missed push is recoverable but unbounded thread creation is not (see
 `threat-model.md`, "Push delivery background tasks were unbounded"). The
@@ -572,3 +572,5 @@ The full attacker model, surface inventory, and per-threat mitigations live in
 - Audit logging across auth, federation, and media boundaries.
 - Trust & safety policy engine for moderation rules.
 - Media security: MIME sniffing, quarantine, AV scanner flag, sandboxed decoding flag, private IP fetch blocking. The AV scanner flag can never apply to encrypted-room attachments - see "Encrypted media is never scannable" in `docs/media-repository.md`.
+
+Operational admission/recovery policies are startup snapshots. See [operator budgets](user-manual.md#operational-budgets) and [ADR-0109](adr/0109-configure-operational-budgets-with-shared-recovery-bounds.md) for policy composition across HTTP, IPC and event recovery.

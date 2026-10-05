@@ -19,6 +19,7 @@
 // arrival order).
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -276,6 +277,53 @@ SCENARIO("A merge event's state before it is the resolution of both fork tips' a
                     REQUIRE(recompute_current_state(store, room_id, *policy));
                     REQUIRE(topic_winner(store) == winner_before_merge);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("Configured state-resolution budgets constrain fork resolution without partial cache updates",
+         "[pdu_ingestion][state_groups][limits]")
+{
+    GIVEN("a fork whose state groups exceed a custom per-group event budget")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto store = PersistentStore{};
+        seed_genesis(store, *policy);
+        ingest_test_event(store, "$topic_a", "m.room.topic", std::string{}, "@alice:example.org", 100,
+                          {"$create", "$pl0"}, "{}", {"$alice_join"}, 4U, *policy);
+        ingest_test_event(store, "$topic_b", "m.room.topic", std::string{}, "@alice:example.org", 200,
+                          {"$create", "$pl0"}, "{}", {"$alice_join"}, 4U, *policy);
+
+        REQUIRE(recompute_current_state(store, room_id, *policy));
+        auto const cached_topic = topic_winner(store);
+        auto const cached_state = store.state;
+        auto config = merovingian::config::FederationStateResolutionConfig{};
+        config.max_events_per_state_group = 3U;
+        auto const limits = merovingian::homeserver::state_resolution_limits(config);
+
+        WHEN("state-before and cached current-state resolution use the configured policy")
+        {
+            auto const state_before = compute_state_before(store, room_id, *policy, {"$topic_a", "$topic_b"}, limits);
+            auto const recomputed = recompute_current_state(store, room_id, *policy, limits);
+
+            THEN("over-cap resolution fails closed and leaves cached state untouched")
+            {
+                REQUIRE(limits.max_state_groups == config.max_state_groups);
+                REQUIRE(limits.max_events_per_state_group == 3U);
+                REQUIRE(limits.max_conflicted_state_keys == config.max_conflicted_state_keys);
+                REQUIRE(limits.max_mainline_auth_chain_depth == config.max_mainline_auth_chain_depth);
+                REQUIRE(limits.max_auth_chain_walk_events == config.max_auth_chain_walk_events);
+                REQUIRE(limits.max_total_state_events == config.max_total_state_events);
+                REQUIRE_FALSE(state_before.ok);
+                REQUIRE(recomputed);
+                REQUIRE(topic_winner(store) == cached_topic);
+                REQUIRE(std::ranges::equal(store.state, cached_state, [](auto const& current, auto const& previous) {
+                    return current.room_id == previous.room_id && current.event_type == previous.event_type &&
+                           current.state_key == previous.state_key && current.event_id == previous.event_id;
+                }));
             }
         }
     }

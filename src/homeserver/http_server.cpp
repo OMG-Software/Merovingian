@@ -347,8 +347,8 @@ namespace
 
         // A slot when fewer than `cap` are held; nullopt at the cap. A cap of
         // 0 means unbounded.
-        [[nodiscard]] static auto try_acquire(Counter const& counter,
-                                              std::uint32_t cap) -> std::optional<ParkingReservation>
+        [[nodiscard]] static auto try_acquire(Counter const& counter, std::uint32_t cap)
+            -> std::optional<ParkingReservation>
         {
             auto current = counter->load(std::memory_order_relaxed);
             while (cap == 0U || current < cap)
@@ -499,8 +499,8 @@ namespace
     // client_address_key and refused once that key holds
     // server.http.max_connections_per_ip connections. The same key (and the
     // same exemption) is the connection's per-client worker share (ADR-0077).
-    [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime,
-                                        std::string const& peer_addr) -> ConnectionAdmission
+    [[nodiscard]] auto admit_connection(ClientServerRuntime& runtime, std::string const& peer_addr)
+        -> ConnectionAdmission
     {
         auto const& server = runtime.homeserver.config.server();
         if (std::ranges::find(server.trusted_proxies, peer_addr) != server.trusted_proxies.end())
@@ -664,8 +664,8 @@ namespace
     // returned without touching the socket. The slowloris clocks restart per
     // call, i.e. per request — a keep-alive connection parked between
     // requests is not charged for its idle time.
-    [[nodiscard]] auto read_request_head(ConnectionStream& stream, std::string buffered,
-                                         std::size_t cap) -> std::pair<std::string, std::size_t>
+    [[nodiscard]] auto read_request_head(ConnectionStream& stream, std::string buffered, std::size_t cap)
+        -> std::pair<std::string, std::size_t>
     {
         auto buffer = std::move(buffered);
         // Pipelined head already fully buffered: no recv needed. This check
@@ -997,8 +997,8 @@ namespace
         return std::string{authorization.substr(prefix.size())};
     }
 
-    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body,
-                                           std::string_view peer_addr) -> LocalHttpRequest
+    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body, std::string_view peer_addr)
+        -> LocalHttpRequest
     {
         auto request = LocalHttpRequest{};
         request.method = head.method;
@@ -1169,6 +1169,56 @@ namespace
 
 } // namespace
 
+auto sync_admission_caps(config::HttpTransportConfig const& settings, std::size_t pool_worker_count) noexcept
+    -> SyncAdmissionCaps
+{
+    auto const configured_pool_size =
+        pool_worker_count == 0U ? static_cast<std::size_t>(settings.sync_threads) : pool_worker_count;
+    auto const pool_cap = static_cast<std::uint32_t>(std::min<std::size_t>(
+        configured_pool_size, static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    auto const global = std::min(settings.sync_max_in_flight, pool_cap);
+    return SyncAdmissionCaps{
+        .global = global,
+        .per_user = std::min(settings.sync_max_per_user, global),
+        .per_device = std::min(settings.sync_max_per_device, global),
+    };
+}
+
+auto http_request_limits_for(ClientServerRuntime const& runtime, HttpDispatchMode dispatch_mode,
+                             std::string_view method, std::string_view target) -> http::RequestLimits
+{
+    auto limits = http::RequestLimits{};
+    auto const& runtime_config = runtime.homeserver.config;
+    auto const& http_config = runtime_config.server().http;
+    auto const body_limit = config::parse_size_limit(http_config.max_body_size);
+    if (!body_limit.valid)
+    {
+        return limits;
+    }
+
+    limits.max_start_line_bytes = http_config.max_start_line_bytes;
+    limits.max_header_bytes = http_config.max_header_bytes;
+    limits.max_header_count = http_config.max_header_count;
+    limits.max_body_bytes = body_limit.bytes;
+    if (!http::request_limits_are_valid(limits))
+    {
+        return http::RequestLimits{};
+    }
+
+    constexpr auto send_prefix = std::string_view{"/_matrix/federation/v1/send/"};
+    if (dispatch_mode == HttpDispatchMode::federation && method == "PUT" && target.starts_with(send_prefix))
+    {
+        auto const transaction_limit =
+            config::parse_size_limit(runtime_config.security().federation.max_transaction_size);
+        if (transaction_limit.valid && transaction_limit.bytes <= 64U * 1024U * 1024U)
+        {
+            limits.max_body_bytes = transaction_limit.bytes;
+        }
+    }
+
+    return limits;
+}
+
 // The dispatcher's internals (ADR-0077). Shared: every pool task that carries a
 // connection holds a reference, so a worker finishing a round can always hand
 // its connection back (or close it once stopped) even if the public
@@ -1258,8 +1308,8 @@ namespace
     // slot (in the connection) until the connection is next dispatched, so
     // the Keep-Alive header is never a promise the dispatcher cannot keep.
     [[nodiscard]] auto decide_connection(ConnectionContext const& ctx, HttpConnection& connection,
-                                         http::HttpVersion version,
-                                         std::string_view connection_header) -> http::ConnectionPreference
+                                         http::HttpVersion version, std::string_view connection_header)
+        -> http::ConnectionPreference
     {
         ++connection.requests_served;
         auto const policy = keep_alive_policy_for(ctx);
@@ -1424,16 +1474,16 @@ namespace
     // Returns close_connection / continue_keep_alive, or transferred when a
     // long-poll was handed to the sync pool, which then owns the connection
     // (`owner` is empty on return).
-    [[nodiscard]] auto serve_request_round(ConnectionContext& ctx, HttpConnection& connection,
-                                           ConnectionOwner& owner) -> RoundOutcome
+    [[nodiscard]] auto serve_request_round(ConnectionContext& ctx, HttpConnection& connection, ConnectionOwner& owner)
+        -> RoundOutcome
     {
         auto stream = make_connection_stream(connection);
         if (stream == nullptr)
         {
             return RoundOutcome::close_connection;
         }
-        auto const limits = http::RequestLimits{};
-        auto const head_cap = header_size_cap(limits);
+        auto const head_limits = http_request_limits_for(ctx.runtime, ctx.dispatch_mode, {}, {});
+        auto const head_cap = header_size_cap(head_limits);
         auto const first_request = std::exchange(connection.first_request, false);
         auto [buffer, head_end] = read_request_head(*stream, std::move(connection.leftover), head_cap);
         // std::move leaves it valid-but-unspecified; reset it. It is re-assigned
@@ -1474,7 +1524,7 @@ namespace
             return RoundOutcome::close_connection;
         }
 
-        auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end});
+        auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end}, head_limits);
         if (parse.error != http::RequestErrorCode::none)
         {
             ++ctx.stats.rejected_requests;
@@ -1492,19 +1542,21 @@ namespace
         }
 
         auto const connection_header = find_header_value(parse.request, "connection");
+        auto const request_limits =
+            http_request_limits_for(ctx.runtime, ctx.dispatch_mode, parse.request.method, parse.request.target);
         auto body_tail = std::string{buffer.substr(head_end)};
         auto body = std::string{};
         if (parse.request.has_content_length && parse.request.content_length > 0U)
         {
-            auto const expected = static_cast<std::size_t>(parse.request.content_length);
-            auto effective_cap = body_size_cap(limits);
+            auto const expected_body_bytes = parse.request.content_length;
+            auto effective_cap = body_size_cap(request_limits);
             // HTTP-1 / HTTP-6: the media upload routes may carry up to
             // max_upload_size, but only for a request whose head already
             // authenticates. Anything else is answered from the head alone,
             // before a byte of a large body is read, and the connection closed
             // (its unread body cannot be skipped).
             if (ctx.dispatch_mode == HttpDispatchMode::client_server && parse.request.method == "POST" &&
-                is_media_upload_target(parse.request.target) && expected > effective_cap)
+                is_media_upload_target(parse.request.target) && expected_body_bytes > effective_cap)
             {
                 auto const head_only = build_local_request(parse.request, {}, ctx.peer_addr);
                 if (auto const refusal = media_upload_authentication_refusal(ctx.runtime, head_only);
@@ -1516,7 +1568,7 @@ namespace
                                        {"method",              parse.request.method,                                       false},
                                        {"target",              observability::sanitized_http_target(parse.request.target), false},
                                        {"status",              std::to_string(refusal->status),                            false},
-                                       {"expected_body_bytes", std::to_string(expected),                                   false},
+                                       {"expected_body_bytes", std::to_string(expected_body_bytes),                        false},
                                        {"reason",              "upload body refused before authentication",                false}
                     });
                     std::ignore = send_all(*stream, format_response(refusal->status, refusal->body, refusal->headers));
@@ -1524,7 +1576,7 @@ namespace
                 }
                 effective_cap = max_upload_bytes(ctx.runtime);
             }
-            if (expected > effective_cap)
+            if (expected_body_bytes > effective_cap)
             {
                 ++ctx.stats.rejected_requests;
                 log_diagnostic("request.rejected",
@@ -1532,7 +1584,7 @@ namespace
                                    {"method",              parse.request.method,                                       false},
                                    {"target",              observability::sanitized_http_target(parse.request.target), false},
                                    {"status",              "413",                                                      false},
-                                   {"expected_body_bytes", std::to_string(expected),                                   false},
+                                   {"expected_body_bytes", std::to_string(expected_body_bytes),                        false},
                                    {"limit_bytes",         std::to_string(effective_cap),                              false},
                                    {"reason",              "request body too large",                                   false}
                 });
@@ -1546,6 +1598,7 @@ namespace
             }
             // Drain the body exactly: read precisely Content-Length bytes and
             // keep any surplus (a pipelined next request) for the next round.
+            auto const expected = static_cast<std::size_t>(expected_body_bytes);
             auto body_result = read_remaining_body(*stream, std::move(body_tail), expected, effective_cap, ctx.tuning);
             if (!body_result.complete)
             {
@@ -1597,17 +1650,17 @@ namespace
 
             // Admit before submitting: queued waits count too. One account must
             // not occupy the sync pool, even across tokens, devices and protocols.
-            auto const global_cap =
-                ctx.sync_pool == nullptr
-                    ? 32U
-                    : static_cast<std::uint32_t>(std::min(ctx.sync_pool->worker_count(), std::size_t{32U}));
-            auto const user_cap = std::min(4U, std::max(1U, global_cap / 4U));
-            auto user_slot = ctx.runtime.sync_user_budget->try_acquire(result.wait.user_id, global_cap, user_cap);
+            auto const& sync_settings = ctx.runtime.homeserver.config.server().http;
+            auto const sync_caps = sync_admission_caps(
+                sync_settings, ctx.sync_pool == nullptr ? std::size_t{0U} : ctx.sync_pool->worker_count());
+            auto user_slot =
+                ctx.runtime.sync_user_budget->try_acquire(result.wait.user_id, sync_caps.global, sync_caps.per_user);
             auto const device_key =
                 std::to_string(result.wait.user_id.size()) + ":" + result.wait.user_id + result.wait.device_id;
-            auto device_slot = user_slot.has_value()
-                                   ? ctx.runtime.sync_device_budget->try_acquire(device_key, global_cap, 2U)
-                                   : std::nullopt;
+            auto device_slot =
+                user_slot.has_value()
+                    ? ctx.runtime.sync_device_budget->try_acquire(device_key, sync_caps.global, sync_caps.per_device)
+                    : std::nullopt;
             if (result.wait.user_id.empty() || !user_slot.has_value() || !device_slot.has_value())
             {
                 write_error_response(*stream, 429U,
@@ -1882,8 +1935,8 @@ auto HttpConnectionDispatcher::impl() noexcept -> Impl&
     return *m_impl;
 }
 
-auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
-                                 HttpDispatchMode mode) -> LocalHttpResponse
+auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
+    -> LocalHttpResponse
 {
     // This public API preserves its original blocking behaviour for backward
     // compatibility (tests, one-off callers). The server's hot path uses
@@ -1948,8 +2001,8 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
-                               std::string_view peer_addr) -> bool
+                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool, std::string_view peer_addr)
+    -> bool
 {
     // Direct callers (tests, one-off embeds) keep the historical one-request-
     // per-call contract: with no dispatcher there is nowhere to park the

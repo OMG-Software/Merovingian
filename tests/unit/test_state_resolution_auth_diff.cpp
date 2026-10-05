@@ -110,8 +110,8 @@ private:
 };
 
 [[nodiscard]] auto result_event_for(merovingian::events::StateResolutionResult const& result,
-                                    std::string const& event_type,
-                                    std::string const& state_key) -> StateEventReference const*
+                                    std::string const& event_type, std::string const& state_key)
+    -> StateEventReference const*
 {
     for (auto const& r : result.resolved_state)
     {
@@ -248,6 +248,43 @@ SCENARIO("Fail closed: a missing auth-chain event yields an unresolved result", 
             {
                 REQUIRE_FALSE(result.resolved);
                 REQUIRE_FALSE(result.reason.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution fails closed when its configured auth-chain walk budget is exhausted",
+         "[state_res_v2][limits][fail-closed]")
+{
+    GIVEN("two conflicting power-level state groups and a walk budget smaller than their known chains")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto dag = EventDag{};
+        dag.add(make_ref("m.room.topic", "", "$origin", "@alice:example.org", 1, {}, "{}"));
+        auto const create = dag.add(make_ref("m.room.create", "", "$create", "@alice:example.org", 2, {"$origin"},
+                                             R"({"creator":"@alice:example.org","room_version":"10"})"));
+        auto const pl_a =
+            make_ref("m.room.power_levels", "", "$pl_a", "@alice:example.org", 10, {"$create"}, pl_content_full);
+        auto const pl_b =
+            make_ref("m.room.power_levels", "", "$pl_b", "@bob:example.org", 20, {"$create"}, pl_content_full);
+        auto request = StateResolutionRequest{};
+        request.room_version = "10";
+        request.state_groups = {
+            StateGroup{"branch-a", {pl_a}},
+            StateGroup{"branch-b", {pl_b}}
+        };
+        request.event_lookup = dag.lookup();
+        request.limits.max_auth_chain_walk_events = 1U;
+
+        WHEN("v2 state resolution computes the auth difference")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("it rejects the incomplete walk instead of resolving from partial auth information")
+            {
+                REQUIRE_FALSE(result.resolved);
+                REQUIRE(result.reason.find("auth-chain walk") != std::string::npos);
             }
         }
     }

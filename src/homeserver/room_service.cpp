@@ -162,8 +162,8 @@ namespace
         int count_;
     };
 
-    [[nodiscard]] auto json_object_member(canonicaljson::Object const& object,
-                                          std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto json_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -175,8 +175,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto json_string_member(canonicaljson::Object const& object,
-                                          std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto json_string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = json_object_member(object, key);
         if (value == nullptr)
@@ -186,8 +186,8 @@ namespace
         return std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto json_integer_member(canonicaljson::Object const& object,
-                                           std::string_view key) noexcept -> std::int64_t const*
+    [[nodiscard]] auto json_integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
     {
         auto const* value = json_object_member(object, key);
         if (value == nullptr)
@@ -236,8 +236,8 @@ namespace
     };
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                            std::string_view sender,
-                                            std::string_view client_event_json) -> std::optional<ComposedEvent>;
+                                            std::string_view sender, std::string_view client_event_json)
+        -> std::optional<ComposedEvent>;
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view sender, ComposedEvent const& composed) -> bool;
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
@@ -322,8 +322,8 @@ namespace
 
     // Encrypt raw Ed25519 secret bytes with the operator's master key.  Returns
     // nullopt if no master key is configured or libsodium is unavailable.
-    [[nodiscard]] auto encrypt_signing_secret(HomeserverRuntime const& runtime,
-                                              std::span<std::uint8_t const> secret) -> std::optional<std::string>
+    [[nodiscard]] auto encrypt_signing_secret(HomeserverRuntime const& runtime, std::span<std::uint8_t const> secret)
+        -> std::optional<std::string>
     {
         // Cached against the master key file's identity (finding 3): this used
         // to re-read the root secret and re-derive the box key on every call.
@@ -347,8 +347,8 @@ namespace
         return encode_encrypted_secret_for_storage(*ciphertext);
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -360,15 +360,15 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object,
-                                      std::string_view key) noexcept -> std::int64_t const*
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
@@ -451,8 +451,8 @@ namespace
     // Spec: Matrix v1.19 rooms/v11.md — Authorization rules for m.room.third_party_invite.
     [[nodiscard]] auto serialize_third_party_invite_event_json(
         std::string_view token, std::string_view public_key_base64, std::string_view key_validity_url,
-        std::vector<merovingian::identity::StoreInvitePublicKey> const& public_keys,
-        std::string_view display_name) -> std::optional<std::string>
+        std::vector<merovingian::identity::StoreInvitePublicKey> const& public_keys, std::string_view display_name)
+        -> std::optional<std::string>
     {
         // The IS returns a long-term key and an ephemeral key; both are emitted
         // in `public_keys` so joining servers can verify the join-side `signed`
@@ -495,15 +495,16 @@ namespace
     }
 
     // Forward declaration: defined later in this anonymous namespace.
-    [[nodiscard]] auto find_event_json(database::PersistentStore const& store,
-                                       std::string_view event_id) -> canonicaljson::Value;
+    [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
+        -> canonicaljson::Value;
 
     // Builds the `m.room.member` event that accepts a third-party invite.
     // Its content carries `membership: invite` and the client-supplied signed
     // blob inside `third_party_invite.signed`, satisfying rooms/v11.md rule 4.3.1.
     // The caller must persist this event before attempting the user's actual join.
-    [[nodiscard]] auto serialize_third_party_invite_member_event_json(
-        std::string_view target_user_id, canonicaljson::Object const& signed_obj) -> std::optional<std::string>
+    [[nodiscard]] auto serialize_third_party_invite_member_event_json(std::string_view target_user_id,
+                                                                      canonicaljson::Object const& signed_obj)
+        -> std::optional<std::string>
     {
         auto signed_copy = canonicaljson::Object{};
         signed_copy.reserve(signed_obj.size());
@@ -687,14 +688,14 @@ namespace
         return error == std::errc{} && ptr == room_version.data() + room_version.size() ? parsed : 0;
     }
 
-    [[nodiscard]] auto full_room_alias(config::ServerConfig const& server,
-                                       std::string_view room_alias_name) -> std::string
+    [[nodiscard]] auto full_room_alias(config::ServerConfig const& server, std::string_view room_alias_name)
+        -> std::string
     {
         return "#" + std::string{room_alias_name} + ":" + server.server_name;
     }
 
-    [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object,
-                                                   std::string_view key) -> canonicaljson::Value
+    [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Value
     {
         auto const* value = object_member(object, key);
         auto const* member_object = value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -713,8 +714,8 @@ namespace
         return canonicaljson::Value{std::move(array)};
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
-                                               std::string_view key) noexcept -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -830,14 +831,14 @@ namespace
     // inbound federation can fork a room's tip, and silently produces an
     // event whose bookkeeping the rest of ADR-0064 cannot place (see
     // homeserver::forward_extremities_for_new_event).
-    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store,
-                                                std::string_view room_id) -> std::vector<std::string>
+    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::vector<std::string>
     {
         return forward_extremities_for_new_event(store, room_id);
     }
 
-    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store,
-                                         std::string_view event_id) -> std::optional<std::string>
+    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
+        -> std::optional<std::string>
     {
         auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
             return current.event_id == event_id;
@@ -976,8 +977,8 @@ namespace
 
     [[nodiscard]] auto persist_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
                                                      std::string_view sender_user_id, std::string_view target_user_id,
-                                                     std::string_view membership,
-                                                     std::string_view reason = {}) -> OperationResult
+                                                     std::string_view membership, std::string_view reason = {})
+        -> OperationResult
     {
         auto const event_json = serialize_membership_event_json(target_user_id, membership, reason);
         if (!event_json.has_value())
@@ -1124,8 +1125,8 @@ namespace
         return event_ids;
     }
 
-    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store,
-                                           std::string_view room_id) noexcept -> std::uint64_t
+    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store, std::string_view room_id) noexcept
+        -> std::uint64_t
     {
         auto depth = std::uint64_t{0U};
         for (auto const& event : store.events)
@@ -1166,8 +1167,8 @@ namespace
     }
 
     [[nodiscard]] auto record_local_device_list_change(LocalDatabase& database, std::string_view observer_user_id,
-                                                       std::string_view subject_user_id,
-                                                       std::string_view change_type) -> bool
+                                                       std::string_view subject_user_id, std::string_view change_type)
+        -> bool
     {
         if (observer_user_id == subject_user_id || !is_local_user(database, observer_user_id))
         {
@@ -1225,8 +1226,8 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto find_event_json(database::PersistentStore const& store,
-                                       std::string_view event_id) -> canonicaljson::Value
+    [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
+        -> canonicaljson::Value
     {
         for (auto const& event : store.events)
         {
@@ -1259,8 +1260,8 @@ namespace
 
     [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
                                             std::string_view sender, std::string_view target_state_key,
-                                            std::string_view event_type,
-                                            canonicaljson::Value const& event) -> events::AuthEventMap
+                                            std::string_view event_type, canonicaljson::Value const& event)
+        -> events::AuthEventMap
     {
         auto result = events::AuthEventMap{};
         auto const invite_token = third_party_invite_token(event);
@@ -1303,8 +1304,8 @@ namespace
 
     // Returns the room_version string from the room's m.room.create event, or "10"
     // as a safe fallback for rooms that pre-date initial-state generation.
-    [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store,
-                                             std::string_view room_id) -> std::string
+    [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::string
     {
         for (auto const& state : store.state)
         {
@@ -1339,8 +1340,8 @@ namespace
     }
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                            std::string_view sender,
-                                            std::string_view client_event_json) -> std::optional<ComposedEvent>
+                                            std::string_view sender, std::string_view client_event_json)
+        -> std::optional<ComposedEvent>
     {
         auto const parsed = canonicaljson::parse_lossless(client_event_json);
         auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
@@ -1592,7 +1593,8 @@ namespace
         event.prev_event_ids = composed.prev_event_ids;
         event.auth_event_ids = composed.auth_event_ids;
         event.signatures = composed.signatures;
-        return store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state));
+        return store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state),
+                                 state_resolution_limits(runtime.config.security().federation.state_resolution));
     }
 
     [[nodiscard]] auto emit_initial_state_event(HomeserverRuntime& runtime, std::string_view room_id,
@@ -1704,8 +1706,8 @@ namespace
 [[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
                                                  std::string_view key_id, core::SecretBuffer secret_key,
-                                                 std::string_view diagnostic_event,
-                                                 std::uint32_t deadline_seconds) -> std::pair<bool, std::string>
+                                                 std::string_view diagnostic_event, std::uint32_t deadline_seconds)
+    -> std::pair<bool, std::string>
 {
     auto const bounded = std::optional<BoundedOutboundLimits>{
         BoundedOutboundLimits{OutboundDeadline{deadline_seconds},
@@ -1715,11 +1717,12 @@ namespace
                                  deadline_seconds, 0U, bounded);
 }
 
-[[nodiscard]] auto perform_outbound_call(
-    HomeserverRuntime& runtime, std::string_view room_id, federation::OutboundTransaction const& transaction,
-    std::string_view key_id, core::SecretBuffer secret_key, std::string_view diagnostic_event,
-    std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
-    std::optional<BoundedOutboundLimits> const& bounded) -> std::pair<bool, std::string>
+[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
+                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
+                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
+                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+                                         std::optional<BoundedOutboundLimits> const& bounded)
+    -> std::pair<bool, std::string>
 {
     if (bounded.has_value() && bounded->deadline.expired())
     {
@@ -1940,8 +1943,8 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
 // Decrypt a stored signing secret.  Returns nullopt if the value is encrypted
 // but cannot be decrypted (wrong master key / corrupted).  For legacy plaintext
 // rows, returns the decoded bytes directly.
-[[nodiscard]] auto decrypt_stored_signing_secret(HomeserverRuntime const& runtime,
-                                                 std::string_view stored) -> std::optional<core::SecretBuffer>
+[[nodiscard]] auto decrypt_stored_signing_secret(HomeserverRuntime const& runtime, std::string_view stored)
+    -> std::optional<core::SecretBuffer>
 {
     if (auto const ciphertext = decode_encrypted_secret_from_storage(stored); ciphertext.has_value())
     {
@@ -3180,8 +3183,8 @@ namespace
 // are correctly persisted. Do NOT change the state-key check without updating the
 // corresponding test in tests/unit/test_federation_invite_join.cpp.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, std::string_view room_id,
-                                          canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult
+                                          canonicaljson::Array const& state_arr, rooms::RoomVersionPolicy const& policy)
+    -> SendJoinStateIngestResult
 {
     auto result = SendJoinStateIngestResult{};
     auto& joined_members = result.joined_members;
@@ -3307,8 +3310,8 @@ namespace
 }
 
 auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
-                                      rooms::RoomVersionPolicy const& policy,
-                                      std::string_view our_server) -> canonicaljson::Array
+                                      rooms::RoomVersionPolicy const& policy, std::string_view our_server)
+    -> canonicaljson::Array
 {
     if (events.empty())
     {
@@ -3497,8 +3500,8 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     return verified;
 }
 
-auto split_send_join_state_events(canonicaljson::Array const& state_arr,
-                                  std::string_view our_user_id) -> SendJoinStateSplit
+auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::string_view our_user_id)
+    -> SendJoinStateSplit
 {
     auto split = SendJoinStateSplit{};
     for (auto const& entry : state_arr)
@@ -3576,7 +3579,7 @@ namespace
             : runtime_{runtime}
             , room_id_{room_id}
         {
-            if (runtime_.pending_federated_joins.size() < max_pending_join_rooms)
+            if (runtime_.pending_federated_joins.size() < runtime_.federation.config.pending_join_max_rooms)
             {
                 active_ = runtime_.pending_federated_joins.try_emplace(room_id_).second;
             }
@@ -3614,8 +3617,8 @@ namespace
                                               std::vector<std::string> candidates,
                                               std::vector<std::string> const& supported_versions,
                                               std::optional<database::PersistentServerSigningKey> const& signing_key,
-                                              std::string_view key_id,
-                                              core::SecretBuffer secret_key) -> FederatedJoinOutcome
+                                              std::string_view key_id, core::SecretBuffer secret_key)
+        -> FederatedJoinOutcome
     {
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
         // calls and return on the first successful response. Still-running losers are
@@ -4379,7 +4382,9 @@ namespace
                         runtime.database.persistent_store, room_id, join_event_id, {}, snapshot_group_id, state_after);
                     if (join_group.has_value())
                     {
-                        if (!recompute_current_state(runtime.database.persistent_store, room_id, policy))
+                        if (!recompute_current_state(
+                                runtime.database.persistent_store, room_id, policy,
+                                state_resolution_limits(runtime.config.security().federation.state_resolution)))
                         {
                             return make_operation_result(false, {}, "join current-state persistence failed", 500U);
                         }
@@ -4775,8 +4780,8 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
-[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token,
-                              std::string_view room_id) -> OperationResult
+[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+    -> OperationResult
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     log_diagnostic("room.leave.started", {
@@ -5449,8 +5454,8 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
-[[nodiscard]] auto forget_room(HomeserverRuntime& runtime, std::string_view access_token,
-                               std::string_view room_id) -> OperationResult
+[[nodiscard]] auto forget_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+    -> OperationResult
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
@@ -5494,8 +5499,8 @@ namespace
     return make_operation_result(true, std::string{room_id});
 }
 
-[[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token,
-                              std::string_view room_id) -> OperationResult
+[[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+    -> OperationResult
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
@@ -5539,13 +5544,8 @@ namespace
     // it SEQUENTIALLY inside one dispatch_push_deliveries background task —
     // up to server.push.total_timeout_seconds (default 30s) per pusher. An
     // unbounded list therefore lets one recipient's pusher count alone keep a
-    // task (and, repeated across events, one of the
-    // k_max_in_flight_push_deliveries slots below) occupied for minutes to
-    // hours, independent of the 128-task cap. 10 comfortably covers a real
-    // user's device count (phone, tablet, a couple of desktops/browsers) while
-    // bounding the worst case to 10 * total_timeout_seconds per event rather
-    // than unbounded.
-    static constexpr auto k_max_pushers_per_delivery = std::size_t{10U};
+    // task (and repeatedly occupy a background-delivery slot) for minutes to
+    // hours. The configured cap bounds sequential gateway calls per event.
 
     // Resolves `member`'s display name FOR THIS ROOM: the `displayname` field
     // of their current `m.room.member` state event, if present and non-empty.
@@ -5595,8 +5595,8 @@ namespace
     // shape events::extract_user_power_level/extract_power_level_key expect.
     // Returns a null Value (both helpers treat that as "use every default")
     // when the room has no power_levels state yet.
-    [[nodiscard]] auto room_power_levels_event_value(database::PersistentStore const& store,
-                                                     std::string_view room_id) -> canonicaljson::Value
+    [[nodiscard]] auto room_power_levels_event_value(database::PersistentStore const& store, std::string_view room_id)
+        -> canonicaljson::Value
     {
         auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
             return state.room_id == room_id && state.event_type == "m.room.power_levels" && state.state_key.empty();
@@ -5704,9 +5704,10 @@ namespace
     // itself). Safe to call under runtime.mutex, which send_event() already
     // holds when it calls this. Only the Push Gateway network calls happen
     // later, off the request path — see dispatch_push_deliveries.
-    [[nodiscard]] auto build_pending_push_deliveries(
-        HomeserverRuntime& runtime, LocalRoom const& room, ComposedEvent const& composed, std::string_view sender,
-        std::span<std::string const> extra_recipients = {}) -> std::vector<PendingPushDelivery>
+    [[nodiscard]] auto build_pending_push_deliveries(HomeserverRuntime& runtime, LocalRoom const& room,
+                                                     ComposedEvent const& composed, std::string_view sender,
+                                                     std::span<std::string const> extra_recipients = {})
+        -> std::vector<PendingPushDelivery>
     {
         auto deliveries = std::vector<PendingPushDelivery>{};
         auto& store = runtime.database.persistent_store;
@@ -5884,21 +5885,24 @@ namespace
             // configured tag, but this recording happens once per (user,
             // event) rather than once per pusher.
             std::ignore = database::store_notification(
-                store, database::PersistentNotification{std::string{member}, room.room_id, composed.event_id,
-                                                        persisted_stream_ordering, notification_ts,
-                                                        push_notification_actions_json(result), std::string{},
-                                                        result.tweak_highlight});
+                store,
+                database::PersistentNotification{
+                    std::string{member}, room.room_id, composed.event_id, persisted_stream_ordering, notification_ts,
+                    push_notification_actions_json(result), std::string{}, result.tweak_highlight},
+                static_cast<std::size_t>(runtime.config.server().client_api.max_notifications_retained_per_user));
 
             if (!push_delivery_enabled)
             {
                 continue;
             }
             auto pushers = database::list_pushers_for_user(store, member);
+            auto const max_pushers_per_delivery =
+                static_cast<std::size_t>(runtime.config.server().push.max_pushers_per_delivery);
             if (pushers.empty())
             {
                 continue;
             }
-            if (pushers.size() > k_max_pushers_per_delivery)
+            if (pushers.size() > max_pushers_per_delivery)
             {
                 // Mirrors dispatch_push_deliveries's push.delivery.dropped log
                 // below: never truncate silently. The recipient still gets
@@ -5908,12 +5912,12 @@ namespace
                 // surface on its own.
                 log_diagnostic("push.pushers.truncated",
                                {
-                                   {"user_id",   std::string{member},                        false},
-                                   {"total",     std::to_string(pushers.size()),             false},
-                                   {"processed", std::to_string(k_max_pushers_per_delivery), false}
+                                   {"user_id",   std::string{member},                      false},
+                                   {"total",     std::to_string(pushers.size()),           false},
+                                   {"processed", std::to_string(max_pushers_per_delivery), false}
                 },
                                observability::LogEventSeverity::warning);
-                pushers.resize(k_max_pushers_per_delivery);
+                pushers.resize(max_pushers_per_delivery);
             }
 
             auto const unread = total_unread_count(runtime, member);
@@ -6016,11 +6020,8 @@ namespace
     // of how many individual notifications it carries — run_pending_push_
     // deliveries loops over every PendingPushDelivery sequentially within
     // that one task — so this is a per-event, not per-notification, cap.
-    // 128 gives a busy multi-room deployment ample headroom under normal
-    // message volume while still bounding thread creation against a hostile
-    // or misbehaving client driving a high send rate; same order of
-    // magnitude as k_max_join_parallelism above.
-    static constexpr auto k_max_in_flight_push_deliveries = std::size_t{128U};
+    // The configured cap bounds thread creation against high send rates while
+    // remaining adjustable for the deployment's available resources.
 
     // Dispatches `deliveries` asynchronously (see run_pending_push_deliveries)
     // and parks the future in runtime.orphan_futures_. No-op when there is
@@ -6031,7 +6032,7 @@ namespace
     // orphan_futures_ (shared with join_room's make_join race — see
     // reap_completed_futures) so the vector does not grow by one entry per
     // event for the life of the runtime, and checks
-    // push_delivery_in_flight_ against k_max_in_flight_push_deliveries so a
+    // push_delivery_in_flight_ against the configured cap so a
     // busy room or a client sending many events cannot drive unbounded
     // thread creation. At capacity, the delivery is dropped — never spawned,
     // never blocked on — and a warning is logged: a missed push is
@@ -6046,12 +6047,13 @@ namespace
         {
             auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
             reap_completed_futures(runtime.orphan_futures_);
-            if (at_background_task_capacity(runtime.push_delivery_in_flight_, k_max_in_flight_push_deliveries))
+            auto const max_in_flight = static_cast<std::size_t>(runtime.config.server().push.max_in_flight_deliveries);
+            if (at_background_task_capacity(runtime.push_delivery_in_flight_, max_in_flight))
             {
                 log_diagnostic("push.delivery.dropped",
                                {
                                    {"in_flight",  std::to_string(runtime.push_delivery_in_flight_), false},
-                                   {"cap",        std::to_string(k_max_in_flight_push_deliveries),  false},
+                                   {"cap",        std::to_string(max_in_flight),                    false},
                                    {"deliveries", std::to_string(deliveries.size()),                false}
                 },
                                observability::LogEventSeverity::warning);
@@ -6137,7 +6139,8 @@ namespace
 
         auto const result = [&]() {
             auto const unlocked = RuntimeLockRelease{};
-            auto client = appservice::AppserviceClient{*runtime.outbound_client, *runtime.cached_discovery};
+            auto client = appservice::AppserviceClient{*runtime.outbound_client, *runtime.cached_discovery,
+                                                       runtime.config.appservice()};
             return client.send_transaction(registration, transaction);
         }();
 
@@ -6602,8 +6605,8 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
 // injecting server-generated fields: event_id and, for state events,
 // unsigned.replaces_state (Matrix v1.19). Shared by /messages, GET
 // /rooms/{roomId}/state, and the client_server.cpp event serializer.
-[[nodiscard]] auto client_event_with_id(database::PersistentStore const& store,
-                                        database::PersistentEvent const& event) -> canonicaljson::Value
+[[nodiscard]] auto client_event_with_id(database::PersistentStore const& store, database::PersistentEvent const& event)
+    -> canonicaljson::Value
 {
     auto const parsed = canonicaljson::parse_lossless(event.json);
     if (parsed.error != canonicaljson::ParseError::none)
@@ -6820,7 +6823,7 @@ namespace
     auto const from_token = parse_stream_ordering_token(request.from);
     auto const to_token = parse_stream_ordering_token(request.to);
     auto constexpr default_limit = std::uint64_t{100U};
-    auto constexpr max_limit = std::uint64_t{1000U};
+    auto const max_limit = static_cast<std::uint64_t>(runtime.config.server().client_api.max_relations_page_size);
     auto limit = request.limit.value_or(default_limit);
     if (limit == 0U || limit > max_limit)
     {
@@ -7093,7 +7096,7 @@ namespace
     }
 
     auto constexpr default_limit = std::uint64_t{50U};
-    auto constexpr max_limit = std::uint64_t{500U};
+    auto const max_limit = static_cast<std::uint64_t>(runtime.config.server().client_api.max_threads_page_size);
     auto const limit = std::min(request.limit.value_or(default_limit), max_limit);
     auto end = listed.size();
     if (end - start > static_cast<std::size_t>(limit))

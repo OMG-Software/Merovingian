@@ -181,8 +181,8 @@ auto register_http_pusher_with_extra_data(merovingian::homeserver::ClientServerR
 
 // PUT /rooms/{roomId}/send/m.room.message/{txnId} — a plain text message.
 [[nodiscard]] auto send_text_message(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
-                                     std::string const& room_id, std::string const& txn_id,
-                                     std::string const& body) -> merovingian::homeserver::DispatchResult
+                                     std::string const& room_id, std::string const& txn_id, std::string const& body)
+    -> merovingian::homeserver::DispatchResult
 {
     return merovingian::homeserver::handle_client_server_request(
         runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn_id, token,
@@ -226,8 +226,8 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
     }
 }
 
-[[nodiscard]] auto pusher_count(merovingian::homeserver::ClientServerRuntime& runtime,
-                                std::string const& token) -> std::size_t
+[[nodiscard]] auto pusher_count(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::size_t
 {
     auto const response = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
@@ -241,8 +241,8 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
 // Creates a private_chat room with only alice as a member — deliberately
 // does NOT invite bob, so the room's membership state (and LocalRoom::members)
 // never includes him until the WHEN clause invites him. Returns the room ID.
-[[nodiscard]] auto room_with_alice_only(merovingian::homeserver::ClientServerRuntime& runtime,
-                                        std::string const& alice) -> std::string
+[[nodiscard]] auto room_with_alice_only(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& alice)
+    -> std::string
 {
     auto const create = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/createRoom", alice, R"({"preset":"private_chat"})"});
@@ -257,8 +257,8 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
 // Named _via_http to avoid any ambiguity with merovingian::homeserver::invite_user
 // (the room_service.cpp entry point this HTTP call ultimately dispatches to).
 [[nodiscard]] auto invite_user_via_http(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
-                                        std::string const& room_id,
-                                        std::string const& user_id) -> merovingian::homeserver::DispatchResult
+                                        std::string const& room_id, std::string const& user_id)
+    -> merovingian::homeserver::DispatchResult
 {
     return merovingian::homeserver::handle_client_server_request(
         runtime,
@@ -280,8 +280,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, st
 }
 
 // GET /_matrix/client/v3/notifications, parsed into an object.
-[[nodiscard]] auto get_notifications(merovingian::homeserver::ClientServerRuntime& runtime,
-                                     std::string const& token) -> merovingian::canonicaljson::Object
+[[nodiscard]] auto get_notifications(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> merovingian::canonicaljson::Object
 {
     auto const response = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
@@ -468,10 +468,11 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
 // NOT named: this room is v12 (MSC4291, create_room's default), where the
 // create event is implicit in the room ID and naming it is itself a
 // selection violation; ingest_pdu_event resolves it separately for v12.
-[[nodiscard]] auto make_federation_message_envelope(
-    merovingian::homeserver::ClientServerRuntime const& runtime, std::string const& room_id, std::string const& sender,
-    std::string const& remote_member_event_id, std::string const& body,
-    std::string const& event_id) -> merovingian::federation::InboundPduEnvelope
+[[nodiscard]] auto make_federation_message_envelope(merovingian::homeserver::ClientServerRuntime const& runtime,
+                                                    std::string const& room_id, std::string const& sender,
+                                                    std::string const& remote_member_event_id, std::string const& body,
+                                                    std::string const& event_id)
+    -> merovingian::federation::InboundPduEnvelope
 {
     namespace canonicaljson = merovingian::canonicaljson;
     auto const& store = runtime.homeserver.database.persistent_store;
@@ -925,7 +926,7 @@ SCENARIO("a completed push-delivery task is reaped before the next one is parked
 // creation itself. Directly saturates HomeserverRuntime::push_delivery_
 // in_flight_ (guarded by orphan_futures_mutex_, same as reap_completed_
 // futures above) rather than spawning the real cap's worth of concurrent
-// deliveries — see room_service.cpp's k_max_in_flight_push_deliveries.
+// deliveries — see the configured max_in_flight_deliveries.
 SCENARIO("exceeding the in-flight push-delivery cap drops the notification instead of spawning it",
          "[integration][push]")
 {
@@ -934,6 +935,7 @@ SCENARIO("exceeding the in-flight push-delivery cap drops the notification inste
         auto started = merovingian::homeserver::start_client_server(push_test_config());
         REQUIRE(started.started);
         started.runtime.homeserver.config.server().push.enabled = true;
+        started.runtime.homeserver.config.server().push.max_in_flight_deliveries = 1U;
 
         auto const alice = register_and_login(started.runtime, "alice");
         auto const bob = register_and_login(started.runtime, "bob");
@@ -948,13 +950,11 @@ SCENARIO("exceeding the in-flight push-delivery cap drops the notification inste
         register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-pushkey-cap",
                              "https://push-cap-must-not-be-contacted.invalid/_matrix/push/v1/notify");
 
-        // Simulate the cap already being reached by every existing delivery
-        // task, without spawning (and waiting out) the real cap's worth of
-        // concurrent tasks. Any value at or above the real cap exercises the
-        // same drop-not-spawn branch.
+        // Simulate the configured cap already being reached, without
+        // spawning (and waiting out) that many concurrent tasks.
         {
             auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
-            started.runtime.homeserver.push_delivery_in_flight_ = 1'000'000U;
+            started.runtime.homeserver.push_delivery_in_flight_ = 1U;
         }
 
         WHEN("alice sends a message that would otherwise notify bob")
@@ -971,7 +971,7 @@ SCENARIO("exceeding the in-flight push-delivery cap drops the notification inste
             THEN("the saturated counter is untouched by the dropped delivery — it was never incremented")
             {
                 auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
-                REQUIRE(started.runtime.homeserver.push_delivery_in_flight_ == 1'000'000U);
+                REQUIRE(started.runtime.homeserver.push_delivery_in_flight_ == 1U);
             }
         }
     }
@@ -1484,10 +1484,10 @@ SCENARIO("a locally composed event is still delivered exactly once now that fede
 // POST /pushers/set has no per-user limit on distinct (app_id, pushkey)
 // pairs, and build_pending_push_deliveries used to copy and process every one
 // of a recipient's pushers sequentially inside a single background task —
-// unbounded by the 128-task in-flight cap, which only bounds the number of
+// unbounded by the configured task in-flight cap, which only bounds the number of
 // *tasks*, not the work inside one. Fixed by room_service.cpp's
-// k_max_pushers_per_delivery (10): only the first 10 of a recipient's
-// pushers are contacted per event; the rest are skipped (with a
+// configured max_pushers_per_delivery: only the configured number of a
+// recipient's pushers are contacted per event; the rest are skipped (with a
 // push.pushers.truncated warning log, not silently).
 SCENARIO("a recipient with more pushers than the per-delivery cap only has the capped number actually contacted "
          "for one event",
@@ -1499,6 +1499,7 @@ SCENARIO("a recipient with more pushers than the per-delivery cap only has the c
         auto started = merovingian::homeserver::start_client_server(push_test_config());
         REQUIRE(started.started);
         started.runtime.homeserver.config.server().push.enabled = true;
+        started.runtime.homeserver.config.server().push.max_pushers_per_delivery = 3U;
 
         auto const alice = register_and_login(started.runtime, "alice");
         auto const bob = register_and_login(started.runtime, "bob");
@@ -1516,9 +1517,8 @@ SCENARIO("a recipient with more pushers than the per-delivery cap only has the c
         started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
             merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
 
-        // 12 distinct (app_id, pushkey) pushers for bob -- 2 more than
-        // room_service.cpp's k_max_pushers_per_delivery (10).
-        auto constexpr registered_pusher_count = 12U;
+        // Five distinct pushers for bob exercise a custom cap of three.
+        auto constexpr registered_pusher_count = 5U;
         for (auto i = 0U; i < registered_pusher_count; ++i)
         {
             register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-pushkey-cap-" + std::to_string(i),
@@ -1526,7 +1526,7 @@ SCENARIO("a recipient with more pushers than the per-delivery cap only has the c
         }
         REQUIRE(pusher_count(started.runtime, bob) == registered_pusher_count);
 
-        auto constexpr expected_processed = 10U; // room_service.cpp's k_max_pushers_per_delivery
+        auto constexpr expected_processed = 3U;
         auto const ok_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
         auto path_responses = std::vector<std::pair<std::string, std::string>>{};
         for (auto i = 0U; i < expected_processed; ++i)
@@ -1551,7 +1551,7 @@ SCENARIO("a recipient with more pushers than the per-delivery cap only has the c
                 server_thread.join();
             }
 
-            THEN("exactly the capped number of pushers were actually contacted, not all twelve")
+            THEN("exactly the configured number of pushers were contacted, not all five")
             {
                 REQUIRE(captured_requests.size() == expected_processed);
             }

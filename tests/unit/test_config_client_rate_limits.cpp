@@ -48,7 +48,7 @@ SCENARIO("Default config leaves the per-IP and per-user maps empty and falls bac
                 REQUIRE(limits.per_user.empty());
                 // The struct default keeps the rate-limit engine's
                 // "everything else" bucket at 90 requests per 60s.
-                REQUIRE(limits.default_per_ip.max_requests == 90U);
+                REQUIRE(limits.default_per_ip.max_requests == 600U);
                 REQUIRE(limits.default_per_ip.window_seconds == 60U);
             }
         }

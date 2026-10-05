@@ -1513,6 +1513,88 @@ SCENARIO("Persistent store transactions commit all rows or no rows", "[database]
     }
 }
 
+SCENARIO("Notification retention keeps the newest configured number of rows durably",
+         "[database][persistence][notifications][boundary]")
+{
+    GIVEN("a SQLite store with a per-user notification retention cap of two")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("three notifications are recorded for the same user")
+        {
+            for (auto const ordering : {1U, 2U, 3U})
+            {
+                REQUIRE(merovingian::database::store_notification(store,
+                                                                  {"@alice:example.org",
+                                                                   "!room:example.org",
+                                                                   "$event" + std::to_string(ordering),
+                                                                   ordering,
+                                                                   1000U + ordering,
+                                                                   "[]",
+                                                                   {},
+                                                                   false},
+                                                                  2U));
+            }
+            auto const memory_rows = merovingian::database::list_notifications_for_user(store, "@alice:example.org");
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("only the newest two remain in memory and after reopening the database")
+            {
+                REQUIRE(memory_rows.size() == 2U);
+                REQUIRE(memory_rows[0].event_id == "$event2");
+                REQUIRE(memory_rows[1].event_id == "$event3");
+                auto const durable_rows =
+                    merovingian::database::list_notifications_for_user(reopened.store, "@alice:example.org");
+                REQUIRE(durable_rows.size() == 2U);
+                REQUIRE(durable_rows[0].event_id == "$event2");
+                REQUIRE(durable_rows[1].event_id == "$event3");
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("Default notification retention exceeds the previous fixed cap", "[database][persistence][notifications]")
+{
+    GIVEN("a SQLite store using the default notification retention policy")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("201 notifications are recorded for one user")
+        {
+            for (auto ordering = 1U; ordering <= 201U; ++ordering)
+            {
+                REQUIRE(merovingian::database::store_notification(store, {"@alice:example.org",
+                                                                          "!room:example.org",
+                                                                          "$event" + std::to_string(ordering),
+                                                                          ordering,
+                                                                          1000U + ordering,
+                                                                          "[]",
+                                                                          {},
+                                                                          false}));
+            }
+
+            THEN("all 201 remain available rather than being pruned at the old limit")
+            {
+                auto const rows = merovingian::database::list_notifications_for_user(store, "@alice:example.org");
+                REQUIRE(rows.size() == 201U);
+                REQUIRE(rows.front().event_id == "$event1");
+                REQUIRE(rows.back().event_id == "$event201");
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("Persistent store offers atomic helpers for multi-row runtime mutations",
          "[database][persistence][transaction]")
 {

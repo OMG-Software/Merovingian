@@ -62,10 +62,10 @@ server.cors.max_age=86400
 # listener. One client address may hold at most a quarter of its workers at
 # once (addresses in server.trusted_proxies are exempt), and remote directory
 # and media proxying at most half. Restart required.
-server.http.request_threads=16
+server.http.request_threads=32
 server.http.keep_alive=true
 server.http.keep_alive_idle_seconds=15
-server.http.keep_alive_max_connections=8
+server.http.keep_alive_max_connections=256
 # Per-client connection cap (ADR-0072). One client address may hold at most
 # max_connections_per_ip (1..65535) open connections on the client and
 # federation listeners; a further connection is closed at accept time, before
@@ -75,7 +75,7 @@ server.http.keep_alive_max_connections=8
 # server.trusted_proxies are exempt: behind a reverse proxy every client
 # arrives from the proxy's address, so limit connections per client at the
 # proxy. Restart required.
-server.http.max_connections_per_ip=64
+server.http.max_connections_per_ip=256
 server.http.ipv6_client_prefix_length=64
 
 # Identity Service API — third-party identifiers (3PIDs: email, msisdn)
@@ -228,10 +228,10 @@ security.federation.remote_timeout=60s
 # endpoint. Format is N/Ns, as with client_rate_limits below.
 security.federation.max_transaction_pdus=50
 security.federation.max_transaction_edus=100
-security.federation.per_origin_transaction_rate=120/60s
-security.federation.per_origin_pdu_rate=600/60s
-security.federation.per_origin_edu_rate=1200/60s
-security.federation.per_origin_request_rate=600/60s
+security.federation.per_origin_transaction_rate=600/60s
+security.federation.per_origin_pdu_rate=6000/60s
+security.federation.per_origin_edu_rate=12000/60s
+security.federation.per_origin_request_rate=3000/60s
 
 # Pre-authentication remote-key resolution budgets
 # Resolving a peer's signing key necessarily happens BEFORE its request
@@ -255,9 +255,9 @@ security.federation.per_origin_request_rate=600/60s
 # A legitimate new peer needs exactly one resolution, after which its record is
 # cached, so these defaults are generous for real federation traffic.
 # Changing any of them requires a restart.
-security.federation.key_resolution_per_ip_rate=10/60s
-security.federation.key_resolution_max_in_flight=8
-security.federation.key_resolution_failure_ttl=300s
+security.federation.key_resolution_per_ip_rate=30/60s
+security.federation.key_resolution_max_in_flight=16
+security.federation.key_resolution_failure_ttl=60s
 
 # Join/leave membership budget
 # make_join/send_join/make_leave/send_leave get a separate, longer budget than
@@ -275,7 +275,7 @@ security.federation.key_resolution_failure_ttl=300s
 # make_join/send_join specifically: a large room's full state can exceed
 # 16 MiB even once it arrives within budget. Also sizes the federation-worker
 # IPC frame cap, so changing it requires restarting the server (and worker).
-# See docs/configuration.md for full details.
+# All security.federation settings require restart; see docs/user-manual.md.
 security.federation.join_timeout=180s
 security.federation.join_parallelism=8
 security.federation.join_race_deadline=45s
@@ -503,7 +503,7 @@ security.logging.structured=true
 client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
 client_rate_limits.per_ip./_matrix/client/v3/register=20/60s
 client_rate_limits.per_user./_matrix/client/v3/login=5/60s
-client_rate_limits.default_per_ip=90/60s
+client_rate_limits.default_per_ip=600/60s
 
 # Per-tier budgets. Every route belongs to exactly one tier, so a tier line
 # retunes a whole class of endpoints without naming each path. An unknown tier
@@ -515,15 +515,15 @@ client_rate_limits.default_per_ip=90/60s
 #   admin           operator-only endpoints
 #   generic         everything else
 #client_rate_limits.tier.auth_sensitive=20/60s
-#client_rate_limits.tier.media=20/60s
-#client_rate_limits.tier.sync=90/60s
-#client_rate_limits.tier.federation=600/60s
+#client_rate_limits.tier.media=120/60s
+#client_rate_limits.tier.sync=3000/60s
+#client_rate_limits.tier.federation=3000/60s
 #client_rate_limits.tier.admin=30/60s
-#client_rate_limits.tier.generic=90/60s
-# Thumbnail requests have a built-in 60/60s refinement. Raise only these
+#client_rate_limits.tier.generic=600/60s
+# Thumbnail requests have a built-in 240/60s refinement. Raise only these
 # prefixes if clients still receive 429 responses during room rendering:
-#client_rate_limits.per_ip./_matrix/client/v1/media/thumbnail=120/60s
-#client_rate_limits.per_ip./_matrix/media/v3/thumbnail=120/60s
+#client_rate_limits.per_ip./_matrix/client/v1/media/thumbnail=480/60s
+#client_rate_limits.per_ip./_matrix/media/v3/thumbnail=480/60s
 
 # Per-module log level overrides
 # Each entry maps a logger name to a level (trace|debug|info|notice|
@@ -577,3 +577,89 @@ client_rate_limits.default_per_ip=90/60s
 
 # All log module config
 log_modules.*=debug
+
+# Operational budgets (restart main and federation workers after changing).
+# Counts and bytes remain finite. Raise from observed demand, not user count alone.
+# /state_ids ID capacity includes cached events; network work has separate budgets.
+# Existing installations must update explicit old values to obtain the new defaults.
+
+# server.client_api
+server.client_api.max_sync_rooms=1000
+server.client_api.max_sync_events_per_room=100
+server.client_api.max_search_events_scanned=10000
+server.client_api.max_messages_events_examined=10000
+server.client_api.max_messages_page_size=500
+server.client_api.max_context_events=100
+server.client_api.max_search_page_size=100
+server.client_api.max_search_context_events=100
+server.client_api.sliding_sync_max_timeline_limit=500
+server.client_api.sliding_sync_max_room_subscriptions=1024
+server.client_api.sliding_sync_max_required_state_entries=1024
+server.client_api.sliding_sync_connections_per_device=16
+server.client_api.max_registration_validation_sessions=1024
+server.client_api.max_registration_validation_sessions_per_remote=16
+server.client_api.max_uia_sessions=2048
+server.client_api.max_safety_report_rows=1000
+server.client_api.max_notifications_page_size=1000
+server.client_api.max_relations_page_size=500
+server.client_api.max_public_rooms_page_size=1000
+server.client_api.max_hierarchy_rooms=1000
+server.client_api.max_threads_page_size=500
+server.client_api.max_notifications_retained_per_user=1000
+server.client_api.max_body_size=1MiB
+
+# server.http
+server.http.sync_threads=128
+server.http.sync_max_in_flight=128
+server.http.sync_max_per_user=8
+server.http.sync_max_per_device=4
+server.http.max_start_line_bytes=8192
+server.http.max_header_bytes=32768
+server.http.max_header_count=100
+server.http.max_body_size=1MiB
+
+# server.push
+server.push.max_pushers_per_delivery=25
+server.push.max_in_flight_deliveries=256
+
+# security.federation.backfill
+security.federation.backfill.max_missing_events=20
+security.federation.backfill.max_outbound_calls=16
+security.federation.backfill.max_state_ids=65536
+security.federation.backfill.max_auth_chain_ids=65536
+security.federation.backfill.max_snapshot_events=131072
+security.federation.backfill.max_snapshot_outbound_calls=256
+security.federation.backfill.max_total_outbound_calls=512
+security.federation.backfill.response_max_size=16MiB
+security.federation.backfill.timeout=45s
+
+# security.federation
+security.federation.accepted_transaction_cache_entries=50000
+security.federation.audit_event_cache_entries=10000
+security.federation.key_resolution_cache_entries=16384
+security.federation.bad_signature_cache_entries=4096
+security.federation.pending_join_max_rooms=32
+security.federation.pending_join_max_pdus=256
+security.federation.outbound_queue_capacity=4096
+security.federation.outbound_max_retries=32
+security.federation.pending_join_max_size=4MiB
+security.federation.bad_signature_per_ip_rate=30/60s
+
+# security.federation.query
+security.federation.query.max_backfill_pdus=500
+security.federation.query.max_missing_events_pdus=100
+security.federation.query.max_missing_events_latest=100
+security.federation.query.max_missing_events_traversal=4096
+
+# security.federation.state_resolution
+security.federation.state_resolution.max_state_groups=1000
+security.federation.state_resolution.max_events_per_state_group=65536
+security.federation.state_resolution.max_total_state_events=131072
+security.federation.state_resolution.max_conflicted_state_keys=65536
+security.federation.state_resolution.max_mainline_auth_chain_depth=10000
+security.federation.state_resolution.max_auth_chain_walk_events=131072
+
+# appservice
+appservice.connect_timeout_seconds=10
+appservice.total_timeout_seconds=30
+appservice.response_max_size=16MiB

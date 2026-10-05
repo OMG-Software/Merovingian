@@ -6,6 +6,7 @@
 #include "merovingian/events/limits.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -53,6 +54,16 @@ struct StateGroup final
     std::vector<StateEventReference> state{};
 };
 
+struct StateResolutionLimits final
+{
+    std::size_t max_state_groups{merovingian::events::max_state_groups};
+    std::size_t max_events_per_state_group{merovingian::events::max_events_per_state_group};
+    std::size_t max_conflicted_state_keys{merovingian::events::max_conflicted_state_keys};
+    std::size_t max_mainline_auth_chain_depth{merovingian::events::max_mainline_auth_chain_depth};
+    std::size_t max_auth_chain_walk_events{merovingian::events::max_auth_chain_walk_events};
+    std::size_t max_total_state_events{merovingian::events::max_total_state_events};
+};
+
 // Fetches a single event (by id) that is not present in any submitted state
 // group, so the resolver can walk auth_events chains past the two forked
 // state snapshots it was handed. Returns nullopt when the event is unknown
@@ -87,6 +98,9 @@ struct StateResolutionRequest final
     // `room_id`, so that fallback is never reachable from untrusted
     // federation input.
     std::string room_id{};
+    // Runtime policy, copied from the homeserver configuration by production
+    // callers. Defaults retain the standalone helper API's historical use.
+    StateResolutionLimits limits{};
 };
 
 struct StateResolutionResult final
@@ -120,7 +134,9 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
 // representative event per conflicted key) — the caller gathers every distinct
 // value from the groups. Returns two empty maps when the number of distinct
 // keys exceeds `max_conflicted_state_keys`.
-[[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>;
+[[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups,
+                                              StateResolutionLimits const& limits = {})
+    -> std::pair<StateMap, StateMap>;
 // Each candidate's sender power is read from the m.room.power_levels event
 // in THAT CANDIDATE'S OWN auth_events — never
 // from the candidate's own new content, and never from a shared
@@ -146,7 +162,8 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
 // returns nullopt for a duplicate event id or a cycle in the auth graph.
 [[nodiscard]] auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
                                                   EventJsonIndex const& known_events, EventLookupFn const& event_lookup,
-                                                  rooms::RoomVersionPolicy const& policy)
+                                                  rooms::RoomVersionPolicy const& policy,
+                                                  StateResolutionLimits const& limits = {})
     -> std::optional<std::vector<StateEventReference>>;
 
 // Spec (rooms/v10 — Definitions, Power events): a power event is an
@@ -161,6 +178,6 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
 // been auth-checked). `events_by_id` supplies event JSON for the transitive
 // auth_events walk.
 auto mainline_order(std::vector<StateEventReference>& events, StateMap const& resolved,
-                    EventJsonIndex const& events_by_id) -> void;
+                    EventJsonIndex const& events_by_id, StateResolutionLimits const& limits = {}) -> void;
 
 } // namespace merovingian::events

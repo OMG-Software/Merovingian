@@ -83,8 +83,8 @@ namespace
     // store has no event index, and the events a get_missing_events walk visits
     // are the recently stored ones, so this finds them without crossing the whole
     // history.
-    [[nodiscard]] auto find_event_newest_first(database::PersistentStore const& store,
-                                               std::string_view event_id) -> database::PersistentEvent const*
+    [[nodiscard]] auto find_event_newest_first(database::PersistentStore const& store, std::string_view event_id)
+        -> database::PersistentEvent const*
     {
         for (auto it = store.events.rbegin(); it != store.events.rend(); ++it)
         {
@@ -202,8 +202,8 @@ namespace
 
     // Reads `key` as a list of strings. Absent, not a list, or any non-string
     // element gives nullopt.
-    [[nodiscard]] auto string_list_member(canonicaljson::Object const& object,
-                                          std::string_view key) -> std::optional<std::vector<std::string>>
+    [[nodiscard]] auto string_list_member(canonicaljson::Object const& object, std::string_view key)
+        -> std::optional<std::vector<std::string>>
     {
         auto const* value = member_value(object, key);
         auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
@@ -238,11 +238,6 @@ namespace
         auto const* number = std::get_if<std::int64_t>(&value->storage());
         return number == nullptr ? std::nullopt : std::optional<std::int64_t>{*number};
     }
-
-    // The most events one get_missing_events walk may look up, whatever the
-    // request asks for. It bounds the cost of a walk that is skipping most of
-    // what it finds (below min_depth, wrong room, unknown).
-    constexpr auto max_missing_events_lookups = std::size_t{512U};
 
     // Computes the transitive closure of auth events reachable from `seed_ids`
     // by following PersistentEvent::auth_event_ids. The traversal is breadth
@@ -448,8 +443,8 @@ namespace
 
 } // namespace
 
-auto origin_may_read_room(database::PersistentStore const& store, std::string_view room_id,
-                          std::string_view origin) -> bool
+auto origin_may_read_room(database::PersistentStore const& store, std::string_view room_id, std::string_view origin)
+    -> bool
 {
     if (origin.empty() || room_id.empty())
     {
@@ -687,7 +682,8 @@ auto build_backfill_pdus(database::PersistentStore const& store, std::string_vie
     return pdus;
 }
 
-auto build_backfill_response(database::PersistentStore const& store, BackfillRequest const& request) -> BackfillResult
+auto build_backfill_response(database::PersistentStore const& store, BackfillRequest const& request,
+                             FederationQueryPolicy const& policy) -> BackfillResult
 {
     if (!origin_may_read_room(store, request.room_id, request.origin))
     {
@@ -698,11 +694,16 @@ auto build_backfill_response(database::PersistentStore const& store, BackfillReq
         });
         return {false, 403U, std::string{forbidden_body}, {}};
     }
-    return {true, 200U, {}, build_backfill_pdus(store, request.room_id, request.event_ids, request.limit)};
+    return {true,
+            200U,
+            {},
+            build_backfill_pdus(store, request.room_id, request.event_ids,
+                                std::min(request.limit, policy.max_backfill_pdus))};
 }
 
 auto build_get_missing_events_response(database::PersistentStore const& store, std::string_view room_id,
-                                       std::string_view request_body, std::string_view origin) -> RoomReadResult
+                                       std::string_view request_body, std::string_view origin,
+                                       FederationQueryPolicy const& policy) -> RoomReadResult
 {
     // Membership first: a server outside the room learns nothing, not even
     // whether its request body was well formed.
@@ -731,12 +732,12 @@ auto build_get_missing_events_response(database::PersistentStore const& store, s
         optional_integer_member(*root, "limit", static_cast<std::int64_t>(default_missing_events_limit));
     auto const min_depth = optional_integer_member(*root, "min_depth", 0);
     if (!latest_events.has_value() || !earliest_events.has_value() || !requested_limit.has_value() ||
-        !min_depth.has_value() || latest_events->size() > max_missing_events_latest)
+        !min_depth.has_value() || latest_events->size() > policy.max_missing_events_latest)
     {
         return malformed_result();
     }
     auto const limit = static_cast<std::size_t>(
-        std::clamp(*requested_limit, std::int64_t{0}, static_cast<std::int64_t>(max_missing_events_limit)));
+        std::clamp(*requested_limit, std::int64_t{0}, static_cast<std::int64_t>(policy.max_missing_events_pdus)));
 
     // Breadth-first walk of prev_events from latest_events. Everything the
     // requester already has (earliest_events) and the latest events themselves
@@ -758,7 +759,7 @@ auto build_get_missing_events_response(database::PersistentStore const& store, s
     seen.insert(roots.begin(), roots.end());
     auto collected = std::vector<database::PersistentEvent const*>{};
     auto lookups = std::size_t{0U};
-    while (!queue.empty() && collected.size() < limit && lookups < max_missing_events_lookups)
+    while (!queue.empty() && collected.size() < limit && lookups < policy.max_missing_events_traversal)
     {
         auto const id = std::move(queue.front());
         queue.pop_front();

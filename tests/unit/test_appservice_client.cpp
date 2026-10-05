@@ -14,10 +14,12 @@
 
 #include "merovingian/appservice/appservice_client.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -77,6 +79,26 @@ struct StubDiscoveryNetwork final : public merovingian::federation::ServerDiscov
         -> merovingian::federation::ResolvedAddressSet override
     {
         return {false, {}, "not exercised"};
+    }
+};
+
+struct ResolvableDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        return {true, {"127.0.0.1"}, {}};
     }
 };
 
@@ -255,6 +277,48 @@ SCENARIO("AppserviceClient never attempts a network call for a url:null appservi
                 CHECK(result.disabled);
                 CHECK_FALSE(result.ok);
                 CHECK(result.users.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("AppserviceClient applies configured bounds to every outbound request", "[appservice][client][limits]")
+{
+    GIVEN("an appservice request policy and a local resolution stub")
+    {
+        auto outbound = merovingian::http::OutboundClient{};
+        auto network = ResolvableDiscoveryNetwork{};
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+        auto policy = merovingian::config::AppserviceConfig{};
+        policy.connect_timeout_seconds = 3U;
+        policy.total_timeout_seconds = 7U;
+        policy.response_max_size = "2KiB";
+        auto observed = std::optional<merovingian::http::OutboundRequest>{};
+        auto client = merovingian::appservice::AppserviceClient{
+            outbound, discovery, policy, [&observed](merovingian::http::OutboundRequest const& request) {
+                observed = request;
+                auto result = merovingian::http::OutboundResult{};
+                result.ok = true;
+                result.response.status = 200U;
+                return result;
+            }};
+        auto registration = merovingian::appservice::AppserviceRegistration{};
+        registration.id = "configured";
+        registration.url = "http://127.0.0.1:1234";
+
+        WHEN("the client performs an appservice query")
+        {
+            auto const result = client.query_user(registration, "@bot:example.org");
+
+            THEN("the outbound request carries the configured deadlines and finite response bound")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(observed.has_value());
+                CHECK(observed->connect_timeout_seconds == 3U);
+                CHECK(observed->total_timeout_seconds == 7U);
+                CHECK(observed->max_response_body_bytes == 2048U);
             }
         }
     }

@@ -4,10 +4,13 @@
 
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -206,7 +209,10 @@ struct AppserviceThirdPartyUsersResult final
 class AppserviceClient final
 {
 public:
-    AppserviceClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery) noexcept;
+    using Perform = std::function<http::OutboundResult(http::OutboundRequest const&)>;
+
+    AppserviceClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
+                     config::AppserviceConfig const& config = {}, Perform perform = {});
 
     // PUT /_matrix/app/v1/transactions/{txnId}. `disabled` is returned
     // immediately (no network I/O) when `registration.url` is nullopt.
@@ -257,6 +263,10 @@ public:
 private:
     http::OutboundClient& outbound_;
     federation::CachedServerDiscovery& discovery_;
+    std::uint32_t connect_timeout_seconds_{10U};
+    std::uint32_t total_timeout_seconds_{30U};
+    std::size_t response_max_size_bytes_{16U * 1024U * 1024U};
+    Perform perform_{};
 
     [[nodiscard]] auto perform_query(AppserviceRegistration const& registration, std::string_view path)
         -> AppserviceQueryResult;

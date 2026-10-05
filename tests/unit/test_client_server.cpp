@@ -299,8 +299,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                     std::string_view event_type,
-                                     std::string_view state_key = {}) -> merovingian::canonicaljson::Object
+                                     std::string_view event_type, std::string_view state_key = {})
+    -> merovingian::canonicaljson::Object
 {
     auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
     auto const* content = object_member_as_object(event, "content");
@@ -3589,7 +3589,9 @@ SCENARIO("Registration requestToken sessions are capped per remote address",
 {
     GIVEN("a running client-server homeserver")
     {
-        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        auto config = registration_enabled_config();
+        config.server().client_api.max_registration_validation_sessions_per_remote = 4U;
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -3631,7 +3633,7 @@ SCENARIO("Registration requestToken sessions are capped per remote address",
                           {},
                           "203.0.113.10"});
 
-            THEN("the server rejects the excess session instead of growing the cache without bound")
+            THEN("the configured per-remote cap rejects the fifth session instead of growing without bound")
             {
                 REQUIRE(request_one.response.status == 200U);
                 REQUIRE(request_two.response.status == 200U);
@@ -4045,8 +4047,8 @@ namespace
 // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
 // header value or empty string when the header is absent. Case-sensitive
 // because the wire emitter writes the canonical header name.
-[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response,
-                                   std::string_view name) -> std::string
+[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response, std::string_view name)
+    -> std::string
 {
     for (auto const& [key, value] : response.headers)
     {
@@ -4092,7 +4094,9 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
 
     GIVEN("a started runtime with the default rate-limit engine")
     {
-        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        auto config = registration_enabled_config();
+        config.server().client_api.max_registration_validation_sessions_per_remote = 4U;
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -4110,7 +4114,7 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
                     runtime, {"POST", "/_matrix/client/v3/register/email/requestToken", {}, body, {}, "203.0.113.10"});
             }
 
-            THEN("the 429 carries the hard-coded retry_after_ms=60000 and Retry-After: 60")
+            THEN("the configured cap returns retry_after_ms=60000 and Retry-After: 60")
             {
                 REQUIRE(denied.response.status == 429U);
                 REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
@@ -8832,8 +8836,8 @@ namespace
 // One /register request from `remote_addr` with the given X-Forwarded-For
 // headers (each a separate header line); returns the HTTP status.
 [[nodiscard]] auto register_status(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view username,
-                                   std::string remote_addr,
-                                   std::vector<std::string> const& forwarded_for) -> std::uint16_t
+                                   std::string remote_addr, std::vector<std::string> const& forwarded_for)
+    -> std::uint16_t
 {
     auto request = merovingian::homeserver::LocalHttpRequest{"POST",
                                                              "/_matrix/client/v3/register",

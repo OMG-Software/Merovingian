@@ -23,6 +23,13 @@ namespace merovingian::homeserver
 // main process even while the worker pool is active.
 [[nodiscard]] auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool;
 
+// Returns true for room-scoped federation reads that the main process can
+// serve authoritatively when the worker's room snapshot is known to be stale.
+// Only GET endpoints that consume room state (state, state_ids, backfill,
+// get_missing_events, event_auth) qualify; writes must still reach the worker
+// because they may trigger main-side relays and side effects.
+[[nodiscard]] auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& request) noexcept -> bool;
+
 // Returns true when the request target is exactly `/_matrix/key/v2/server`
 // (optionally followed by a query string). The key server endpoint must be
 // matched precisely: a substring match would let unrelated paths such as

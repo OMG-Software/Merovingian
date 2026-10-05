@@ -34,8 +34,8 @@ namespace
         observability::log_diagnostic("state_resolution", event, fields, severity);
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -48,8 +48,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -59,8 +59,8 @@ namespace
         return std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
-                                               std::string_view key) noexcept -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -75,8 +75,8 @@ namespace
         return std::get_if<canonicaljson::Object>(&value.storage());
     }
 
-    [[nodiscard]] auto array_member(canonicaljson::Object const& object,
-                                    std::string_view key) noexcept -> canonicaljson::Array const*
+    [[nodiscard]] auto array_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Array const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -219,8 +219,8 @@ namespace
     // power_levels event exists. Mainline ordering is defined by repeated
     // auth_events lookups, including events absent from the submitted state
     // groups; a missing/malformed ancestor makes the ordering incomplete.
-    [[nodiscard]] auto power_levels_auth_ancestor(canonicaljson::Object const& event_json,
-                                                  AuthChainEventSource& source) -> PowerLevelsAncestor
+    [[nodiscard]] auto power_levels_auth_ancestor(canonicaljson::Object const& event_json, AuthChainEventSource& source)
+        -> PowerLevelsAncestor
     {
         auto const* auth = array_member(event_json, "auth_events");
         if (auth == nullptr || auth->size() > max_auth_events_per_event)
@@ -259,9 +259,10 @@ namespace
     // Build [P0, P1, …, Pn] by repeatedly resolving the power-level event in
     // each predecessor's auth_events. Both a cycle and a truncated walk make
     // the ordering unusable and therefore fail closed.
-    [[nodiscard]] auto collect_mainline_power_events(
-        std::string const& head_event_id, canonicaljson::Value const& power_levels_event,
-        AuthChainEventSource& source) -> std::optional<std::vector<std::string>>
+    [[nodiscard]] auto collect_mainline_power_events(std::string const& head_event_id,
+                                                     canonicaljson::Value const& power_levels_event,
+                                                     AuthChainEventSource& source, std::size_t max_depth)
+        -> std::optional<std::vector<std::string>>
     {
         auto result = std::vector<std::string>{};
         auto visited = std::unordered_set<std::string>{};
@@ -272,7 +273,7 @@ namespace
             return std::nullopt;
         }
 
-        while (result.size() < max_mainline_auth_chain_depth)
+        while (result.size() < max_depth)
         {
             if (!visited.insert(current_id).second)
             {
@@ -288,7 +289,7 @@ namespace
             {
                 return result;
             }
-            if (result.size() == max_mainline_auth_chain_depth)
+            if (result.size() == max_depth)
             {
                 return std::nullopt;
             }
@@ -378,8 +379,8 @@ namespace
     // event in the group's state. Spec: rooms/v10.md — Definitions, "Auth
     // difference": "the full auth chain for each state Si, that is the union
     // of the auth chains for each event in Si".
-    [[nodiscard]] auto full_auth_chain_of_group(StateGroup const& group, AuthChainEventSource& source,
-                                                std::size_t cap) -> std::optional<std::unordered_set<std::string>>
+    [[nodiscard]] auto full_auth_chain_of_group(StateGroup const& group, AuthChainEventSource& source, std::size_t cap)
+        -> std::optional<std::unordered_set<std::string>>
     {
         auto result = std::unordered_set<std::string>{};
         for (auto const& event : group.state)
@@ -580,8 +581,8 @@ namespace
     // third_party_invite are the only permitted auth event types), so `type`
     // and `state_key` are always expected; a malformed ancestor is treated as
     // a fetch failure (fail closed) rather than silently skipped.
-    [[nodiscard]] auto materialize_ref(std::string const& event_id,
-                                       AuthChainEventSource& source) -> std::optional<StateEventReference>
+    [[nodiscard]] auto materialize_ref(std::string const& event_id, AuthChainEventSource& source)
+        -> std::optional<StateEventReference>
     {
         auto const* json = source.find_required(event_id);
         if (json == nullptr)
@@ -929,13 +930,15 @@ namespace
     }
 
     [[nodiscard]] auto mainline_order_with_source(std::vector<StateEventReference>& events, StateMap const& resolved,
-                                                  AuthChainEventSource& source) -> bool
+                                                  AuthChainEventSource& source, StateResolutionLimits const& limits)
+        -> bool
     {
         auto const pl_key = StateKey{"m.room.power_levels", ""};
         auto mainline = std::vector<std::string>{};
         if (auto const it = resolved.find(pl_key); it != resolved.end() && value_has_content(it->second.event_json))
         {
-            auto collected = collect_mainline_power_events(it->second.event_id, it->second.event_json, source);
+            auto collected = collect_mainline_power_events(it->second.event_id, it->second.event_json, source,
+                                                           limits.max_mainline_auth_chain_depth);
             if (!collected.has_value())
             {
                 return false;
@@ -965,7 +968,7 @@ namespace
                 }
                 auto visited = std::unordered_set<std::string>{};
                 auto found_position = false;
-                for (std::size_t hop = 0; hop < max_mainline_auth_chain_depth; ++hop)
+                for (std::size_t hop = 0; hop < limits.max_mainline_auth_chain_depth; ++hop)
                 {
                     auto const ancestor = power_levels_auth_ancestor(*current, source);
                     if (!ancestor.valid)
@@ -1055,17 +1058,27 @@ auto state_group_event(StateGroup const& group, StateKey const& key) noexcept ->
 [[nodiscard]] auto validate_state_resolution_request(StateResolutionRequest const& request)
     -> std::optional<std::string>
 {
-    if (request.state_groups.size() > max_state_groups)
+    auto const& limits = request.limits;
+    if (request.state_groups.size() > limits.max_state_groups)
     {
         return "too many state groups";
     }
 
+    auto total_events = std::size_t{0U};
     for (auto const& group : request.state_groups)
     {
-        if (group.state.size() > max_events_per_state_group)
+        if (group.state.size() > limits.max_events_per_state_group)
         {
             return "too many events in state group";
         }
+        // Keep the subtraction guarded so no untrusted input can overflow the
+        // aggregate count while checking the configured ceiling.
+        if (total_events > limits.max_total_state_events ||
+            group.state.size() > limits.max_total_state_events - total_events)
+        {
+            return "too many total state events";
+        }
+        total_events += group.state.size();
     }
     return std::nullopt;
 }
@@ -1128,7 +1141,8 @@ auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResu
     return result;
 }
 
-auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>
+auto partition_conflicted_state(std::vector<StateGroup> const& groups, StateResolutionLimits const& limits)
+    -> std::pair<StateMap, StateMap>
 {
     // Spec (rooms/v10.md — Definitions, "Unconflicted state map and
     // conflicted state set"): "If a given key K is present in every Si with
@@ -1147,6 +1161,21 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
         std::size_t last_group_counted{0};
     };
 
+    auto total_events = std::size_t{0U};
+    if (groups.size() > limits.max_state_groups)
+    {
+        return {};
+    }
+    for (auto const& group : groups)
+    {
+        if (group.state.size() > limits.max_events_per_state_group || total_events > limits.max_total_state_events ||
+            group.state.size() > limits.max_total_state_events - total_events)
+        {
+            return {};
+        }
+        total_events += group.state.size();
+    }
+
     auto tallies = std::unordered_map<StateKey, KeyTally, StateKeyHash>{};
     tallies.reserve(groups.size() * 8U);
 
@@ -1156,7 +1185,7 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
         {
             auto [it, inserted] = tallies.try_emplace(event.key);
             auto& tally = it->second;
-            if (tallies.size() > max_conflicted_state_keys)
+            if (tallies.size() > limits.max_conflicted_state_keys)
             {
                 // Fail fast: too many distinct state keys to resolve safely.
                 return {};
@@ -1199,7 +1228,7 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
 
 auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
                                     EventJsonIndex const& known_events, EventLookupFn const& event_lookup,
-                                    rooms::RoomVersionPolicy const& policy)
+                                    rooms::RoomVersionPolicy const& policy, StateResolutionLimits const& limits)
     -> std::optional<std::vector<StateEventReference>>
 {
     // Powers are computed once up front, rather than inside the sort
@@ -1207,7 +1236,11 @@ auto reverse_topological_power_sort(std::vector<StateEventReference> const& conf
     // clean way to report a fail-closed condition (a missing auth_events
     // ancestor — see power_level_from_event), and recomputing per comparison
     // would re-walk the same auth_events on every comparator call.
-    auto source = AuthChainEventSource{known_events, event_lookup, max_auth_chain_walk_events};
+    if (conflicted.size() > limits.max_conflicted_state_keys)
+    {
+        return std::nullopt;
+    }
+    auto source = AuthChainEventSource{known_events, event_lookup, limits.max_auth_chain_walk_events};
     auto power_by_id = std::unordered_map<std::string, std::int64_t>{};
     power_by_id.reserve(conflicted.size());
     for (auto const& event : conflicted)
@@ -1382,15 +1415,15 @@ auto build_event_json_index(std::vector<StateGroup> const& groups) -> EventJsonI
 }
 
 auto mainline_order(std::vector<StateEventReference>& events, StateMap const& resolved,
-                    EventJsonIndex const& events_by_id) -> void
+                    EventJsonIndex const& events_by_id, StateResolutionLimits const& limits) -> void
 {
     auto const no_lookup = EventLookupFn{};
-    auto source = AuthChainEventSource{events_by_id, no_lookup, max_auth_chain_walk_events};
-    std::ignore = mainline_order_with_source(events, resolved, source);
+    auto source = AuthChainEventSource{events_by_id, no_lookup, limits.max_auth_chain_walk_events};
+    std::ignore = mainline_order_with_source(events, resolved, source, limits);
 }
 
-auto resolve_state_v2(StateResolutionRequest const& request,
-                      rooms::RoomVersionPolicy const& policy) -> StateResolutionResult
+auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionPolicy const& policy)
+    -> StateResolutionResult
 {
     if (auto error = validate_state_resolution_request(request); error.has_value())
     {
@@ -1411,7 +1444,7 @@ auto resolve_state_v2(StateResolutionRequest const& request,
     }
 
     // Step 1: Partition into conflicted and unconflicted
-    auto [unconflicted, conflicted_events] = partition_conflicted_state(request.state_groups);
+    auto [unconflicted, conflicted_events] = partition_conflicted_state(request.state_groups, request.limits);
 
     // Step 3: Collect all conflicted events and sort by reverse topological power ordering
     if (unconflicted.empty() && conflicted_events.empty())
@@ -1428,6 +1461,7 @@ auto resolve_state_v2(StateResolutionRequest const& request,
 
     auto all_conflicted = std::vector<StateEventReference>{};
     all_conflicted.reserve(conflicted_events.size());
+    auto seen_conflicted_ids = std::unordered_map<StateKey, std::unordered_set<std::string>, StateKeyHash>{};
     for (auto const& group : request.state_groups)
     {
         for (auto const& event : group.state)
@@ -1437,13 +1471,11 @@ auto resolve_state_v2(StateResolutionRequest const& request,
                 continue;
             }
 
-            auto const duplicate = std::ranges::any_of(all_conflicted, [&event](StateEventReference const& existing) {
-                return state_key_matches(existing.key, event.key) && existing.event_id == event.event_id;
-            });
-            if (!duplicate)
+            auto& seen_ids = seen_conflicted_ids.try_emplace(event.key).first->second;
+            if (seen_ids.insert(event.event_id).second)
             {
                 all_conflicted.push_back(event);
-                if (all_conflicted.size() > max_conflicted_state_keys)
+                if (all_conflicted.size() > request.limits.max_conflicted_state_keys)
                 {
                     log_diagnostic("resolve_state_v2.rejected", {
                                                                     {"room_version", request.room_version,         false},
@@ -1486,11 +1518,12 @@ auto resolve_state_v2(StateResolutionRequest const& request,
     // chains are not silently ignored. Backed by the submitted state groups
     // plus request.event_lookup for anything else.
     auto const known_index = build_event_json_index(request.state_groups);
-    auto source = AuthChainEventSource{known_index, request.event_lookup, max_auth_chain_walk_events};
+    auto source = AuthChainEventSource{known_index, request.event_lookup, request.limits.max_auth_chain_walk_events};
 
     // Spec (rooms/v10.md — Definitions, "Auth difference"): "∪Ci − ∩Ci",
     // where Ci is the full auth chain of state group i.
-    auto const auth_difference = compute_auth_difference(request.state_groups, source, max_auth_chain_walk_events);
+    auto const auth_difference =
+        compute_auth_difference(request.state_groups, source, request.limits.max_auth_chain_walk_events);
     if (!auth_difference.has_value() || source.missing())
     {
         log_diagnostic("resolve_state_v2.rejected",
@@ -1537,7 +1570,8 @@ auto resolve_state_v2(StateResolutionRequest const& request,
         {
             conflicted_ids.insert(event.event_id);
         }
-        auto const subgraph = compute_conflicted_state_subgraph(conflicted_ids, source, max_auth_chain_walk_events);
+        auto const subgraph =
+            compute_conflicted_state_subgraph(conflicted_ids, source, request.limits.max_auth_chain_walk_events);
         if (!subgraph.has_value() || source.missing())
         {
             log_diagnostic("resolve_state_v2.rejected",
@@ -1674,7 +1708,7 @@ auto resolve_state_v2(StateResolutionRequest const& request,
         auto const id = std::move(enlarge_queue.back());
         enlarge_queue.pop_back();
         auto const& event = full_conflicted_by_id.at(id);
-        auto const chain = walk_auth_chain(event.event_json, source, max_auth_chain_walk_events);
+        auto const chain = walk_auth_chain(event.event_json, source, request.limits.max_auth_chain_walk_events);
         if (!chain.has_value() || source.missing())
         {
             log_diagnostic("resolve_state_v2.rejected", {
@@ -1710,7 +1744,8 @@ auto resolve_state_v2(StateResolutionRequest const& request,
     // The reverse topological power ordering sort reads each candidate's own
     // auth_events, regardless of algorithm variant — only the iterative auth
     // checks' starting map changes for v12 (modification 1 above).
-    auto sorted_power_result = reverse_topological_power_sort(power_events, known_index, request.event_lookup, policy);
+    auto sorted_power_result =
+        reverse_topological_power_sort(power_events, known_index, request.event_lookup, policy, request.limits);
     if (!sorted_power_result.has_value())
     {
         auto const sort_failure_fields = std::vector<observability::StructuredLogField>{
@@ -1728,7 +1763,7 @@ auto resolve_state_v2(StateResolutionRequest const& request,
 
     // Algorithm step 3: order only the remaining events by the mainline
     // ordering based on the power levels in the partially resolved state.
-    if (!mainline_order_with_source(remaining_events, resolved, source) || source.missing())
+    if (!mainline_order_with_source(remaining_events, resolved, source, request.limits) || source.missing())
     {
         log_diagnostic("resolve_state_v2.rejected", {
                                                         {"room_version", request.room_version,                       false},

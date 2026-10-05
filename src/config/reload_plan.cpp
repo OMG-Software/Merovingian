@@ -575,6 +575,297 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     diff_keyed_map(plan, "client_rate_limits.tier.", current.client_rate_limits().tier, next.client_rate_limits().tier);
     diff_keyed_map(plan, "log_modules.", current.log_modules().levels, next.log_modules().levels);
 
+    if (current.server().client_api.max_sync_rooms != next.server().client_api.max_sync_rooms)
+    {
+        add_change(plan, "server.client_api.max_sync_rooms");
+    }
+    if (current.server().client_api.max_sync_events_per_room != next.server().client_api.max_sync_events_per_room)
+    {
+        add_change(plan, "server.client_api.max_sync_events_per_room");
+    }
+    if (current.server().client_api.max_search_events_scanned != next.server().client_api.max_search_events_scanned)
+    {
+        add_change(plan, "server.client_api.max_search_events_scanned");
+    }
+    if (current.server().client_api.max_messages_events_examined !=
+        next.server().client_api.max_messages_events_examined)
+    {
+        add_change(plan, "server.client_api.max_messages_events_examined");
+    }
+    if (current.server().client_api.max_messages_page_size != next.server().client_api.max_messages_page_size)
+    {
+        add_change(plan, "server.client_api.max_messages_page_size");
+    }
+    if (current.server().client_api.max_context_events != next.server().client_api.max_context_events)
+    {
+        add_change(plan, "server.client_api.max_context_events");
+    }
+    if (current.server().client_api.max_search_page_size != next.server().client_api.max_search_page_size)
+    {
+        add_change(plan, "server.client_api.max_search_page_size");
+    }
+    if (current.server().client_api.max_search_context_events != next.server().client_api.max_search_context_events)
+    {
+        add_change(plan, "server.client_api.max_search_context_events");
+    }
+    if (current.server().client_api.sliding_sync_max_timeline_limit !=
+        next.server().client_api.sliding_sync_max_timeline_limit)
+    {
+        add_change(plan, "server.client_api.sliding_sync_max_timeline_limit");
+    }
+    if (current.server().client_api.sliding_sync_max_room_subscriptions !=
+        next.server().client_api.sliding_sync_max_room_subscriptions)
+    {
+        add_change(plan, "server.client_api.sliding_sync_max_room_subscriptions");
+    }
+    if (current.server().client_api.sliding_sync_max_required_state_entries !=
+        next.server().client_api.sliding_sync_max_required_state_entries)
+    {
+        add_change(plan, "server.client_api.sliding_sync_max_required_state_entries");
+    }
+    if (current.server().client_api.sliding_sync_connections_per_device !=
+        next.server().client_api.sliding_sync_connections_per_device)
+    {
+        add_change(plan, "server.client_api.sliding_sync_connections_per_device");
+    }
+    if (current.server().http.sync_threads != next.server().http.sync_threads)
+    {
+        add_change(plan, "server.http.sync_threads");
+    }
+    if (current.server().http.sync_max_in_flight != next.server().http.sync_max_in_flight)
+    {
+        add_change(plan, "server.http.sync_max_in_flight");
+    }
+    if (current.server().http.sync_max_per_user != next.server().http.sync_max_per_user)
+    {
+        add_change(plan, "server.http.sync_max_per_user");
+    }
+    if (current.server().http.sync_max_per_device != next.server().http.sync_max_per_device)
+    {
+        add_change(plan, "server.http.sync_max_per_device");
+    }
+    if (current.server().http.max_start_line_bytes != next.server().http.max_start_line_bytes)
+    {
+        add_change(plan, "server.http.max_start_line_bytes");
+    }
+    if (current.server().http.max_header_bytes != next.server().http.max_header_bytes)
+    {
+        add_change(plan, "server.http.max_header_bytes");
+    }
+    if (current.server().http.max_header_count != next.server().http.max_header_count)
+    {
+        add_change(plan, "server.http.max_header_count");
+    }
+    if (current.security().federation.backfill.max_missing_events !=
+        next.security().federation.backfill.max_missing_events)
+    {
+        add_change(plan, "security.federation.backfill.max_missing_events");
+    }
+    if (current.security().federation.backfill.max_outbound_calls !=
+        next.security().federation.backfill.max_outbound_calls)
+    {
+        add_change(plan, "security.federation.backfill.max_outbound_calls");
+    }
+    if (current.security().federation.backfill.max_state_ids != next.security().federation.backfill.max_state_ids)
+    {
+        add_change(plan, "security.federation.backfill.max_state_ids");
+    }
+    if (current.security().federation.backfill.max_auth_chain_ids !=
+        next.security().federation.backfill.max_auth_chain_ids)
+    {
+        add_change(plan, "security.federation.backfill.max_auth_chain_ids");
+    }
+    if (current.security().federation.backfill.max_snapshot_events !=
+        next.security().federation.backfill.max_snapshot_events)
+    {
+        add_change(plan, "security.federation.backfill.max_snapshot_events");
+    }
+    if (current.security().federation.backfill.max_snapshot_outbound_calls !=
+        next.security().federation.backfill.max_snapshot_outbound_calls)
+    {
+        add_change(plan, "security.federation.backfill.max_snapshot_outbound_calls");
+    }
+    if (current.security().federation.accepted_transaction_cache_entries !=
+        next.security().federation.accepted_transaction_cache_entries)
+    {
+        add_change(plan, "security.federation.accepted_transaction_cache_entries");
+    }
+    if (current.security().federation.audit_event_cache_entries != next.security().federation.audit_event_cache_entries)
+    {
+        add_change(plan, "security.federation.audit_event_cache_entries");
+    }
+    if (current.security().federation.key_resolution_cache_entries !=
+        next.security().federation.key_resolution_cache_entries)
+    {
+        add_change(plan, "security.federation.key_resolution_cache_entries");
+    }
+    if (current.security().federation.bad_signature_cache_entries !=
+        next.security().federation.bad_signature_cache_entries)
+    {
+        add_change(plan, "security.federation.bad_signature_cache_entries");
+    }
+    if (current.security().federation.pending_join_max_rooms != next.security().federation.pending_join_max_rooms)
+    {
+        add_change(plan, "security.federation.pending_join_max_rooms");
+    }
+    if (current.security().federation.pending_join_max_pdus != next.security().federation.pending_join_max_pdus)
+    {
+        add_change(plan, "security.federation.pending_join_max_pdus");
+    }
+    if (current.server().push.max_pushers_per_delivery != next.server().push.max_pushers_per_delivery)
+    {
+        add_change(plan, "server.push.max_pushers_per_delivery");
+    }
+    if (current.server().push.max_in_flight_deliveries != next.server().push.max_in_flight_deliveries)
+    {
+        add_change(plan, "server.push.max_in_flight_deliveries");
+    }
+    if (current.server().client_api.max_body_size != next.server().client_api.max_body_size)
+    {
+        add_change(plan, "server.client_api.max_body_size");
+    }
+    if (current.server().http.max_body_size != next.server().http.max_body_size)
+    {
+        add_change(plan, "server.http.max_body_size");
+    }
+    if (current.security().federation.backfill.response_max_size !=
+        next.security().federation.backfill.response_max_size)
+    {
+        add_change(plan, "security.federation.backfill.response_max_size");
+    }
+    if (current.security().federation.pending_join_max_size != next.security().federation.pending_join_max_size)
+    {
+        add_change(plan, "security.federation.pending_join_max_size");
+    }
+    if (current.security().federation.bad_signature_per_ip_rate.max_requests !=
+            next.security().federation.bad_signature_per_ip_rate.max_requests ||
+        current.security().federation.bad_signature_per_ip_rate.window_seconds !=
+            next.security().federation.bad_signature_per_ip_rate.window_seconds)
+    {
+        add_change(plan, "security.federation.bad_signature_per_ip_rate");
+    }
+
+    if (current.security().federation.backfill.max_total_outbound_calls !=
+        next.security().federation.backfill.max_total_outbound_calls)
+    {
+        add_change(plan, "security.federation.backfill.max_total_outbound_calls");
+    }
+    if (current.security().federation.backfill.timeout != next.security().federation.backfill.timeout)
+    {
+        add_change(plan, "security.federation.backfill.timeout");
+    }
+    if (current.server().client_api.max_registration_validation_sessions !=
+        next.server().client_api.max_registration_validation_sessions)
+    {
+        add_change(plan, "server.client_api.max_registration_validation_sessions");
+    }
+    if (current.server().client_api.max_registration_validation_sessions_per_remote !=
+        next.server().client_api.max_registration_validation_sessions_per_remote)
+    {
+        add_change(plan, "server.client_api.max_registration_validation_sessions_per_remote");
+    }
+    if (current.server().client_api.max_uia_sessions != next.server().client_api.max_uia_sessions)
+    {
+        add_change(plan, "server.client_api.max_uia_sessions");
+    }
+    if (current.server().client_api.max_safety_report_rows != next.server().client_api.max_safety_report_rows)
+    {
+        add_change(plan, "server.client_api.max_safety_report_rows");
+    }
+    if (current.server().client_api.max_notifications_page_size != next.server().client_api.max_notifications_page_size)
+    {
+        add_change(plan, "server.client_api.max_notifications_page_size");
+    }
+    if (current.security().federation.query.max_backfill_pdus != next.security().federation.query.max_backfill_pdus)
+    {
+        add_change(plan, "security.federation.query.max_backfill_pdus");
+    }
+    if (current.security().federation.query.max_missing_events_pdus !=
+        next.security().federation.query.max_missing_events_pdus)
+    {
+        add_change(plan, "security.federation.query.max_missing_events_pdus");
+    }
+    if (current.security().federation.query.max_missing_events_latest !=
+        next.security().federation.query.max_missing_events_latest)
+    {
+        add_change(plan, "security.federation.query.max_missing_events_latest");
+    }
+    if (current.security().federation.query.max_missing_events_traversal !=
+        next.security().federation.query.max_missing_events_traversal)
+    {
+        add_change(plan, "security.federation.query.max_missing_events_traversal");
+    }
+    if (current.security().federation.state_resolution.max_state_groups !=
+        next.security().federation.state_resolution.max_state_groups)
+    {
+        add_change(plan, "security.federation.state_resolution.max_state_groups");
+    }
+    if (current.security().federation.state_resolution.max_events_per_state_group !=
+        next.security().federation.state_resolution.max_events_per_state_group)
+    {
+        add_change(plan, "security.federation.state_resolution.max_events_per_state_group");
+    }
+    if (current.security().federation.state_resolution.max_total_state_events !=
+        next.security().federation.state_resolution.max_total_state_events)
+    {
+        add_change(plan, "security.federation.state_resolution.max_total_state_events");
+    }
+    if (current.security().federation.state_resolution.max_conflicted_state_keys !=
+        next.security().federation.state_resolution.max_conflicted_state_keys)
+    {
+        add_change(plan, "security.federation.state_resolution.max_conflicted_state_keys");
+    }
+    if (current.security().federation.state_resolution.max_mainline_auth_chain_depth !=
+        next.security().federation.state_resolution.max_mainline_auth_chain_depth)
+    {
+        add_change(plan, "security.federation.state_resolution.max_mainline_auth_chain_depth");
+    }
+    if (current.security().federation.state_resolution.max_auth_chain_walk_events !=
+        next.security().federation.state_resolution.max_auth_chain_walk_events)
+    {
+        add_change(plan, "security.federation.state_resolution.max_auth_chain_walk_events");
+    }
+    if (current.server().client_api.max_notifications_retained_per_user !=
+        next.server().client_api.max_notifications_retained_per_user)
+    {
+        add_change(plan, "server.client_api.max_notifications_retained_per_user");
+    }
+    if (current.server().client_api.max_threads_page_size != next.server().client_api.max_threads_page_size)
+    {
+        add_change(plan, "server.client_api.max_threads_page_size");
+    }
+    if (current.server().client_api.max_relations_page_size != next.server().client_api.max_relations_page_size)
+    {
+        add_change(plan, "server.client_api.max_relations_page_size");
+    }
+    if (current.server().client_api.max_public_rooms_page_size != next.server().client_api.max_public_rooms_page_size)
+    {
+        add_change(plan, "server.client_api.max_public_rooms_page_size");
+    }
+    if (current.server().client_api.max_hierarchy_rooms != next.server().client_api.max_hierarchy_rooms)
+    {
+        add_change(plan, "server.client_api.max_hierarchy_rooms");
+    }
+    if (current.security().federation.outbound_queue_capacity != next.security().federation.outbound_queue_capacity)
+    {
+        add_change(plan, "security.federation.outbound_queue_capacity");
+    }
+    if (current.security().federation.outbound_max_retries != next.security().federation.outbound_max_retries)
+    {
+        add_change(plan, "security.federation.outbound_max_retries");
+    }
+    if (current.appservice().connect_timeout_seconds != next.appservice().connect_timeout_seconds)
+    {
+        add_change(plan, "appservice.connect_timeout_seconds");
+    }
+    if (current.appservice().total_timeout_seconds != next.appservice().total_timeout_seconds)
+    {
+        add_change(plan, "appservice.total_timeout_seconds");
+    }
+    if (current.appservice().response_max_size != next.appservice().response_max_size)
+    {
+        add_change(plan, "appservice.response_max_size");
+    }
     return plan;
 }
 

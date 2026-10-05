@@ -1,6 +1,20 @@
 ## 0.12.18
 
 - Remove the retired September 2026 audit report and its documentation navigation entry; retain the later 29 September report and remediation ADRs.
+- Raise normal client and federation traffic budgets and sync/page defaults; expose HTTP parsing, sync admission, API scan/page/session, recovery, cache, outbound queue, push and application-service budgets as validated deployment settings.
+- Raise per-address open-connection admission from 64 to 256 for clients sharing an address, while retaining global dispatcher and worker bounds.
+- Raise `/state_ids` state/auth list caps from 1,000 to 65,536 each, while bounding each incoming PDU's cumulative recovery work by a shared call budget and deadline. Recovery still depends on remote availability and local event history.
+- Make per-user notification retention configurable and raise its default from 200 to 1,000 entries, independently of push delivery.
+- Make state-resolution group, key, mainline and auth-walk budgets configurable; allow 65,536 entries per group and enforce an aggregate 131,072-entry default before resolving forks.
+- Replace the conflicted-event duplicate scan with hash indexing while preserving first-occurrence order, avoiding quadratic collection work at larger resolver capacities.
+- Honor the configured federation transaction byte cap at the HTTP layer and size worker IPC frames for the configured request and response caps.
+- Require restart for startup-snapshotted federation/client limits rather than claiming that SIGHUP applies them.
+- **FIXED: federation worker room-scoped reads trust main's verified identity.** When main forwards an inbound request to the worker over authenticated IPC, the X-Matrix signature has already been verified and server/discovery/trust policy applied. The worker now synthesizes a minimal remote record from the verified `origin`/`key_id` instead of re-resolving the peer, allowing room-scoped reads to be served (and fallback-tested) without a redundant network resolution step. Direct, unverified requests keep the full fail-closed resolution path. ADR-0110.
+- **TEST-ONLY: `handle_local_http_request` supports `PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}[/{stateKey}]`.** This lets integration tests seed room state events (e.g., `m.room.server_acl` and `m.room.history_visibility`) through the local-router seam used by federation-worker tests.
+- **TESTS:** new `tests/integration/test_security_audit_worker_snapshot_flow.cpp` verifies that a failed worker room reload falls back to main's authoritative state, so a stale allow-ACL cannot outlive a fresh deny-ACL. `tests/integration/test_security_audit_federated_to_device_flow.cpp` is now registered and passing.
+- **FIXED: inbound federation to-device EDUs with an empty message type are no longer reported as accepted.** `enqueue_direct_to_device_messages` now treats an empty per-message `type` as an invalid envelope, and the EDU sink returns `rejected_invalid` instead of `accepted` when nothing can be stored. Existing tests that delivered to a local user without a matching device now register the device so the end-to-end delivery assertion actually exercises the store path.
+- **Tighten secure defaults for configurable operational limits.** `sliding_sync_max_timeline_limit` defaults to 100, `sliding_sync_max_room_subscriptions` and `sliding_sync_max_required_state_entries` to 256; HTTP sync admission defaults to 4 per user / 2 per device; federation pending-join queues default to 32 PDUs and 512 KiB. These match the security-audit integration tests and limit amplification surfaces out of the box.
+- **TESTS:** the draft security-audit integration tests are moved from `build-wsl/drafts/` to `tests/integration/`, registered in `tests/meson.build`, and passing; new `tests/unit/test_config_operational_limits.cpp`, `test_configurable_client_limits.cpp`, `test_configurable_federation_limits.cpp` and `test_configurable_http_limits.cpp` are added to the suite.
 
 ## 0.12.17
 
@@ -31,6 +45,21 @@
   device-targeted row even if the previous response was truncated or lost. The
   continuation token is now the stream ID of the last message actually included
   in the response, and an empty response keeps the previous position. ADR-0106.
+
+- **FIXED: inbound federation to-device EDUs no longer queue unknown local
+  devices.** `m.direct_to_device` EDUs in `/_matrix/federation/v1/send/{txnId}`
+  previously advanced the sync stream ID for every syntactically valid target
+  device, even when the device did not exist or did not belong to the named
+  local user. The inbound path now silently discards those deliveries. ADR-0107.
+
+- **FIXED: federation worker room-sync failures fall back to main.** The
+  federation worker's PersistentStore is a startup snapshot, and `room_sync`
+  notifications were fire-and-forget: a reload failure left the worker serving
+  stale room state. Main now assigns a per-room generation to each `room_sync`
+  notification, the worker reports `ok`/`failed` back via a new
+  `room_sync_result` IPC frame, and `FederationProxy` falls back to the
+  authoritative main-process state when the last observed sync failed.
+  ADR-0108.
 
 - **Log records cannot be forged by control characters (AUTH-9).** A JSON
   `\n` in a login `identifier.user` or `device_id` wrote an extra physical

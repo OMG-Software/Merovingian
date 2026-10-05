@@ -399,8 +399,9 @@ state group already agrees on it — that agreement is precisely why
 anything modification 1's empty-start rule exists to guard against (mutable,
 genuinely-contestable state like membership or power levels).
 
-The auth-chain walk is bounded (`events::max_auth_chain_walk_events`,
-`include/merovingian/events/limits.hpp`) and **fails closed**: a missing or
+The auth-chain walk is bounded by
+`security.federation.state_resolution.max_auth_chain_walk_events`
+(default 131,072 visits) and **fails closed**: a missing or
 unreachable event, an over-budget walk, or an exhausted lookup returns an
 unresolved `StateResolutionResult` rather than resolving on a partial chain —
 `compute_state_before`/`recompute_current_state` (phase B1/B2, above) treat
@@ -409,6 +410,15 @@ rejection. This does not apply to the iterative auth checks' own `auth_events`
 fallback above, which is intentionally soft — an ancestor it cannot reach
 only fails that one candidate event's own auth check (as it already did
 before the fallback existed), not the whole resolution.
+
+As of 0.12.18, `security.federation.state_resolution` also configures group
+count, entries per group, aggregate submitted entries, distinct/conflicted
+keys and mainline depth. The aggregate entry limit is checked before indexing
+and prevents per-group capacity from multiplying unchecked. Defaults allow
+65,536 entries per group, 131,072 submitted entries in total and 65,536 keys.
+The policy applies to local event creation and federation bookkeeping;
+changing it requires restart. Single-parent bookkeeping bypasses fork
+resolution, so its full state can exceed a deliberately lowered resolver cap.
 
 Three properties of the ordering are easy to get subtly wrong and are worth
 stating explicitly, because all three were defects (the first two until
@@ -522,7 +532,7 @@ apply after this admission boundary, not to arbitrary unknown-room traffic.
 
 Outbound joins acquire a room-scoped RAII reservation before releasing the
 runtime mutex for the network exchange. Otherwise-uninterested rooms defer PDUs
-in transient queues capped at 32 rooms, 32 distinct event IDs and 512 KiB of JSON
+in transient queues with configurable default caps of 32 rooms, 256 distinct event IDs and 4MiB of JSON
 per room. Duplicates do not consume more capacity; overlaps and excess are
 refused. Failure or exception discards the queue without storing its PDUs.
 
@@ -730,7 +740,7 @@ fetches them from that origin before retrying the PDU.
 * The backfill strategy is `/_matrix/federation/v1/get_missing_events/{roomId}`
   first, then per-event `/_matrix/federation/v1/event/{eventId}`. The
   `/get_missing_events` call asks for up to 20 events; the whole PDU is allowed
-  at most 5 outbound calls. These caps prevent a malicious or delayed origin
+  at most 16 general outbound calls by default. Snapshot materialisation has a separate 256-call default, and the entire recovery shares a 512-call budget and 45-second deadline for further work/HTTP timeouts. These configurable caps prevent a malicious or delayed origin
   from driving unbounded outbound work.
 * Every fetched event is verified independently: content hash (mismatch
   redacts), Ed25519 signature, the `auth_events` selection check, and
@@ -748,8 +758,7 @@ fetches them from that origin before retrying the PDU.
   become forward extremities on their own.
 * If a `prev_event` still has no state group, `backfill_state_ids_snapshot`
   asks the origin for `GET /_matrix/federation/v1/state_ids/{roomId}` at that
-  event (at most 1000 IDs in each list, and its own budget of 100 outbound
-  calls). Every named event not already stored is fetched and verified. A
+  event (at most 65,536 IDs in each list by default, a 131,072-unique-event cap, and a shared 256-call snapshot budget). Every named event not already stored is fetched and verified. A
   snapshot state event whose own `prev_events` have no state is verified
   instead through `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`,
   against its own `auth_events` only (ADR-0069). An `/event_auth` entry skips
@@ -767,7 +776,7 @@ fetches them from that origin before retrying the PDU.
   stored group-less event is known and the event passes auth against it, it
   gains a state group and keeps its status.
 * If references remain missing after the capped attempt, the original PDU still
-  returns `missing_prev_state` and is not applied. Fail-closed is preserved;
+  returns `missing_prev_state` and is not applied or durably retained for retry. Fail-closed is preserved;
   backfill only turns a *resolvable* gap into accepted history.
 
 The membership-acceptor path does not yet run this backfill step — see the
@@ -833,3 +842,5 @@ policy flags refine this further:
   while pre-v12 rooms keep listing the creator at level 100.
 
 Later work must expand this with full Matrix room-version fixtures.
+
+The 0.12.18 operational recovery/query settings are documented in [operator budgets](user-manual.md#operational-budgets). Calls consume budgets even on failure; exhausting a call budget blocks another fetch but does not discard its successful final response. Deadline checks between steps do not preempt synchronous discovery, signature verification or database work already in progress. Increasing these bounds cannot restore an ordinary unresolved PDU that was never retained.

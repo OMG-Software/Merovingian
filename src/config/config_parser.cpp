@@ -49,7 +49,449 @@ namespace
         // name, both of which contain '/' or '_' characters. We handle them
         // with prefix-matching before the literal-key branches so the rest
         // of the parser remains a clean if/else chain.
-        if (starts_with(key, "client_rate_limits.per_ip."))
+        if (key == "security.federation.state_resolution.max_state_groups")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_state_groups))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.state_resolution.max_events_per_state_group")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_events_per_state_group))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.state_resolution.max_total_state_events")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_total_state_events))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.state_resolution.max_conflicted_state_keys")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_conflicted_state_keys))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.state_resolution.max_mainline_auth_chain_depth")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_mainline_auth_chain_depth))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.state_resolution.max_auth_chain_walk_events")
+        {
+            if (!parse_u32_value(value, security.federation.state_resolution.max_auth_chain_walk_events))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_registration_validation_sessions")
+        {
+            if (!parse_u32_value(value, server.client_api.max_registration_validation_sessions))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_registration_validation_sessions_per_remote")
+        {
+            if (!parse_u32_value(value, server.client_api.max_registration_validation_sessions_per_remote))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_uia_sessions")
+        {
+            if (!parse_u32_value(value, server.client_api.max_uia_sessions))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_safety_report_rows")
+        {
+            if (!parse_u32_value(value, server.client_api.max_safety_report_rows))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_notifications_retained_per_user")
+        {
+            if (!parse_u32_value(value, server.client_api.max_notifications_retained_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_notifications_page_size")
+        {
+            if (!parse_u32_value(value, server.client_api.max_notifications_page_size))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_threads_page_size")
+        {
+            if (!parse_u32_value(value, server.client_api.max_threads_page_size))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.query.max_backfill_pdus")
+        {
+            if (!parse_u32_value(value, security.federation.query.max_backfill_pdus))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.query.max_missing_events_pdus")
+        {
+            if (!parse_u32_value(value, security.federation.query.max_missing_events_pdus))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.query.max_missing_events_latest")
+        {
+            if (!parse_u32_value(value, security.federation.query.max_missing_events_latest))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.query.max_missing_events_traversal")
+        {
+            if (!parse_u32_value(value, security.federation.query.max_missing_events_traversal))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_relations_page_size")
+        {
+            if (!parse_u32_value(value, server.client_api.max_relations_page_size))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_public_rooms_page_size")
+        {
+            if (!parse_u32_value(value, server.client_api.max_public_rooms_page_size))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_hierarchy_rooms")
+        {
+            if (!parse_u32_value(value, server.client_api.max_hierarchy_rooms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.outbound_queue_capacity")
+        {
+            if (!parse_u32_value(value, security.federation.outbound_queue_capacity))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.outbound_max_retries")
+        {
+            if (!parse_u32_value(value, security.federation.outbound_max_retries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "appservice.connect_timeout_seconds")
+        {
+            if (!parse_u32_value(value, appservice.connect_timeout_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "appservice.total_timeout_seconds")
+        {
+            if (!parse_u32_value(value, appservice.total_timeout_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "appservice.response_max_size")
+        {
+            appservice.response_max_size = std::string{value};
+        }
+        else if (key == "server.client_api.max_sync_rooms")
+        {
+            if (!parse_u32_value(value, server.client_api.max_sync_rooms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_sync_events_per_room")
+        {
+            if (!parse_u32_value(value, server.client_api.max_sync_events_per_room))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_search_events_scanned")
+        {
+            if (!parse_u32_value(value, server.client_api.max_search_events_scanned))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_messages_events_examined")
+        {
+            if (!parse_u32_value(value, server.client_api.max_messages_events_examined))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_messages_page_size")
+        {
+            if (!parse_u32_value(value, server.client_api.max_messages_page_size))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_context_events")
+        {
+            if (!parse_u32_value(value, server.client_api.max_context_events))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_search_page_size")
+        {
+            if (!parse_u32_value(value, server.client_api.max_search_page_size))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_search_context_events")
+        {
+            if (!parse_u32_value(value, server.client_api.max_search_context_events))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.sliding_sync_max_timeline_limit")
+        {
+            if (!parse_u32_value(value, server.client_api.sliding_sync_max_timeline_limit))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.sliding_sync_max_room_subscriptions")
+        {
+            if (!parse_u32_value(value, server.client_api.sliding_sync_max_room_subscriptions))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.sliding_sync_max_required_state_entries")
+        {
+            if (!parse_u32_value(value, server.client_api.sliding_sync_max_required_state_entries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.sliding_sync_connections_per_device")
+        {
+            if (!parse_u32_value(value, server.client_api.sliding_sync_connections_per_device))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.sync_threads")
+        {
+            if (!parse_u32_value(value, server.http.sync_threads))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.sync_max_in_flight")
+        {
+            if (!parse_u32_value(value, server.http.sync_max_in_flight))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.sync_max_per_user")
+        {
+            if (!parse_u32_value(value, server.http.sync_max_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.sync_max_per_device")
+        {
+            if (!parse_u32_value(value, server.http.sync_max_per_device))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.max_start_line_bytes")
+        {
+            if (!parse_u32_value(value, server.http.max_start_line_bytes))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.max_header_bytes")
+        {
+            if (!parse_u32_value(value, server.http.max_header_bytes))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.max_header_count")
+        {
+            if (!parse_u32_value(value, server.http.max_header_count))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.max_missing_events")
+        {
+            if (!parse_u32_value(value, security.federation.backfill.max_missing_events))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.max_outbound_calls")
+        {
+            if (!parse_u32_value(value, security.federation.backfill.max_outbound_calls))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.max_state_ids")
+        {
+            if (!parse_u32_value(value, security.federation.backfill.max_state_ids))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.max_auth_chain_ids")
+        {
+            if (!parse_u32_value(value, security.federation.backfill.max_auth_chain_ids))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.max_snapshot_events")
+        {
+            if (!parse_u32_value(value, security.federation.backfill.max_snapshot_events))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.max_snapshot_outbound_calls")
+        {
+            if (!parse_u32_value(value, security.federation.backfill.max_snapshot_outbound_calls))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.max_total_outbound_calls")
+        {
+            if (!parse_u32_value(value, security.federation.backfill.max_total_outbound_calls))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.backfill.timeout")
+        {
+            security.federation.backfill.timeout = std::string{value};
+        }
+        else if (key == "security.federation.accepted_transaction_cache_entries")
+        {
+            if (!parse_u32_value(value, security.federation.accepted_transaction_cache_entries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.audit_event_cache_entries")
+        {
+            if (!parse_u32_value(value, security.federation.audit_event_cache_entries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.key_resolution_cache_entries")
+        {
+            if (!parse_u32_value(value, security.federation.key_resolution_cache_entries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.bad_signature_cache_entries")
+        {
+            if (!parse_u32_value(value, security.federation.bad_signature_cache_entries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.pending_join_max_rooms")
+        {
+            if (!parse_u32_value(value, security.federation.pending_join_max_rooms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.pending_join_max_pdus")
+        {
+            if (!parse_u32_value(value, security.federation.pending_join_max_pdus))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.push.max_pushers_per_delivery")
+        {
+            if (!parse_u32_value(value, server.push.max_pushers_per_delivery))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.push.max_in_flight_deliveries")
+        {
+            if (!parse_u32_value(value, server.push.max_in_flight_deliveries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_body_size")
+        {
+            server.client_api.max_body_size = std::string{value};
+        }
+        else if (key == "server.http.max_body_size")
+        {
+            server.http.max_body_size = std::string{value};
+        }
+        else if (key == "security.federation.backfill.response_max_size")
+        {
+            security.federation.backfill.response_max_size = std::string{value};
+        }
+        else if (key == "security.federation.pending_join_max_size")
+        {
+            security.federation.pending_join_max_size = std::string{value};
+        }
+        else if (key == "security.federation.bad_signature_per_ip_rate")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive rate-limit policy N/Ws");
+            }
+            else
+            {
+                security.federation.bad_signature_per_ip_rate = *policy;
+            }
+        }
+        else if (starts_with(key, "client_rate_limits.per_ip."))
         {
             auto const target = std::string{key.substr(std::string_view{"client_rate_limits.per_ip."}.size())};
             auto const policy = parse_rate_limit_policy(value);
@@ -64,7 +506,7 @@ namespace
             }
             return;
         }
-        if (starts_with(key, "client_rate_limits.per_user."))
+        else if (starts_with(key, "client_rate_limits.per_user."))
         {
             auto const target = std::string{key.substr(std::string_view{"client_rate_limits.per_user."}.size())};
             auto const policy = parse_rate_limit_policy(value);
@@ -79,7 +521,7 @@ namespace
             }
             return;
         }
-        if (starts_with(key, "client_rate_limits.tier."))
+        else if (starts_with(key, "client_rate_limits.tier."))
         {
             // Tier names are validated against the engine's tier table so a
             // typo (e.g. client_rate_limits.tier.login) becomes a parse
@@ -103,7 +545,7 @@ namespace
             }
             return;
         }
-        if (key == "client_rate_limits.default_per_ip")
+        else if (key == "client_rate_limits.default_per_ip")
         {
             auto const policy = parse_rate_limit_policy(value);
             if (!policy.has_value())
@@ -117,7 +559,7 @@ namespace
             }
             return;
         }
-        if (starts_with(key, "log_modules."))
+        else if (starts_with(key, "log_modules."))
         {
             auto const name = std::string{key.substr(std::string_view{"log_modules."}.size())};
             auto const level = parse_log_level(value);
@@ -133,7 +575,7 @@ namespace
             return;
         }
 
-        if (key == "server.name")
+        else if (key == "server.name")
         {
             server.server_name = std::string{value};
         }

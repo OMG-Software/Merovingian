@@ -25,8 +25,8 @@ namespace
 
     // ── canonicaljson accessor helpers ──────────────────────────────────────
 
-    [[nodiscard]] auto find_member(canonicaljson::Object const& obj,
-                                   std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto find_member(canonicaljson::Object const& obj, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& m : obj)
         {
@@ -82,9 +82,10 @@ namespace
     }
 
     // A client-supplied timeline_limit, reduced to the server maximum.
-    [[nodiscard]] auto clamp_timeline_limit(std::int64_t requested) noexcept -> std::uint64_t
+    [[nodiscard]] auto clamp_timeline_limit(std::int64_t requested, SlidingSyncLimits const& limits) noexcept
+        -> std::uint64_t
     {
-        return std::min(static_cast<std::uint64_t>(requested), sliding_sync_max_timeline_limit);
+        return std::min(static_cast<std::uint64_t>(requested), static_cast<std::uint64_t>(limits.timeline_limit));
     }
 
     // ── Sub-parsers ──────────────────────────────────────────────────────────
@@ -197,7 +198,8 @@ namespace
     }
 
     // Returns nullopt if ranges are invalid (overlapping).
-    [[nodiscard]] auto parse_list(canonicaljson::Object const& obj) -> std::optional<SlidingSyncList>
+    [[nodiscard]] auto parse_list(canonicaljson::Object const& obj, SlidingSyncLimits const& limits)
+        -> std::optional<SlidingSyncList>
     {
         auto list = SlidingSyncList{};
 
@@ -246,7 +248,7 @@ namespace
         {
             if (auto const* n = as_int(*v); n != nullptr && *n >= 0)
             {
-                list.timeline_limit = clamp_timeline_limit(*n);
+                list.timeline_limit = clamp_timeline_limit(*n, limits);
             }
         }
 
@@ -274,7 +276,8 @@ namespace
         return list;
     }
 
-    [[nodiscard]] auto parse_room_subscription(canonicaljson::Object const& obj) -> SlidingSyncRoomSubscription
+    [[nodiscard]] auto parse_room_subscription(canonicaljson::Object const& obj, SlidingSyncLimits const& limits)
+        -> SlidingSyncRoomSubscription
     {
         auto sub = SlidingSyncRoomSubscription{};
 
@@ -286,7 +289,7 @@ namespace
         {
             if (auto const* n = as_int(*v); n != nullptr && *n >= 0)
             {
-                sub.timeline_limit = clamp_timeline_limit(*n);
+                sub.timeline_limit = clamp_timeline_limit(*n, limits);
             }
         }
         if (auto const* v = find_member(obj, "include_heroes"); v != nullptr)
@@ -420,7 +423,7 @@ namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingSyncRequest>
+auto parse_sliding_sync_request(std::string_view body, SlidingSyncLimits limits) -> std::optional<SlidingSyncRequest>
 {
     if (body.empty())
     {
@@ -463,7 +466,7 @@ auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingS
             {
                 return std::nullopt;
             }
-            auto list = parse_list(*list_obj);
+            auto list = parse_list(*list_obj, limits);
             if (!list.has_value())
             {
                 return std::nullopt; // invalid ranges or malformed list
@@ -484,7 +487,7 @@ auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingS
                 {
                     continue;
                 }
-                req.room_subscriptions.emplace(member.key, parse_room_subscription(*sub_obj));
+                req.room_subscriptions.emplace(member.key, parse_room_subscription(*sub_obj, limits));
             }
         }
     }
@@ -518,14 +521,20 @@ auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingS
 
 auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request) -> std::optional<std::string_view>
 {
-    if (request.room_subscriptions.size() > sliding_sync_max_room_subscriptions)
+    return sliding_sync_request_limit_violation(request, SlidingSyncLimits{});
+}
+
+auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, SlidingSyncLimits limits)
+    -> std::optional<std::string_view>
+{
+    if (request.room_subscriptions.size() > limits.room_subscriptions)
     {
         return "too many room_subscriptions";
     }
     for (auto const& [name, list] : request.lists)
     {
         std::ignore = name;
-        if (list.required_state.size() > sliding_sync_max_required_state_entries)
+        if (list.required_state.size() > limits.required_state_entries)
         {
             return "too many required_state entries in a list";
         }
@@ -533,7 +542,7 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request) -> 
     for (auto const& [room_id, subscription] : request.room_subscriptions)
     {
         std::ignore = room_id;
-        if (subscription.required_state.size() > sliding_sync_max_required_state_entries)
+        if (subscription.required_state.size() > limits.required_state_entries)
         {
             return "too many required_state entries in a room subscription";
         }

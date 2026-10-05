@@ -1370,12 +1370,13 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
                                          std::string_view user_id) -> std::vector<PersistentPusher>;
 // Upsert a notification keyed by (user_id, event_id) -- see
 // PersistentNotification. Persists the row, mirrors it into the in-memory
-// vector, and then prunes user_id's oldest rows beyond a fixed per-user
-// retention cap (see k_max_notifications_per_user in persistent_store.cpp)
+// vector, and then prunes user_id's oldest rows beyond max_per_user
+// (default 1000)
 // so `notifications` cannot grow without bound under sustained message
 // volume. Returns false on an empty user_id/room_id/event_id or a backend
 // write failure.
-[[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification) -> bool;
+[[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification,
+                                      std::size_t max_per_user = 1000U) -> bool;
 // Return every notification recorded for user_id, in insertion
 // (stream_ordering) order ascending. Callers apply from/limit/only
 // pagination and filtering.

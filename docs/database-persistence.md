@@ -293,14 +293,14 @@ value. Test fixtures that do not exercise persistence select it through
   `m.read.private` receipt in that room, so it always reflects the latest
   receipt without a write-side update on every receipt change.
   **Retention:** `store_notification` prunes the oldest rows for that
-  `user_id` beyond a fixed cap, `k_max_notifications_per_user` (200,
-  `persistent_store.cpp`), after every insert — chosen to cover many
-  multiples of the endpoint's own default page size while keeping even a
-  very active user's history table small; chosen independently of
-  `room_service.cpp`'s `k_max_in_flight_push_deliveries` (that bounds
-  concurrent background threads, this bounds persisted rows). This closes
-  the same class of unbounded-growth vector `k_max_in_flight_push_deliveries`
-  fixed for push delivery's background-task count.
+  `user_id` beyond `server.client_api.max_notifications_retained_per_user`
+  (default 1,000, valid range 1..100,000), after every insert. The same policy
+  applies to the in-memory mirror and SQLite/PostgreSQL persistence; rows with
+  the oldest stream ordering are removed first. It is independent of
+  `server.push.max_in_flight_deliveries`, which bounds background tasks rather
+  than persisted rows. Recording still occurs when push delivery is disabled.
+  Increasing retention preserves more future history but cannot restore rows
+  already pruned under an earlier policy. Changing the policy requires restart.
 - `openid_tokens` table (schema version `10`, migration
   `migrations/010_openid_tokens.sql`) stores the short-lived tokens minted by
   `POST /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19

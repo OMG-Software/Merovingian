@@ -916,8 +916,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   room member or the invite target) — it opens no new network path and adds
   no new trust boundary. Two properties bound its own resource cost: (1)
   **per-user retention** — `store_notification` prunes the oldest rows for
-  that `user_id` beyond a fixed cap (`k_max_notifications_per_user`, 200,
-  `persistent_store.cpp`) after every insert, so the table cannot grow
+  that `user_id` beyond `server.client_api.max_notifications_retained_per_user`
+  (default 1,000; finite range 1..100,000) after every insert, so the table cannot grow
   without bound under sustained message volume, mirroring the fix applied to
   `orphan_futures_` below; (2) **ignore-list suppression applies first** — a
   notification is recorded only after the same
@@ -943,7 +943,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   tracked separately from the shared vector's total size so a large join
   race cannot starve push delivery or vice versa — see the deadlock note
   below for why it is atomic rather than mutex-guarded), is
-  checked against a fixed cap, `k_max_in_flight_push_deliveries` (128,
+  checked against a validated configurable cap, `server.push.max_in_flight_deliveries` (256 by default,
   `room_service.cpp`) before a task is spawned. At capacity the delivery is
   dropped — never spawned, never blocked on — and a warning is logged: a
   missed push is recoverable (the client still sees the event on its next
@@ -1084,7 +1084,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   `dispatch_push_deliveries` unchanged rather than a second delivery
   implementation that could drift from the local one; carries the same
   `push.enabled` gate, the same off-request-path `std::async` dispatch, and
-  the same `k_max_in_flight_push_deliveries` cap as the local path.
+  the same configurable push-delivery cap as the local path.
 
 - **Unbounded pushers per recipient (v0.11.11, fixed):** `POST /pushers/set`
   has no per-user limit on the number of distinct `(app_id, pushkey)` pairs
@@ -1114,6 +1114,10 @@ threat it closes; the controls above are the standing defences these reinforce.
   this cap — it happens once per `(user, event)` before the pusher list is
   even read, so a user with more than ten pushers still sees every
   notification in their history even though not every pusher is contacted.
+  As of 0.12.18, these deployment budgets are configurable:
+  `server.push.max_pushers_per_delivery` defaults to 25 and
+  `server.push.max_in_flight_deliveries` to 256. Both remain finite;
+  increasing them increases outbound work and concurrent resource use.
 
 - **OpenID token confusion (identified and mitigated during implementation,
   v0.11.11):** `POST /_matrix/client/v3/user/{userId}/openid/request_token`
@@ -1288,7 +1292,7 @@ threat it closes; the controls above are the standing defences these reinforce.
     `M_MISSING_TOKEN`/`M_UNKNOWN_TOKEN` before reading the body and closes;
   - HTTP-8: a connection is closed (`Connection: close`) after 1 000 requests
     or one hour, so a kept-alive connection cannot be held indefinitely;
-  - `server.http.request_threads` (default 16, range 4..256) sizes the pool.
+  - `server.http.request_threads` (default 32, range 4..256) sizes the pool.
   **Residual:** a client can still hold its own share of workers for the head
   deadline (30 s) or at the minimum body rate; many distinct addresses can
   still share out the whole pool (the share bounds one address, not a
@@ -1304,7 +1308,7 @@ threat it closes; the controls above are the standing defences these reinforce.
   slow-request thresholds and lock every other client out. Both accept loops
   now admit a connection only while its client key (IPv6 grouped by
   `server.http.ipv6_client_prefix_length`, default /64) holds fewer than
-  `server.http.max_connections_per_ip` (default 64) connections, and close a
+  `server.http.max_connections_per_ip` (default 256) connections, and close a
   refused socket before reading a byte or starting a TLS handshake. The slot
   is RAII and released on every path that closes the connection.
   **Residual:** addresses in `server.trusted_proxies` are exempt, so behind a
@@ -1939,7 +1943,8 @@ until the refresh).
   still count every event after the user's read receipt without the filter, so a newcomer to a
   `joined` room can learn how many messages preceded their join (never their content). `/notifications` rows are
   returned as recorded: they were created for a user who was joined at delivery, and are not
-  re-filtered. `/messages` examines at most `max_messages_events_examined` (2000) events per
+  re-filtered. `/messages` examines at most `server.client_api.max_messages_events_examined`
+  (default 10,000) events per
   page, but each request still builds a sorted list of the room's events, so its cost grows
   with room history, as before. The per-request indexes (events, state groups) are O(store)
   to build, in line with the store's existing linear scans.
@@ -2020,3 +2025,9 @@ still fail closed and require operational handling of the rejected resolution.
 ### Security audit follow-up (0.12.17)
 
 Presence disclosure is restricted to current joined peers. Invite, departed, banned and unrelated users do not receive another user's presence. Required presence enum/type checks and a 1024 UTF-8 byte status limit precede stream allocation. Directory POST authentication precedes any remote discovery; publication persists independently of join rules. Media moderation refuses failed transactions before changing flags, bytes or audit projections. The PostgreSQL large-room query ceiling is removed; generic failed worker reload handling is still outstanding.
+
+### Configurable operational budgets (0.12.18)
+
+Normal client/federation admission, cache sizes, recovery, push and application-service budgets can be tuned within validated finite ranges. Increasing them trades memory, threads and remote-call work for headroom; no user-count capacity is implied. Larger state-ID lists still use shared per-PDU total calls/deadline, and signature/hash/authorization checks remain mandatory. Requests admitted by HTTP must fit the derived IPC request budget even when the join-response cap is smaller. Both processes derive the same frame ceiling at startup.
+
+Fixed authentication, cryptographic, parser/decoder and sandbox boundaries remain in place. Ordinary PDUs whose missing history cannot be recovered are currently neither applied nor durably retained: larger budgets reduce one failure cause but do not substitute for a persistent retry design. See [operator budgets](user-manual.md#operational-budgets) and [ADR-0109](adr/0109-configure-operational-budgets-with-shared-recovery-bounds.md).

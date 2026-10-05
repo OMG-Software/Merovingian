@@ -21,6 +21,9 @@ struct SpaceHierarchyRequest final
     std::optional<std::size_t> limit{};
     std::optional<std::size_t> max_depth{};
     bool suggested_only{false};
+    // Client-side operational page ceiling. Federation hierarchy responses
+    // use their separate unpaginated response shape and do not consume this.
+    std::size_t max_rooms{1000U};
 };
 
 struct SpaceHierarchyResult final

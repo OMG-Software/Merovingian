@@ -376,7 +376,6 @@ SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending serve
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
-
         auto const room_id = std::string{"!backfill:local.example.org"};
         seed_room_with_genesis_state_group(runtime, room_id);
 
@@ -487,7 +486,6 @@ SCENARIO("A backfilled event passing its auth_events but failing state-before is
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
-
         auto const room_id = std::string{"!backfill-state-before:local.example.org"};
         seed_room_with_genesis_state_group(runtime, room_id);
         auto const create_id = room_id + ":create";
@@ -929,6 +927,9 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
         merovingian::homeserver::wire_federation_callbacks(runtime);
 
         auto const room_id = std::string{"!backfill-state-ids:local.example.org"};
+        // Exercise the exact boundary of a custom, tight policy.
+        runtime.federation.config.backfill.max_state_ids = 3U;
+        runtime.federation.config.backfill.max_auth_chain_ids = 3U;
         seed_room_with_genesis_state_group(runtime, room_id);
 
         auto const create_id = room_id + ":create";
@@ -1059,12 +1060,9 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
 // Endpoint / Section: Backfilling and retrieving missing events
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
 //
-// ADR-0064 phase C2 caps bound the size of a /state_ids response the server
-// will accept. An oversized pdu_ids list is treated as an unverifiable
-// snapshot and the fallback fails closed, leaving the PDU in
-// missing_prev_state rather than materialising a potentially malicious state.
-SCENARIO("ingest_pdu_event rejects an oversized /state_ids pdu_ids list during backfill",
-         "[pdu_ingestion][backfill][conformance]")
+// The aggregate per-PDU network budget applies across all recovery stages. The
+// final permitted response must still be processed after its call is spent.
+SCENARIO("ingest_pdu_event respects the shared total backfill call budget", "[pdu_ingestion][backfill][conformance]")
 {
     GIVEN("a fresh runtime seeded with a room genesis state group")
     {
@@ -1075,7 +1073,8 @@ SCENARIO("ingest_pdu_event rejects an oversized /state_ids pdu_ids list during b
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
 
-        auto const room_id = std::string{"!backfill-state-ids-oversized:local.example.org"};
+        auto const room_id = std::string{"!backfill-total-budget:local.example.org"};
+        runtime.federation.config.backfill.max_total_outbound_calls = 1U;
         seed_room_with_genesis_state_group(runtime, room_id);
 
         auto const create_id = room_id + ":create";
@@ -1090,7 +1089,7 @@ SCENARIO("ingest_pdu_event rejects an oversized /state_ids pdu_ids list during b
 
         auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 6, 20);
 
-        AND_GIVEN("a mock sending server that returns a /state_ids response exceeding the pdu_ids cap")
+        AND_GIVEN("a mock sending server whose first response fills the missing chain")
         {
             auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
             auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
@@ -1116,13 +1115,99 @@ SCENARIO("ingest_pdu_event rejects an oversized /state_ids pdu_ids list during b
                 return remote_runtime();
             };
 
-            auto oversized_pdu_ids = std::vector<std::string>{};
-            oversized_pdu_ids.reserve(1001U);
-            for (std::size_t i = 0U; i < 1001U; ++i)
+            auto missing_events = canonicaljson::Array{};
+            for (auto const& json : {old_event.json, mid_event.json})
             {
-                oversized_pdu_ids.push_back(room_id + ":oversized:" + std::to_string(i));
+                auto const parsed_event = canonicaljson::parse_lossless(json);
+                REQUIRE(parsed_event.error == canonicaljson::ParseError::none);
+                missing_events.push_back(parsed_event.value);
             }
-            auto const state_ids_body = make_state_ids_response(oversized_pdu_ids, auth_event_ids);
+            auto missing_events_object = canonicaljson::Object{};
+            missing_events_object.push_back(
+                canonicaljson::make_member("events", canonicaljson::Value{std::move(missing_events)}));
+            auto const missing_events_body =
+                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(missing_events_object)});
+            REQUIRE(missing_events_body.error == canonicaljson::CanonicalJsonError::none);
+            auto const path_responses = std::vector<std::pair<std::string, std::string>>{
+                {"POST /_matrix/federation/v1/get_missing_events/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", missing_events_body.output)},
+            };
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the PDU is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+                THEN("the PDU is accepted from the final permitted response")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::accepted);
+                }
+
+                THEN("recovery processes the response and makes exactly the one allowed call")
+                {
+                    REQUIRE(captured_requests.size() == 1U);
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+SCENARIO("ingest_pdu_event rejects a /state_ids response just above the configured cap",
+         "[pdu_ingestion][backfill][conformance][limits]")
+{
+    GIVEN("a fresh room runtime configured to accept at most three state IDs")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.config.backfill.max_state_ids = 3U;
+
+        auto const room_id = std::string{"!backfill-state-cap:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_bob_id = room_id + ":member:bob";
+        auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
+        auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 4, 10);
+        auto const mid_event = make_remote_message_pdu(room_id, {old_event.event_id}, auth_event_ids, 5, 11);
+        auto const pdu = make_remote_message_pdu(room_id, {mid_event.event_id}, auth_event_ids, 6, 20);
+
+        AND_GIVEN("the origin returns a /state_ids response with four state IDs")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+            auto oversized_ids = std::vector<std::string>{room_id + ":extra:1", room_id + ":extra:2",
+                                                          room_id + ":extra:3", room_id + ":extra:4"};
+            auto const state_ids_body = make_state_ids_response(oversized_ids, auth_event_ids);
             auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
             auto const path_responses = std::vector<std::pair<std::string, std::string>>{
                 {"POST /_matrix/federation/v1/get_missing_events/",
@@ -1139,31 +1224,23 @@ SCENARIO("ingest_pdu_event rejects an oversized /state_ids pdu_ids list during b
             auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
             std::ignore = join_server;
 
-            WHEN("the PDU is ingested")
+            WHEN("the incoming PDU triggers fallback recovery")
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
-                THEN("the PDU is rejected with missing_prev_state")
+                THEN("the PDU remains unresolved instead of materialising an oversized snapshot")
                 {
                     REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
                 }
-
-                THEN("the /state_ids endpoint was still consulted")
+                THEN("the /state_ids response is checked against the configured cap")
                 {
-                    auto has_state_ids = false;
-                    for (auto const& req : captured_requests)
-                    {
-                        if (req.find("GET /_matrix/federation/v1/state_ids/") != std::string::npos)
-                        {
-                            has_state_ids = true;
-                        }
-                    }
-                    REQUIRE(has_state_ids);
+                    REQUIRE(std::ranges::any_of(captured_requests, [](std::string const& request) {
+                        return request.find("GET /_matrix/federation/v1/state_ids/") != std::string::npos;
+                    }));
                 }
             }
-
-            std::filesystem::remove(path);
         }
+        std::filesystem::remove(path);
     }
 }
 

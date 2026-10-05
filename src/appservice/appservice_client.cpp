@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -152,7 +153,9 @@ namespace
 
     [[nodiscard]] auto call_appservice(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
                                        AppserviceRegistration const& registration, std::string_view method,
-                                       std::string_view path_suffix, std::string body)
+                                       std::string_view path_suffix, std::string body,
+                                       std::uint32_t connect_timeout_seconds, std::uint32_t total_timeout_seconds,
+                                       std::size_t response_max_size_bytes, AppserviceClient::Perform const& perform)
         -> std::pair<bool, http::OutboundResult>
     {
         if (!registration.url.has_value())
@@ -188,8 +191,9 @@ namespace
         // below intentionally bypasses the private/loopback-address
         // rejection that applies to attacker-influenced destinations.
         request.allow_cleartext_http = true;
-        request.connect_timeout_seconds = 10U;
-        request.total_timeout_seconds = 30U;
+        request.connect_timeout_seconds = connect_timeout_seconds;
+        request.total_timeout_seconds = total_timeout_seconds;
+        request.max_response_body_bytes = response_max_size_bytes;
 
         auto const resolved = discovery.upstream().lookup_addresses(parsed->host, parsed->port);
         if (!resolved.ok || resolved.addresses.empty())
@@ -202,7 +206,7 @@ namespace
         }
         request.pinned_addresses = resolved.addresses;
 
-        return {true, outbound.perform(request)};
+        return {true, perform ? perform(request) : outbound.perform(request)};
     }
 
     // ── Third-party lookups: bounded, defensive parsing of untrusted
@@ -544,11 +548,19 @@ auto build_transaction_request_body(AppserviceTransaction const& transaction) ->
     return canonicaljson::serialize_canonical(canonicaljson::Value{std::move(root)}).output;
 }
 
-AppserviceClient::AppserviceClient(http::OutboundClient& outbound,
-                                   federation::CachedServerDiscovery& discovery) noexcept
+AppserviceClient::AppserviceClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
+                                   config::AppserviceConfig const& appservice_config, Perform perform)
     : outbound_{outbound}
     , discovery_{discovery}
+    , connect_timeout_seconds_{appservice_config.connect_timeout_seconds}
+    , total_timeout_seconds_{appservice_config.total_timeout_seconds}
+    , perform_{std::move(perform)}
 {
+    auto const response_limit = config::parse_size_limit(appservice_config.response_max_size);
+    if (response_limit.valid && response_limit.bytes <= std::numeric_limits<std::size_t>::max())
+    {
+        response_max_size_bytes_ = static_cast<std::size_t>(response_limit.bytes);
+    }
 }
 
 auto AppserviceClient::send_transaction(AppserviceRegistration const& registration,
@@ -556,7 +568,8 @@ auto AppserviceClient::send_transaction(AppserviceRegistration const& registrati
 {
     auto const path = "/_matrix/app/v1/transactions/" + core::percent_encode_path_component(transaction.txn_id);
     auto const [attempted, result] =
-        call_appservice(outbound_, discovery_, registration, "PUT", path, build_transaction_request_body(transaction));
+        call_appservice(outbound_, discovery_, registration, "PUT", path, build_transaction_request_body(transaction),
+                        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, http::OutboundError::none, "appservice has no url configured"};
@@ -571,7 +584,9 @@ auto AppserviceClient::send_transaction(AppserviceRegistration const& registrati
 auto AppserviceClient::perform_query(AppserviceRegistration const& registration, std::string_view path)
     -> AppserviceQueryResult
 {
-    auto const [attempted, result] = call_appservice(outbound_, discovery_, registration, "GET", path, {});
+    auto const [attempted, result] =
+        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
+                        total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, http::OutboundError::none, "appservice has no url configured"};
@@ -610,7 +625,9 @@ auto AppserviceClient::query_thirdparty_protocol(AppserviceRegistration const& r
     -> AppserviceThirdPartyProtocolResult
 {
     auto const path = "/_matrix/app/v1/thirdparty/protocol/" + core::percent_encode_path_component(protocol);
-    auto const [attempted, result] = call_appservice(outbound_, discovery_, registration, "GET", path, {});
+    auto const [attempted, result] =
+        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
+                        total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -654,7 +671,9 @@ auto AppserviceClient::query_thirdparty_location_by_alias(AppserviceRegistration
                                                           std::string_view alias) -> AppserviceThirdPartyLocationsResult
 {
     auto const path = "/_matrix/app/v1/thirdparty/location?alias=" + core::percent_encode_path_component(alias);
-    auto const [attempted, result] = call_appservice(outbound_, discovery_, registration, "GET", path, {});
+    auto const [attempted, result] =
+        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
+                        total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -691,7 +710,9 @@ auto AppserviceClient::query_thirdparty_location_by_protocol(
 {
     auto const path = "/_matrix/app/v1/thirdparty/location/" + core::percent_encode_path_component(protocol) +
                       build_thirdparty_fields_query(fields);
-    auto const [attempted, result] = call_appservice(outbound_, discovery_, registration, "GET", path, {});
+    auto const [attempted, result] =
+        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
+                        total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -726,7 +747,9 @@ auto AppserviceClient::query_thirdparty_user_by_userid(AppserviceRegistration co
                                                        std::string_view user_id) -> AppserviceThirdPartyUsersResult
 {
     auto const path = "/_matrix/app/v1/thirdparty/user?userid=" + core::percent_encode_path_component(user_id);
-    auto const [attempted, result] = call_appservice(outbound_, discovery_, registration, "GET", path, {});
+    auto const [attempted, result] =
+        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
+                        total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};
@@ -764,7 +787,9 @@ auto AppserviceClient::query_thirdparty_user_by_protocol(AppserviceRegistration 
 {
     auto const path = "/_matrix/app/v1/thirdparty/user/" + core::percent_encode_path_component(protocol) +
                       build_thirdparty_fields_query(fields);
-    auto const [attempted, result] = call_appservice(outbound_, discovery_, registration, "GET", path, {});
+    auto const [attempted, result] =
+        call_appservice(outbound_, discovery_, registration, "GET", path, {}, connect_timeout_seconds_,
+                        total_timeout_seconds_, response_max_size_bytes_, perform_);
     if (!attempted)
     {
         return {false, true, 0U, false, {}, http::OutboundError::none, "appservice has no url configured"};

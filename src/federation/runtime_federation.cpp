@@ -49,6 +49,10 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
     auto const join_timeout = config::parse_duration_seconds(config.security().federation.join_timeout);
     auto const join_race_deadline = config::parse_duration_seconds(config.security().federation.join_race_deadline);
     auto const join_response_max_size = config::parse_size_limit(config.security().federation.join_response_max_size);
+    auto const backfill_response_max_size =
+        config::parse_size_limit(config.security().federation.backfill.response_max_size);
+    auto const backfill_timeout = config::parse_duration_seconds(config.security().federation.backfill.timeout);
+    auto const pending_join_max_size = config::parse_size_limit(config.security().federation.pending_join_max_size);
     // An unparsable TTL yields 0 (negative caching off) rather than a wild
     // value; config validation has already rejected a malformed one by here.
     auto const key_resolution_failure_ttl =
@@ -80,6 +84,25 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.key_resolution_per_ip_rate,
         config.security().federation.key_resolution_max_in_flight,
         key_resolution_failure_ttl.valid ? key_resolution_failure_ttl.seconds : 0U,
+        config.security().federation.bad_signature_per_ip_rate,
+        config.security().federation.backfill,
+        FederationQueryPolicy{
+                              .max_backfill_pdus = config.security().federation.query.max_backfill_pdus,
+                              .max_missing_events_pdus = config.security().federation.query.max_missing_events_pdus,
+                              .max_missing_events_latest = config.security().federation.query.max_missing_events_latest,
+                              .max_missing_events_traversal = config.security().federation.query.max_missing_events_traversal,
+                              },
+        backfill_timeout.valid ? backfill_timeout.seconds : 0U,
+        backfill_response_max_size.valid ? backfill_response_max_size.bytes : 0U,
+        config.security().federation.accepted_transaction_cache_entries,
+        config.security().federation.audit_event_cache_entries,
+        config.security().federation.key_resolution_cache_entries,
+        config.security().federation.bad_signature_cache_entries,
+        config.security().federation.pending_join_max_rooms,
+        config.security().federation.pending_join_max_pdus,
+        pending_join_max_size.valid ? pending_join_max_size.bytes : 0U,
+        config.security().federation.outbound_queue_capacity,
+        config.security().federation.outbound_max_retries,
     };
 }
 
@@ -105,7 +128,30 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " join_response_max_bytes=" + std::to_string(config.join_response_max_bytes) +
            " key_resolution_per_ip_rate=" + rate_limit_policy_string(config.key_resolution_per_ip_rate) +
            " key_resolution_max_in_flight=" + std::to_string(config.key_resolution_max_in_flight) +
-           " key_resolution_failure_ttl_seconds=" + std::to_string(config.key_resolution_failure_ttl_seconds);
+           " key_resolution_failure_ttl_seconds=" + std::to_string(config.key_resolution_failure_ttl_seconds) +
+           " backfill.max_missing_events=" + std::to_string(config.backfill.max_missing_events) +
+           " backfill.max_outbound_calls=" + std::to_string(config.backfill.max_outbound_calls) +
+           " backfill.max_state_ids=" + std::to_string(config.backfill.max_state_ids) +
+           " backfill.max_auth_chain_ids=" + std::to_string(config.backfill.max_auth_chain_ids) +
+           " backfill.max_snapshot_events=" + std::to_string(config.backfill.max_snapshot_events) +
+           " backfill.max_snapshot_outbound_calls=" + std::to_string(config.backfill.max_snapshot_outbound_calls) +
+           " backfill.max_total_outbound_calls=" + std::to_string(config.backfill.max_total_outbound_calls) +
+           " backfill.timeout_seconds=" + std::to_string(config.backfill_timeout_seconds) +
+           " query.max_backfill_pdus=" + std::to_string(config.query_policy.max_backfill_pdus) +
+           " query.max_missing_events_pdus=" + std::to_string(config.query_policy.max_missing_events_pdus) +
+           " query.max_missing_events_latest=" + std::to_string(config.query_policy.max_missing_events_latest) +
+           " query.max_missing_events_traversal=" + std::to_string(config.query_policy.max_missing_events_traversal) +
+           " backfill_response_max_bytes=" + std::to_string(config.backfill_response_max_bytes) +
+           " accepted_transaction_cache_entries=" + std::to_string(config.accepted_transaction_cache_entries) +
+           " audit_event_cache_entries=" + std::to_string(config.audit_event_cache_entries) +
+           " key_resolution_cache_entries=" + std::to_string(config.key_resolution_cache_entries) +
+           " bad_signature_cache_entries=" + std::to_string(config.bad_signature_cache_entries) +
+           " bad_signature_per_ip_rate=" + rate_limit_policy_string(config.bad_signature_per_ip_rate) +
+           " pending_join_max_rooms=" + std::to_string(config.pending_join_max_rooms) +
+           " pending_join_max_pdus=" + std::to_string(config.pending_join_max_pdus) +
+           " pending_join_max_bytes=" + std::to_string(config.pending_join_max_bytes) +
+           " outbound_queue_capacity=" + std::to_string(config.outbound_queue_capacity) +
+           " outbound_max_retries=" + std::to_string(config.outbound_max_retries);
 }
 
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)

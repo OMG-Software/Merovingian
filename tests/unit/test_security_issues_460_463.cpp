@@ -89,8 +89,8 @@ auto constexpr remote_key_seed = "security-test-remote-seed";
     return remote;
 }
 
-[[nodiscard]] auto signed_put(std::string const& target,
-                              std::string const& body) -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_put(std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto req = merovingian::federation::SignedFederationRequest{};
     req.method = "PUT";
@@ -545,14 +545,16 @@ SCENARIO("audit log actor field never contains the raw bearer token on 413 rejec
     GIVEN("a started client-server runtime and a raw bearer token")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        auto config = registration_enabled_config();
+        config.server().client_api.max_body_size = "64KiB";
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
         auto const raw_token = std::string{"sct_secret_bearer_token_463_should_never_appear"};
 
         // Build an oversized request body to trigger the 413 path.
-        auto const body = std::string(100000, 'x'); // > 64 KiB default body limit
+        auto const body = std::string(100000, 'x'); // > 64 KiB configured body limit
 
         WHEN("the oversized request is dispatched (triggers 413 pre-auth)")
         {

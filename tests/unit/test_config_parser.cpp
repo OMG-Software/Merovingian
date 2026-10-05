@@ -643,9 +643,9 @@ SCENARIO("Key-value config parser applies the per-client connection limits", "[c
     {
         auto const result = merovingian::config::parse_key_value_config(std::string{});
 
-        THEN("the cap is 64 connections and IPv6 clients are grouped by /64")
+        THEN("the cap is 256 connections and IPv6 clients are grouped by /64")
         {
-            REQUIRE(result.config.server().http.max_connections_per_ip == 64U);
+            REQUIRE(result.config.server().http.max_connections_per_ip == 256U);
             REQUIRE(result.config.server().http.ipv6_client_prefix_length == 64U);
         }
     }
@@ -689,7 +689,7 @@ SCENARIO("Key-value config parser applies the per-client connection limits", "[c
                     REQUIRE(std::ranges::any_of(result.findings, [&](auto const& finding) {
                         return finding.field == field;
                     }));
-                    REQUIRE(result.config.server().http.max_connections_per_ip == 64U);
+                    REQUIRE(result.config.server().http.max_connections_per_ip == 256U);
                     REQUIRE(result.config.server().http.ipv6_client_prefix_length == 64U);
                 }
             }
@@ -703,9 +703,9 @@ SCENARIO("Key-value config parser applies the main request pool size", "[config]
     {
         auto const result = merovingian::config::parse_key_value_config(std::string{});
 
-        THEN("the main request pool has sixteen threads")
+        THEN("the main request pool has thirty-two threads")
         {
-            REQUIRE(result.config.server().http.request_threads == 16U);
+            REQUIRE(result.config.server().http.request_threads == 32U);
         }
     }
 
@@ -747,7 +747,7 @@ SCENARIO("Key-value config parser applies the main request pool size", "[config]
                     REQUIRE(std::ranges::any_of(result.findings, [](auto const& finding) {
                         return finding.field == "server.http.request_threads";
                     }));
-                    REQUIRE(result.config.server().http.request_threads == 16U);
+                    REQUIRE(result.config.server().http.request_threads == 32U);
                 }
             }
         }
@@ -821,7 +821,7 @@ SCENARIO("Key-value config parser applies the HTTP keep-alive transport policy",
                 REQUIRE(has_finding(zero_idle_result.findings, "server.http.keep_alive_idle_seconds"));
                 REQUIRE(zero_idle_result.config.server().http.keep_alive_idle_seconds == 15U);
                 REQUIRE(has_finding(zero_max_result.findings, "server.http.keep_alive_max_connections"));
-                REQUIRE(zero_max_result.config.server().http.keep_alive_max_connections == 8U);
+                REQUIRE(zero_max_result.config.server().http.keep_alive_max_connections == 256U);
             }
         }
     }

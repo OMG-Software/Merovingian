@@ -51,7 +51,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.17"};
+constexpr auto version = std::string_view{"0.12.18"};
 
 struct BootstrapConfigResult final
 {
@@ -733,8 +733,6 @@ struct ListenerBinding final
     auto const install_audit_sink_hook = [&runtime]() {
         merovingian::homeserver::install_local_audit_database(&runtime.homeserver.database);
     };
-    auto const max_queued_connections =
-        static_cast<std::size_t>(runtime.homeserver.config.listeners().max_queued_connections);
     // The main pool serves every request that is not a waiting /sync, on every
     // listener. Its size is server.http.request_threads (HTTP-1, ADR-0077).
     // No worker ever waits on a quiet connection: the dispatcher below holds
@@ -751,7 +749,10 @@ struct ListenerBinding final
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,
     // login, federation) are always serviced without delay.
-    auto sync_pool = merovingian::net::ThreadPool{32U, install_audit_sink_hook, max_queued_connections};
+    auto const& sync_config = runtime.homeserver.config.server().http;
+    auto const sync_threads = static_cast<std::size_t>(sync_config.sync_threads);
+    auto const sync_queue_depth = static_cast<std::size_t>(sync_config.sync_max_in_flight);
+    auto sync_pool = merovingian::net::ThreadPool{sync_threads, install_audit_sink_hook, sync_queue_depth};
     // One dispatcher for every listener, so the per-client worker share is
     // process-wide. Its thread starts here, after process hardening (ADR-0082).
     auto dispatcher = merovingian::homeserver::HttpConnectionDispatcher{runtime, stats, pool, &sync_pool};

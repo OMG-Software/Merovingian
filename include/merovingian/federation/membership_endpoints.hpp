@@ -135,11 +135,25 @@ struct BackfillResult final
 
 using BackfillProvider = std::function<BackfillResult(BackfillRequest const&)>;
 
+// Per-requested-event-graph work limits for federation history endpoints.
+// These are operator policies, not protocol maxima. Matrix gives backfill a
+// requested count and get_missing_events an optional count (default 10), but
+// does not require a server to honour an arbitrarily large requested count.
+struct FederationQueryPolicy final
+{
+    std::size_t max_backfill_pdus{500U};
+    std::size_t max_missing_events_pdus{100U};
+    std::size_t max_missing_events_latest{100U};
+    std::size_t max_missing_events_traversal{4096U};
+};
+
 // Parses the v1 backfill query string (?v=eventId&v=eventId&limit=N). Returns
 // nullopt when the input is malformed (e.g. limit not numeric).
-// The parsed `limit` is clamped to a server-side maximum (100) so a remote
+// The parsed `limit` is clamped to the configured server policy so a remote
 // cannot ask the injected BackfillProvider for an unbounded number of PDUs.
-[[nodiscard]] auto parse_backfill_query(std::string_view target) -> std::optional<BackfillRequest>;
+[[nodiscard]] auto parse_backfill_query(std::string_view target,
+                                        FederationQueryPolicy const& policy = FederationQueryPolicy{})
+    -> std::optional<BackfillRequest>;
 
 [[nodiscard]] auto parse_invite_body(std::string_view body, std::string_view room_id, std::string_view event_id,
                                      FederationEndpoint endpoint) -> std::optional<InviteRequest>;

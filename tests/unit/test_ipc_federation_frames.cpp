@@ -5,6 +5,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <limits>
 #include <string>
 
 namespace
@@ -20,7 +22,10 @@ using merovingian::ipc::deserialize_fed_request;
 using merovingian::ipc::deserialize_fed_response;
 using merovingian::ipc::deserialize_outbound_http_request;
 using merovingian::ipc::deserialize_outbound_http_response;
+using merovingian::ipc::frame_bytes_for_response_cap;
+using merovingian::ipc::frame_bytes_for_transport_caps;
 using merovingian::ipc::ipc_json_get_str;
+using merovingian::ipc::ipc_json_get_u64;
 using merovingian::ipc::ipc_json_str;
 using merovingian::ipc::kIpcMaxFrameBytes;
 using merovingian::ipc::serialize_fed_request;
@@ -28,8 +33,49 @@ using merovingian::ipc::serialize_fed_response;
 using merovingian::ipc::serialize_outbound_http_request;
 using merovingian::ipc::serialize_outbound_http_response;
 using merovingian::ipc::serialize_room_sync_notification;
+using merovingian::ipc::serialize_room_sync_result;
 
 } // namespace
+
+SCENARIO("IPC frame sizing covers request string escaping as well as response base64", "[ipc][limits]")
+{
+    GIVEN("a small join response cap and the configured federation request budgets")
+    {
+        constexpr auto mib = std::uint64_t{1024U * 1024U};
+        constexpr auto transaction_bytes = std::uint64_t{20U} * mib;
+        constexpr auto header_bytes = std::uint64_t{32768U};
+        constexpr auto start_line_bytes = std::uint64_t{8192U};
+
+        WHEN("the shared transport frame cap is resolved")
+        {
+            auto const frame_bytes =
+                frame_bytes_for_transport_caps(1U * mib, transaction_bytes, 1U * mib, header_bytes, start_line_bytes);
+
+            THEN("the request expansion budget governs even though the join response cap is low")
+            {
+                REQUIRE(frame_bytes > frame_bytes_for_response_cap(1U * mib));
+                REQUIRE(frame_bytes >= 6U * (transaction_bytes + header_bytes + start_line_bytes) + 2U * mib);
+            }
+        }
+    }
+}
+
+SCENARIO("IPC frame sizing saturates rather than wrapping for invalidly large inputs", "[ipc][limits]")
+{
+    GIVEN("transport limits at the uint64 boundary")
+    {
+        WHEN("the frame cap is computed")
+        {
+            constexpr auto max_u64 = std::numeric_limits<std::uint64_t>::max();
+            auto const frame_bytes = frame_bytes_for_transport_caps(max_u64, max_u64, max_u64, max_u64, max_u64);
+
+            THEN("the result leaves room for the authenticated-encryption tag in the uint32 wire length")
+            {
+                REQUIRE(frame_bytes == std::numeric_limits<std::uint32_t>::max() - 17U);
+            }
+        }
+    }
+}
 
 SCENARIO("IPC JSON escaping preserves common special characters", "[ipc][federation][json]")
 {
@@ -844,12 +890,13 @@ SCENARIO("room_sync notification carries the room_id and is tagged as a notifica
 
         WHEN("a room_sync notification is serialized")
         {
-            auto const serialized = serialize_room_sync_notification(room_id);
+            auto const serialized = serialize_room_sync_notification(room_id, 7U);
 
-            THEN("the type and room_id fields round-trip through the shared JSON helpers")
+            THEN("the type, room_id and generation fields round-trip through the shared JSON helpers")
             {
                 REQUIRE(ipc_json_get_str(serialized, "type") == "room_sync");
                 REQUIRE(ipc_json_get_str(serialized, "room_id") == room_id);
+                REQUIRE(merovingian::ipc::ipc_json_get_u64(serialized, "generation") == 7U);
             }
         }
     }
@@ -860,11 +907,43 @@ SCENARIO("room_sync notification carries the room_id and is tagged as a notifica
 
         WHEN("a room_sync notification is serialized")
         {
-            auto const serialized = serialize_room_sync_notification(room_id);
+            auto const serialized = serialize_room_sync_notification(room_id, 0U);
 
             THEN("the room_id round-trips exactly, proving it was escaped rather than interpolated raw")
             {
                 REQUIRE(ipc_json_get_str(serialized, "room_id") == room_id);
+            }
+        }
+    }
+}
+
+SCENARIO("room_sync_result notification carries room_id, state and generation", "[ipc][federation][notification]")
+{
+    GIVEN("a room_id, state and generation")
+    {
+        auto const room_id = std::string{"!BUVBUduhTRUAsl7_0IMUes5lNKNMTw0d7B4cTRffhGI"};
+
+        WHEN("a successful room_sync_result is serialized")
+        {
+            auto const serialized = serialize_room_sync_result(room_id, "ok", 42U);
+
+            THEN("the type, room_id, state and generation round-trip")
+            {
+                REQUIRE(ipc_json_get_str(serialized, "type") == "room_sync_result");
+                REQUIRE(ipc_json_get_str(serialized, "room_id") == room_id);
+                REQUIRE(ipc_json_get_str(serialized, "state") == "ok");
+                REQUIRE(ipc_json_get_u64(serialized, "generation") == 42U);
+            }
+        }
+
+        WHEN("a failed room_sync_result is serialized")
+        {
+            auto const serialized = serialize_room_sync_result(room_id, "failed", 0U);
+
+            THEN("the state round-trips as failed")
+            {
+                REQUIRE(ipc_json_get_str(serialized, "state") == "failed");
+                REQUIRE(ipc_json_get_u64(serialized, "generation") == 0U);
             }
         }
     }

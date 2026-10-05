@@ -28,16 +28,21 @@ namespace merovingian::sync
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Bounds on what one sliding sync request may ask for. Each room named by a subscription
-// costs a scan of the event store, so an unbounded request is a CPU amplifier.
-//
-// A `timeline_limit` above the maximum is clamped by the parser. More than
-// `sliding_sync_max_room_subscriptions` subscriptions, or more than
-// `sliding_sync_max_required_state_entries` `required_state` pairs on one list or
-// subscription, is rejected with 400 `M_INVALID_PARAM` (see
-// `sliding_sync_request_limit_violation`).
-inline constexpr std::uint64_t sliding_sync_max_timeline_limit = 100U;
-inline constexpr std::size_t sliding_sync_max_room_subscriptions = 256U;
-inline constexpr std::size_t sliding_sync_max_required_state_entries = 256U;
+// costs a scan of the event store, so an unbounded request is a CPU amplifier. These are
+// policy defaults; the homeserver supplies its validated runtime configuration to the parser.
+// A timeline request above the configured ceiling is clamped. Exceeding either count cap is
+// rejected with 400 M_INVALID_PARAM by sliding_sync_request_limit_violation().
+struct SlidingSyncLimits final
+{
+    std::uint32_t timeline_limit{100U};
+    std::uint32_t room_subscriptions{256U};
+    std::uint32_t required_state_entries{256U};
+};
+
+// Source-compatible defaults for standalone callers and existing tests.
+inline constexpr std::uint64_t sliding_sync_max_timeline_limit{100U};
+inline constexpr std::size_t sliding_sync_max_room_subscriptions{256U};
+inline constexpr std::size_t sliding_sync_max_required_state_entries{256U};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Request types
