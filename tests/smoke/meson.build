@@ -257,9 +257,9 @@ test(
     '-c',
     tmp_smoke_prefix
       + 'current_config="$tmpdir/reloadable-current-smoke.conf" && next_config="$tmpdir/reloadable-next-smoke.conf"'
-      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > "$current_config"'
+      + ' && printf "%s\n" "security.media.local_upload_policy=allow-after-scan" > "$current_config"'
       + ' && chmod 0644 "$current_config"'
-      + ' && printf "%s\n" "security.federation.remote_timeout=45s" > "$next_config"'
+      + ' && printf "%s\n" "security.media.local_upload_policy=deny" > "$next_config"'
       + ' && chmod 0644 "$next_config"'
       + ' && output=$( '
       + server_executable
