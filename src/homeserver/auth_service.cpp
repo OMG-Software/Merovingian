@@ -1043,8 +1043,13 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
         return throttled;
     }
 
-    auto* user = find_user(runtime.database, user_id);
-    auto const password_hash = std::string{user != nullptr ? user->password_hash : *dummy_password_hash()};
+    // Snapshot the claimed identity and the hash to verify against. The user
+    // pointer itself must not outlive the RuntimeLockRelease below: the vector
+    // may be reallocated while runtime.mutex is dropped around Argon2id.
+    auto const verified_user_id = std::string{user_id};
+    auto* initial_user = find_user(runtime.database, verified_user_id);
+    auto const password_hash =
+        std::string{initial_user != nullptr ? initial_user->password_hash : *dummy_password_hash()};
     // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
     // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
     // an admission-saturated pile-on does not also exhaust the lockout budget.
@@ -1063,11 +1068,16 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
         auto const released = merovingian::homeserver::RuntimeLockRelease{};
         password_valid = auth::password_matches(password_hash, password);
     }
-    if (user == nullptr || !password_valid)
+    // RuntimeLockRelease has re-acquired the lock. Re-find the user and insist
+    // the stored password hash is still the one we just verified. A concurrent
+    // password change (or account deletion) during Argon2id must not issue a
+    // session against the old credentials.
+    auto* user = find_user(runtime.database, verified_user_id);
+    if (user == nullptr || user->password_hash != password_hash || !password_valid)
     {
         // Counted against the *claimed* user_id whether or not it exists, so the
         // lockout cannot be used to probe which accounts are real.
-        record_failed_login(runtime, user_id);
+        record_failed_login(runtime, verified_user_id);
         auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
         // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",

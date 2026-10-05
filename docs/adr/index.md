@@ -104,6 +104,9 @@
 * [0100 - Commit media moderation with audit and blob state](0100-commit-media-moderation-with-audit-and-blob-state.md)
 * [0101 - Build the documentation site on every branch, but publish only from main](0101-build-the-documentation-site-on-every-branch-but-publish-only-from-main.md)
 * [0102 - Escape log control characters once, at the sink](0102-escape-log-control-characters-once-at-the-sink.md)
+* [0104 - Re-verify the user and password hash after Argon2id](0104-reverify-password-hash-after-argon2id.md)
+* [0105 - Silently discard sendToDevice to unknown local recipients](0105-silently-discard-sendtodevice-to-unknown-local-recipients.md)
+* [0106 - to_device next_batch is the last included stream ID](0106-to-device-next-batch-is-last-included-stream-id.md)
 
 ## Rejected Records
 

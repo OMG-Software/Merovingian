@@ -6,6 +6,28 @@
   suite passes 55 groups with no failures or timeouts; strict Pages build,
   8 package checks and 20 documentation-tooling checks pass.
 
+- **FIXED: a password change during Argon2id verification no longer issues a
+  session.** `login_local_user` used the password hash snapshot taken before
+  releasing `runtime.mutex` and ignored any concurrent password change until
+  after the session was minted. It now re-finds the user and re-checks the
+  stored hash after re-acquiring the lock, so a password invalidated mid-login
+  fails with `403 M_FORBIDDEN`. ADR-0104.
+
+- **FIXED: sendToDevice no longer creates queue state for unknown local
+  recipients.** The client-server `PUT /sendToDevice` endpoint previously
+  enqueued a `to_device_messages` row and advanced the sync stream ID for any
+  syntactically valid local `(user_id, device_id)`, including non-existent users
+  and devices that did not belong to the named user. It now silently discards
+  those deliveries while still fanning out wildcard `*` to the target user's
+  registered devices. ADR-0105.
+
+- **FIXED: MSC4186 to_device pagination no longer acknowledges undelivered
+  rows.** The sliding-sync `to_device` extension reported the global sync
+  watermark as `next_batch`, causing the next request to delete every earlier
+  device-targeted row even if the previous response was truncated or lost. The
+  continuation token is now the stream ID of the last message actually included
+  in the response, and an empty response keeps the previous position. ADR-0106.
+
 - **Log records cannot be forged by control characters (AUTH-9).** A JSON
   `\n` in a login `identifier.user` or `device_id` wrote an extra physical
   log line, and ESC or a C1 CSI reached the operator's terminal raw.
