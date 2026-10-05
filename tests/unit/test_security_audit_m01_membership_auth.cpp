@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  SECURITY AUDIT M-01 — FEDERATION MEMBERSHIP AUTHORIZATION BYPASS        |
@@ -66,9 +67,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -93,8 +97,8 @@ auto constexpr remote_key_seed = "m01-audit-remote-seed";
     return remote;
 }
 
-[[nodiscard]] auto signed_put(std::string const& target, std::string const& body)
-    -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_put(std::string const& target,
+                              std::string const& body) -> merovingian::federation::SignedFederationRequest
 {
     auto req = merovingian::federation::SignedFederationRequest{};
     req.method = "PUT";

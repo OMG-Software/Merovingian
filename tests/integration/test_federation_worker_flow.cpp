@@ -1026,11 +1026,17 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
             auto const sender = std::string{"@remote:matrix.example.org"};
             auto const target_user = "@local:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
-            // to-device messages are only delivered to existing local users (FED-3).
+            // to-device messages are only delivered to existing local users and devices (FED-3).
             {
                 auto persistent = merovingian::database::PersistentUser{};
                 persistent.user_id = target_user;
                 runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
+            {
+                auto device = merovingian::database::PersistentDevice{};
+                device.user_id = target_user;
+                device.device_id = target_device;
+                runtime.database.persistent_store.devices.push_back(std::move(device));
             }
             auto const content_json = std::string{R"({"sender":")"} + sender +
                                       R"(","type":"m.room_key","message_id":"m1","messages":{")" + target_user +
@@ -1118,11 +1124,17 @@ SCENARIO("handle_edu_ingest_request delivers a realistically-shaped Olm-encrypte
             auto const sender = std::string{"@james:matrix.ping.me.uk"};
             auto const target_user = "@james:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
-            // to-device messages are only delivered to existing local users (FED-3).
+            // to-device messages are only delivered to existing local users and devices (FED-3).
             {
                 auto persistent = merovingian::database::PersistentUser{};
                 persistent.user_id = target_user;
                 runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
+            {
+                auto device = merovingian::database::PersistentDevice{};
+                device.user_id = target_user;
+                device.device_id = target_device;
+                runtime.database.persistent_store.devices.push_back(std::move(device));
             }
             auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
             // ~2KB placeholder ciphertext body — long enough to match a real
@@ -1220,11 +1232,17 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
             auto const sender = std::string{"@james:matrix.ping.me.uk"};
             auto const target_user = "@james:" + runtime.config.server().server_name;
             auto const target_device = std::string{"DEVICE1"};
-            // to-device messages are only delivered to existing local users (FED-3).
+            // to-device messages are only delivered to existing local users and devices (FED-3).
             {
                 auto persistent = merovingian::database::PersistentUser{};
                 persistent.user_id = target_user;
                 runtime.database.persistent_store.users.push_back(std::move(persistent));
+            }
+            {
+                auto device = merovingian::database::PersistentDevice{};
+                device.user_id = target_user;
+                device.device_id = target_device;
+                runtime.database.persistent_store.devices.push_back(std::move(device));
             }
             auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
             // ~2KB placeholder ciphertext body — long enough to match a real
@@ -2567,6 +2585,74 @@ SCENARIO("WorkerSupervisor restarts an unexpectedly exited worker with exponenti
                 supervisor.stop();
                 REQUIRE_FALSE(supervisor.healthy());
                 REQUIRE(supervisor.worker_pid() == -1);
+            }
+        }
+    }
+}
+
+SCENARIO("WorkerSupervisor retries a transient spawn failure without losing supervision",
+         "[iso-3][integration][federation-worker][supervisor]")
+{
+    GIVEN("a supervised real worker whose executable temporarily disappears")
+    {
+        REQUIRE_FALSE(worker_binary_path().empty());
+        REQUIRE(sodium_init() >= 0);
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-spawn-retry");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.federation_worker().request_timeout_seconds = 2U;
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto const executable = tmp_dir / "worker-link";
+        auto const real_binary = std::filesystem::absolute(std::string{worker_binary_path()});
+        std::filesystem::create_symlink(real_binary, executable);
+        auto supervisor =
+            WorkerSupervisor{executable.string(), config_path.string(), 2U, 0U,
+                             derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
+        supervisor.start();
+        auto const original_pid = supervisor.worker_pid();
+        REQUIRE(original_pid > 0);
+        std::filesystem::remove(executable);
+        REQUIRE(::kill(original_pid, SIGKILL) == 0);
+        auto const reap_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (supervisor.worker_pid() == original_pid && std::chrono::steady_clock::now() < reap_deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        REQUIRE(supervisor.worker_pid() == -1);
+        // The first retry has a one-second backoff. Keep the path absent through
+        // that attempt so this exercises posix_spawn failure, not just a crash.
+        std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+        REQUIRE_FALSE(supervisor.healthy());
+        WHEN("the executable becomes available again")
+        {
+            std::filesystem::create_symlink(real_binary, executable);
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+            while ((supervisor.worker_pid() <= 0 || !supervisor.healthy()) &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            }
+            THEN("a new owned child is started and the supervisor becomes healthy")
+            {
+                CHECK(supervisor.worker_pid() > 0);
+                CHECK(supervisor.worker_pid() != original_pid);
+                CHECK(supervisor.healthy());
+            }
+            supervisor.stop();
+            CHECK(supervisor.worker_pid() == -1);
+            CHECK_FALSE(supervisor.healthy());
+        }
+        WHEN("shutdown is requested during retry backoff")
+        {
+            auto const began = std::chrono::steady_clock::now();
+            supervisor.stop();
+            THEN("shutdown interrupts the backoff promptly")
+            {
+                CHECK(std::chrono::steady_clock::now() - began < std::chrono::milliseconds{500});
+                CHECK(supervisor.worker_pid() == -1);
+                CHECK_FALSE(supervisor.healthy());
             }
         }
     }

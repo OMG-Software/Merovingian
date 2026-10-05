@@ -196,6 +196,23 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
     return false;
 }
 
+auto federation_worker_room_read_may_fallback_to_main(LocalHttpRequest const& request) noexcept -> bool
+{
+    if (request.method != "GET")
+    {
+        return false;
+    }
+    auto const path = request.target.substr(0U, request.target.find('?'));
+    static auto const prefixes = std::vector<std::string_view>{
+        "/_matrix/federation/v1/state/",      "/_matrix/federation/v1/state_ids/",
+        "/_matrix/federation/v1/backfill/",   "/_matrix/federation/v1/get_missing_events/",
+        "/_matrix/federation/v1/event_auth/",
+    };
+    return std::ranges::any_of(prefixes, [&path](std::string_view prefix) {
+        return path.starts_with(prefix);
+    });
+}
+
 auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool
 {
     // The key server endpoint is the only inbound federation route that main

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |     SECURITY AUDIT M-03: ROOM STATE READ AUTHORIZATION                  |
@@ -37,9 +38,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -76,12 +80,12 @@ namespace
     REQUIRE(register_response.response.status == 200U);
 
     auto const login_response = merovingian::homeserver::handle_client_server_request(
-        runtime, {"POST",
-                  "/_matrix/client/v3/login",
-                  {},
-                  R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)" + std::string{localpart} +
-                      R"(:example.org"},"password":"CorrectHorse7!","device_id":")" + std::string{device_id} +
-                      R"("})"});
+        runtime,
+        {"POST",
+         "/_matrix/client/v3/login",
+         {},
+         R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)" + std::string{localpart} +
+             R"(:example.org"},"password":"CorrectHorse7!","device_id":")" + std::string{device_id} + R"("})"});
     REQUIRE(login_response.response.status == 200U);
     return m03_login_token(login_response.response.body);
 }

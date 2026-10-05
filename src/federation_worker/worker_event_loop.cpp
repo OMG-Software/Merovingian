@@ -22,6 +22,7 @@
 #include "merovingian/net/thread_pool.hpp"
 #include "merovingian/observability/logger.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -592,13 +593,23 @@ auto WorkerEventLoop::run() -> void
     }
 
     // Create the IPC channel first; the blocking key exchange completes here
-    // before the runtime starts. The worker is the client side of the exchange. max_frame_bytes must match what
-    // WorkerPool derives for the supervisor side of this same channel (see
-    // ipc::frame_bytes_for_response_cap) — both sides parse the same
-    // --config file independently rather than negotiating it over IPC.
+    // before the runtime starts. Both peers derive the same frame cap from the
+    // same configured response and request budgets rather than negotiating it.
     auto const join_response_max_size = config::parse_size_limit(config_.security().federation.join_response_max_size);
-    auto const max_frame_bytes =
-        ipc::frame_bytes_for_response_cap(join_response_max_size.valid ? join_response_max_size.bytes : 0U);
+    auto const backfill_response_max_size =
+        config::parse_size_limit(config_.security().federation.backfill.response_max_size);
+    auto const federation_request_body_size =
+        config::parse_size_limit(config_.security().federation.max_transaction_size);
+    auto const http_body_size = config::parse_size_limit(config_.server().http.max_body_size);
+    auto const client_api_body_size = config::parse_size_limit(config_.server().client_api.max_body_size);
+    auto const http_config = config_.server().http;
+    auto const max_frame_bytes = ipc::frame_bytes_for_transport_caps(
+        std::max(join_response_max_size.valid ? join_response_max_size.bytes : 0U,
+                 backfill_response_max_size.valid ? backfill_response_max_size.bytes : 0U),
+        federation_request_body_size.valid ? federation_request_body_size.bytes : 0U,
+        std::max(http_body_size.valid ? http_body_size.bytes : 0U,
+                 client_api_body_size.valid ? client_api_body_size.bytes : 0U),
+        http_config.max_header_bytes, http_config.max_start_line_bytes);
     auto channel = std::make_unique<ipc::IpcChannel>(std::move(ipc_fd_), ipc::IpcChannel::Role::client, *auth_key,
                                                      max_frame_bytes);
     auto* channel_ptr = channel.get();
@@ -914,12 +925,16 @@ auto WorkerEventLoop::run() -> void
             // scheduling order between two reloads of the same room is
             // immaterial.
             auto const room_id = ipc::ipc_json_get_str(json, "room_id");
-            auto const sync_enqueued = local_pool.submit([&runtime, room_id]() {
+            auto const generation = ipc::ipc_json_get_u64(json, "generation");
+            auto const sync_enqueued = local_pool.submit([&runtime, channel_ptr, room_id, generation]() {
                 auto guard = std::unique_lock{runtime.mutex};
-                if (!database::reload_room(runtime.database.persistent_store, room_id))
+                auto const ok = database::reload_room(runtime.database.persistent_store, room_id);
+                if (!ok)
                 {
                     LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
                 }
+                channel_ptr->send_notification(
+                    ipc::serialize_room_sync_result(room_id, ok ? "ok" : "failed", generation));
             });
             if (!sync_enqueued)
             {

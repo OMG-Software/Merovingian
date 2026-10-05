@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |       MATRIX /SYNC COMPLEMENT CONFORMANCE INTEGRATION TESTS             |
@@ -31,8 +32,8 @@
 // |    rooms.join[id].timeline.prev_batch - backfill token (when limited)   |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -63,9 +64,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -78,8 +82,8 @@ namespace
     return buffer.str();
 }
 
-[[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object, std::string_view key)
-    -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object,
+                                 std::string_view key) -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -94,8 +98,8 @@ namespace
 // Navigate a dotted JSON path against a parsed Value. Matrix response keys
 // often contain literal dots (for example `m.change_password`), so each level
 // first tries the remaining text as an exact key before splitting on dots.
-[[nodiscard]] auto navigate(merovingian::canonicaljson::Value const& value, std::string_view path)
-    -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto navigate(merovingian::canonicaljson::Value const& value,
+                            std::string_view path) -> merovingian::canonicaljson::Value const*
 {
     auto cursor = &value;
     auto remainder = path;
@@ -155,8 +159,8 @@ auto replace_all(std::string& value, std::string_view needle, std::string_view r
     }
 }
 
-[[nodiscard]] auto interpolate(std::string value, std::unordered_map<std::string, std::string> const& bindings)
-    -> std::string
+[[nodiscard]] auto interpolate(std::string value,
+                               std::unordered_map<std::string, std::string> const& bindings) -> std::string
 {
     for (auto const& [name, replacement] : bindings)
     {

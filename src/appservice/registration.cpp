@@ -150,6 +150,13 @@ auto sender_user_id(AppserviceRegistration const& registration, std::string_view
 auto appservice_owns_user(AppserviceRegistration const& registration, std::string_view server_name,
                           std::string_view user_id) noexcept -> bool
 {
+    // Identity assertion and ownership are only meaningful for local users.
+    // A compromised appservice must not be able to assert a foreign user and
+    // have the homeserver sign events as that user (AUTH-6).
+    if (!user_id.ends_with(':' + std::string{server_name}))
+    {
+        return false;
+    }
     if (sender_user_id(registration, server_name) == user_id)
     {
         return true;
@@ -397,8 +404,15 @@ auto AppserviceRegistry::find_by_id(std::string_view id) const noexcept -> Appse
     return it == m_registrations.end() ? nullptr : &(*it);
 }
 
+auto AppserviceRegistry::is_sender_user_id(std::string_view user_id, std::string_view server_name) const noexcept -> bool
+{
+    return std::ranges::any_of(m_registrations, [user_id, server_name](AppserviceRegistration const& reg) {
+        return sender_user_id(reg, server_name) == user_id;
+    });
+}
+
 auto AppserviceRegistry::user_namespace_exclusively_owned_by_other(std::string_view user_id,
-                                                                   std::string_view excluded_id) const noexcept -> bool
+                                                                 std::string_view excluded_id) const noexcept -> bool
 {
     return std::ranges::any_of(m_registrations, [user_id, excluded_id](AppserviceRegistration const& reg) {
         return reg.id != excluded_id && any_exclusive_namespace_matches(reg.namespaces.users, user_id);

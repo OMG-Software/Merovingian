@@ -222,6 +222,13 @@
 | `GET` | `/_matrix/client/v3/publicRooms` | `getPublicRooms` | none | - | 200 |
 | `POST` | `/_matrix/client/v3/publicRooms` | `queryPublicRooms` | access token | required application/json | 200 |
 
+Implementation note (0.12.16, CSAZ-5): local public-room listings now require
+explicit directory publication; a public join rule alone does not publish a
+room. `createRoom` defaults to private directory visibility, and explicit
+public visibility publishes it. The existing public-join listing filter is
+retained. Directory publication is still in-memory, and POST authentication
+has not yet been enforced; both remain tracked gaps, not completed fixes.
+
 ## Room membership
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -237,6 +244,15 @@
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/kick` | `kick` | access token | required application/json | 200, 403 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/leave` | `leaveRoom` | access token | required application/json | 200, 429 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/unban` | `unban` | access token | required application/json | 200, 403 |
+
+Implementation note (0.12.16, CSAZ-7): invite and knock summaries expose only
+`sender`, `type`, `state_key`, and `content`. The disclosure policy permits the
+seven room-summary types recommended in the stripped-state specification plus
+the recipient's own membership, excluding other membership events, ACLs, power
+levels, and custom private state. Local invitations retain their invitation-time
+snapshot; historical and federated snapshots are re-pruned on client reads,
+including sliding-sync invite responses. Matrix permits additional event types;
+the restrictive allowlist is our policy (ADR-0088), not a protocol prohibition.
 
 ## Room participation
 
@@ -370,3 +386,11 @@ Implemented: returns RFC 8414 metadata when `server.oidc.*` is configured; `404 
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/_matrix/client/v3/voip/turnServer` | `getTurnServer` | access token | - | 200, 429 |
+
+### Security audit follow-up (0.12.17)
+
+POST /_matrix/client/v3/publicRooms runs after the shared authentication and account-state gates, including remote lookups. Directory publication is durable and independent of join rules: a published invite-only room remains listed. Presence sync includes only peers sharing a current joined membership; PUT presence requires online, offline or unavailable and an optional string status_msg. The local 1024 UTF-8 byte status cap is resource policy (ADR-0098).
+
+## Configurable response budgets (0.12.18)
+
+The client-server runtime applies `server.client_api` policy to sync room/timeline counts, message/search/context work and pages, notifications/relations/threads/public-room/hierarchy listings and transient session cardinality. Sliding-sync parsing receives the same configured policy for timeline/subscription/state-pair caps. Client-requested limits remain upper bounds; increasing a server maximum does not change a client's requested timeline size or bypass history visibility, ignore-list or accepted-event filtering. See [operator budgets](user-manual.md#operational-budgets) for defaults and ranges. Runtime policies require restart.

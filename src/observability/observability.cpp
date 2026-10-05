@@ -425,12 +425,62 @@ auto redact_log_value(StructuredLogField const& field) -> std::string
     return field.sensitive || log_field_is_sensitive(field.key) ? "<redacted>" : field.value;
 }
 
+auto escape_log_controls(std::string_view text) -> std::string
+{
+    constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
+    auto const append_hex = [&hex_digits](std::string& output, unsigned char byte) {
+        output.push_back(hex_digits[byte >> 4U]);
+        output.push_back(hex_digits[byte & 0x0fU]);
+    };
+
+    auto escaped = std::string{};
+    escaped.reserve(text.size());
+    for (auto index = std::size_t{0U}; index < text.size(); ++index)
+    {
+        auto const byte = static_cast<unsigned char>(text[index]);
+        if (byte == '\n')
+        {
+            escaped.append("\\n");
+        }
+        else if (byte == '\r')
+        {
+            escaped.append("\\r");
+        }
+        else if (byte == '\t')
+        {
+            escaped.append("\\t");
+        }
+        else if (byte < 0x20U || byte == 0x7fU)
+        {
+            escaped.append("\\x");
+            append_hex(escaped, byte);
+        }
+        else if (auto const next = static_cast<unsigned char>(index + 1U < text.size() ? text[index + 1U] : '\0');
+                 byte == 0xc2U && next >= 0x80U && next <= 0x9fU)
+        {
+            // U+0080-U+009F is encoded as 0xC2 0x80-0x9F. U+009B is a
+            // single-character CSI that some terminals act on.
+            escaped.append("\\u00");
+            append_hex(escaped, next);
+            ++index;
+        }
+        else
+        {
+            escaped.push_back(text[index]);
+        }
+    }
+    return escaped;
+}
+
 // M-11: applies the same sensitivity rule as `log_field_is_sensitive` to a
 // freeform message, so the legacy LOG_*/LOGF_* macros (which build a plain
 // std::string rather than a std::vector<StructuredLogField>) cannot bypass
 // redaction. Scans whitespace-delimited "key=value" tokens; a token whose
 // key matches a sensitive marker is rewritten to "key=<redacted>", every
 // other token (including plain words with no '=') passes through unchanged.
+// Every whitespace character delimits a token and is copied through, so the
+// '\n' that ends a composed log line survives a sensitive last token instead
+// of being swallowed with its value and joining the next record to this one.
 auto redact_log_message(std::string_view message) -> std::string
 {
     auto output = std::string{};
@@ -439,7 +489,7 @@ auto redact_log_message(std::string_view message) -> std::string
     auto pos = std::size_t{0U};
     while (pos < message.size())
     {
-        auto const space = message.find(' ', pos);
+        auto const space = message.find_first_of(" \t\r\n", pos);
         auto const token_end = space == std::string_view::npos ? message.size() : space;
         auto const token = message.substr(pos, token_end - pos);
 
@@ -465,7 +515,7 @@ auto redact_log_message(std::string_view message) -> std::string
         {
             break;
         }
-        output.push_back(' ');
+        output.push_back(message[space]);
         pos = space + 1U;
     }
 

@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 
-SCENARIO("Runtime-facing config keys are reloadable", "[config][reload]")
+SCENARIO("Config reload policies reflect runtime ownership", "[config][reload]")
 {
     GIVEN("runtime-facing config keys")
     {
@@ -26,11 +26,11 @@ SCENARIO("Runtime-facing config keys are reloadable", "[config][reload]")
             auto const media_timeout_policy = merovingian::config::reload_policy_for_key(media_timeout_key);
             auto const database_pool_policy = merovingian::config::reload_policy_for_key(database_pool_key);
 
-            THEN("all policies are reloadable")
+            THEN("snapshotted federation policies require restart")
             {
                 REQUIRE(client_bind_policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(transaction_size_policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(federation_timeout_policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(transaction_size_policy == merovingian::config::ReloadPolicy::restart_required);
+                REQUIRE(federation_timeout_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(media_timeout_policy == merovingian::config::ReloadPolicy::reloadable);
                 REQUIRE(database_pool_policy == merovingian::config::ReloadPolicy::reloadable);
             }
@@ -38,7 +38,7 @@ SCENARIO("Runtime-facing config keys are reloadable", "[config][reload]")
     }
 }
 
-SCENARIO("Runtime-facing config groups are reloadable", "[config][reload]")
+SCENARIO("Config group reload policies distinguish startup snapshots", "[config][reload]")
 {
     GIVEN("runtime-facing config group keys")
     {
@@ -66,16 +66,18 @@ SCENARIO("Runtime-facing config groups are reloadable", "[config][reload]")
 
         WHEN("their reload policies are checked")
         {
-            auto all_reloadable = true;
+            auto all_policies_match = true;
             for (auto const key : keys)
             {
-                all_reloadable = all_reloadable && merovingian::config::reload_policy_for_key(key) ==
-                                                       merovingian::config::ReloadPolicy::reloadable;
+                auto const expected = key.starts_with("security.federation.")
+                                          ? merovingian::config::ReloadPolicy::restart_required
+                                          : merovingian::config::ReloadPolicy::reloadable;
+                all_policies_match = all_policies_match && merovingian::config::reload_policy_for_key(key) == expected;
             }
 
-            THEN("each policy is reloadable")
+            THEN("each policy matches its runtime lifecycle")
             {
-                REQUIRE(all_reloadable);
+                REQUIRE(all_policies_match);
             }
         }
     }

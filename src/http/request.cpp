@@ -214,10 +214,9 @@ auto header_value_is_valid(std::string_view value) noexcept -> bool
     return true;
 }
 
-auto parse_request_head(std::string_view input) -> RequestParseResult
+auto parse_request_head(std::string_view input, RequestLimits const& limits) -> RequestParseResult
 {
     auto result = RequestParseResult{};
-    auto const limits = RequestLimits{};
 
     auto const request_line_end = input.find("\r\n");
     if (request_line_end == std::string_view::npos)

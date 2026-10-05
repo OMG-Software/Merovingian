@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
@@ -66,9 +67,12 @@ struct ModuleLogLevelGuard final
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -85,8 +89,12 @@ struct ModuleLogLevelGuard final
     server.turn.password = "testpass";
     server.turn.ttl_seconds = 3600U;
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -105,8 +113,12 @@ struct ModuleLogLevelGuard final
     server.oidc.registration_endpoint = "https://account.example.com/oauth2/clients/register";
     server.oidc.revocation_endpoint = "https://account.example.com/oauth2/revoke";
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -123,8 +135,12 @@ struct ModuleLogLevelGuard final
     server.sso.redirect_url_allowlist = {"https://client.example.com/"};
     server.sso.identity_providers.push_back({"com.example.idp.github", "GitHub", "mxc://example.com/abc123", "github"});
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -1084,7 +1100,7 @@ SCENARIO("Client-server publicRooms handles the server query parameter", "[homes
 
         auto const public_room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token,
-                      R"({"preset":"public_chat","name":"Lobby","topic":"Open to everyone"})"});
+                      R"({"preset":"public_chat","visibility":"public","name":"Lobby","topic":"Open to everyone"})"});
         REQUIRE(public_room.response.status == 200U);
         auto const public_room_id = room_id(public_room.response.body);
 
@@ -1132,6 +1148,89 @@ SCENARIO("Client-server publicRooms handles the server query parameter", "[homes
                 REQUIRE(response.response.status == 502U);
                 REQUIRE(response.response.body.find("M_UNKNOWN") != std::string::npos);
                 REQUIRE(response.response.body.find(public_room_id) == std::string::npos);
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.19, Published room directory and POST /createRoom visibility.
+// ../../docs/matrix-v1.19-spec/client-server-api.md#published-room-directory
+SCENARIO("Public room listings respect directory visibility independently of public_chat",
+         "[homeserver][client-server][public-rooms][CSAZ-5]")
+{
+    GIVEN("a creator with public-join rooms having default, private and public directory visibility")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(registration.response.status == 200U);
+        auto const token = login_token(registration.response.body);
+        REQUIRE(!token.empty());
+        auto const create = [&](std::string const& body) {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, body});
+            REQUIRE(response.response.status == 200U);
+            return room_id(response.response.body);
+        };
+        auto const default_id = create(R"({"preset":"public_chat","name":"Hidden default"})");
+        auto const private_id = create(R"({"preset":"public_chat","visibility":"private","name":"Hidden private"})");
+        auto const public_id = create(R"({"visibility":"public","name":"Published lobby"})");
+
+        WHEN("the client queries the directory visibility of the newly created public room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/directory/list/room/" + public_id, {}, {}});
+            THEN("createRoom has published the room rather than only selecting public_chat")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == R"({"visibility":"public"})");
+            }
+        }
+
+        WHEN("GET and authenticated POST list the local public rooms")
+        {
+            THEN("only the explicitly published room is counted and disclosed for both methods")
+            {
+                for (auto const& method : {std::string{"GET"}, std::string{"POST"}})
+                {
+                    auto const response = merovingian::homeserver::handle_client_server_request(
+                        runtime, {method, "/_matrix/client/v3/publicRooms", token, method == "POST" ? "{}" : ""});
+                    REQUIRE(response.response.status == 200U);
+                    auto const body = parse_object(response.response.body);
+                    auto const& chunk =
+                        std::get<merovingian::canonicaljson::Array>(object_member(body, "chunk")->storage());
+                    REQUIRE(chunk.size() == 1U);
+                    REQUIRE(*int_member(body, "total_room_count_estimate") == 1);
+                    REQUIRE(response.response.body.find(public_id) != std::string::npos);
+                    REQUIRE(response.response.body.find(default_id) == std::string::npos);
+                    REQUIRE(response.response.body.find(private_id) == std::string::npos);
+                }
+            }
+        }
+
+        WHEN("the creator publishes the default-hidden room and unpublishes the public room")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"PUT", "/_matrix/client/v3/directory/list/room/" + default_id, token,
+                                  R"({"visibility":"public"})"})
+                        .response.status == 200U);
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"PUT", "/_matrix/client/v3/directory/list/room/" + public_id, token,
+                                  R"({"visibility":"private"})"})
+                        .response.status == 200U);
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/publicRooms", {}, {}});
+            THEN("listing follows the updated directory flags without changing public join rules")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find(default_id) != std::string::npos);
+                REQUIRE(response.response.body.find(private_id) == std::string::npos);
+                REQUIRE(response.response.body.find(public_id) == std::string::npos);
             }
         }
     }
@@ -2905,6 +3004,211 @@ SCENARIO("Client-server /versions advertises Matrix spec compatibility to unauth
     }
 }
 
+// Spec: Matrix v1.19 Client-Server API, #stripped-state. The four-key schema and
+// create event are required; the restricted type set below is our disclosure policy.
+SCENARIO("Invite and knock recipients receive only stripped room summaries",
+         "[homeserver][client-server][sync][CSAZ-7]")
+{
+    GIVEN("three joined users, private room state and a prospective fourth member")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const register_user = [&](std::string const& name) {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json(name, "CorrectHorse7!")});
+            REQUIRE(response.response.status == 200U);
+            return std::pair{login_token(response.response.body),
+                             *string_member(parse_object(response.response.body), "user_id")};
+        };
+        auto const [alice_token, alice] = register_user("alice");
+        auto const [bob_token, bob] = register_user("bob");
+        auto const [carol_token, carol] = register_user("carol");
+        auto const [mallory_token, mallory] = register_user("mallory");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/createRoom", alice_token,
+             R"({"preset":"public_chat","name":"Invitation snapshot","topic":"Room summary","initial_state":[{"type":"m.room.avatar","state_key":"","content":{"url":"mxc://example.org/avatar"}},{"type":"m.room.canonical_alias","state_key":"","content":{"alias":"#summary:example.org"}},{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}},{"type":"m.room.server_acl","state_key":"","content":{"allow":["*"]}},{"type":"com.example.private","state_key":"","content":{"internal":"private-room-data"}}]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const rid = room_id(create.response.body);
+        for (auto const& token : {bob_token, carol_token})
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST", "/_matrix/client/v3/rooms/" + rid + "/join", token, "{}"})
+                        .response.status == 200U);
+        }
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"PUT", "/_matrix/client/v3/rooms/" + rid + "/state/m.room.join_rules", alice_token,
+                              R"({"join_rule":"knock"})"})
+                    .response.status == 200U);
+        auto& store = runtime.homeserver.database.persistent_store;
+        auto const require_summary = [&](merovingian::canonicaljson::Array const& events,
+                                         std::string const& expected_membership) {
+            auto seen = std::vector<std::string>{};
+            for (auto const& value : events)
+            {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                REQUIRE(event != nullptr);
+                REQUIRE(event->size() == 4U);
+                REQUIRE(string_member(*event, "sender") != nullptr);
+                auto const* type = string_member(*event, "type");
+                auto const* state_key = string_member(*event, "state_key");
+                auto const* content = object_member_as_object(*event, "content");
+                REQUIRE(type != nullptr);
+                REQUIRE(state_key != nullptr);
+                REQUIRE(content != nullptr);
+                REQUIRE(std::ranges::find(seen, *type) == seen.end());
+                seen.push_back(*type);
+                if (*type == "m.room.member")
+                {
+                    REQUIRE(*state_key == mallory);
+                    REQUIRE(string_member(*content, "membership") != nullptr);
+                    REQUIRE(*string_member(*content, "membership") == expected_membership);
+                }
+                else
+                {
+                    REQUIRE(*state_key == "");
+                    REQUIRE((*type == "m.room.create" || *type == "m.room.name" || *type == "m.room.avatar" ||
+                             *type == "m.room.topic" || *type == "m.room.join_rules" ||
+                             *type == "m.room.canonical_alias" || *type == "m.room.encryption"));
+                }
+            }
+            for (auto const& type :
+                 {"m.room.create", "m.room.name", "m.room.avatar", "m.room.topic", "m.room.join_rules",
+                  "m.room.canonical_alias", "m.room.encryption", "m.room.member"})
+            {
+                REQUIRE(std::ranges::find(seen, type) != seen.end());
+            }
+            REQUIRE(events.size() == 8U);
+        };
+        auto const invite = [&]() {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST", "/_matrix/client/v3/rooms/" + rid + "/invite", alice_token,
+                                  "{\"user_id\":\"" + mallory + "\"}"})
+                        .response.status == 200U);
+        };
+        auto const legacy_state = [&](std::string const& category, std::string const& state_name) {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?timeout=0", mallory_token, {}});
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+            auto const* rooms = object_member_as_object(body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* category_rooms = object_member_as_object(*rooms, category);
+            REQUIRE(category_rooms != nullptr);
+            auto const* room = object_member_as_object(*category_rooms, rid);
+            REQUIRE(room != nullptr);
+            auto const* state = object_member_as_object(*room, state_name);
+            REQUIRE(state != nullptr);
+            auto const* events = object_member_as_array(*state, "events");
+            REQUIRE(events != nullptr);
+            return *events;
+        };
+
+        WHEN("a local invite snapshot is generated")
+        {
+            invite();
+            auto const record = merovingian::database::find_invite(store, rid, mallory);
+            THEN("the stored summary itself excludes private state and foreign members")
+            {
+                REQUIRE(record.has_value());
+                auto snapshot = merovingian::canonicaljson::Array{};
+                for (auto const& json : record->invite_state_events_json)
+                {
+                    snapshot.push_back(merovingian::canonicaljson::Value{parse_object(json)});
+                }
+                require_summary(snapshot, "invite");
+            }
+        }
+
+        WHEN("the current room name changes after an invitation")
+        {
+            invite();
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"PUT", "/_matrix/client/v3/rooms/" + rid + "/state/m.room.name", alice_token,
+                                  R"({"name":"Changed after invitation"})"})
+                        .response.status == 200U);
+            auto const events = legacy_state("invite", "invite_state");
+            THEN("sync strips the persisted snapshot rather than disclosing current state")
+            {
+                require_summary(events, "invite");
+                for (auto const& value : events)
+                {
+                    auto const& event = std::get<merovingian::canonicaljson::Object>(value.storage());
+                    if (*string_member(event, "type") == "m.room.name")
+                    {
+                        auto const* content = object_member_as_object(event, "content");
+                        REQUIRE(*string_member(*content, "name") == "Invitation snapshot");
+                    }
+                }
+            }
+        }
+
+        WHEN("a legacy or federated invite snapshot contains full events and malformed entries")
+        {
+            invite();
+            auto record = std::ranges::find_if(store.invites, [&](auto const& current) {
+                return current.room_id == rid && current.user_id == mallory;
+            });
+            REQUIRE(record != store.invites.end());
+            record->invite_state_events_json.clear();
+            for (auto const& state : store.state)
+            {
+                if (state.room_id != rid)
+                    continue;
+                auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+                    return current.event_id == state.event_id;
+                });
+                REQUIRE(event != store.events.end());
+                record->invite_state_events_json.push_back(event->json);
+                record->invite_state_events_json.push_back(event->json);
+            }
+            record->invite_state_events_json.push_back("not-json");
+            record->invite_state_events_json.push_back("[]");
+            record->invite_state_events_json.push_back(
+                R"({"type":"m.room.topic","state_key":"","sender":"@alice:example.org","content":"not-an-object"})");
+            record->invite_state_events_json.push_back(R"({"type":"m.room.name","state_key":"","content":{}})");
+            auto const events = legacy_state("invite", "invite_state");
+            auto const sliding = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", mallory_token,
+                          "{\"room_subscriptions\":{\"" + rid +
+                              "\":{\"required_state\":[[\"*\",\"*\"]],\"timeline_limit\":20}}}"});
+            THEN("both sync consumers prune the snapshot, deduplicate stripped state and expose no full-state "
+                 "alternative")
+            {
+                require_summary(events, "invite");
+                REQUIRE(sliding.response.status == 200U);
+                auto const body = parse_object(sliding.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* room = object_member_as_object(*rooms, rid);
+                REQUIRE(room != nullptr);
+                auto const* stripped = object_member_as_array(*room, "invite_state");
+                REQUIRE(stripped != nullptr);
+                require_summary(*stripped, "invite");
+                auto const* required_state = object_member_as_array(*room, "required_state");
+                auto const* timeline = object_member_as_array(*room, "timeline");
+                REQUIRE(required_state != nullptr);
+                REQUIRE(timeline != nullptr);
+                REQUIRE(required_state->empty());
+                REQUIRE(timeline->empty());
+            }
+        }
+
+        WHEN("the fourth user knocks and syncs without joining")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST", "/_matrix/client/v3/knock/" + rid, mallory_token, "{}"})
+                        .response.status == 200U);
+            auto const events = legacy_state("knock", "knock_state");
+            THEN("the knock summary contains only room decoration and the knocker's own membership")
+            {
+                require_summary(events, "knock");
+            }
+        }
+    }
+}
+
 SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec top-level stubs",
          "[homeserver][client-server][sync]")
 {
@@ -3285,7 +3589,9 @@ SCENARIO("Registration requestToken sessions are capped per remote address",
 {
     GIVEN("a running client-server homeserver")
     {
-        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        auto config = registration_enabled_config();
+        config.server().client_api.max_registration_validation_sessions_per_remote = 4U;
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -3327,7 +3633,7 @@ SCENARIO("Registration requestToken sessions are capped per remote address",
                           {},
                           "203.0.113.10"});
 
-            THEN("the server rejects the excess session instead of growing the cache without bound")
+            THEN("the configured per-remote cap rejects the fifth session instead of growing without bound")
             {
                 REQUIRE(request_one.response.status == 200U);
                 REQUIRE(request_two.response.status == 200U);
@@ -3788,7 +4094,9 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
 
     GIVEN("a started runtime with the default rate-limit engine")
     {
-        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        auto config = registration_enabled_config();
+        config.server().client_api.max_registration_validation_sessions_per_remote = 4U;
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -3806,7 +4114,7 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
                     runtime, {"POST", "/_matrix/client/v3/register/email/requestToken", {}, body, {}, "203.0.113.10"});
             }
 
-            THEN("the 429 carries the hard-coded retry_after_ms=60000 and Retry-After: 60")
+            THEN("the configured cap returns retry_after_ms=60000 and Retry-After: 60")
             {
                 REQUIRE(denied.response.status == 429U);
                 REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
@@ -3947,7 +4255,8 @@ SCENARIO("OPTIONS preflight echoes back an explicit single origin from the allow
         // (0.12.5 audit, finding 1), so every fixture needs a master key.
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         // Configure the allow-list via the runtime's CORS snapshot. (The
         // config-parser key is wired in commit 3; here we exercise the
         // runtime surface directly so the test is independent of the
@@ -4065,7 +4374,8 @@ SCENARIO("A wildcard allow-origin is never paired with allow-credentials",
         auto security = merovingian::config::SecurityConfig{};
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         config.server().cors.allowed_origins = {"*"};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -4106,7 +4416,8 @@ SCENARIO("An explicitly allowed origin still receives allow-credentials",
         auto security = merovingian::config::SecurityConfig{};
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         config.server().cors.allowed_origins = {"https://app.example.com"};
         config.server().cors.allow_credentials = true;
         auto started = merovingian::homeserver::start_client_server(config);
@@ -4143,7 +4454,8 @@ SCENARIO("OPTIONS preflight from an origin not in the allow-list omits Allow-Ori
         // (0.12.5 audit, finding 1), so every fixture needs a master key.
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         config.server().cors.allowed_origins = {"https://app.example.com"};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -4292,7 +4604,8 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
         // (0.12.5 audit, finding 1), so every fixture needs a master key.
         security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
+        auto config =
+            merovingian::config::Config{server, {}, merovingian::tests::in_memory_database_config(), security, {}, {}};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
@@ -5001,8 +5314,12 @@ SCENARIO("GET /login advertises m.login.sso with identity_providers when SSO is 
     // Deliberately no trailing slash: this is the shape the bypass needs.
     server.sso.redirect_url_allowlist = {"https://client.example.com"};
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -9714,6 +10031,21 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
         REQUIRE(bob_login.response.status == 200U);
         auto const bob_token = login_token(bob_login.response.body);
 
+        // Matrix v1.19 §Presence, Security considerations: presence is published
+        // to users who share a room with the target user. Make the users joined
+        // to the same room before checking cross-user delivery.
+        auto const created_room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(created_room.response.status == 200U);
+        auto const shared_room_id = room_id(created_room.response.body);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + shared_room_id + "/invite", alice_token,
+                              R"({"user_id":"@bob:example.org"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/join/" + shared_room_id, bob_token, "{}"})
+                    .response.status == 200U);
+
         WHEN("alice sets online presence with a status message")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
@@ -9770,22 +10102,22 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
             }
         }
 
-        WHEN("alice omits presence fields")
+        WHEN("alice omits the required presence field")
         {
+            auto const sync_watermark_before = runtime.homeserver.database.persistent_store.next_sync_stream_id;
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"PUT", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", alice_token, "{}"});
 
-            THEN("the server defaults the stored state to offline with no status message")
+            THEN("the server rejects the request without storing presence or advancing its sync watermark")
             {
-                REQUIRE(response.response.status == 200U);
+                // Matrix v1.19 §PUT /presence/{userId}/status requires `presence`.
+                REQUIRE(response.response.status == 400U);
                 auto const presence = std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
                                                            [](auto const& state) {
                                                                return state.user_id == "@alice:example.org";
                                                            });
-                REQUIRE(presence != runtime.homeserver.database.persistent_store.presence_states.end());
-                REQUIRE(presence->presence == "offline");
-                REQUIRE(presence->status_msg.empty());
-                REQUIRE_FALSE(presence->currently_active);
+                REQUIRE(presence == runtime.homeserver.database.persistent_store.presence_states.end());
+                REQUIRE(runtime.homeserver.database.persistent_store.next_sync_stream_id == sync_watermark_before);
             }
         }
 

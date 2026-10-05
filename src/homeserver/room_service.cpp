@@ -856,14 +856,49 @@ namespace
             {
                 continue;
             }
-            if (state.event_type == "m.room.member" && state.state_key == invitee)
+            auto const event_json = event_json_for_id(store, state.event_id);
+            if (!event_json.has_value())
             {
                 continue;
             }
-            auto const event_json = event_json_for_id(store, state.event_id);
-            if (event_json.has_value())
+            auto const parsed = canonicaljson::parse_lossless(*event_json);
+            if (parsed.error != canonicaljson::ParseError::none)
             {
-                events.push_back(*event_json);
+                continue;
+            }
+            auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (event == nullptr)
+            {
+                continue;
+            }
+            auto const* type = string_member(*event, "type");
+            auto const* state_key = string_member(*event, "state_key");
+            auto const* sender = string_member(*event, "sender");
+            auto const* content = object_member(*event, "content");
+            if (type == nullptr || state_key == nullptr || sender == nullptr || content == nullptr ||
+                !std::holds_alternative<canonicaljson::Object>(content->storage()))
+            {
+                continue;
+            }
+            // Matrix v1.19 #stripped-state: persist a room summary, not the roster
+            // or private state. The exact type allowlist is our disclosure policy.
+            auto const is_summary =
+                state_key->empty() && (*type == "m.room.create" || *type == "m.room.name" || *type == "m.room.avatar" ||
+                                       *type == "m.room.topic" || *type == "m.room.join_rules" ||
+                                       *type == "m.room.canonical_alias" || *type == "m.room.encryption");
+            if (!is_summary && !(*type == "m.room.member" && *state_key == invitee))
+            {
+                continue;
+            }
+            auto stripped = canonicaljson::Object{};
+            stripped.push_back(canonicaljson::make_member("sender", canonicaljson::Value{*sender}));
+            stripped.push_back(canonicaljson::make_member("type", canonicaljson::Value{*type}));
+            stripped.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
+            stripped.push_back(canonicaljson::make_member("content", *content));
+            auto const serialized = serialize_canonical_string(canonicaljson::Value{std::move(stripped)});
+            if (serialized.has_value())
+            {
+                events.push_back(*serialized);
             }
         }
         return events;
@@ -1239,6 +1274,7 @@ namespace
             if (state.event_type == "m.room.create" && state.state_key.empty())
             {
                 result.create = find_event_json(store, state.event_id);
+                result.create_event_id = state.event_id;
             }
             if (state.event_type == "m.room.power_levels" && state.state_key.empty())
             {
@@ -1557,7 +1593,8 @@ namespace
         event.prev_event_ids = composed.prev_event_ids;
         event.auth_event_ids = composed.auth_event_ids;
         event.signatures = composed.signatures;
-        return store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state));
+        return store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state),
+                                 state_resolution_limits(runtime.config.security().federation.state_resolution));
     }
 
     [[nodiscard]] auto emit_initial_state_event(HomeserverRuntime& runtime, std::string_view room_id,
@@ -2519,11 +2556,24 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     // reference hash of the create event (MSC4291), so the create event must be
     // composed before a room ID exists; earlier versions use a server-scoped ID.
     auto create_content = options.creation_content;
-    upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
+    auto const* version_policy = rooms::find_room_version_policy(options.room_version);
+    auto const create_sender_replaces_legacy_creator =
+        version_policy != nullptr && version_policy->redaction_rules == rooms::RedactionRules::room_v11_plus;
+    if (create_sender_replaces_legacy_creator)
+    {
+        // Room v11 removed content.creator. Strip client-supplied values too;
+        // they must not survive into the signed create event as misleading data.
+        std::erase_if(create_content, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "creator";
+        });
+    }
+    else
+    {
+        upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
+    }
     upsert_object_member(create_content,
                          canonicaljson::make_member("room_version", canonicaljson::Value{options.room_version}));
 
-    auto const* version_policy = rooms::find_room_version_policy(options.room_version);
     auto const create_defines_room_id = version_policy != nullptr && version_policy->create_event_is_room_id;
     auto const supports_additional_creators = version_policy != nullptr && version_policy->privilege_room_creators;
 
@@ -2633,8 +2683,8 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return make_operation_result(false, {}, "room alias in use", 400U);
     }
 
-    if (!database::store_room_with_membership(runtime.database.persistent_store, {room_id, *user_id},
-                                              {room_id, *user_id}))
+    if (!database::store_room_with_membership(runtime.database.persistent_store,
+                                              {room_id, *user_id, options.directory_public}, {room_id, *user_id}))
     {
         log_diagnostic("room.create.rejected", {
                                                    {"actor",   *user_id,                  false},
@@ -2644,7 +2694,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         });
         return make_operation_result(false, {}, "room persistence failed", 500U);
     }
-    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}});
+    runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}, options.directory_public});
 
     auto emit_state = [&](std::string_view event_type, canonicaljson::Object content,
                           std::string_view state_key = std::string_view{}) -> bool {
@@ -3232,10 +3282,16 @@ namespace
                 // snapshot state group from the full state array below,
                 // used as the join event's state-before.
                 pe.status = "outlier";
-                if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state))
+                if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state) &&
+                    !std::ranges::any_of(runtime.database.persistent_store.events, [&](auto const& stored) {
+                        return stored.event_id == event_id && stored.room_id == room_id;
+                    }))
                 {
                     continue;
                 }
+                // A duplicate verified snapshot event is already committed;
+                // include it in the new join snapshot rather than mistaking the
+                // store's duplicate-insert refusal for a failed initial state.
                 if (state.has_value())
                 {
                     result.state_entries.push_back({{}, state->event_type, state->state_key, state->event_id});
@@ -3513,6 +3569,49 @@ namespace
     // by the caller. `runtime` itself is still touched — `runtime.federation.config`
     // for timeouts, `runtime.orphan_futures_` under its own mutex, and the
     // outbound client — none of which is guarded by `runtime.mutex`.
+    // One lease per canonical requested room. Refusing overlaps avoids a
+    // failed join clearing another join's queue. The caller holds mutex when
+    // constructing/taking the queue; cleanup also locks on exceptional exits.
+    class PendingJoinLease final
+    {
+    public:
+        PendingJoinLease(HomeserverRuntime& runtime, std::string_view room_id)
+            : runtime_{runtime}
+            , room_id_{room_id}
+        {
+            if (runtime_.pending_federated_joins.size() < runtime_.federation.config.pending_join_max_rooms)
+            {
+                active_ = runtime_.pending_federated_joins.try_emplace(room_id_).second;
+            }
+        }
+        ~PendingJoinLease() noexcept
+        {
+            if (active_)
+            {
+                auto const lock = std::lock_guard{runtime_.mutex};
+                runtime_.pending_federated_joins.erase(room_id_);
+            }
+        }
+        PendingJoinLease(PendingJoinLease const&) = delete;
+        auto operator=(PendingJoinLease const&) -> PendingJoinLease& = delete;
+        [[nodiscard]] auto acquired() const noexcept -> bool
+        {
+            return active_;
+        }
+        [[nodiscard]] auto take_committed() -> std::vector<federation::InboundPduEnvelope>
+        {
+            auto pdus = std::move(runtime_.pending_federated_joins.at(room_id_).pdus);
+            runtime_.pending_federated_joins.erase(room_id_);
+            active_ = false;
+            return pdus;
+        }
+
+    private:
+        HomeserverRuntime& runtime_;
+        std::string room_id_;
+        bool active_{false};
+    };
+
     [[nodiscard]] auto perform_federated_join(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string const& user_id, std::string const& our_server,
                                               std::vector<std::string> candidates,
@@ -4051,6 +4150,11 @@ namespace
         // holding the mutex (the client-server dispatcher, the local router)
         // does not leave it locked across the round trip; the destructor
         // restores exactly what it released, on the throwing path too.
+        auto pending_join = PendingJoinLease{runtime, room_id};
+        if (!pending_join.acquired())
+        {
+            return make_operation_result(false, {}, "outbound join already active or capacity exhausted", 429U);
+        }
         auto joined = [&] {
             auto const released = RuntimeLockRelease{guard};
             std::ignore = released;
@@ -4079,6 +4183,16 @@ namespace
         // checking the raw JSON for the presence of the "state_key" field
         // rather than its emptiness.
         auto send_join_state = ingest_send_join_state(runtime, room_id, verified_critical_state, policy);
+        // Never open/drain admission on an incomplete or failed initial state
+        // commit. The verified snapshot must contain create and every critical
+        // state entry must have been persisted by the bootstrap writer.
+        if (send_join_state.state_entries.size() != verified_critical_state.size() ||
+            !std::ranges::any_of(send_join_state.state_entries, [](auto const& entry) {
+                return entry.event_type == "m.room.create" && entry.state_key.empty();
+            }))
+        {
+            return make_operation_result(false, {}, "initial join state persistence failed", 500U);
+        }
         for (auto const& m : send_join_state.joined_members)
         {
             append_unique_member(joined_members, m);
@@ -4163,8 +4277,14 @@ namespace
                     // auth-only outliers). The room's current state comes
                     // from the `state` snapshot above.
                     pe.status = "outlier";
-                    std::ignore = database::store_event_with_state(runtime.database.persistent_store, std::move(pe),
-                                                                   std::nullopt);
+                    if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe),
+                                                          std::nullopt) &&
+                        !std::ranges::any_of(runtime.database.persistent_store.events, [&](auto const& stored) {
+                            return stored.event_id == event_id && stored.room_id == room_id;
+                        }))
+                    {
+                        return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
+                    }
                 }
             }
         }
@@ -4236,7 +4356,10 @@ namespace
             // at the join event at membership_stream, which joined_membership_changed_since
             // then detects correctly.
             auto const join_event_id = join_pe.event_id;
-            if (database::store_event_with_state(runtime.database.persistent_store, std::move(join_pe), join_state))
+            if (!database::store_event_with_state(runtime.database.persistent_store, std::move(join_pe), join_state))
+            {
+                return make_operation_result(false, {}, "join event persistence failed", 500U);
+            }
             {
                 // ADR-0064 phase B1: seed this freshly joined room's state
                 // bookkeeping so the FIRST inbound PDU after the join does
@@ -4259,18 +4382,21 @@ namespace
                         runtime.database.persistent_store, room_id, join_event_id, {}, snapshot_group_id, state_after);
                     if (join_group.has_value())
                     {
-                        std::ignore = recompute_current_state(runtime.database.persistent_store, room_id, policy);
+                        if (!recompute_current_state(
+                                runtime.database.persistent_store, room_id, policy,
+                                state_resolution_limits(runtime.config.security().federation.state_resolution)))
+                        {
+                            return make_operation_result(false, {}, "join current-state persistence failed", 500U);
+                        }
                     }
                     else
                     {
-                        LOG_WARNING("Join event state-group bookkeeping failed; event_id=" + join_event_id +
-                                    " room_id=" + std::string{room_id});
+                        return make_operation_result(false, {}, "join event state-group persistence failed", 500U);
                     }
                 }
                 else
                 {
-                    LOG_WARNING("Join snapshot state-group creation failed; event_id=" + join_event_id +
-                                " room_id=" + std::string{room_id});
+                    return make_operation_result(false, {}, "join snapshot persistence failed", 500U);
                 }
             }
         }
@@ -4426,6 +4552,31 @@ namespace
                 });
             auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
             runtime.orphan_futures_.push_back(std::move(bg_future));
+        }
+        auto const pending_pdus = pending_join.take_committed();
+        {
+            // The sink takes room stripe then runtime mutex. Drop ALL global
+            // recursion levels first, including a dispatcher's outer guard,
+            // and restore them before guard/lease destruction on every path.
+            auto const released = RuntimeLockRelease{guard};
+            std::ignore = released;
+            for (auto const& pdu : pending_pdus)
+            {
+                try
+                {
+                    std::ignore = runtime.federation.pdu_sink(pdu);
+                }
+                catch (...)
+                {
+                    // The join is already committed. A best-effort backlog
+                    // drain must not turn it into a failed join after storing
+                    // some queued PDUs. Drop the rest of this transient queue;
+                    // subsequent transactions use ordinary joined admission.
+                    LOG_WARNING("Pending join PDU drain failed after local join commit; room_id=" +
+                                std::string{room_id});
+                    break;
+                }
+            }
         }
         return make_operation_result(true, std::string{room_id});
     }
@@ -5393,13 +5544,8 @@ namespace
     // it SEQUENTIALLY inside one dispatch_push_deliveries background task —
     // up to server.push.total_timeout_seconds (default 30s) per pusher. An
     // unbounded list therefore lets one recipient's pusher count alone keep a
-    // task (and, repeated across events, one of the
-    // k_max_in_flight_push_deliveries slots below) occupied for minutes to
-    // hours, independent of the 128-task cap. 10 comfortably covers a real
-    // user's device count (phone, tablet, a couple of desktops/browsers) while
-    // bounding the worst case to 10 * total_timeout_seconds per event rather
-    // than unbounded.
-    static constexpr auto k_max_pushers_per_delivery = std::size_t{10U};
+    // task (and repeatedly occupy a background-delivery slot) for minutes to
+    // hours. The configured cap bounds sequential gateway calls per event.
 
     // Resolves `member`'s display name FOR THIS ROOM: the `displayname` field
     // of their current `m.room.member` state event, if present and non-empty.
@@ -5739,21 +5885,24 @@ namespace
             // configured tag, but this recording happens once per (user,
             // event) rather than once per pusher.
             std::ignore = database::store_notification(
-                store, database::PersistentNotification{std::string{member}, room.room_id, composed.event_id,
-                                                        persisted_stream_ordering, notification_ts,
-                                                        push_notification_actions_json(result), std::string{},
-                                                        result.tweak_highlight});
+                store,
+                database::PersistentNotification{
+                    std::string{member}, room.room_id, composed.event_id, persisted_stream_ordering, notification_ts,
+                    push_notification_actions_json(result), std::string{}, result.tweak_highlight},
+                static_cast<std::size_t>(runtime.config.server().client_api.max_notifications_retained_per_user));
 
             if (!push_delivery_enabled)
             {
                 continue;
             }
             auto pushers = database::list_pushers_for_user(store, member);
+            auto const max_pushers_per_delivery =
+                static_cast<std::size_t>(runtime.config.server().push.max_pushers_per_delivery);
             if (pushers.empty())
             {
                 continue;
             }
-            if (pushers.size() > k_max_pushers_per_delivery)
+            if (pushers.size() > max_pushers_per_delivery)
             {
                 // Mirrors dispatch_push_deliveries's push.delivery.dropped log
                 // below: never truncate silently. The recipient still gets
@@ -5763,12 +5912,12 @@ namespace
                 // surface on its own.
                 log_diagnostic("push.pushers.truncated",
                                {
-                                   {"user_id",   std::string{member},                        false},
-                                   {"total",     std::to_string(pushers.size()),             false},
-                                   {"processed", std::to_string(k_max_pushers_per_delivery), false}
+                                   {"user_id",   std::string{member},                      false},
+                                   {"total",     std::to_string(pushers.size()),           false},
+                                   {"processed", std::to_string(max_pushers_per_delivery), false}
                 },
                                observability::LogEventSeverity::warning);
-                pushers.resize(k_max_pushers_per_delivery);
+                pushers.resize(max_pushers_per_delivery);
             }
 
             auto const unread = total_unread_count(runtime, member);
@@ -5871,11 +6020,8 @@ namespace
     // of how many individual notifications it carries — run_pending_push_
     // deliveries loops over every PendingPushDelivery sequentially within
     // that one task — so this is a per-event, not per-notification, cap.
-    // 128 gives a busy multi-room deployment ample headroom under normal
-    // message volume while still bounding thread creation against a hostile
-    // or misbehaving client driving a high send rate; same order of
-    // magnitude as k_max_join_parallelism above.
-    static constexpr auto k_max_in_flight_push_deliveries = std::size_t{128U};
+    // The configured cap bounds thread creation against high send rates while
+    // remaining adjustable for the deployment's available resources.
 
     // Dispatches `deliveries` asynchronously (see run_pending_push_deliveries)
     // and parks the future in runtime.orphan_futures_. No-op when there is
@@ -5886,7 +6032,7 @@ namespace
     // orphan_futures_ (shared with join_room's make_join race — see
     // reap_completed_futures) so the vector does not grow by one entry per
     // event for the life of the runtime, and checks
-    // push_delivery_in_flight_ against k_max_in_flight_push_deliveries so a
+    // push_delivery_in_flight_ against the configured cap so a
     // busy room or a client sending many events cannot drive unbounded
     // thread creation. At capacity, the delivery is dropped — never spawned,
     // never blocked on — and a warning is logged: a missed push is
@@ -5901,12 +6047,13 @@ namespace
         {
             auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
             reap_completed_futures(runtime.orphan_futures_);
-            if (at_background_task_capacity(runtime.push_delivery_in_flight_, k_max_in_flight_push_deliveries))
+            auto const max_in_flight = static_cast<std::size_t>(runtime.config.server().push.max_in_flight_deliveries);
+            if (at_background_task_capacity(runtime.push_delivery_in_flight_, max_in_flight))
             {
                 log_diagnostic("push.delivery.dropped",
                                {
                                    {"in_flight",  std::to_string(runtime.push_delivery_in_flight_), false},
-                                   {"cap",        std::to_string(k_max_in_flight_push_deliveries),  false},
+                                   {"cap",        std::to_string(max_in_flight),                    false},
                                    {"deliveries", std::to_string(deliveries.size()),                false}
                 },
                                observability::LogEventSeverity::warning);
@@ -5992,7 +6139,8 @@ namespace
 
         auto const result = [&]() {
             auto const unlocked = RuntimeLockRelease{};
-            auto client = appservice::AppserviceClient{*runtime.outbound_client, *runtime.cached_discovery};
+            auto client = appservice::AppserviceClient{*runtime.outbound_client, *runtime.cached_discovery,
+                                                       runtime.config.appservice()};
             return client.send_transaction(registration, transaction);
         }();
 
@@ -6675,7 +6823,7 @@ namespace
     auto const from_token = parse_stream_ordering_token(request.from);
     auto const to_token = parse_stream_ordering_token(request.to);
     auto constexpr default_limit = std::uint64_t{100U};
-    auto constexpr max_limit = std::uint64_t{1000U};
+    auto const max_limit = static_cast<std::uint64_t>(runtime.config.server().client_api.max_relations_page_size);
     auto limit = request.limit.value_or(default_limit);
     if (limit == 0U || limit > max_limit)
     {
@@ -6948,7 +7096,7 @@ namespace
     }
 
     auto constexpr default_limit = std::uint64_t{50U};
-    auto constexpr max_limit = std::uint64_t{500U};
+    auto const max_limit = static_cast<std::uint64_t>(runtime.config.server().client_api.max_threads_page_size);
     auto const limit = std::min(request.limit.value_or(default_limit), max_limit);
     auto end = listed.size();
     if (end - start > static_cast<std::size_t>(limit))

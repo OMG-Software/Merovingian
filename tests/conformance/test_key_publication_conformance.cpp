@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // Matrix Server-Server API v1.19 conformance for:
 //   GET /_matrix/key/v2/server
@@ -37,13 +38,13 @@ namespace
     server.server_name = "example.org";
 
     return {
-        server,   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
         security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
-[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
-    -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj,
+                            std::string const& key) -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : obj)
     {
@@ -58,8 +59,8 @@ namespace
 // Convenience: fetch a member and narrow it to an Object in one step, returning
 // nullptr if the member is absent or not an object. Keeps the rotation scenarios
 // readable while preserving strict null-checking before every dereference.
-[[nodiscard]] auto get_object(merovingian::canonicaljson::Object const& obj, std::string const& key)
-    -> merovingian::canonicaljson::Object const*
+[[nodiscard]] auto get_object(merovingian::canonicaljson::Object const& obj,
+                              std::string const& key) -> merovingian::canonicaljson::Object const*
 {
     auto const* value = json_get(obj, key);
     return value == nullptr ? nullptr : std::get_if<merovingian::canonicaljson::Object>(&value->storage());
@@ -265,9 +266,9 @@ SCENARIO("GET /_matrix/key/v2/server keeps the same key with a refreshed window 
         REQUIRE(before_verify_keys->size() == 1U);
         auto const original_key_id = before_verify_keys->front().key;
 
-        auto const now_ms = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                          std::chrono::system_clock::now().time_since_epoch())
-                                                          .count());
+        auto const now_ms = static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
         for (auto& stored : runtime.homeserver.database.persistent_store.server_signing_keys)
         {
             stored.valid_until_ts = static_cast<std::uint64_t>(now_ms) - std::uint64_t{60U * 1000U};
@@ -644,8 +645,9 @@ SCENARIO("GET /_matrix/key/v2/server advertises multiple simultaneously-active s
             auto const second_keypair = merovingian::crypto::generate_ed25519_keypair().value();
             auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(std::string_view{
                 reinterpret_cast<char const*>(second_keypair.public_key.data()), second_keypair.public_key.size()});
-            auto const secret_key_b64 = merovingian::events::matrix_base64_from_bytes(std::string_view{
-                reinterpret_cast<char const*>(second_keypair.secret_key.bytes().data()), second_keypair.secret_key.bytes().size()});
+            auto const secret_key_b64 = merovingian::events::matrix_base64_from_bytes(
+                std::string_view{reinterpret_cast<char const*>(second_keypair.secret_key.bytes().data()),
+                                 second_keypair.secret_key.bytes().size()});
             auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
             auto const now_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                                std::chrono::system_clock::now().time_since_epoch())

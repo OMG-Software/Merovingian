@@ -35,7 +35,7 @@ SCENARIO("Runtime config snapshot applies reloadable changes", "[config][runtime
     {
         auto snapshot = merovingian::config::RuntimeConfigSnapshot{merovingian::config::Config{}};
         auto security = merovingian::config::SecurityConfig{};
-        security.federation.remote_timeout = "45s";
+        security.media.remote_fetch_timeout = "45s";
         auto const next = merovingian::config::Config{
             merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},         security,
@@ -49,13 +49,13 @@ SCENARIO("Runtime config snapshot applies reloadable changes", "[config][runtime
             THEN("the snapshot updates in place")
             {
                 REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::applied);
-                REQUIRE(snapshot.current()->security().federation.remote_timeout == "45s");
+                REQUIRE(snapshot.current()->security().media.remote_fetch_timeout == "45s");
             }
         }
     }
 }
 
-SCENARIO("Runtime config snapshot applies federation server list changes", "[config][runtime][reload]")
+SCENARIO("Runtime config snapshot requires restart for federation server list changes", "[config][runtime][reload]")
 {
     GIVEN("a runtime config snapshot and updated federation policy lists")
     {
@@ -75,11 +75,11 @@ SCENARIO("Runtime config snapshot applies federation server list changes", "[con
         {
             auto const result = snapshot.apply_reload(next);
 
-            THEN("the snapshot updates the active federation server lists")
+            THEN("the snapshot keeps the live startup federation policy")
             {
-                REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::applied);
-                REQUIRE(snapshot.current()->security().federation.allowed_servers == expected_allowed_servers);
-                REQUIRE(snapshot.current()->security().federation.denied_servers == expected_denied_servers);
+                REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::restart_required);
+                REQUIRE(snapshot.current()->security().federation.allowed_servers.empty());
+                REQUIRE(snapshot.current()->security().federation.denied_servers.empty());
             }
         }
     }
@@ -149,8 +149,8 @@ SCENARIO("Runtime config snapshot supports concurrent readers during reload", "[
         auto snapshot = merovingian::config::RuntimeConfigSnapshot{merovingian::config::Config{}};
 
         auto reloadable = merovingian::config::SecurityConfig{};
-        reloadable.federation.remote_timeout = "45s";
-        reloadable.federation.join_timeout = "45s";
+        reloadable.media.remote_fetch_timeout = "45s";
+        reloadable.media.max_upload_size = "25MiB";
         auto const next = merovingian::config::Config{
             merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},         reloadable,
@@ -175,11 +175,11 @@ SCENARIO("Runtime config snapshot supports concurrent readers during reload", "[
                     for (std::size_t read = 0; read < reads_per_thread; ++read)
                     {
                         auto const config = snapshot.current();
-                        auto const& federation = config->security().federation;
+                        auto const& media = config->security().media;
                         // Both fields change together in the reload; observing
                         // a mix means the read was torn.
-                        auto const old_pair = federation.remote_timeout == "60s" && federation.join_timeout == "180s";
-                        auto const new_pair = federation.remote_timeout == "45s" && federation.join_timeout == "45s";
+                        auto const old_pair = media.remote_fetch_timeout == "30s" && media.max_upload_size == "50MiB";
+                        auto const new_pair = media.remote_fetch_timeout == "45s" && media.max_upload_size == "25MiB";
                         if (!old_pair && !new_pair)
                         {
                             torn_reads.fetch_add(1U);
@@ -199,7 +199,7 @@ SCENARIO("Runtime config snapshot supports concurrent readers during reload", "[
             {
                 REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::applied);
                 REQUIRE(torn_reads.load() == 0U);
-                REQUIRE(snapshot.current()->security().federation.remote_timeout == "45s");
+                REQUIRE(snapshot.current()->security().media.remote_fetch_timeout == "45s");
             }
         }
     }

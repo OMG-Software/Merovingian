@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // Error, boundary, and anomaly tests for room_service functions not covered
 // by test_homeserver_vertical_slice.cpp or test_client_server.cpp.
@@ -16,8 +17,8 @@
 //   - create_room with is_direct: m.direct account data is written/appended for
 //     the creator so that a second device can classify the room via sliding sync
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -55,9 +56,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return merovingian::config::Config{
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -107,10 +111,9 @@ namespace
 // Builds the canonical JSON for a third-party signed blob and signs it with the
 // supplied Ed25519 secret key. The returned object matches the shape expected by
 // Matrix v1.19 POST /join/{roomId}: mxid, sender, token, and signatures.
-[[nodiscard]] auto make_signed_third_party_object(std::string_view mxid, std::string_view sender,
-                                                  std::string_view token, std::string const& secret_key_bytes,
-                                                  std::string_view signature_origin)
-    -> merovingian::canonicaljson::Object
+[[nodiscard]] auto make_signed_third_party_object(
+    std::string_view mxid, std::string_view sender, std::string_view token, std::string const& secret_key_bytes,
+    std::string_view signature_origin) -> merovingian::canonicaljson::Object
 {
     using merovingian::canonicaljson::make_member;
     using merovingian::canonicaljson::Object;
@@ -544,8 +547,8 @@ namespace
     return it == account_data.end() ? std::string{} : it->content_json;
 }
 
-[[nodiscard]] auto m_direct_rooms_for(std::string const& content_json, std::string const& invitee_id)
-    -> std::vector<std::string>
+[[nodiscard]] auto m_direct_rooms_for(std::string const& content_json,
+                                      std::string const& invitee_id) -> std::vector<std::string>
 {
     auto const parsed = merovingian::canonicaljson::parse_lossless(content_json);
     auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
@@ -1642,8 +1645,8 @@ SCENARIO("join_room accepts a valid third_party_signed join", "[homeserver][room
 
         auto const keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(keypair.has_value());
-        auto const secret_key =
-            std::string{reinterpret_cast<char const*>(keypair->secret_key.bytes().data()), keypair->secret_key.bytes().size()};
+        auto const secret_key = std::string{reinterpret_cast<char const*>(keypair->secret_key.bytes().data()),
+                                            keypair->secret_key.bytes().size()};
         auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
             {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
 

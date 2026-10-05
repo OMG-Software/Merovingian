@@ -88,8 +88,8 @@ struct FederationMediaPart final
 // 200 response. `content_type_header` is the outer response's Content-Type header
 // value (used to extract the boundary parameter); `body` is the raw response body.
 // Pure function; performs no I/O. Exposed for unit testing.
-[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
-    -> FederationMediaPart;
+[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header,
+                                                    std::string_view body) -> FederationMediaPart;
 
 // Result of resolving a `Location` redirect URL from the authenticated
 // federation media download endpoint. `ok` is true when the URL uses HTTPS,
@@ -101,14 +101,14 @@ struct MediaRedirectResolutionResult final
     bool ok{false};
     std::string reason{};
     federation::ServerDiscoveryResult discovery{};
+    std::string url{}; // Canonical URL from the transport's parser; use this for the fetch.
 };
 
 // Resolves a media redirect URL in an SSRF-safe way so the caller can fetch
 // it with pinned addresses. `location_url` must be an absolute https:// URL;
 // relative redirects are rejected. Exposed for unit testing.
-[[nodiscard]] auto resolve_media_redirect_url(std::string_view location_url,
-                                              federation::ServerDiscoveryNetwork& network)
-    -> MediaRedirectResolutionResult;
+[[nodiscard]] auto resolve_media_redirect_url(
+    std::string_view location_url, federation::ServerDiscoveryNetwork& network) -> MediaRedirectResolutionResult;
 [[nodiscard]] auto media_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
 
 } // namespace merovingian::homeserver

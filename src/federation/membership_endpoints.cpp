@@ -24,11 +24,6 @@ namespace merovingian::federation
 namespace
 {
 
-    // Upper bound on the number of PDUs a single /backfill request may ask for.
-    // Matches the conventional Matrix backfill batch size; see the clamp in
-    // parse_backfill_query for the rationale (audit L-06).
-    constexpr auto max_backfill_limit = std::size_t{100U};
-
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
@@ -185,7 +180,8 @@ auto parse_membership_path(FederationEndpoint endpoint, std::string_view target)
     return MembershipPathParams{std::move(split->first), std::move(split->second)};
 }
 
-auto parse_backfill_query(std::string_view target) -> std::optional<BackfillRequest>
+auto parse_backfill_query(std::string_view target, FederationQueryPolicy const& policy)
+    -> std::optional<BackfillRequest>
 {
     auto const q_position = target.find('?');
     if (q_position == std::string_view::npos)
@@ -237,7 +233,8 @@ auto parse_backfill_query(std::string_view target) -> std::optional<BackfillRequ
             // given limit" — it does not require the server to honour an
             // arbitrarily large value, so clamping is spec-compatible and keeps
             // federation working with peers that ask for more than we serve.
-            request.limit = std::min(static_cast<std::size_t>(parsed), max_backfill_limit);
+            request.limit =
+                parsed > policy.max_backfill_pdus ? policy.max_backfill_pdus : static_cast<std::size_t>(parsed);
         }
         if (amp == std::string_view::npos)
         {

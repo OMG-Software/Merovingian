@@ -72,10 +72,18 @@ struct HttpTransportConfig final
 {
     bool keep_alive{true};
     std::uint32_t keep_alive_idle_seconds{15U};
-    std::uint32_t keep_alive_max_connections{8U};
-    std::uint32_t max_connections_per_ip{64U};
+    std::uint32_t keep_alive_max_connections{256U};
+    std::uint32_t max_connections_per_ip{256U};
     std::uint8_t ipv6_client_prefix_length{64U};
-    std::uint32_t request_threads{16U};
+    std::uint32_t request_threads{32U};
+    std::uint32_t sync_threads{128U};
+    std::uint32_t sync_max_in_flight{128U};
+    std::uint32_t sync_max_per_user{4U};
+    std::uint32_t sync_max_per_device{2U};
+    std::uint32_t max_start_line_bytes{8192U};
+    std::uint32_t max_header_bytes{32768U};
+    std::uint32_t max_header_count{100U};
+    std::string max_body_size{"1MiB"};
 };
 
 struct TurnServerConfig final
@@ -191,6 +199,37 @@ struct PushConfig final
     bool enabled{false};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{30U};
+    std::uint32_t max_pushers_per_delivery{25U};
+    std::uint32_t max_in_flight_deliveries{256U};
+};
+
+// Deployment work budgets, not protocol maxima. Startup snapshots these
+// settings; every key in server.client_api requires a restart.
+struct ClientApiConfig final
+{
+    std::string max_body_size{"1MiB"};
+    std::uint32_t max_sync_rooms{1000U};
+    std::uint32_t max_sync_events_per_room{100U};
+    std::uint32_t max_search_events_scanned{10000U};
+    std::uint32_t max_messages_events_examined{10000U};
+    std::uint32_t max_messages_page_size{500U};
+    std::uint32_t max_context_events{100U};
+    std::uint32_t max_search_page_size{100U};
+    std::uint32_t max_search_context_events{100U};
+    std::uint32_t sliding_sync_max_timeline_limit{100U};
+    std::uint32_t sliding_sync_max_room_subscriptions{256U};
+    std::uint32_t sliding_sync_max_required_state_entries{256U};
+    std::uint32_t sliding_sync_connections_per_device{16U};
+    std::uint32_t max_registration_validation_sessions{1024U};
+    std::uint32_t max_registration_validation_sessions_per_remote{16U};
+    std::uint32_t max_uia_sessions{2048U};
+    std::uint32_t max_safety_report_rows{1000U};
+    std::uint32_t max_notifications_page_size{1000U};
+    std::uint32_t max_notifications_retained_per_user{1000U};
+    std::uint32_t max_relations_page_size{500U};
+    std::uint32_t max_threads_page_size{500U};
+    std::uint32_t max_public_rooms_page_size{1000U};
+    std::uint32_t max_hierarchy_rooms{1000U};
 };
 
 struct ServerConfig final
@@ -208,6 +247,7 @@ struct ServerConfig final
     // federation listeners. See merovingian/http/keep_alive.hpp for the
     // semantics of each field; validation enforces the documented ranges.
     HttpTransportConfig http{};
+    ClientApiConfig client_api{};
     // TURN relay configuration for GET /_matrix/client/v3/voip/turnServer.
     // Empty by default; when populated the endpoint returns real credentials.
     TurnServerConfig turn{};
@@ -251,6 +291,9 @@ enum class DatabaseBackend
 {
     postgresql,
     sqlite,
+    // Explicit programmatic backend for tests only. The config parser does not
+    // accept "memory"; deployed configuration must choose a durable backend.
+    memory,
 };
 
 enum class DatabaseRole
@@ -305,8 +348,43 @@ struct EncryptionSecurityConfig final
     bool block_unencrypted_federated_private_rooms{true};
 };
 
+// A state snapshot can name many already-cached events. Its advertised ID
+// capacity is independent of the bounded number of network calls per attempt.
+struct FederationBackfillConfig final
+{
+    std::uint32_t max_missing_events{20U};
+    std::uint32_t max_outbound_calls{16U};
+    std::uint32_t max_state_ids{65536U};
+    std::uint32_t max_auth_chain_ids{65536U};
+    std::uint32_t max_snapshot_events{131072U};
+    std::uint32_t max_snapshot_outbound_calls{256U};
+    std::uint32_t max_total_outbound_calls{512U};
+    std::string response_max_size{"16MiB"};
+    std::string timeout{"45s"};
+};
+
+struct FederationQueryConfig final
+{
+    std::uint32_t max_backfill_pdus{500U};
+    std::uint32_t max_missing_events_pdus{100U};
+    std::uint32_t max_missing_events_latest{100U};
+    std::uint32_t max_missing_events_traversal{4096U};
+};
+
+struct FederationStateResolutionConfig final
+{
+    std::uint32_t max_state_groups{1000U};
+    std::uint32_t max_events_per_state_group{65536U};
+    std::uint32_t max_total_state_events{131072U};
+    std::uint32_t max_conflicted_state_keys{65536U};
+    std::uint32_t max_mainline_auth_chain_depth{10000U};
+    std::uint32_t max_auth_chain_walk_events{131072U};
+};
+
 struct FederationSecurityConfig final
 {
+    FederationQueryConfig query{};
+    FederationStateResolutionConfig state_resolution{};
     bool enabled{true};
     std::string default_policy{"allow"};
     std::vector<std::string> allowed_servers{};
@@ -316,7 +394,7 @@ struct FederationSecurityConfig final
     std::vector<std::string> deny_ip_ranges{
         "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
     };
-    std::string max_transaction_size{"10MiB"};
+    std::string max_transaction_size{"20MiB"};
     // Matrix Server-Server API v1.19 caps /send transactions at 50 PDUs
     // and 100 EDUs. Operators may lower these caps but validation rejects
     // values above the spec maximum.
@@ -324,14 +402,14 @@ struct FederationSecurityConfig final
     std::uint32_t max_transaction_edus{100U};
     // Authenticated inbound federation pressure caps. These are keyed by the
     // verified remote origin, not by client IP or claimed event sender.
-    http::RateLimitPolicy per_origin_transaction_rate{120U, 60U};
-    http::RateLimitPolicy per_origin_pdu_rate{600U, 60U};
-    http::RateLimitPolicy per_origin_edu_rate{1200U, 60U};
+    http::RateLimitPolicy per_origin_transaction_rate{600U, 60U};
+    http::RateLimitPolicy per_origin_pdu_rate{6000U, 60U};
+    http::RateLimitPolicy per_origin_edu_rate{12000U, 60U};
     // Per-origin cap on inbound federation requests OUTSIDE /send (query,
     // backfill, membership, key and state endpoints). /send keeps its own
     // weighted transaction/PDU/EDU trio above and is exempt so a transaction
     // and its contents are never double-counted.
-    http::RateLimitPolicy per_origin_request_rate{600U, 60U};
+    http::RateLimitPolicy per_origin_request_rate{3000U, 60U};
     // Budgets for remote signing-key resolution, which necessarily happens
     // BEFORE a request's X-Matrix signature can be checked -- verifying the
     // signature requires the key. Without a budget, an unauthenticated sender
@@ -348,18 +426,29 @@ struct FederationSecurityConfig final
     //
     // key_resolution_per_ip_rate bounds how often one source IP may cause a
     // resolution of an origin this server has no usable cached key for.
-    http::RateLimitPolicy key_resolution_per_ip_rate{10U, 60U};
+    http::RateLimitPolicy key_resolution_per_ip_rate{30U, 60U};
     // Cap on resolutions in flight across the whole process, so a sender
     // spreading across many source IPs still cannot exhaust the outbound path.
     // Over the cap the request is rejected rather than queued: queuing converts
     // an overload into a slower overload while holding the resources anyway.
     // Must be >= 1 (validated); 0 would deadlock every resolution.
-    std::uint32_t key_resolution_max_in_flight{8U};
+    std::uint32_t key_resolution_max_in_flight{16U};
     // How long a failed resolution is remembered, so repeated requests naming
     // the same unresolvable origin are cheap. Bounds the honest-misconfiguration
     // case; a sender varying the origin defeats it by design, which is what the
     // two budgets above are for. "0s" disables the negative cache.
-    std::string key_resolution_failure_ttl{"300s"};
+    std::string key_resolution_failure_ttl{"60s"};
+    FederationBackfillConfig backfill{};
+    std::uint32_t accepted_transaction_cache_entries{50000U};
+    std::uint32_t audit_event_cache_entries{10000U};
+    std::uint32_t key_resolution_cache_entries{16384U};
+    std::uint32_t bad_signature_cache_entries{4096U};
+    http::RateLimitPolicy bad_signature_per_ip_rate{30U, 60U};
+    std::uint32_t pending_join_max_rooms{32U};
+    std::uint32_t pending_join_max_pdus{32U};
+    std::string pending_join_max_size{"512KiB"};
+    std::uint32_t outbound_queue_capacity{4096U};
+    std::uint32_t outbound_max_retries{32U};
     std::string remote_timeout{"60s"};
     // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
     // membership dance. A large remote room's make_join can take longer than the
@@ -460,13 +549,12 @@ struct SecretsSecurityConfig final
 
 // Per-endpoint rate-limit policies. The values populate
 // `http::RateLimitEngine` at `start_client_server()` time; restart
-// required (see `src/config/reload_policy.cpp`). The 0.5.0 design doc
-// (`docs/log-filtering-design.md`) lists the operator-agreed defaults,
-// now expressed through the route tiers in `http::rate_limit_tier_for()`:
+// required (see `src/config/reload_policy.cpp`). Defaults are expressed
+// through the route tiers in `http::rate_limit_tier_for()`:
 // 20/min per IP for the auth-sensitive tier (/login, /register, /refresh
-// and the */requestToken family), 5/min per user for /login, 30/min for
-// keys/devices, 20/min for media and search, 120/min for federation routes
-// on the client listener, 90/min for everything else.
+// and the */requestToken family), 5/min per user for /login, 120/min for
+// keys/devices and media, 20/min for search, 240/min for thumbnails,
+// 3000/min for sync/federation routes, 600/min for generic traffic.
 struct ClientRateLimitsConfig final
 {
     std::unordered_map<std::string, http::RateLimitPolicy> per_ip{};
@@ -475,7 +563,7 @@ struct ClientRateLimitsConfig final
     // federation, admin, generic). Validated against
     // `http::rate_limit_tier_from_name()` so a typo is a parse finding.
     std::unordered_map<std::string, http::RateLimitPolicy> tier{};
-    http::RateLimitPolicy default_per_ip{90U, 60U};
+    http::RateLimitPolicy default_per_ip{600U, 60U};
 };
 
 // Per-module log level overrides. Populated from `log_modules.<name>=<level>`
@@ -594,6 +682,9 @@ struct FederationWorkerConfig final
 struct AppserviceConfig final
 {
     std::vector<std::string> registration_files{};
+    std::uint32_t connect_timeout_seconds{10U};
+    std::uint32_t total_timeout_seconds{30U};
+    std::string response_max_size{"16MiB"};
 };
 
 struct SecurityConfig final

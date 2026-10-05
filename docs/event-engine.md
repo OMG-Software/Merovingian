@@ -1,5 +1,12 @@
 # Event engine
 
+State resolution fetches required mainline power-level ancestors through the
+shared auth-event source, including external lookup. Missing, cyclic or
+truncated ancestry fails closed. Room-v12 conflicted subgraphs memoize distinct
+vertices, validate the reachable DAG, and compute the union of paths by reverse
+reachability; shared paths do not repeatedly consume the event budget. See
+[ADR-0095](adr/0095-bound-state-resolution-by-distinct-auth-events.md).
+
 This capability note describes the Matrix event-engine foundation on top of
 canonical JSON.
 
@@ -132,9 +139,26 @@ Implemented now:
   store — the ordinary `/send` transaction path above and the membership
   acceptor here — must enforce this gate: a rule enforced on only one of two
   paths into the same store is not enforced at all
-- room creator is implicitly treated as joined with power level 100 when
-  no sender_member or power_levels event exists, enabling correct
-  authorization of initial state events during room bootstrapping
+- membership endpoint/content agreement (0.12.16, FED-6): `send_join`,
+  `send_leave`, and `send_knock` validate the membership value, event type,
+  authenticated-origin/sender relationship, sender/state-key equality, and
+  URL room/event identifiers before invoking the acceptor. The main-process
+  mutation sink repeats these structural checks before changing state and
+  derives the stored membership from the validated event, never the route
+- receipt EDU ACL enforcement (0.12.16, FED-8): the main-process mutation
+  sink checks the authenticated sending origin against each receipt room's
+  current server ACL. Denied rooms are skipped individually so a mixed EDU
+  still updates allowed rooms; this also guards direct worker-relay calls
+- creator identity is room-version-aware: room versions v1-v10 use
+  `m.room.create.content.creator`, while v11+ use the create event's `sender`
+  and ignore a legacy `content.creator` field. Creator identity alone does not
+  grant room membership or permit ordinary event sends.
+- creator bootstrap joins are accepted only when `prev_events` contains exactly
+  the authoritative create event ID. Versions before v12 use the ID from
+  persisted room state; v12 derives the create event ID from the room ID.
+  Additional v12 creators receive the specified power privilege but not
+  implicit bootstrap membership. Locally-created v11+ create events remove a
+  client-supplied legacy `creator` property.
 - v2 state resolution algorithm: conflicted/unconflicted partition, power
   events (spec definition) sorted by reverse topological power ordering and
   auth-checked first, remaining events ordered by the mainline of the
@@ -306,6 +330,16 @@ topological power ordering for power events and the mainline ordering (based
 on the partially resolved power levels) for the remaining events. Room v12
 uses state-res v2.1: the same algorithm with three modifications (below).
 
+In room v12, reverse topological power ordering resolves the implicit
+`m.room.create` event from each candidate's `room_id` through the event index
+or `event_lookup`. It uses that create event to recognise both its sender
+and `content.additional_creators` as having infinite power, even though the
+create event is absent from explicit `auth_events`. Each candidate still
+uses its own explicit power-level ancestor, not the shared resolved state.
+An unavailable implicit create event, or one with the wrong type/state key,
+makes the ordering fail closed. The `[evt-8]` conformance regression covers
+creator ordering and unavailable create-event lookup.
+
 ### Auth difference, full conflicted set, and the v12 conflicted state subgraph
 
 Until 0.12.13, `resolve_state_v2` only ever considered power events that
@@ -365,8 +399,9 @@ state group already agrees on it — that agreement is precisely why
 anything modification 1's empty-start rule exists to guard against (mutable,
 genuinely-contestable state like membership or power levels).
 
-The auth-chain walk is bounded (`events::max_auth_chain_walk_events`,
-`include/merovingian/events/limits.hpp`) and **fails closed**: a missing or
+The auth-chain walk is bounded by
+`security.federation.state_resolution.max_auth_chain_walk_events`
+(default 131,072 visits) and **fails closed**: a missing or
 unreachable event, an over-budget walk, or an exhausted lookup returns an
 unresolved `StateResolutionResult` rather than resolving on a partial chain —
 `compute_state_before`/`recompute_current_state` (phase B1/B2, above) treat
@@ -375,6 +410,15 @@ rejection. This does not apply to the iterative auth checks' own `auth_events`
 fallback above, which is intentionally soft — an ancestor it cannot reach
 only fails that one candidate event's own auth check (as it already did
 before the fallback existed), not the whole resolution.
+
+As of 0.12.18, `security.federation.state_resolution` also configures group
+count, entries per group, aggregate submitted entries, distinct/conflicted
+keys and mainline depth. The aggregate entry limit is checked before indexing
+and prevents per-group capacity from multiplying unchecked. Defaults allow
+65,536 entries per group, 131,072 submitted entries in total and 65,536 keys.
+The policy applies to local event creation and federation bookkeeping;
+changing it requires restart. Single-parent bookkeeping bypasses fork
+resolution, so its full state can exceed a deliberately lowered resolver cap.
 
 Three properties of the ordering are easy to get subtly wrong and are worth
 stating explicitly, because all three were defects (the first two until
@@ -461,8 +505,43 @@ were fixed after 0.12.14:
   `origin_server_ts`, event id) by the spec's definition, and the iterative auth
   checks apply their input in the order given, so neither shared the defect.
 
+Two additional state-resolution properties are being closed on the 0.12.16
+security-audit branch (EVT-5 and EVT-9). For room versions 10–12, mainline
+ordering must fetch each power-level predecessor named by the prior event's
+`auth_events`, including events absent from submitted state groups. Missing,
+malformed, cyclic, or depth-truncated required ancestors now reject the
+resolution instead of silently shortening the mainline and falling back to
+timestamp ordering. For room v12, the conflicted state subgraph is computed
+from the auth graph reachable from conflicted roots: the result is the
+intersection of vertices reachable from those roots and vertices that can
+reach any root. The implementation processes distinct vertices and edges
+iteratively, rejects cycles and malformed/missing graph events, and uses the
+existing `max_auth_chain_walk_events` cap. Focused verification is pending.
+
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
+
+### Unsolicited-room admission and pending outbound joins (ADR-0089)
+
+As of 0.12.16 (FED-11), common PDU ingestion checks current local
+join/invite/knock interest before allocating stream IDs, fetching missing history,
+mutating caches or writing events. Remote-only, malformed, departed and banned
+membership rows do not establish interest. Room metadata or a room-version
+resolver cannot authorize unsolicited storage. The rejection-storage rules below
+apply after this admission boundary, not to arbitrary unknown-room traffic.
+
+Outbound joins acquire a room-scoped RAII reservation before releasing the
+runtime mutex for the network exchange. Otherwise-uninterested rooms defer PDUs
+in transient queues with configurable default caps of 32 rooms, 256 distinct event IDs and 4MiB of JSON
+per room. Duplicates do not consume more capacity; overlaps and excess are
+refused. Failure or exception discards the queue without storing its PDUs.
+
+After verified initial state and local membership commit, queued PDUs pass
+through the existing common sink outside every global-lock recursion level,
+preserving stripe-then-global lock order. This is bounded best-effort deferral,
+not a durable transaction queue. Explicit verified join-state bootstrap and
+requested-backfill writers remain separate paths; an incoming PDU cannot claim
+those privileges through its content. See ADR-0089 for the policy and tradeoffs.
 
 ### Phase B1: state resolution wired into ingestion (ADR-0064)
 
@@ -661,7 +740,7 @@ fetches them from that origin before retrying the PDU.
 * The backfill strategy is `/_matrix/federation/v1/get_missing_events/{roomId}`
   first, then per-event `/_matrix/federation/v1/event/{eventId}`. The
   `/get_missing_events` call asks for up to 20 events; the whole PDU is allowed
-  at most 5 outbound calls. These caps prevent a malicious or delayed origin
+  at most 16 general outbound calls by default. Snapshot materialisation has a separate 256-call default, and the entire recovery shares a 512-call budget and 45-second deadline for further work/HTTP timeouts. These configurable caps prevent a malicious or delayed origin
   from driving unbounded outbound work.
 * Every fetched event is verified independently: content hash (mismatch
   redacts), Ed25519 signature, the `auth_events` selection check, and
@@ -679,8 +758,7 @@ fetches them from that origin before retrying the PDU.
   become forward extremities on their own.
 * If a `prev_event` still has no state group, `backfill_state_ids_snapshot`
   asks the origin for `GET /_matrix/federation/v1/state_ids/{roomId}` at that
-  event (at most 1000 IDs in each list, and its own budget of 100 outbound
-  calls). Every named event not already stored is fetched and verified. A
+  event (at most 65,536 IDs in each list by default, a 131,072-unique-event cap, and a shared 256-call snapshot budget). Every named event not already stored is fetched and verified. A
   snapshot state event whose own `prev_events` have no state is verified
   instead through `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`,
   against its own `auth_events` only (ADR-0069). An `/event_auth` entry skips
@@ -698,7 +776,7 @@ fetches them from that origin before retrying the PDU.
   stored group-less event is known and the event passes auth against it, it
   gains a state group and keeps its status.
 * If references remain missing after the capped attempt, the original PDU still
-  returns `missing_prev_state` and is not applied. Fail-closed is preserved;
+  returns `missing_prev_state` and is not applied or durably retained for retry. Fail-closed is preserved;
   backfill only turns a *resolvable* gap into accepted history.
 
 The membership-acceptor path does not yet run this backfill step — see the
@@ -764,3 +842,5 @@ policy flags refine this further:
   while pre-v12 rooms keep listing the creator at level 100.
 
 Later work must expand this with full Matrix room-version fixtures.
+
+The 0.12.18 operational recovery/query settings are documented in [operator budgets](user-manual.md#operational-budgets). Calls consume budgets even on failure; exhausting a call budget blocks another fetch but does not discard its successful final response. Deadline checks between steps do not preempt synchronous discovery, signature verification or database work already in progress. Increasing these bounds cannot restore an ordinary unresolved PDU that was never retained.

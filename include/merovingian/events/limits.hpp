@@ -36,13 +36,13 @@ inline constexpr std::size_t max_signatures_per_event = 5'000U;
 inline constexpr std::size_t max_state_groups = 1'000U;
 
 // Maximum number of state events in a single state group. Large rooms may have
-// tens of thousands of state events, but processing is O(N log N); 10 000
-// keeps worst-case work bounded while still supporting ordinary large rooms.
-inline constexpr std::size_t max_events_per_state_group = 10'000U;
+// tens of thousands of state events, but processing remains bounded by the
+// separate aggregate event cap below.
+inline constexpr std::size_t max_events_per_state_group = 65'536U;
 
 // Maximum number of conflicted state keys the resolver will consider before
-// giving up. Derived from the maximum number of events across all groups.
-inline constexpr std::size_t max_conflicted_state_keys = 10'000U;
+// giving up. The aggregate event cap below bounds the total input independently.
+inline constexpr std::size_t max_conflicted_state_keys = 65'536U;
 
 // Maximum depth the auth-chain/mainline walker will follow. State resolution
 // v2 orders power-levels events by their position on the mainline; real rooms
@@ -54,13 +54,17 @@ inline constexpr std::size_t max_mainline_auth_chain_depth = 10'000U;
 // auth difference, the v12 conflicted state subgraph, and the iterative auth
 // checks' own-auth-events fallback. This walk is reachable from untrusted
 // federation input (a hostile remote can propose a state fork), so it must
-// be bounded independently of the room's real size; 20 000 comfortably
-// covers a legitimate room's auth chain while still failing closed on an
-// adversarially deep or wide chain.
+// be bounded independently of the room's real size; the limit admits a large
+// legitimate room while retaining a strict bound on adversarial work.
 // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions ("Auth
 // chain", "Auth difference"); ../../docs/matrix-v1.19-spec/rooms/v12.md —
 // Definitions ("Conflicted state subgraph").
-inline constexpr std::size_t max_auth_chain_walk_events = 20'000U;
+inline constexpr std::size_t max_auth_chain_walk_events = 131'072U;
+
+// Maximum number of state-event references across all submitted state groups.
+// This aggregate bound prevents a request from multiplying the per-group cap
+// across many fork snapshots while indexing and comparing their states.
+inline constexpr std::size_t max_total_state_events = 131'072U;
 
 // ---- Delta state group limits (ADR-0064) ----
 

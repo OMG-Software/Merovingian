@@ -15,4 +15,5 @@ http_lib = static_library(
   http_sources,
   include_directories: inc,
   dependencies: [libcurl_dep],
+  link_with: [core_lib],
 )

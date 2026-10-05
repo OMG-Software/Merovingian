@@ -145,10 +145,10 @@ All foundation modules depend on `core` (RAII utilities, `not_null`,
 
 ```text
 merovingian-server
-  - main pool (`server.http.request_threads`, default 16): all non-sync
+  - main pool (`server.http.request_threads`, default 32): all non-sync
     requests; a worker is given a connection only once it is readable, and one
     client address may hold at most a quarter of the pool (ADR-0077)
-  - sync pool (32 threads): `/sync` long-polls only
+  - sync pool (`server.http.sync_threads`, default 128): `/sync` long-polls only
   - connection dispatcher thread: holds every connection that is not being
     served (before its first byte, between keep-alive requests) in one
     `poll(2)` set and hands readable ones to the main pool (ADR-0077)
@@ -274,8 +274,8 @@ unboundedly over the runtime's lifetime. Push delivery additionally bounds
 *concurrent* tasks — not just the vector's steady-state size — via
 `HomeserverRuntime::push_delivery_in_flight_`, a `std::atomic<std::size_t>`
 (tracked separately from the make_join race's use of the same vector so the
-two do not starve each other) checked against a fixed cap
-(`k_max_in_flight_push_deliveries`, 128) before a task is spawned; at
+two do not starve each other) checked against
+`server.push.max_in_flight_deliveries` (default 256) before a task is spawned; at
 capacity the delivery is dropped and logged rather than spawned, since a
 missed push is recoverable but unbounded thread creation is not (see
 `threat-model.md`, "Push delivery background tasks were unbounded"). The
@@ -483,6 +483,13 @@ Implemented endpoints: `PUT /send/{txnId}`, `GET/PUT /make_join`, `GET/PUT /make
 
 **Server ACLs** (`federation/server_acl.hpp`, `server_acl.cpp`): per-room `m.room.server_acl` enforcement (MSC4436). `evaluate_server_acl()` strips ports, checks `allow_ip_literals`, applies deny-then-allow glob lists case-insensitively, and fail-closes to deny when an allow list exists and the server does not match. `room_server_acl_allows()` loads the current ACL from the persistent store. `FederationRuntimeState` carries a `room_server_acl_provider` hook so the inbound path can reject protected endpoints, per-PDU transaction entries, and room-local EDUs (`m.typing`, `m.receipt`) before they reach room state.
 
+Worker supervision retries temporary spawn failures rather than ending its loop
+with no child. Each supervisor waits only on its owned positive PID. Retry delay
+doubles from one second to 30 seconds and resets after 30 seconds of continuous
+child and IPC health; shutdown interrupts the delay within a 100-millisecond
+poll interval. The old channel is stopped outside the channel ownership mutex
+before retrying. See [ADR-0096](adr/0096-retry-worker-spawn-failures-with-owned-child-waits.md).
+
 ## Client-server API
 
 Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in [Client Authentication](matrix-v1.19-spec/client-server-api.md#client-authentication), [Room event format](matrix-v1.19-spec/client-server-api.md#room-event-format), [Rooms](matrix-v1.19-spec/client-server-api.md#rooms), [Syncing](matrix-v1.19-spec/client-server-api.md#syncing), and the media endpoints under the [Client-Server API](matrix-v1.19-spec/client-server-api.md).
@@ -565,3 +572,5 @@ The full attacker model, surface inventory, and per-threat mitigations live in
 - Audit logging across auth, federation, and media boundaries.
 - Trust & safety policy engine for moderation rules.
 - Media security: MIME sniffing, quarantine, AV scanner flag, sandboxed decoding flag, private IP fetch blocking. The AV scanner flag can never apply to encrypted-room attachments - see "Encrypted media is never scannable" in `docs/media-repository.md`.
+
+Operational admission/recovery policies are startup snapshots. See [operator budgets](user-manual.md#operational-budgets) and [ADR-0109](adr/0109-configure-operational-budgets-with-shared-recovery-bounds.md) for policy composition across HTTP, IPC and event recovery.

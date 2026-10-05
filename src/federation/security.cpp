@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -42,6 +43,124 @@ namespace
         }
 
         return true;
+    }
+
+    [[nodiscard]] auto ascii_alphanumeric(char value) noexcept -> bool
+    {
+        return (value >= '0' && value <= '9') || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
+    }
+
+    [[nodiscard]] auto valid_port(std::string_view port) noexcept -> bool
+    {
+        if (port.empty() || port.size() > 5U)
+        {
+            return false;
+        }
+        auto value = std::uint16_t{0U};
+        auto const parsed = std::from_chars(port.data(), port.data() + port.size(), value);
+        return parsed.ec == std::errc{} && parsed.ptr == port.data() + port.size() && value != 0U;
+    }
+
+    [[nodiscard]] auto valid_ipv4(std::string_view host) noexcept -> bool
+    {
+        auto remaining = host;
+        for (unsigned index = 0; index < 4U; ++index)
+        {
+            auto const separator = remaining.find('.');
+            auto const part = remaining.substr(0U, separator);
+            auto value = unsigned{0U};
+            auto const parsed = std::from_chars(part.data(), part.data() + part.size(), value);
+            if (part.empty() || part.size() > 3U || parsed.ec != std::errc{} ||
+                parsed.ptr != part.data() + part.size() || value > 255U)
+            {
+                return false;
+            }
+            if (index == 3U)
+            {
+                return separator == std::string_view::npos;
+            }
+            if (separator == std::string_view::npos)
+            {
+                return false;
+            }
+            remaining.remove_prefix(separator + 1U);
+        }
+        return false;
+    }
+
+    [[nodiscard]] auto valid_ipv6(std::string_view host) noexcept -> bool
+    {
+        auto text = std::array<char, 256U>{};
+        if (host.empty() || host.size() >= text.size())
+        {
+            return false;
+        }
+        std::ranges::copy(host, text.begin());
+        auto address = in6_addr{};
+        return ::inet_pton(AF_INET6, text.data(), &address) == 1;
+    }
+
+    [[nodiscard]] auto valid_server_name_host(std::string_view host) noexcept -> bool
+    {
+        if (host.empty() || host.size() > 255U || !contains_no_control_or_space(host))
+        {
+            return false;
+        }
+
+        if (host.front() == '[')
+        {
+            if (host.size() < 4U || host.back() != ']')
+            {
+                return false;
+            }
+            return valid_ipv6(host.substr(1U, host.size() - 2U));
+        }
+
+        auto const numeric_address = std::ranges::all_of(host, [](char value) {
+            return (value >= '0' && value <= '9') || value == '.';
+        });
+        if (numeric_address && std::ranges::count(host, '.') == 3)
+        {
+            return valid_ipv4(host);
+        }
+
+        return std::ranges::all_of(host, [](char value) {
+            return ascii_alphanumeric(value) || value == '-' || value == '.';
+        });
+    }
+
+    [[nodiscard]] auto valid_matrix_server_name(std::string_view server_name) noexcept -> bool
+    {
+        if (server_name.empty() || server_name.size() > 261U)
+        {
+            return false;
+        }
+
+        auto host = server_name;
+        if (server_name.front() == '[')
+        {
+            auto const close = server_name.find(']');
+            if (close == std::string_view::npos)
+            {
+                return false;
+            }
+            host = server_name.substr(0U, close + 1U);
+            auto const suffix = server_name.substr(close + 1U);
+            return valid_server_name_host(host) &&
+                   (suffix.empty() || (suffix.front() == ':' && valid_port(suffix.substr(1U))));
+        }
+
+        auto const colon = server_name.find(':');
+        if (colon != std::string_view::npos)
+        {
+            if (server_name.find(':', colon + 1U) != std::string_view::npos)
+            {
+                return false;
+            }
+            host = server_name.substr(0U, colon);
+            return valid_server_name_host(host) && valid_port(server_name.substr(colon + 1U));
+        }
+        return valid_server_name_host(host);
     }
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
@@ -122,8 +241,7 @@ namespace
 
 auto server_name_is_valid(std::string_view server_name) noexcept -> bool
 {
-    return !server_name.empty() && server_name.size() <= 255U && server_name.find('.') != std::string_view::npos &&
-           contains_no_control_or_space(server_name);
+    return valid_matrix_server_name(server_name);
 }
 
 auto ip_address_is_valid(std::string_view address) noexcept -> bool

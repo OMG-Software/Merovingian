@@ -24,6 +24,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/state_resolution.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
@@ -33,6 +34,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace
@@ -57,6 +59,20 @@ using merovingian::events::StateResolutionRequest;
     auto parsed = merovingian::canonicaljson::parse_lossless(json);
     if (parsed.error == merovingian::canonicaljson::ParseError::none)
     {
+        // These fixtures model already accepted state references without
+        // historical ancestry unless a scenario supplies it explicitly.
+        // auth_events is still a required event field: omitting it must not
+        // make malformed input pass the mainline completeness check.
+        auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+        if (object != nullptr && !std::ranges::any_of(*object, [](auto const& member) {
+                return member.key == "auth_events";
+            }))
+        {
+            auto complete = *object;
+            complete.push_back(merovingian::canonicaljson::make_member(
+                "auth_events", merovingian::canonicaljson::Value{merovingian::canonicaljson::Array{}}));
+            parsed.value = merovingian::canonicaljson::Value{std::move(complete)};
+        }
         ref.event_json = std::move(parsed.value);
     }
     return ref;
@@ -75,8 +91,8 @@ using merovingian::events::StateResolutionRequest;
 
 // Build an m.room.create event with creator in content.
 // Auth checks (v6+) require content.creator to exist (auth rule Step 3).
-[[nodiscard]] auto make_create_event(std::string const& creator, std::string const& event_id, std::int64_t ts)
-    -> StateEventReference
+[[nodiscard]] auto make_create_event(std::string const& creator, std::string const& event_id,
+                                     std::int64_t ts) -> StateEventReference
 {
     auto const json = std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\""} + creator +
                       "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
@@ -85,8 +101,8 @@ using merovingian::events::StateResolutionRequest;
 }
 
 // Build an m.room.member join event for a user.
-[[nodiscard]] auto make_member_event(std::string user_id, std::string event_id, std::int64_t ts, std::uint64_t depth)
-    -> StateEventReference
+[[nodiscard]] auto make_member_event(std::string user_id, std::string event_id, std::int64_t ts,
+                                     std::uint64_t depth) -> StateEventReference
 {
     auto const json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + user_id + "\",\"sender\":\"" +
                       user_id + "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
@@ -138,8 +154,8 @@ using merovingian::events::StateResolutionRequest;
 
 // Returns the event in resolved_state for (type, state_key), or nullptr.
 [[nodiscard]] auto result_event_for(merovingian::events::StateResolutionResult const& result,
-                                    std::string const& event_type, std::string const& state_key)
-    -> StateEventReference const*
+                                    std::string const& event_type,
+                                    std::string const& state_key) -> StateEventReference const*
 {
     for (auto const& r : result.resolved_state)
     {
@@ -745,8 +761,8 @@ namespace
 // event-id strings — the v3+ PDU shape consumed by the mainline walk.
 [[nodiscard]] auto make_event_with_auth(std::string const& event_type, std::string const& state_key,
                                         std::string const& event_id, std::string const& sender, std::int64_t ts,
-                                        std::vector<std::string> const& auth_ids, std::string const& content_json)
-    -> StateEventReference
+                                        std::vector<std::string> const& auth_ids, std::string const& content_json,
+                                        std::string const& room_id = "") -> StateEventReference
 {
     auto auth = std::string{"["};
     for (auto const& id : auth_ids)
@@ -758,10 +774,11 @@ namespace
         auth += "\"" + id + "\"";
     }
     auth += "]";
+    auto const room_field = room_id.empty() ? std::string{} : ",\"room_id\":\"" + room_id + "\"";
     auto const json = std::string{"{\"type\":\""} + event_type + "\",\"state_key\":\"" + state_key +
                       "\",\"sender\":\"" + sender + "\",\"event_id\":\"" + event_id +
                       "\",\"origin_server_ts\":" + std::to_string(ts) + ",\"auth_events\":" + auth +
-                      ",\"content\":" + content_json + "}";
+                      ",\"content\":" + content_json + room_field + "}";
     return make_event_ref(event_type, state_key, event_id, sender, ts, 1, json);
 }
 
@@ -770,6 +787,61 @@ auto const power_levels_content =
                 "\"state_default\":50,\"users\":{\"@alice:example.org\":100},\"users_default\":0}"};
 
 } // namespace
+
+// Spec: Matrix v1.19 — Room v12, Reverse topological power ordering.
+// URL: ../../docs/matrix-v1.19-spec/rooms/v12.md
+// Implicit create-event privileges must apply to both original and additional
+// creators even when explicit auth_events contains only the power-level event.
+SCENARIO("v12 power ordering resolves implicit create-event privileges", "[conformance][state_res][evt-8]")
+{
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+    GIVEN("an implicit create event and power levels granting another user power 50")
+    {
+        auto const create_json = merovingian::canonicaljson::parse_lossless(
+            R"({"type":"m.room.create","state_key":"","sender":"@creator:example.org","content":{"room_version":"12","additional_creators":["@additional:example.org"]},"prev_events":[],"auth_events":[],"depth":1,"origin_server_ts":1})");
+        REQUIRE(create_json.error == merovingian::canonicaljson::ParseError::none);
+        auto const create_id = merovingian::events::make_reference_hash_event_id(create_json.value, *policy);
+        REQUIRE(create_id.error.empty());
+        auto const room_id = "!" + create_id.event_id.substr(1);
+        auto const create = StateEventReference{
+            .key = StateKey{"m.room.create", ""},
+            .event_id = create_id.event_id,
+            .sender = "@creator:example.org",
+            .origin_server_ts = 1,
+            .depth = 1,
+            .event_json = create_json.value
+        };
+        auto const pl = make_event_with_auth("m.room.power_levels", "", "$levels", "@creator:example.org", 2, {},
+                                             R"({"users":{"@admin:example.org":50}})");
+        auto known = merovingian::events::EventJsonIndex{};
+        known.emplace(create.event_id, std::cref(create.event_json));
+        known.emplace(pl.event_id, std::cref(pl.event_json));
+        WHEN("each creator's power event competes with an earlier event from the power-50 user")
+        {
+            THEN("both creators sort first, and missing implicit create events fail closed")
+            {
+                for (auto const& creator : std::vector<std::string>{"@creator:example.org", "@additional:example.org"})
+                {
+                    auto creator_event = make_event_with_auth("m.room.join_rules", "", "$z-creator", creator, 100,
+                                                              {"$levels"}, R"({"join_rule":"public"})", room_id);
+                    auto admin_event = make_event_with_auth("m.room.join_rules", "", "$a-admin", "@admin:example.org",
+                                                            10, {"$levels"}, R"({"join_rule":"invite"})", room_id);
+                    auto const result = merovingian::events::reverse_topological_power_sort(
+                        {admin_event, creator_event}, known, {}, *policy);
+                    REQUIRE(result.has_value());
+                    REQUIRE(result->size() == 2);
+                    CHECK(result->front().event_id == creator_event.event_id);
+                    known.erase(create.event_id);
+                    auto const missing = merovingian::events::reverse_topological_power_sort(
+                        {admin_event, creator_event}, known, {}, *policy);
+                    CHECK_FALSE(missing.has_value());
+                    known.emplace(create.event_id, std::cref(create.event_json));
+                }
+            }
+        }
+    }
+}
 
 // Spec: Matrix v1.19 — Room v2 state resolution, Mainline ordering
 // URL: ../../docs/matrix-v1.19-spec/rooms/v10.md (Definitions — Mainline ordering)
@@ -970,8 +1042,8 @@ namespace
 
 // Build an m.room.join_rules event with an arbitrary join rule.
 [[nodiscard]] auto make_join_rules_event(std::string const& join_rule, std::string const& sender,
-                                         std::string const& event_id, std::int64_t ts, std::uint64_t depth)
-    -> StateEventReference
+                                         std::string const& event_id, std::int64_t ts,
+                                         std::uint64_t depth) -> StateEventReference
 {
     auto const json = std::string{"{\"type\":\"m.room.join_rules\",\"state_key\":\"\",\"sender\":\""} + sender +
                       "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
@@ -984,8 +1056,8 @@ namespace
 // an integer (100). `invite` is spelled out because the restricted-join rule
 // compares the authorising user's level against it.
 [[nodiscard]] auto make_power_levels_with_users(std::string const& users_json, std::string const& sender,
-                                                std::string const& event_id, std::int64_t ts, std::uint64_t depth)
-    -> StateEventReference
+                                                std::string const& event_id, std::int64_t ts,
+                                                std::uint64_t depth) -> StateEventReference
 {
     auto const json = std::string{"{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\""} + sender +
                       "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
@@ -996,15 +1068,19 @@ namespace
 }
 
 // Build an m.room.member join event carrying content.join_authorised_via_users_server,
-// as a resident server issues for a join into a restricted room.
+// as a resident server issues for a join into a restricted room. Includes a
+// signatures entry from the authorising user's server so the auth rule (EVT-1)
+// is satisfied during state resolution.
 [[nodiscard]] auto make_restricted_join_event(std::string const& user_id, std::string const& authorising_user,
-                                              std::string const& event_id, std::int64_t ts, std::uint64_t depth)
-    -> StateEventReference
+                                              std::string const& event_id, std::int64_t ts,
+                                              std::uint64_t depth) -> StateEventReference
 {
+    auto const authorising_server = authorising_user.substr(authorising_user.find(':') + 1);
     auto const json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + user_id + "\",\"sender\":\"" +
                       user_id + "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
                       ",\"content\":{\"membership\":\"join\",\"join_authorised_via_users_server\":\"" +
-                      authorising_user + "\"}}";
+                      authorising_user + "\"},\"signatures\":{\"" + authorising_server +
+                      "\":{\"ed25519:test\":\"c2ln\"}}}";
     return make_event_ref("m.room.member", user_id, event_id, user_id, ts, depth, json);
 }
 
@@ -1503,28 +1579,33 @@ SCENARIO("Room v12: state resolution derives the create event from room_id, not 
         auto const create =
             make_event_ref("m.room.create", "", "$createconf:example.org", "@alice:example.org", 1, 0, create_json);
 
-        auto const power_levels = make_power_levels_event("@alice:example.org", "$power_levels:example.org", 2, 1);
+        auto const alice_join = make_event_ref(
+            "m.room.member", "@alice:example.org", "$creator_join:example.org", "@alice:example.org", 2, 1,
+            R"({"type":"m.room.member","state_key":"@alice:example.org","sender":"@alice:example.org","prev_events":["$createconf:example.org"],"auth_events":[],"content":{"membership":"join"}})");
+        auto const power_levels = make_event_ref(
+            "m.room.power_levels", "", "$power_levels:example.org", "@alice:example.org", 3, 2,
+            R"({"type":"m.room.power_levels","state_key":"","sender":"@alice:example.org","auth_events":["$creator_join:example.org"],"content":{"users":{},"users_default":0,"state_default":50}})");
         auto const topic_a_json =
             std::string{"{\"type\":\"m.room.topic\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
                         "\"event_id\":\"$topic_a:example.org\",\"origin_server_ts\":100,\"content\":{\"topic\":"
-                        "\"a\"}}"};
+                        "\"a\"},\"auth_events\":[\"$power_levels:example.org\",\"$creator_join:example.org\"]}"};
         auto const topic_a =
             make_event_ref("m.room.topic", "", "$topic_a:example.org", "@alice:example.org", 100, 2, topic_a_json);
         auto const topic_b_json =
             std::string{"{\"type\":\"m.room.topic\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
                         "\"event_id\":\"$topic_b:example.org\",\"origin_server_ts\":200,\"content\":{\"topic\":"
-                        "\"b\"}}"};
+                        "\"b\"},\"auth_events\":[\"$power_levels:example.org\",\"$creator_join:example.org\"]}"};
         auto const topic_b =
             make_event_ref("m.room.topic", "", "$topic_b:example.org", "@alice:example.org", 200, 2, topic_b_json);
 
         // Neither state group lists the create event at all.
         auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
-        group_a.state = {power_levels, topic_a};
+        group_a.state = {power_levels, alice_join, topic_a};
 
         auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";
-        group_b.state = {power_levels, topic_b};
+        group_b.state = {power_levels, alice_join, topic_b};
 
         auto request = merovingian::events::StateResolutionRequest{};
         request.room_version = "12";

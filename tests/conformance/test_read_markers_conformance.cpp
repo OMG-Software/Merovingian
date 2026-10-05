@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX READ MARKERS CONFORMANCE TESTS                            |
@@ -9,8 +10,8 @@
 // |  Covers POST /_matrix/client/v3/rooms/{roomId}/read_markers.             |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -32,9 +33,12 @@ using namespace merovingian::tests;
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -81,8 +85,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto first_room_ephemeral_events(merovingian::homeserver::ClientServerRuntime& runtime,
-                                               std::string const& token, std::string const& room_id)
-    -> merovingian::canonicaljson::Array
+                                               std::string const& token,
+                                               std::string const& room_id) -> merovingian::canonicaljson::Array
 {
     auto const sync =
         merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
@@ -112,8 +116,8 @@ using namespace merovingian::tests;
     return {};
 }
 
-[[nodiscard]] auto find_receipt_for_event(merovingian::canonicaljson::Array const& events, std::string const& event_id)
-    -> merovingian::canonicaljson::Object const*
+[[nodiscard]] auto find_receipt_for_event(merovingian::canonicaljson::Array const& events,
+                                          std::string const& event_id) -> merovingian::canonicaljson::Object const*
 {
     for (auto const& ev : events)
     {

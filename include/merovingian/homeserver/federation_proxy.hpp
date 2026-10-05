@@ -18,6 +18,18 @@ namespace merovingian::homeserver
 struct HomeserverRuntime;
 class WorkerPool;
 
+// Observed room-sync state of a federation worker shard.
+//
+// The worker's PersistentStore is a snapshot taken at startup.  When main
+// mutates room state it sends a `room_sync` notification; the worker reloads
+// the room and reports back whether the reload succeeded.  Main records that
+// outcome here and can use it to refuse to serve stale reads from the worker.
+struct RoomSyncStatus final
+{
+    std::string state{};         // "pending", "ok", or "failed"
+    std::uint64_t generation{0}; // monotonic per room_id, assigned by main
+};
+
 // Intercepts inbound federation HTTP requests and forwards them to the
 // out-of-process federation worker pool via encrypted IPC channels.
 //
@@ -61,6 +73,12 @@ public:
     // True when the underlying worker pool is up and all shards are healthy.
     // Exposed for tests that need to poll readiness instead of sleeping.
     [[nodiscard]] auto healthy() const noexcept -> bool;
+
+    // Returns the last observed room-sync status for the shard that owns room_id.
+    // A "failed" status means the worker's room snapshot is stale and must not be
+    // trusted for room-scoped reads; room-scoped federation requests then fall back
+    // to the main process's authoritative in-memory state.
+    [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
 
 private:
     HomeserverRuntime& runtime_;

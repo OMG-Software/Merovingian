@@ -130,13 +130,13 @@ SCENARIO("Config blocks private federation and loopback targets by default", "[c
                 REQUIRE(federation.deny_ip_ranges.size() == 6U);
                 REQUIRE(federation.deny_ip_ranges[0] == "127.0.0.0/8");
                 REQUIRE(federation.deny_ip_ranges[5] == "fc00::/7");
-                REQUIRE(federation.max_transaction_size == "10MiB");
+                REQUIRE(federation.max_transaction_size == "20MiB");
                 REQUIRE(federation.max_transaction_pdus == 50U);
                 REQUIRE(federation.max_transaction_edus == 100U);
-                REQUIRE(federation.per_origin_transaction_rate.max_requests == 120U);
-                REQUIRE(federation.per_origin_pdu_rate.max_requests == 600U);
-                REQUIRE(federation.per_origin_edu_rate.max_requests == 1200U);
-                REQUIRE(federation.per_origin_request_rate.max_requests == 600U);
+                REQUIRE(federation.per_origin_transaction_rate.max_requests == 600U);
+                REQUIRE(federation.per_origin_pdu_rate.max_requests == 6000U);
+                REQUIRE(federation.per_origin_edu_rate.max_requests == 12000U);
+                REQUIRE(federation.per_origin_request_rate.max_requests == 3000U);
                 REQUIRE(federation.per_origin_request_rate.window_seconds == 60U);
                 REQUIRE(federation.remote_timeout == "60s");
             }

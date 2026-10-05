@@ -8,16 +8,19 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 
 namespace
 {
 
-[[nodiscard]] auto make_create_value(std::string_view creator) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto make_create_value(std::string_view creator, std::string_view room_version = "12")
+    -> merovingian::canonicaljson::Value
 {
     auto json = std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
                             "\",\"room_id\":\"!room:example.org\",\"content\":{\"creator\":\"" + std::string{creator} +
-                            "\",\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_"
+                            "\",\"room_version\":\"" + std::string{room_version} +
+                            "\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_"
                             "events\":[],\"hashes\":{\"sha256\":\"hash\"}}"};
     return merovingian::canonicaljson::parse_lossless(json).value;
 }
@@ -176,7 +179,12 @@ SCENARIO("V2 state resolution resolves conflicting power levels using reverse to
 {
     GIVEN("two state groups with conflicting power levels from different senders")
     {
-        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        // Use room version "10" for this pure v2 algorithm test: it exercises
+        // the same reverse-topological power ordering as v12 without requiring
+        // the MSC4291 implicit create-event convention (room_id derived from the
+        // create event's reference hash). v12 coverage with that convention is
+        // in the conformance suite.
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
         auto const create_key = merovingian::events::StateKey{"m.room.create", ""};
         auto const power_key = merovingian::events::StateKey{"m.room.power_levels", ""};
@@ -232,20 +240,28 @@ SCENARIO("V2 state resolution resolves conflicting power levels using reverse to
     }
 }
 
-SCENARIO("V2 state resolution resolves conflicting member events", "[events][state][resolution][v2]")
+SCENARIO("V2 state resolution deduplicates conflicted references across groups", "[events][state][resolution][v2]")
 {
-    GIVEN("two state groups with conflicting member states")
+    GIVEN("five state groups that repeat one conflicted event and contain one alternative")
     {
-        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
         auto const create_key = merovingian::events::StateKey{"m.room.create", ""};
         auto const power_key = merovingian::events::StateKey{"m.room.power_levels", ""};
         auto const member_charlie = merovingian::events::StateKey{"m.room.member", "@charlie:example.org"};
 
         auto const create_event = merovingian::events::StateEventReference{
-            create_key, "$create", "@alice:example.org", 1, 0, make_create_value("@alice:example.org")};
+            create_key, "$create", "@alice:example.org", 1, 0, make_create_value("@alice:example.org", "10")};
         auto const power_event = merovingian::events::StateEventReference{
             power_key, "$power", "@alice:example.org", 10, 1, make_power_levels_value("@alice:example.org", 100)};
+        auto const alice_joined = merovingian::events::StateEventReference{
+            {"m.room.member", "@alice:example.org"},
+            "$alice_joined",
+            "@alice:example.org",
+            20,
+            2,
+            make_member_value("@alice:example.org", "@alice:example.org", "join", 20)
+        };
         auto const charlie_invited = merovingian::events::StateEventReference{
             member_charlie,
             "$charlie_invite",
@@ -263,16 +279,26 @@ SCENARIO("V2 state resolution resolves conflicting member events", "[events][sta
 
         auto const group_a = merovingian::events::StateGroup{
             "group-a",
-            {create_event, power_event, charlie_invited},
+            {create_event, power_event, alice_joined, charlie_invited},
         };
         auto const group_b = merovingian::events::StateGroup{
             "group-b",
-            {create_event, power_event, charlie_joined},
+            {create_event, power_event, alice_joined, charlie_joined},
+        };
+        auto const group_c = merovingian::events::StateGroup{
+            "group-c", {create_event, power_event, alice_joined, charlie_invited}
+        };
+        auto const group_d = merovingian::events::StateGroup{
+            "group-d", {create_event, power_event, alice_joined, charlie_invited}
+        };
+        auto const group_e = merovingian::events::StateGroup{
+            "group-e", {create_event, power_event, alice_joined, charlie_invited}
         };
 
-        auto const request = merovingian::events::StateResolutionRequest{
-            "12", {group_a, group_b}
+        auto request = merovingian::events::StateResolutionRequest{
+            "10", {group_a, group_b, group_c, group_d, group_e}
         };
+        request.limits.max_conflicted_state_keys = 4U;
 
         WHEN("v2 state resolution is applied")
         {
@@ -282,6 +308,11 @@ SCENARIO("V2 state resolution resolves conflicting member events", "[events][sta
             {
                 REQUIRE(result.resolved);
                 REQUIRE(result.reason.empty());
+                auto const charlie_entries =
+                    std::ranges::count_if(result.resolved_state, [&member_charlie](auto const& event) {
+                        return event.key == member_charlie;
+                    });
+                REQUIRE(charlie_entries == 1);
             }
         }
     }
@@ -428,20 +459,26 @@ SCENARIO("State resolution rejects too many state groups", "[events][state][reso
     }
 }
 
-SCENARIO("State resolution rejects an oversized state group", "[events][state][resolution][limits]")
+SCENARIO("State resolution rejects a state group above its configured event cap", "[events][state][resolution][limits]")
 {
-    GIVEN("a single state group with more events than the per-group cap")
+    GIVEN("a single state group with three events and a configured per-group cap of two")
     {
-        auto const key = merovingian::events::StateKey{"m.room.member", "@user:example.org"};
         auto state = std::vector<merovingian::events::StateEventReference>{};
-        state.reserve(merovingian::events::max_events_per_state_group + 1U);
-        for (std::size_t i = 0; i < merovingian::events::max_events_per_state_group + 1U; ++i)
+        state.reserve(3U);
+        for (std::size_t i = 0; i < 3U; ++i)
         {
             state.push_back(merovingian::events::StateEventReference{
-                key, "$event-" + std::to_string(i), "@server:example.org", static_cast<std::int64_t>(i), i, {}});
+                {"m.room.member", "@user" + std::to_string(i) + ":example.org"},
+                "$event-" + std::to_string(i),
+                "@server:example.org",
+                static_cast<std::int64_t>(i),
+                i,
+                {}
+            });
         }
-        auto const request = merovingian::events::StateResolutionRequest{
+        auto request = merovingian::events::StateResolutionRequest{
             "12", {merovingian::events::StateGroup{"group-1", std::move(state)}}};
+        request.limits.max_events_per_state_group = 2U;
 
         WHEN("v1 state resolution is applied")
         {
@@ -469,51 +506,97 @@ SCENARIO("State resolution rejects an oversized state group", "[events][state][r
     }
 }
 
-SCENARIO("State resolution v2 rejects too many conflicted state keys", "[events][state][resolution][v2][limits]")
+SCENARIO("State resolution v2 honors its configured conflicted-key cap", "[events][state][resolution][v2][limits]")
 {
-    GIVEN("state groups whose distinct state keys exceed the conflicted-key cap")
+    GIVEN("a group with three distinct state keys and a configured conflicted-key cap of two")
     {
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
-
-        // Use the maximum allowed number of groups, each small enough to pass
-        // max_events_per_state_group, but with enough distinct state keys in total
-        // to exceed max_conflicted_state_keys.
-        auto const events_per_group = 11U;
-        auto const groups_needed = merovingian::events::max_state_groups;
-        auto groups = std::vector<merovingian::events::StateGroup>{};
-        groups.reserve(groups_needed);
-
-        for (std::size_t g = 0; g < groups_needed; ++g)
+        auto state = std::vector<merovingian::events::StateEventReference>{};
+        for (std::size_t i = 0; i < 3U; ++i)
         {
-            auto state = std::vector<merovingian::events::StateEventReference>{};
-            state.reserve(events_per_group);
-            for (std::size_t i = 0; i < events_per_group; ++i)
-            {
-                auto const key_index = g * events_per_group + i;
-                state.push_back(merovingian::events::StateEventReference{
-                    merovingian::events::StateKey{"m.room.member",
-                                                  "@user" + std::to_string(key_index) + ":example.org"},
-                    "$event-" + std::to_string(key_index),
-                    "@server:example.org",
-                    static_cast<std::int64_t>(key_index),
-                    key_index,
-                    {}
-                });
-            }
-            groups.push_back(
-                merovingian::events::StateGroup{std::string{"group-"} + std::to_string(g), std::move(state)});
+            state.push_back(merovingian::events::StateEventReference{
+                {"m.room.member", "@user" + std::to_string(i) + ":example.org"},
+                "$event-" + std::to_string(i),
+                "@server:example.org",
+                static_cast<std::int64_t>(i),
+                i,
+                {}
+            });
         }
+        auto request = merovingian::events::StateResolutionRequest{
+            "12", {merovingian::events::StateGroup{"group-1", std::move(state)}}};
+        request.limits.max_conflicted_state_keys = 2U;
 
         WHEN("v2 state resolution is applied")
         {
-            auto const result = merovingian::events::resolve_state_v2(
-                merovingian::events::StateResolutionRequest{"12", std::move(groups)}, *policy);
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
 
             THEN("partitioning fails fast with a clear resource-limit reason")
             {
                 REQUIRE_FALSE(result.resolved);
                 REQUIRE(result.reason == "too many state keys");
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution enforces an aggregate event cap across state groups", "[events][state][resolution][limits]")
+{
+    GIVEN("two state groups whose combined event count exceeds the configured aggregate cap")
+    {
+        auto const event = merovingian::events::StateEventReference{
+            {"m.room.create", ""},
+            "$create", "@server:example.org", 1, 1U, {}
+        };
+        auto request = merovingian::events::StateResolutionRequest{
+            "12", {{"group-a", {event}}, {"group-b", {event}}}
+        };
+        request.limits.max_total_state_events = 1U;
+
+        WHEN("state resolution validates the request")
+        {
+            auto const result = merovingian::events::resolve_state(request);
+
+            THEN("it fails before state indexing or resolution")
+            {
+                REQUIRE_FALSE(result.resolved);
+                REQUIRE(result.reason == "too many total state events");
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution defaults admit groups larger than the former 10000-event cap",
+         "[events][state][resolution][limits]")
+{
+    GIVEN("one state group with 10001 distinct but identical-state events")
+    {
+        auto state = std::vector<merovingian::events::StateEventReference>{};
+        state.reserve(10001U);
+        for (std::size_t i = 0U; i < 10001U; ++i)
+        {
+            state.push_back({
+                {"m.room.member", "@user" + std::to_string(i) + ":example.org"},
+                "$member-" + std::to_string(i),
+                "@server:example.org",
+                static_cast<std::int64_t>(i),
+                static_cast<std::uint64_t>(i),
+                {}
+            });
+        }
+        auto const request = merovingian::events::StateResolutionRequest{"12", {{"group-a", std::move(state)}}};
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        WHEN("v2 resolution is applied under the default policy")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("all state survives and the larger group is resolved")
+            {
+                REQUIRE(result.resolved);
+                REQUIRE(result.resolved_state.size() == 10001U);
             }
         }
     }

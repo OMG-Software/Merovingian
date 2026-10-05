@@ -17,8 +17,8 @@ namespace
 class FakeDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
 {
 public:
-    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
-        -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view,
+                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
     {
         return {};
     }
@@ -28,8 +28,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host,
+                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
     {
         auto found = addresses.find(std::string{host});
         if (found == addresses.end())
@@ -480,15 +480,16 @@ SCENARIO("resolve_media_redirect_url validates and resolves federation media red
             }
         }
 
-        WHEN("the redirect URL has a query string and fragment")
+        WHEN("the redirect URL has a query string")
         {
             auto const result = merovingian::homeserver::resolve_media_redirect_url(
-                "https://cdn.example.org/media/abc123?token=secret#section", network);
+                "https://cdn.example.org/media/abc123?token=secret", network);
 
-            THEN("authority parsing ignores the query and fragment while preserving the path")
+            THEN("authority parsing keeps the query separate and preserves the parsed URL")
             {
                 REQUIRE(result.ok);
                 REQUIRE(result.discovery.resolved_host == "cdn.example.org");
+                REQUIRE(result.url == "https://cdn.example.org/media/abc123?token=secret");
             }
         }
 

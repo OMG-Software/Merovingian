@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 
 // ADR-0064 phase B1 (continued): proves locally created events participate
 // in the same state-group / forward-extremity bookkeeping as inbound PDUs.
@@ -43,9 +44,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return merovingian::config::Config{
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -75,12 +79,11 @@ struct AliceRoom final
 // uses to exercise ingest_pdu_event directly, without a real X-Matrix
 // signature (ingest_pdu_event's trust boundary does not re-verify it; see
 // the comment above ingest_pdu_event itself).
-[[nodiscard]] auto make_inbound_pdu(std::string const& room_id, std::string const& event_id,
-                                    std::string const& event_type, std::optional<std::string> const& state_key,
-                                    std::vector<std::string> const& prev_event_ids, std::int64_t ts,
-                                    merovingian::canonicaljson::Object content = {},
-                                    std::vector<std::string> const& auth_event_ids = {})
-    -> merovingian::federation::InboundPduEnvelope
+[[nodiscard]] auto make_inbound_pdu(
+    std::string const& room_id, std::string const& event_id, std::string const& event_type,
+    std::optional<std::string> const& state_key, std::vector<std::string> const& prev_event_ids, std::int64_t ts,
+    merovingian::canonicaljson::Object content = {},
+    std::vector<std::string> const& auth_event_ids = {}) -> merovingian::federation::InboundPduEnvelope
 {
     using namespace merovingian;
 
@@ -159,7 +162,7 @@ SCENARIO("THE REGRESSION: a remote PDU referencing a locally sent message is acc
         {
             // ADR-0064 phase B2: ingest_pdu_event now authorises against the
             // PDU's own named auth_events (spec step 4), so this fixture
-            // needs the room's real power_levels event, matching what a
+            // needs the room's real power_levels and sender membership events, matching what a
             // real federating server would send. m.room.create is
             // deliberately NOT named: create_room defaults new rooms to
             // v12 (MSC4291), where the create event is implicit in the
@@ -173,7 +176,8 @@ SCENARIO("THE REGRESSION: a remote PDU referencing a locally sent message is acc
                     {
                         continue;
                     }
-                    if (s.event_type == "m.room.power_levels" && s.state_key.empty())
+                    if ((s.event_type == "m.room.power_levels" && s.state_key.empty()) ||
+                        (s.event_type == "m.room.member" && s.state_key == ctx.alice_id))
                     {
                         ids.push_back(s.event_id);
                     }
@@ -213,7 +217,7 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
 
         // Room v12 (this room's default) runs state-res v2.1: the iterative
         // auth checks start from an EMPTY map, so a conflicted candidate
-        // whose own auth_events cannot supply power_levels is denied and
+        // whose own auth_events cannot supply power_levels and sender membership is denied and
         // silently dropped from the resolved state, not treated as
         // "unresolvable". Give both topic events real auth_events so the
         // resolver can find the room's actual power level for alice.
@@ -229,7 +233,8 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
                 {
                     continue;
                 }
-                if (s.event_type == "m.room.power_levels" && s.state_key.empty())
+                if ((s.event_type == "m.room.power_levels" && s.state_key.empty()) ||
+                    (s.event_type == "m.room.member" && s.state_key == ctx.alice_id))
                 {
                     ids.push_back(s.event_id);
                 }

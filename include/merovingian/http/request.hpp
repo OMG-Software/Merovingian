@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/http/request_limits.hpp"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -60,6 +62,6 @@ struct RequestParseResult final
 [[nodiscard]] auto request_error_status(RequestErrorCode code) noexcept -> std::uint16_t;
 [[nodiscard]] auto header_name_is_valid(std::string_view name) noexcept -> bool;
 [[nodiscard]] auto header_value_is_valid(std::string_view value) noexcept -> bool;
-[[nodiscard]] auto parse_request_head(std::string_view input) -> RequestParseResult;
+[[nodiscard]] auto parse_request_head(std::string_view input, RequestLimits const& limits = {}) -> RequestParseResult;
 
 } // namespace merovingian::http

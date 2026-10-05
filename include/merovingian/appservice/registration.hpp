@@ -189,6 +189,10 @@ public:
     // secret, so an ordinary comparison is fine.
     [[nodiscard]] auto find_by_id(std::string_view id) const noexcept -> AppserviceRegistration const*;
 
+    // True when `value` is the sender_localpart user of any registered
+    // appservice. Used at startup to ensure every sender exists (AUTH-3).
+    [[nodiscard]] auto is_sender_user_id(std::string_view user_id, std::string_view server_name) const noexcept -> bool;
+
     // True when `value` falls in an EXCLUSIVE users namespace owned by an
     // appservice OTHER than `excluded_id` (pass an empty excluded_id to
     // check against every registered appservice). Used to enforce the

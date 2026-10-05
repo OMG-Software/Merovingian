@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -99,6 +100,7 @@ namespace
 
         auto resp = ExtToDeviceResponse{};
         auto count = std::uint64_t{0U};
+        auto last_included_stream_id = std::optional<std::uint64_t>{};
         for (auto const& msg : drained)
         {
             if (count >= limit)
@@ -110,9 +112,16 @@ namespace
             event.push_back(canonicaljson::make_member("sender", jstr(msg.sender_user_id)));
             event.push_back(canonicaljson::make_member("content", parse_content(msg.content_json)));
             resp.events_json.push_back(jserialize(jobj(std::move(event))));
+            last_included_stream_id = msg.stream_id;
             ++count;
         }
-        resp.next_batch = std::to_string(current_sync_stream_id);
+        // MSC4186: the continuation position must only advance past messages
+        // actually included in this response. If nothing was returned, the
+        // client should keep the previous position so undelivered rows are not
+        // acknowledged implicitly by a later global watermark.
+        resp.next_batch = last_included_stream_id.has_value()
+                              ? std::to_string(*last_included_stream_id)
+                              : (req.since.has_value() ? std::string{*req.since} : std::string{"0"});
         return resp;
     }
 

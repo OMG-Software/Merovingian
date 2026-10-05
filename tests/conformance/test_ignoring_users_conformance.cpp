@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |            MATRIX v1.19 "IGNORING USERS" CONFORMANCE TESTS              |
@@ -19,8 +20,8 @@
 // |  test_client_server_conformance.cpp.                                    |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
@@ -46,14 +47,17 @@ using namespace merovingian::tests;
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
-[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt, std::string const& localpart)
-    -> std::string
+[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt,
+                                      std::string const& localpart) -> std::string
 {
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 rt, {"POST",
@@ -99,8 +103,8 @@ auto set_malformed_ignored_users(merovingian::homeserver::ClientServerRuntime& r
 }
 
 [[nodiscard]] auto create_room_with_invite(merovingian::homeserver::ClientServerRuntime& rt,
-                                           std::string const& owner_token, std::string const& invitee_user_id)
-    -> std::string
+                                           std::string const& owner_token,
+                                           std::string const& invitee_user_id) -> std::string
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
         rt, {"POST", "/_matrix/client/v3/createRoom", owner_token,
@@ -112,8 +116,8 @@ auto set_malformed_ignored_users(merovingian::homeserver::ClientServerRuntime& r
     return *room_id;
 }
 
-auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token, std::string const& room_id)
-    -> void
+auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+               std::string const& room_id) -> void
 {
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", token, "{}"})
@@ -121,8 +125,8 @@ auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string con
 }
 
 [[nodiscard]] auto send_text_message(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                                     std::string const& room_id, std::string const& txn_id, std::string const& body)
-    -> std::string
+                                     std::string const& room_id, std::string const& txn_id,
+                                     std::string const& body) -> std::string
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
         rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn_id, token,
@@ -134,8 +138,8 @@ auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string con
     return *event_id;
 }
 
-[[nodiscard]] auto sync_full(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token)
-    -> merovingian::homeserver::DispatchResult
+[[nodiscard]] auto sync_full(merovingian::homeserver::ClientServerRuntime& rt,
+                             std::string const& token) -> merovingian::homeserver::DispatchResult
 {
     return merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}},
                                                                  /*can_wait=*/false);
@@ -169,8 +173,8 @@ auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string con
 // Callers must therefore check per-event top-level fields (event_id,
 // sender/type, content.*) via array_has_event_id/array_has_message_from/
 // array_has_content_field below, not raw substring search.
-[[nodiscard]] auto room_timeline_events(std::string const& sync_body, std::string const& room_id)
-    -> merovingian::canonicaljson::Array
+[[nodiscard]] auto room_timeline_events(std::string const& sync_body,
+                                        std::string const& room_id) -> merovingian::canonicaljson::Array
 {
     auto const obj = parse_object(sync_body);
     auto const* rooms = object_member_as_object(obj, "rooms");
@@ -194,8 +198,8 @@ auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string con
 // True when some event in `events` has the given top-level "event_id" —
 // i.e. that exact event was actually delivered as an element of the array,
 // not merely referenced by another event's prev_events/auth_events.
-[[nodiscard]] auto array_has_event_id(merovingian::canonicaljson::Array const& events, std::string const& event_id)
-    -> bool
+[[nodiscard]] auto array_has_event_id(merovingian::canonicaljson::Array const& events,
+                                      std::string const& event_id) -> bool
 {
     return std::ranges::any_of(events, [&](merovingian::canonicaljson::Value const& value) {
         auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
@@ -208,8 +212,8 @@ auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string con
 // top-level "sender" — precise enough to survive a sender's own (legitimate,
 // spec-exempt) state events, such as their m.room.member join, appearing in
 // the same array.
-[[nodiscard]] auto array_has_message_from(merovingian::canonicaljson::Array const& events, std::string_view sender)
-    -> bool
+[[nodiscard]] auto array_has_message_from(merovingian::canonicaljson::Array const& events,
+                                          std::string_view sender) -> bool
 {
     return std::ranges::any_of(events, [&](merovingian::canonicaljson::Value const& value) {
         auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&value.storage());

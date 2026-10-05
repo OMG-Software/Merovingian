@@ -1,3 +1,279 @@
+## 0.12.18
+
+- Remove the retired September 2026 audit report and its documentation navigation entry; retain the later 29 September report and remediation ADRs.
+- Raise normal client and federation traffic budgets and sync/page defaults; expose HTTP parsing, sync admission, API scan/page/session, recovery, cache, outbound queue, push and application-service budgets as validated deployment settings.
+- Raise per-address open-connection admission from 64 to 256 for clients sharing an address, while retaining global dispatcher and worker bounds.
+- Raise `/state_ids` state/auth list caps from 1,000 to 65,536 each, while bounding each incoming PDU's cumulative recovery work by a shared call budget and deadline. Recovery still depends on remote availability and local event history.
+- Make per-user notification retention configurable and raise its default from 200 to 1,000 entries, independently of push delivery.
+- Make state-resolution group, key, mainline and auth-walk budgets configurable; allow 65,536 entries per group and enforce an aggregate 131,072-entry default before resolving forks.
+- Replace the conflicted-event duplicate scan with hash indexing while preserving first-occurrence order, avoiding quadratic collection work at larger resolver capacities.
+- Honor the configured federation transaction byte cap at the HTTP layer and size worker IPC frames for the configured request and response caps.
+- Require restart for startup-snapshotted federation/client limits rather than claiming that SIGHUP applies them.
+- **FIXED: federation worker room-scoped reads trust main's verified identity.** When main forwards an inbound request to the worker over authenticated IPC, the X-Matrix signature has already been verified and server/discovery/trust policy applied. The worker now synthesizes a minimal remote record from the verified `origin`/`key_id` instead of re-resolving the peer, allowing room-scoped reads to be served (and fallback-tested) without a redundant network resolution step. Direct, unverified requests keep the full fail-closed resolution path. ADR-0110.
+- **TEST-ONLY: `handle_local_http_request` supports `PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}[/{stateKey}]`.** This lets integration tests seed room state events (e.g., `m.room.server_acl` and `m.room.history_visibility`) through the local-router seam used by federation-worker tests.
+- **TESTS:** new `tests/integration/test_security_audit_worker_snapshot_flow.cpp` verifies that a failed worker room reload falls back to main's authoritative state, so a stale allow-ACL cannot outlive a fresh deny-ACL. `tests/integration/test_security_audit_federated_to_device_flow.cpp` is now registered and passing.
+- **FIXED: inbound federation to-device EDUs with an empty message type are no longer reported as accepted.** `enqueue_direct_to_device_messages` now treats an empty per-message `type` as an invalid envelope, and the EDU sink returns `rejected_invalid` instead of `accepted` when nothing can be stored. Existing tests that delivered to a local user without a matching device now register the device so the end-to-end delivery assertion actually exercises the store path.
+- **Tighten secure defaults for configurable operational limits.** `sliding_sync_max_timeline_limit` defaults to 100, `sliding_sync_max_room_subscriptions` and `sliding_sync_max_required_state_entries` to 256; HTTP sync admission defaults to 4 per user / 2 per device; federation pending-join queues default to 32 PDUs and 512 KiB. These match the security-audit integration tests and limit amplification surfaces out of the box.
+- **TESTS:** the draft security-audit integration tests are moved from `build-wsl/drafts/` to `tests/integration/`, registered in `tests/meson.build`, and passing; new `tests/unit/test_config_operational_limits.cpp`, `test_configurable_client_limits.cpp`, `test_configurable_federation_limits.cpp` and `test_configurable_http_limits.cpp` are added to the suite.
+- **FIXED: reloadable smoke test uses a genuinely reloadable key.** The `server-plan-config-reload-reloadable-smoke-test` in `tests/smoke/meson.build` changed `security.federation.remote_timeout`, but federation fields now correctly report `restart_required`. It now changes `security.media.local_upload_policy`, which is reloadable, so the smoke test once again verifies the reload path instead of a restart-required path.
+- **FIXED: inbound federated to-device messages addressed to device `*` are delivered again.** The known-device filter (ADR-0107) matched `*` literally against registered devices, so every wildcard `m.direct_to_device` message (for example `m.room_key_request` and its cancellations) was silently dropped while the transaction returned 200. The Server-Server API defines `*` as "all known devices for the user"; it is now expanded into one queued row per registered device of the target user, as the client-server `sendToDevice` path does, and each expanded row counts against the per-EDU delivery cap.
+- **FIXED: E2EE key routes keep their rate limit and their own bucket.** Route normalization (ADR-0092) sent `POST /keys/claim` and `POST /keys/upload` to the shared `{unmatched}` fallback, and the built-in refinements were matched against the normalized route only. Both routes therefore lost their 120/min cap (falling to the 600/min generic default, which made one-time-key draining easier) and shared one bucket with every unknown path. Built-in per-IP and per-user refinements now also match the original path, and the matcher gains templates for every implemented route that was falling back: `keys/claim`, `keys/upload`, `room_keys/version/{version}`, `room_keys/keys/{roomId}[/{sessionId}]`, `rooms/{roomId}/unban`, `user/{userId}/rooms/{roomId}/tags[/{tag}]`, `presence/{userId}/status`, `login/sso/redirect/{idpId}` and the two `im.nheko.summary` routes.
+- **FIXED: login no longer dereferences a missing dummy password hash.** The Argon2id snapshot in `login_local_user` dereferenced `dummy_password_hash()` unconditionally for an unknown user, although it returns null when the dummy hash could not be created; GCC 16 rejected this with `-Werror=null-dereference` (Fedora RPM build). The snapshot is now an `std::optional`, and a login with nothing to verify against is refused as invalid credentials, as before the snapshot was introduced.
+- **FIXED: tests build on the libc++ of FreeBSD and OpenBSD again.** Four new scenarios used `std::jthread`, which that libc++ does not provide; they now use `tests/support/joining_threads.hpp`, which gains an explicit `join()` for scenarios that assert after the thread has finished.
+- **FIXED: `merovingian-http` declares its link to `merovingian-core`.** `outbound_client.cpp` now uses `core::SocketHandle`, so targets linking `http_lib` without `core_lib` (the `fuzz-srv-record` fuzz target) failed to link.
+- **TESTS:** the `%2e%2e` path-preservation check in `test_security_audit_outbound_flow.cpp` compares the request line case-insensitively. libcurl 8.20 and later send percent-encodings with upper-case hex digits (equivalent under RFC 3986), which failed the exact-byte comparison on openSUSE, NetBSD and the coverage job's bundled curl; the dot segment is still required to reach the peer unresolved.
+
+## 0.12.17
+
+- **Pages integration and release version.** Preserve the merged 0.12.16
+  documentation site and update all live binary/package versions to 0.12.17.
+  Four audit ADR links now use the actual published anchors. The merged full
+  suite passes 55 groups with no failures or timeouts; strict Pages build,
+  8 package checks and 20 documentation-tooling checks pass.
+
+- **FIXED: a password change during Argon2id verification no longer issues a
+  session.** `login_local_user` used the password hash snapshot taken before
+  releasing `runtime.mutex` and ignored any concurrent password change until
+  after the session was minted. It now re-finds the user and re-checks the
+  stored hash after re-acquiring the lock, so a password invalidated mid-login
+  fails with `403 M_FORBIDDEN`. ADR-0104.
+
+- **FIXED: sendToDevice no longer creates queue state for unknown local
+  recipients.** The client-server `PUT /sendToDevice` endpoint previously
+  enqueued a `to_device_messages` row and advanced the sync stream ID for any
+  syntactically valid local `(user_id, device_id)`, including non-existent users
+  and devices that did not belong to the named user. It now silently discards
+  those deliveries while still fanning out wildcard `*` to the target user's
+  registered devices. ADR-0105.
+
+- **FIXED: MSC4186 to_device pagination no longer acknowledges undelivered
+  rows.** The sliding-sync `to_device` extension reported the global sync
+  watermark as `next_batch`, causing the next request to delete every earlier
+  device-targeted row even if the previous response was truncated or lost. The
+  continuation token is now the stream ID of the last message actually included
+  in the response, and an empty response keeps the previous position. ADR-0106.
+
+- **FIXED: inbound federation to-device EDUs no longer queue unknown local
+  devices.** `m.direct_to_device` EDUs in `/_matrix/federation/v1/send/{txnId}`
+  previously advanced the sync stream ID for every syntactically valid target
+  device, even when the device did not exist or did not belong to the named
+  local user. The inbound path now silently discards those deliveries. ADR-0107.
+
+- **FIXED: federation worker room-sync failures fall back to main.** The
+  federation worker's PersistentStore is a startup snapshot, and `room_sync`
+  notifications were fire-and-forget: a reload failure left the worker serving
+  stale room state. Main now assigns a per-room generation to each `room_sync`
+  notification, the worker reports `ok`/`failed` back via a new
+  `room_sync_result` IPC frame, and `FederationProxy` falls back to the
+  authoritative main-process state when the last observed sync failed.
+  ADR-0108.
+
+- **Log records cannot be forged by control characters (AUTH-9).** A JSON
+  `\n` in a login `identifier.user` or `device_id` wrote an extra physical
+  log line, and ESC or a C1 CSI reached the operator's terminal raw.
+  `SingleLog::make_log_line` now passes the module and message of every
+  console and file line through the new `escape_log_controls`: `\n`, `\r`,
+  `\t` become those escapes, other C0 controls and DEL become `\xHH`, UTF-8
+  C1 controls become `\u00HH`, and all other bytes (including UTF-8) pass
+  through. ADR-0102.
+
+- **FIXED: a sensitive last field joined the next log record onto its line.**
+  `redact_log_message` split tokens on spaces only, so when a line ended in a
+  sensitive `key=value` its replacement also discarded the record's `\n`. It
+  now treats every whitespace character as a token boundary and keeps it.
+
+- **TESTS:** new `tests/unit/test_security_audit_log_controls.cpp` asserts at
+  the real synchronous console sink that controls in values, keys and event
+  names are escaped (C0, DEL and C1), each call is one physical record, and
+  redaction still holds. `test_observability.cpp` gains a scenario for the
+  terminator surviving a redacted last token.
+
+- **Directory durability and authenticated lookup (CSAZ-5).** Schema 18 stores
+  publication independently of join rules and defaults previously unrecorded
+  publication to private. Creation persists it with initial membership; PUT
+  commits before updating memory. POST publicRooms runs after authentication
+  and account-state checks, including remote lookups. ADR-0099.
+
+- **Presence sharing and input bounds (CSAZ-8).** Sync presence is restricted
+  to current joined peers. PUT requires the specified presence enum and optional
+  string status, bounded locally to 1024 UTF-8 bytes before stream allocation.
+  Invalid updates preserve the stored row and sync watermark. ADR-0098.
+
+- **Atomic administrative media writes (DB-5, partial).** Quarantine, release
+  and removal commit metadata, optional blob changes and required audit rows
+  together before repository state or metrics change. Failed writes return 500.
+  Upload and authentication token/account write-failure paths remain open. ADR-0100.
+
+- **Large PostgreSQL room snapshots (DB-2, partial).** Scoped relation queries
+  join events using one room parameter rather than one parameter per event.
+  A real two-handle regression reproduces the old 128-parameter failure.
+  Generic failed worker reload handling remains open. Before Pages integration,
+  the completed full suite passed 54 groups (0 failures/timeouts); focused
+  security flows passed 491 assertions in 13 cases, and real PostgreSQL
+  regressions passed 256 assertions in 2 cases.
+
+- **Outbound authority and socket pin agreement (OUT-1, OUT-2).**
+  Matrix server names reject malformed authorities before discovery. Outbound
+  and media-redirect URLs share libcurl's strict URL parser; every actual
+  socket destination must match an approved numeric address and port.
+  Proxies and connection reuse cannot bypass the check. Real TLS tests cover
+  multiple pins, IPv6, encoded paths and refused authorities. ADR-0097.
+
+- **Complete mainline ancestry and bounded auth graphs (EVT-5, EVT-9).**
+  State resolution loads power-level ancestors through the event source and
+  refuses incomplete or cyclic ancestry. Room-v12 conflicted-subgraph work
+  counts distinct events and traverses the shared DAG once. Corrected
+  conformance fixtures reproduce both old defects; the combined authorization
+  and state-resolution checks pass 20,994 assertions in 129 cases. ADR-0095.
+
+- **Remote quarantine enforcement (MED-2).** Held remote media returns 451
+  without payload bytes and cannot enter thumbnail processing. Storage
+  admission no longer counts as successful delivery; response conversion
+  refuses unexpected internal success statuses. Repository and real-HTTPS
+  regressions failed before the fix and pass afterward in the parent checks.
+
+- **Worker restart recovery (ISO-3).** A failed spawn no longer ends
+  supervision or calls `waitpid(-1)`. Retries retain exponential backoff,
+  reset it only after sustained child/IPC health, and remain interruptible
+  during shutdown. A real-child regression reproduced permanent loss of
+  recovery before the fix; the focused case passes 28 assertions. ADR-0096.
+
+- **Sync long-poll admission and overflow-safe timeouts (HTTP-4).**
+  v3 and sliding sync share per-account and per-device admission, including
+  queued waits. Excess requests and refused handoffs return 429 instead of
+  occupying the main request pool. Oversized decimal timeouts saturate before
+  applying the existing 120-second ceiling. The transport regression passes
+  224 assertions in one focused case; the combined suite also passes.
+
+- **Durable media privacy and re-upload removal (MED-1, MED-3).**
+  Restart restores legacy endpoint visibility instead of exposing new uploads.
+  Re-uploading removed bytes revives their single storage identity, so live
+  lookup, persistence and later removal address the same blob. Restart
+  regressions reproduced both defects before the fixes and pass afterward.
+
+- **WIP: medium-severity findings from the 2026-09-29 security audit.**
+  The report contains 31 distinct medium-severity findings, not 20.
+  Their per-finding status is tracked in
+  `docs/todos/capability-gaps.md`; this branch does not yet resolve
+  all of them. The verified first batch passed 157 unit assertions in 16 cases,
+  367 integration assertions in 10 cases, and 20,422 state/creator conformance
+  assertions in 18 cases. The completed fresh full suite passes 54 targets,
+  with 0 failures and 0 timeouts (exit 0). All new regression tags executed.
+
+- **FIXED: implicit v12 creator privileges in power ordering (EVT-8).**
+  The sorter resolves the room's implicit create event through the existing
+  event source and preserves candidate-specific power-level ancestors.
+  Both the original and additional creators sort at infinite power; missing
+  create events fail closed. A new BDD conformance regression failed before
+  the fix and passes afterward; the focused state-resolution suite passes.
+  Full-suite verification of the combined medium-fix branch is now green.
+
+- **PARTIAL: published directory visibility (CSAZ-5).**
+  `/publicRooms` excludes rooms not explicitly published, and public
+  `createRoom` visibility sets the directory flag. Focused directory and
+  creation tests pass (672 assertions in 14 cases). Durable visibility and
+  authentication on POST remain outstanding; CSAZ-5 is not yet closed.
+
+- **Stripped invite/knock room summaries (CSAZ-7).**
+  Generated invitation snapshots and client reads now retain only the four
+  stripped-state keys, seven room-summary types, and the recipient's own
+  membership. Legacy/federated snapshots are re-pruned and deduplicated on
+  read; invitation-time decoration is preserved. Sliding-sync invite reads
+  share the same protection. The restrictive allowlist is a disclosure
+  policy, not a protocol prohibition (ADR-0088). After the failing baseline,
+  independent combined-tree focused verification passed 1,286 assertions in
+  17 cases; full-suite verification is now green.
+
+- **Federation membership validation, receipt ACLs, and joined-subject admission
+  (FED-6, FED-8).**
+  `send_join`, `send_leave`, and `send_knock` reject events whose membership,
+  type, sender/origin, state key, or room/event identifiers do not agree with
+  the request. The mutation sink repeats the checks and derives persisted
+  membership from the event. Receipt EDUs check the authenticated origin
+  against each room's ACL independently, retaining allowed rooms in mixed
+  batches, and now also require the receipt subject to be a joined member of
+  that room. Parent verification passed 667 assertions in 45 focused federation
+  cases; the new joined-subject regression adds 67 assertions in 2 focused
+  cases; combined full-suite verification is now green.
+
+- **Unsolicited PDU admission and bounded pending joins (FED-11).**
+  The common sink refuses uninterested-room PDUs before stream allocation,
+  backfill, cache mutation or persistence. Current local join/invite/knock
+  membership permits normal processing; remote-only, departed and banned
+  memberships do not. Outbound joins establish RAII reservations and defer
+  concurrent PDUs in bounded transient queues (32 rooms, 32 PDUs and 512 KiB
+  JSON per room), deduplicating event IDs and refusing overlaps/excess.
+  Failed or throwing joins discard their queues. Successful joins drain
+  through the common sink after committing verified state and membership,
+  outside every global-lock recursion level. Solicited bootstrap/backfill
+  paths remain explicit (ADR-0089). Independent focused unit, lifecycle,
+  and existing join/backfill verification passed; full-suite verification
+  is now green.
+
+- **FIXED: restricted-join authorising-server signature verification (EVT-1).**
+  The restricted/knock-restricted join authorization rule now requires a
+  signature from the authorising user's homeserver in the event's `signatures`
+  object. Federation PDU ingestion cryptographically verifies that signature
+  after resolving the authorising server's key, and state resolution enforces
+  the structural presence of the signature without network access.
+
+- **FIXED: application-service foreign-user assertion (AUTH-6).**
+  `appservice_owns_user` now rejects any `user_id` whose domain is not the
+  local homeserver before matching namespace regexes, preventing a compromised
+  appservice from having this server sign events as a foreign user.
+
+- **FIXED: application-service sender_localpart reservation (AUTH-3).**
+  Every appservice's `sender_localpart` user is created at startup if missing,
+  and ordinary `/register` and `/register/available` reject that localpart as
+  reserved.
+
+- **FIXED: room-version-aware creator authorization (EVT-7).**
+  v1-v10 creator identity comes from `content.creator`; v11+ uses only the
+  create event sender, strips client-supplied legacy creator content on local
+  room creation, and no longer treats the create sender as joined for ordinary
+  sends or power edits. Creator bootstrap joins require exactly the
+  authoritative create event as their sole predecessor; v12 derives that ID
+  from the room ID, and additional creators do not receive implicit
+  membership. EVT-7 conformance passed 108 assertions in 9 cases; related auth
+  conformance passed 467 assertions in 97 cases.
+
+- **WIP: complete state-resolution mainlines and bounded v12 conflicted
+  subgraphs (EVT-5, EVT-9).** Mainline ordering now fetches each required
+  power-level ancestor through the shared event source and fails closed on
+  missing, malformed, cyclic, or depth-truncated chains. The v12 subgraph walk
+  processes each distinct reachable auth event once, rejects cycles and
+  malformed/missing nodes, and applies the existing auth-chain event cap.
+  Focused conformance verification is pending.
+
+- **FIXED: bounded Argon2id admission (AUTH-4).**
+  A process-wide counting semaphore caps the number of concurrent password and
+  registration-token Argon2id verifications. When saturated, `/login`,
+  `/register`, and `/register/m.login.registration_token/validity` return
+  429 / `M_LIMIT_EXCEEDED` before any memory-hard work runs, and shed
+  requests do not count toward the failed-login lockout. Verification still
+  runs outside the global runtime mutex. ADR-0090.
+
+- **PARTIAL: sync timeout cap and rate-limit key normalisation (HTTP-3, HTTP-4).**
+  Rate-limit policy lookup uses the normalised route so varying path/query
+  segments share buckets. `/sync` and sliding-sync long-poll timeouts are
+  capped at 120 s. HTTP-4 still needs per-user long-poll admission. HTTP-3
+  needs dedicated bypass regression verification.
+
+- **HTTP-3 route-bucket normalization and bounded eviction.** Known dynamic
+  Matrix paths use finite route templates, unknown paths share one fallback
+  bucket, and policy lookup still honors original operator prefixes. The
+  bounded bucket tables now evict the least-recently-used entry in O(1)
+  expected time. BDD regressions cover media, directory, room event/state,
+  relations, to-device, account-data, unknown paths, and LRU behavior. Focused
+  verification is pending.
+
+- **DB-3 explicit database selection.** PostgreSQL startup now fails when its
+  URI file is missing, unreadable, or empty instead of silently opening an
+  ephemeral store. A programmatic-only memory backend is available to test
+  fixtures and is not accepted by config parsing; non-persistence fixtures
+  explicitly select it through the shared helper. Database-related focused
+  verification and the pre-Pages combined suite passed.
+
 ## 0.12.16
 
 - **NEW: documentation site on GitHub Pages.** The documents under `docs/`

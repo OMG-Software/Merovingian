@@ -4,6 +4,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/events/limits.hpp"
 
 #include <algorithm>
@@ -15,6 +16,18 @@
 
 namespace merovingian::homeserver
 {
+
+auto state_resolution_limits(config::FederationStateResolutionConfig const& config) -> events::StateResolutionLimits
+{
+    auto limits = events::StateResolutionLimits{};
+    limits.max_state_groups = static_cast<std::size_t>(config.max_state_groups);
+    limits.max_events_per_state_group = static_cast<std::size_t>(config.max_events_per_state_group);
+    limits.max_conflicted_state_keys = static_cast<std::size_t>(config.max_conflicted_state_keys);
+    limits.max_mainline_auth_chain_depth = static_cast<std::size_t>(config.max_mainline_auth_chain_depth);
+    limits.max_auth_chain_walk_events = static_cast<std::size_t>(config.max_auth_chain_walk_events);
+    limits.max_total_state_events = static_cast<std::size_t>(config.max_total_state_events);
+    return limits;
+}
 
 namespace
 {
@@ -111,6 +124,18 @@ namespace
         return entries;
     }
 
+    [[nodiscard]] auto add_state_group_budget(std::size_t state_size, events::StateResolutionLimits const& limits,
+                                              std::size_t& total_state_events) -> bool
+    {
+        if (state_size > limits.max_events_per_state_group || total_state_events > limits.max_total_state_events ||
+            state_size > limits.max_total_state_events - total_state_events)
+        {
+            return false;
+        }
+        total_state_events += state_size;
+        return true;
+    }
+
 } // namespace
 
 auto make_store_event_lookup(database::PersistentStore const& store) -> events::EventLookupFn
@@ -135,14 +160,19 @@ auto make_store_event_lookup(database::PersistentStore const& store) -> events::
 }
 
 auto compute_state_before(database::PersistentStore const& store, std::string_view room_id,
-                          rooms::RoomVersionPolicy const& policy, std::vector<std::string> const& prev_event_ids)
-    -> StateBeforeResult
+                          rooms::RoomVersionPolicy const& policy, std::vector<std::string> const& prev_event_ids,
+                          events::StateResolutionLimits const& limits) -> StateBeforeResult
 {
     if (prev_event_ids.empty())
     {
         return {true, {}};
     }
+    if (prev_event_ids.size() > 1U && prev_event_ids.size() > limits.max_state_groups)
+    {
+        return {false, {}};
+    }
 
+    auto total_state_events = std::size_t{0U};
     if (prev_event_ids.size() == 1U)
     {
         auto const group_id = database::find_event_state_group(store, prev_event_ids.front());
@@ -173,6 +203,10 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
         {
             return {false, {}};
         }
+        if (!add_state_group_budget(full_state->size(), limits, total_state_events))
+        {
+            return {false, {}};
+        }
         auto refs = to_state_event_references(*full_state, lookup);
         if (!refs.has_value())
         {
@@ -186,6 +220,7 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
     request.state_groups = std::move(groups);
     request.event_lookup = lookup;
     request.room_id = std::string{room_id};
+    request.limits = limits;
 
     auto const result = events::resolve_state_v2(request, policy);
     if (!result.resolved)
@@ -259,7 +294,8 @@ auto record_event_state(database::PersistentStore& store, std::string_view room_
 }
 
 auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
-                             rooms::RoomVersionPolicy const& policy) -> bool
+                             rooms::RoomVersionPolicy const& policy, events::StateResolutionLimits const& limits)
+    -> bool
 {
     auto const extremities = database::find_forward_extremities(store, room_id);
     if (extremities.empty())
@@ -268,6 +304,7 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
     }
 
     auto resolved = std::vector<database::PersistentStateGroupStateEntry>{};
+    auto total_state_events = std::size_t{0U};
     if (extremities.size() == 1U)
     {
         auto const group_id = database::find_event_state_group(store, extremities.front());
@@ -284,6 +321,10 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
     }
     else
     {
+        if (extremities.size() > limits.max_state_groups)
+        {
+            return true; // leave cached state unchanged when the configured work budget is exceeded
+        }
         auto const lookup = make_store_event_lookup(store);
         auto groups = std::vector<events::StateGroup>{};
         groups.reserve(extremities.size());
@@ -296,6 +337,10 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
             }
             auto full_state = database::read_state_group_full_state(store, *group_id);
             if (!full_state.has_value())
+            {
+                return true;
+            }
+            if (!add_state_group_budget(full_state->size(), limits, total_state_events))
             {
                 return true;
             }
@@ -312,6 +357,7 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         request.state_groups = std::move(groups);
         request.event_lookup = lookup;
         request.room_id = std::string{room_id};
+        request.limits = limits;
 
         auto const result = events::resolve_state_v2(request, policy);
         if (!result.resolved)
@@ -375,13 +421,14 @@ auto forward_extremities_for_new_event(database::PersistentStore const& store, s
 }
 
 auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
-                       database::PersistentEvent event, std::optional<database::PersistentStateEvent> state) -> bool
+                       database::PersistentEvent event, std::optional<database::PersistentStateEvent> state,
+                       events::StateResolutionLimits const& limits) -> bool
 {
     auto const room_id = event.room_id;
     auto const event_id = event.event_id;
     auto const prev_event_ids = event.prev_event_ids;
 
-    auto const state_before = compute_state_before(store, room_id, policy, prev_event_ids);
+    auto const state_before = compute_state_before(store, room_id, policy, prev_event_ids, limits);
     if (!state_before.ok)
     {
         // A local event's own prev_events were just chosen from this same
@@ -407,7 +454,7 @@ auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolic
     {
         return false;
     }
-    return recompute_current_state(store, room_id, policy);
+    return recompute_current_state(store, room_id, policy, limits);
 }
 
 } // namespace merovingian::homeserver

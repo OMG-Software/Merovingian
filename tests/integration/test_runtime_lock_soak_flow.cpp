@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // Load/soak evidence harness for the "Global runtime lock" release blocker
 // (docs/todos/production-milestone.md, "Release-blocking functional holes").
@@ -47,8 +48,8 @@
 // in test_request_lock_contention_flow.cpp; this harness does not duplicate
 // it.
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
@@ -308,7 +309,7 @@ auto report(std::string_view label, CategoryStats& stats, std::chrono::duration<
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
+        merovingian::tests::in_memory_database_config(),
         security,
         client_rate_limits,
         merovingian::config::LogModulesConfig{},
@@ -373,8 +374,8 @@ struct SimulatedRemote final
     merovingian::federation::test::SigningKeypair keys{};
 };
 
-[[nodiscard]] auto register_remote(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view server_name)
-    -> SimulatedRemote
+[[nodiscard]] auto register_remote(merovingian::homeserver::ClientServerRuntime& runtime,
+                                   std::string_view server_name) -> SimulatedRemote
 {
     auto keys = merovingian::federation::test::keypair_from_seed(server_name);
     auto remote = merovingian::federation::FederationRemoteRuntime{};

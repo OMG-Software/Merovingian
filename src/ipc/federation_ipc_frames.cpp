@@ -539,10 +539,25 @@ auto deserialize_outbound_http_response(std::string_view json) -> http::Outbound
     return result;
 }
 
-auto serialize_room_sync_notification(std::string_view room_id) -> std::string
+auto serialize_room_sync_notification(std::string_view room_id, std::uint64_t generation) -> std::string
 {
     auto body = std::string{R"({"type":"room_sync","room_id":)"};
     body += ipc_json_str(room_id);
+    body += R"(,"generation":)";
+    body += std::to_string(generation);
+    body += '}';
+    return body;
+}
+
+auto serialize_room_sync_result(std::string_view room_id, std::string_view state, std::uint64_t generation)
+    -> std::string
+{
+    auto body = std::string{R"({"type":"room_sync_result","room_id":)"};
+    body += ipc_json_str(room_id);
+    body += R"(,"state":)";
+    body += ipc_json_str(state);
+    body += R"(,"generation":)";
+    body += std::to_string(generation);
     body += '}';
     return body;
 }

@@ -5,6 +5,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <string>
 
 namespace
@@ -380,6 +382,23 @@ SCENARIO("parse_sliding_sync_timeout extracts the timeout query parameter", "[sy
             THEN("the result is nullopt")
             {
                 REQUIRE_FALSE(result.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("sliding sync timeouts saturate without decimal overflow", "[sync][http-4-parser]")
+{
+    GIVEN("a decimal timeout larger than uint64 can represent")
+    {
+        WHEN("the query is parsed")
+        {
+            auto const result = parse_sliding_sync_timeout("/sync?timeout=18446744073709551616");
+            THEN("the timeout saturates so the dispatcher can apply its server ceiling")
+            {
+                REQUIRE(result.has_value());
+                CHECK(*result == std::numeric_limits<std::uint64_t>::max());
+                CHECK_FALSE(parse_sliding_sync_timeout("/sync?timeout=18446744073709551616x").has_value());
             }
         }
     }

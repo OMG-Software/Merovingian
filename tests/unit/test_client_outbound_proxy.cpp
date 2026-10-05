@@ -4,6 +4,7 @@
 // HTTP-2 / OUT-7 / ADR-0079: the policy, deadline and admission helpers that
 // bound client-triggered outbound proxying. Tags: [http-2][out-7][homeserver].
 
+#include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
@@ -209,6 +210,7 @@ SCENARIO("A runtime started from configuration derives its outbound caps from th
     {
         auto config = merovingian::config::Config{};
         config.server().http.request_threads = 32U;
+        config.database() = merovingian::tests::in_memory_database_config();
         config.security().secrets.master_key_file = merovingian::tests::shared_master_key_file();
 
         WHEN("the runtime starts")

@@ -407,11 +407,11 @@ its own requests finishes, while other clients are served.
 
 | Key | Default | When to change |
 |---|---|---|
-| `server.http.request_threads` | `16` | Threads in the main request pool that serves every listener, 4..256. Raise for a busy server with many cores; each client address may use a quarter of them, and remote directory and media proxying at most half. |
+| `server.http.request_threads` | `32` | Threads in the main request pool that serves every listener, 4..256. Raise for a busy server with many cores; each client address may use a quarter of them, and remote directory and media proxying at most half. |
 | `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
 | `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to close idle connections sooner. |
-| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. A parked connection holds no worker thread, so this bounds open descriptors and memory and need not match `request_threads`; raise it to let more clients re-use their connections. |
-| `server.http.max_connections_per_ip` | `64` | Open connections one client may hold on the client and federation listeners, 1..65535. A further connection is closed at accept time, before a byte is read or a TLS handshake starts. Raise if many users share one NAT address. |
+| `server.http.keep_alive_max_connections` | `256` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. A parked connection holds no worker thread, so this bounds open descriptors and memory and need not match `request_threads`; raise it to let more clients re-use their connections. |
+| `server.http.max_connections_per_ip` | `256` | Open connections one client may hold on the client and federation listeners, 1..65535. A further connection is closed at accept time, before a byte is read or a TLS handshake starts. Shared-address users also share this cap. |
 | `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by for the connection cap, the per-client worker share and the per-IP rate limiter, 1..128. `128` counts each address separately; a shorter prefix groups a whole allocation. |
 
 The parser rejects pool sizes outside 4..256, idle windows outside 1..300
@@ -438,6 +438,133 @@ addresses listed in `server.trusted_proxies` are exempt from the per-IP
 connection cap and from the per-client worker share. Limit connections and
 concurrent requests per client at the proxy (for example nginx `limit_conn`);
 the per-IP rate limiter still applies to the forwarded client address.
+
+#### Operational budgets
+
+All settings below require a restart, including the federation workers. The runtime copies these policies at startup; SIGHUP does not reconstruct their consumers. Existing config files keep their explicit values after upgrade: update those values or remove the overrides to use the defaults in 0.12.18.
+
+Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 requests per minute per source address. Login and registration retain 20/minute, administrative traffic retains 30/minute, key/device refinements allow 120/minute and thumbnails 240/minute. Explicit `client_rate_limits.per_ip`, `per_user` and `tier` overrides retain precedence. Several users behind one address share its bucket; prefer narrow prefix overrides when a particular route needs more capacity.
+
+`server.client_api` budgets bound room timelines, paging, scan work, sliding-sync state and transient sessions. A higher timeline maximum allows a larger client-requested limit; it does not make the client request more messages automatically. Search context can multiply work by page size, so tune both together. A bounded `/sync` room list is not a capacity guarantee for a user's entire room set.
+
+Notification history retains the newest `max_notifications_retained_per_user` rows per user (default 1,000), including when push delivery is disabled. Raising retention preserves future rows; it cannot restore entries already pruned.
+
+The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. Sync admission is clamped to the configured sync worker count; the per-device and per-user caps cannot exceed global admission.
+
+`security.federation.backfill.max_state_ids` and `max_auth_chain_ids` bound advertised lists, including events already in local storage. `max_snapshot_events` bounds their unique union. `max_outbound_calls` bounds general recovery calls, `max_snapshot_outbound_calls` bounds event/auth-chain materialisation, and `max_total_outbound_calls` plus `timeout` are shared across the entire incoming PDU recovery. The deadline prevents new work and shortens HTTP timeouts; synchronous discovery, verification or database work already in progress is not preempted. Failed requests consume calls too; remote timeouts are shortened to the remaining deadline. None of these controls bypass signature, hash, authorization or server-ACL checks.
+
+The default 65,536-ID caps cover the supplied 51,463-state/47,596-auth-chain response, but not necessarily the network work to fetch every uncached event. Recovery may still fail on call/time/body caps or remote errors. An unresolved ordinary PDU currently returns `missing_prev_state` without durable retention for later retry; increasing limits does not repair that defect or restore previously absent events.
+
+State resolution has a separate policy under `security.federation.state_resolution`, used for local events and federated events alike. Per-group capacity defaults to 65,536, aggregate submitted entries to 131,072, distinct/conflicted keys to 65,536 and auth-walk visits to 131,072. The aggregate limit prevents group count from multiplying the allowed work unchecked. Single-parent state bookkeeping reads the parent's state without fork resolution; these resolver budgets apply when merging forks. Increasing ID recovery alone would leave a large stored snapshot unable to merge under the previous 10,000-entry resolver ceiling.
+
+Pending-join limits apply per room, except `pending_join_max_rooms`, which is process-wide. Together the default room/byte caps permit up to 128MiB of queued JSON plus object overhead. Larger queue/cache/push settings increase memory and outbound work. Application-service timeouts and response caps apply to all its outbound request types; HTTPS/SSRF and registration-namespace checks remain mandatory.
+
+`server.client_api.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `max_sync_rooms` | `1000` | 1..10,000 |
+| `max_sync_events_per_room` | `100` | 1..1,000 |
+| `max_search_events_scanned` | `10000` | 1..1,000,000 |
+| `max_messages_events_examined` | `10000` | 1..1,000,000 |
+| `max_messages_page_size` | `500` | 1..1,000 |
+| `max_context_events` | `100` | 1..1,000 |
+| `max_search_page_size` | `100` | 1..1,000 |
+| `max_search_context_events` | `100` | 1..1,000 |
+| `sliding_sync_max_timeline_limit` | `100` | 1..1,000 |
+| `sliding_sync_max_room_subscriptions` | `256` | 1..4,096 |
+| `sliding_sync_max_required_state_entries` | `256` | 1..4,096 |
+| `sliding_sync_connections_per_device` | `16` | 1..64 |
+| `max_registration_validation_sessions` | `1024` | 1..65,536 |
+| `max_registration_validation_sessions_per_remote` | `16` | 1..256 |
+| `max_uia_sessions` | `2048` | 1..65,536 |
+| `max_safety_report_rows` | `1000` | 1..10,000 |
+| `max_notifications_page_size` | `1000` | 1..10,000 |
+| `max_relations_page_size` | `500` | 1..1,000 |
+| `max_public_rooms_page_size` | `1000` | 1..10,000 |
+| `max_hierarchy_rooms` | `1000` | 1..10,000 |
+| `max_threads_page_size` | `500` | 1..1,000 |
+| `max_notifications_retained_per_user` | `1000` | 1..100,000 |
+| `max_body_size` | `1MiB` | 1 byte..64MiB |
+
+`server.http.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `sync_threads` | `128` | 4..512 |
+| `sync_max_in_flight` | `128` | 1..512 |
+| `sync_max_per_user` | `4` | 1..64 |
+| `sync_max_per_device` | `2` | 1..16 |
+| `max_start_line_bytes` | `8192` | 1..8,192 |
+| `max_header_bytes` | `32768` | 1..65,536 |
+| `max_header_count` | `100` | 1..200 |
+| `max_body_size` | `1MiB` | 1 byte..64MiB |
+
+`server.push.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `max_pushers_per_delivery` | `25` | 1..256 |
+| `max_in_flight_deliveries` | `256` | 1..4,096 |
+
+`security.federation.backfill.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `max_missing_events` | `20` | 1..100 |
+| `max_outbound_calls` | `16` | 1..256 |
+| `max_state_ids` | `65536` | 1..262,144 |
+| `max_auth_chain_ids` | `65536` | 1..262,144 |
+| `max_snapshot_events` | `131072` | 1..524,288 |
+| `max_snapshot_outbound_calls` | `256` | 1..4,096 |
+| `max_total_outbound_calls` | `512` | 1..4,096 |
+| `response_max_size` | `16MiB` | 1 byte..64MiB |
+| `timeout` | `45s` | 1..300 seconds |
+
+`security.federation.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `accepted_transaction_cache_entries` | `50000` | 1..1,000,000 |
+| `audit_event_cache_entries` | `10000` | 1..1,000,000 |
+| `key_resolution_cache_entries` | `16384` | 1..1,000,000 |
+| `bad_signature_cache_entries` | `4096` | 1..1,000,000 |
+| `pending_join_max_rooms` | `32` | 1..256 |
+| `pending_join_max_pdus` | `32` | 1..4,096 |
+| `outbound_queue_capacity` | `4096` | 1..65,536 |
+| `outbound_max_retries` | `32` | 1..256 |
+| `pending_join_max_size` | `512KiB` | 1 byte..16MiB |
+| `bad_signature_per_ip_rate` | `30/60s` | Positive N/Ws |
+
+`security.federation.query.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `max_backfill_pdus` | `500` | 1..10,000 |
+| `max_missing_events_pdus` | `100` | 1..1,000 |
+| `max_missing_events_latest` | `100` | 1..1,000 |
+| `max_missing_events_traversal` | `4096` | 1..100,000 |
+
+`security.federation.state_resolution.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `max_state_groups` | `1000` | 1..4,096 |
+| `max_events_per_state_group` | `65536` | 1..262,144 |
+| `max_total_state_events` | `131072` | 1..1,048,576 |
+| `max_conflicted_state_keys` | `65536` | 1..262,144 |
+| `max_mainline_auth_chain_depth` | `10000` | 1..100,000 |
+| `max_auth_chain_walk_events` | `131072` | 1..524,288 |
+
+`appservice.*`:
+
+| Key suffix | Default | Valid range |
+|---|---|---|
+| `connect_timeout_seconds` | `10` | 1..120 |
+| `total_timeout_seconds` | `30` | 1..300 |
+| `response_max_size` | `16MiB` | 1 byte..64MiB |
+
+Application-service connect timeout must not exceed its total timeout. Byte sizes accept the existing binary size syntax. Zero and unlimited values are rejected for these operational bounds. Matrix transaction maxima (50 PDUs/100 EDUs), event-format limits, cryptographic validity rules and parser/sandbox structural ceilings remain fixed. The defaults are deployment starting points, not a verified 100-user throughput promise.
 
 #### TURN server — `server.turn.*`
 
@@ -603,7 +730,7 @@ federation port `8448`.
 
 | Key | Default | When to change |
 |---|---|---|
-| `database.backend` | `postgresql` | Set to `sqlite` for development/evaluation. Only one backend line is allowed. |
+| `database.backend` | `postgresql` | Set to `sqlite` for development/evaluation. Only `postgresql` and `sqlite` are accepted; only one backend line is allowed. |
 | `database.uri_file` | `/etc/merovingian/db-uri` | Path to an owner-only file containing the PostgreSQL URI. |
 | `database.role` | `runtime` | Use `migration` only with `merovingian-db-migrate`. |
 | `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
@@ -725,7 +852,7 @@ rooms.
 | `security.federation.verify_json_signatures` | `true` | Disable only in controlled test labs. |
 | `security.federation.deny_ip_ranges` | private/loopback ranges | Ranges blocked during remote discovery/fetching. Keep the defaults. |
 | `security.federation.remote_timeout` | `60s` | General outbound federation HTTP timeout. |
-| `security.federation.max_transaction_size` | `10MiB` | Cap on inbound transaction body size. The shipped example sets `20MiB`. |
+| `security.federation.max_transaction_size` | `20MiB` | Inbound `/send` body cap, enforced at HTTP admission as well as federation parsing. Positive and at most `64MiB`. |
 
 Remote lookups that a client triggers (`GET`/`POST /publicRooms?server=`, a
 room-alias lookup for a remote alias, and remote media when
@@ -798,14 +925,14 @@ events for many users and an abusive remote can rotate sender IDs.
 |---|---|---|
 | `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.19 caps this at `50`; higher values are rejected. |
 | `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.19 caps this at `100`; higher values are rejected. |
-| `security.federation.per_origin_transaction_rate` | `120/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
-| `security.federation.per_origin_pdu_rate` | `600/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
-| `security.federation.per_origin_edu_rate` | `1200/60s` | Weighted EDU budget per verified remote origin per window. |
-| `security.federation.per_origin_request_rate` | `600/60s` | Per-origin cap on inbound federation requests **outside** `/send` (query, backfill, membership, key and state endpoints). `/send` counts only against the weighted trio above, so a transaction and its contents are never double-counted. |
+| `security.federation.per_origin_transaction_rate` | `600/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
+| `security.federation.per_origin_pdu_rate` | `6000/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
+| `security.federation.per_origin_edu_rate` | `12000/60s` | Weighted EDU budget per verified remote origin per window. |
+| `security.federation.per_origin_request_rate` | `3000/60s` | Per-origin cap on inbound federation requests **outside** `/send` (query, backfill, membership, key and state endpoints). `/send` counts only against the weighted trio above, so a transaction and its contents are never double-counted. |
 
-| `security.federation.key_resolution_per_ip_rate` | `10/60s` | Per-**source-IP** cap on remote signing-key resolutions for an origin with no usable cached key. **Requires restart.** |
-| `security.federation.key_resolution_max_in_flight` | `8` | Process-wide cap on concurrent key resolutions; over it, requests are rejected rather than queued. **Requires restart.** |
-| `security.federation.key_resolution_failure_ttl` | `300s` | How long a failed resolution is remembered so repeats of the same origin are cheap. `0s` disables. **Requires restart.** |
+| `security.federation.key_resolution_per_ip_rate` | `30/60s` | Per-**source-IP** cap on remote signing-key resolutions for an origin with no usable cached key. **Requires restart.** |
+| `security.federation.key_resolution_max_in_flight` | `16` | Process-wide cap on concurrent key resolutions; over it, requests are rejected rather than queued. **Requires restart.** |
+| `security.federation.key_resolution_failure_ttl` | `60s` | How long a failed resolution is remembered so repeats of the same origin are cheap. `0s` disables. **Requires restart.** |
 
 The three `key_resolution_*` keys bound work this server does **before** a
 request is authenticated. Resolving a peer's signing key necessarily precedes
@@ -837,7 +964,7 @@ consecutive failures; the backoff lapses after five minutes without a further
 failure.
 
 Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). The six `per_origin_*`
-and transaction keys are reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
+and transaction keys require restart. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
 the transaction and a `federation.rate_limited` audit event; invalid
 individual PDUs inside an otherwise-valid transaction still report per-PDU
 errors in the `200` transaction response, matching Matrix retry semantics
@@ -858,8 +985,8 @@ rejection and pinned resolved addresses used during federation discovery.
 
 | Key | Default | Reload | Notes |
 |---|---|---|---|
-| `security.federation.remote_timeout` | `60s` | reloadable | General outbound federation HTTP timeout for calls other than the join/leave dance. |
-| `security.federation.deny_ip_ranges` | private/loopback ranges | reloadable | Blocks discovered outbound federation targets in private/loopback address space. |
+| `security.federation.remote_timeout` | `60s` | requires restart | General outbound federation HTTP timeout for calls other than the join/leave dance. |
+| `security.federation.deny_ip_ranges` | private/loopback ranges | requires restart | Blocks discovered outbound federation targets in private/loopback address space. |
 | `security.federation.key_resolution_*` | see above | requires restart | Budgets pre-authentication remote-key resolution. Snapshotted into the federation runtime config at startup, which SIGHUP does not rebuild. |
 | `federation.worker.relay_threads` | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
 
@@ -1037,7 +1164,7 @@ or zero-cap policy at startup. Changes require a server restart.
 |---|---|---|
 | `client_rate_limits.per_ip.<target>` | see defaults below | Per-IP cap for requests matching `<target>` prefix. |
 | `client_rate_limits.per_user.<target>` | see defaults below | Per-user cap keyed by authenticated `user_id`. |
-| `client_rate_limits.default_per_ip` | `90/60s` | Fallback cap for unmatched targets. |
+| `client_rate_limits.default_per_ip` | `600/60s` | Fallback cap for unmatched targets. |
 | `client_rate_limits.tier.<auth_sensitive\|media\|sync\|federation\|admin\|generic>` | see engine defaults | Per-tier override. An unknown tier name is a config parse error. |
 
 Default route-aware policies applied when no override is configured:
@@ -1045,28 +1172,28 @@ Default route-aware policies applied when no override is configured:
 | Endpoint class | Default policy |
 |---|---|
 | Login / registration | 20/60s per IP; 5/60s per user on `/login` |
-| Device and key APIs | 30/60s per IP |
-| Media uploads and downloads | 20/60s per IP |
-| Media thumbnails | 60/60s per IP |
-| Generic client APIs | 90/60s per IP fallback |
+| Device and key APIs | 120/60s per IP |
+| Media uploads and downloads | 120/60s per IP |
+| Media thumbnails | 240/60s per IP |
+| Generic client APIs | 600/60s per IP fallback |
 
 Example overrides:
 
 ```ini
 client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
 client_rate_limits.per_user./_matrix/client/v3/login=5/60s
-client_rate_limits.default_per_ip=90/60s
+client_rate_limits.default_per_ip=600/60s
 ```
 
 Client startup or opening a large room can request many different thumbnails
 in a short burst. Those requests share a per-IP thumbnail bucket, whose
-60/minute default accommodates ordinary browsing without widening upload or
+240/minute default accommodates ordinary browsing without widening upload or
 full-download limits. For installations still seeing thumbnail HTTP 429
 responses, increase the thumbnail prefixes only, for example:
 
 ```ini
-client_rate_limits.per_ip./_matrix/client/v1/media/thumbnail=120/60s
-client_rate_limits.per_ip./_matrix/media/v3/thumbnail=120/60s
+client_rate_limits.per_ip./_matrix/client/v1/media/thumbnail=480/60s
+client_rate_limits.per_ip./_matrix/media/v3/thumbnail=480/60s
 ```
 
 Restart to apply, then review actual 429 responses and resource use before
@@ -1110,8 +1237,8 @@ only reports what *would* happen.
 | `listeners.*.tls_private_key_file` | Restart required |
 | `listeners.*.reverse_proxy` | Restart required |
 | `security.registration.token_file` | Restart required |
-| `security.federation.key_resolution_*` | Restart required |
-| `security.federation.join_response_max_size` | Restart required |
+| `security.federation.*` | Restart required |
+| `server.client_api.*` | Restart required |
 | `client_rate_limits.*` | Restart required |
 | `log_modules.*` | Restart required |
 | `security.secrets.master_key_file` | Restart required |
@@ -1128,7 +1255,6 @@ only reports what *would* happen.
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
 | `security.encryption.*` | Reloadable |
-| `security.federation.*` (except `join_response_max_size` and `key_resolution_*`) | Reloadable |
 | `security.media.*` | Reloadable |
 | `security.logging.*` | Reloadable |
 | `server.oidc.*` | Reloadable |
@@ -1140,7 +1266,7 @@ reports the reload action:
 ```text
 Reload plan: changes=1 reloadable=1 restart_required=0
 Reload action: reloadable
-security.federation.remote_timeout=reloadable
+security.media.remote_fetch_timeout=reloadable
 ```
 
 ```text
@@ -1245,7 +1371,10 @@ database.pool_size=16
 ```
 
 Use `database.role=migration` only with the offline migration tool. The live
-server requires `database.role=runtime`.
+server requires `database.role=runtime`. Startup fails closed if the URI file
+is missing, unreadable, or empty; the server never falls back to an ephemeral
+in-memory database. The programmatic-only in-memory backend exists for tests
+and cannot be selected in the config file.
 
 ### Offline migration planning
 
@@ -2213,3 +2342,7 @@ Before opening a server to real users:
 For the complete security architecture and threat model, see
 [`docs/threat-model.md`](threat-model.md) and
 [`docs/hardening.md`](hardening.md).
+
+### Security audit follow-up (0.12.17)
+
+Public directory publication survives restart. Schema 18 leaves older rooms unpublished; an authorized joined user can republish them through the directory visibility endpoint. POST /_matrix/client/v3/publicRooms requires client authentication; GET remains public. Presence status messages accept at most 1024 UTF-8 bytes; invalid or oversized updates return 400 without changing presence state.

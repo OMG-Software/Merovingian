@@ -150,6 +150,21 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     }
 
     auto const room_id = federation_worker_room_id_from_request(request);
+    if (!room_id.empty())
+    {
+        auto const status = pool_->room_sync_status(room_id);
+        if (status.state == "failed")
+        {
+            observability::log_diagnostic("federation_proxy", "federation_proxy.room_sync_failed_fallback",
+                                          {
+                                              {"target",     observability::sanitized_http_target(request.target), false},
+                                              {"room_id",    std::string{room_id},                                 false},
+                                              {"generation", std::to_string(status.generation),                    false},
+            },
+                                          observability::LogEventSeverity::warning);
+            return handle_federation_http_request(runtime_, verified_request);
+        }
+    }
     return pool_->handle(verified_request, room_id);
 }
 
@@ -174,6 +189,15 @@ auto FederationProxy::notify_room_changed(std::string_view room_id) -> void
 auto FederationProxy::healthy() const noexcept -> bool
 {
     return pool_ != nullptr && pool_->healthy();
+}
+
+auto FederationProxy::room_sync_status(std::string_view room_id) const -> RoomSyncStatus
+{
+    if (pool_ == nullptr)
+    {
+        return RoomSyncStatus{"failed", 0U};
+    }
+    return pool_->room_sync_status(room_id);
 }
 
 } // namespace merovingian::homeserver

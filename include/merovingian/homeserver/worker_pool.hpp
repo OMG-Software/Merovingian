@@ -5,6 +5,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -14,8 +15,10 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -198,6 +201,10 @@ public:
     // Exposed for unit tests: which shard index would handle this room_id?
     [[nodiscard]] auto shard_for(std::string_view room_id) const noexcept -> std::size_t;
 
+    // Returns the last observed room-sync status for the shard that owns room_id.
+    // See FederationProxy::room_sync_status for semantics.
+    [[nodiscard]] auto room_sync_status(std::string_view room_id) const -> RoomSyncStatus;
+
 private:
     config::FederationWorkerConfig cfg_{};
     HomeserverRuntime& runtime_;
@@ -210,6 +217,19 @@ private:
     std::string worker_path_;
     std::string config_path_;
     std::vector<std::unique_ptr<WorkerSupervisor>> workers_{};
+
+    // Per-room room_sync tracking.  Guarded by room_sync_mu_.  generation is
+    // monotonically increasing per room_id and assigned by main when it sends a
+    // room_sync notification; the worker echoes the same generation in its
+    // room_sync_result notification so main can match asynchronous results to
+    // the pending entry.
+    mutable std::mutex room_sync_mu_{};
+    std::unordered_map<std::string, RoomSyncStatus> room_sync_status_{};
+    std::unordered_map<std::string, std::uint64_t> room_sync_generations_{};
+
+    // Updates the tracked status for a room_id.  Called on the IPC dispatch
+    // thread when a room_sync_result notification arrives from a worker.
+    auto record_room_sync_result(std::string_view room_id, std::string_view state, std::uint64_t generation) -> void;
 };
 
 } // namespace merovingian::homeserver

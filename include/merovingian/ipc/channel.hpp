@@ -56,6 +56,16 @@ inline constexpr std::uint32_t kIpcMaxFrameBytes{24U * 1024U * 1024U};
 // smaller side silently drops the other's oversize frames.
 [[nodiscard]] auto frame_bytes_for_response_cap(std::uint64_t max_response_body_bytes) noexcept -> std::uint32_t;
 
+// Compute the common bidirectional frame budget for configured federation
+// traffic. Responses use the fixed base64 expansion above; requests can carry
+// arbitrary body bytes nested in JSON strings, so reserve six times the body,
+// header and start-line budgets plus the same envelope headroom. Arithmetic
+// saturates at the uint32 frame-length limit rather than wrapping.
+[[nodiscard]] auto frame_bytes_for_transport_caps(std::uint64_t max_response_body_bytes,
+                                                  std::uint64_t federation_request_body_bytes,
+                                                  std::uint64_t general_request_body_bytes, std::uint64_t header_bytes,
+                                                  std::uint64_t start_line_bytes) noexcept -> std::uint32_t;
+
 // Bidirectional encrypted IPC channel over an AF_UNIX socketpair fd.
 //
 // Security model:

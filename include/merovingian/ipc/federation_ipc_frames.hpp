@@ -54,6 +54,13 @@ namespace merovingian::ipc
 // re-read this one room from the database. See
 // database::reload_room and docs/architecture.md, "Federation worker room
 // staleness".
-[[nodiscard]] auto serialize_room_sync_notification(std::string_view room_id) -> std::string;
+[[nodiscard]] auto serialize_room_sync_notification(std::string_view room_id, std::uint64_t generation) -> std::string;
+
+// Serializes a room_sync_result notification: fire-and-forget, worker to main,
+// reporting whether the worker's reload of the requested room succeeded.
+// `state` is "ok" or "failed"; `generation` echoes the value from the incoming
+// room_sync notification so main can correlate the asynchronous result.
+[[nodiscard]] auto serialize_room_sync_result(std::string_view room_id, std::string_view state,
+                                              std::uint64_t generation) -> std::string;
 
 } // namespace merovingian::ipc

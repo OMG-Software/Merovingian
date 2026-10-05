@@ -34,6 +34,7 @@ struct CreateRoomOptions final
     std::string room_alias_name{};
     std::vector<std::string> invitees{};
     bool is_direct{false};
+    bool directory_public{false};
 };
 
 struct ValidatedMakeJoinResponse final
@@ -71,8 +72,8 @@ struct SendJoinStateSplit final
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers = {},
                              canonicaljson::Object const* third_party_signed = nullptr) -> OperationResult;
-[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
-    -> OperationResult;
+[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token,
+                              std::string_view room_id) -> OperationResult;
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                                std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
 // Creates a local-only third-party identifier invite. Generates a random token
@@ -92,10 +93,10 @@ struct SendJoinStateSplit final
                              std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
 [[nodiscard]] auto unban_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view target_user_id) -> OperationResult;
-[[nodiscard]] auto forget_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
-    -> OperationResult;
-[[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
-    -> OperationResult;
+[[nodiscard]] auto forget_room(HomeserverRuntime& runtime, std::string_view access_token,
+                               std::string_view room_id) -> OperationResult;
+[[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token,
+                              std::string_view room_id) -> OperationResult;
 // Parses the `server_name=` and `via=` query parameters (each may repeat) from a
 // raw query string into an ordered, de-duplicated list of server names. Values are
 // percent-decoded. `server_name` is the legacy spelling; `via` (MSC4156) is current.
@@ -111,8 +112,8 @@ struct SendJoinStateSplit final
 // order — via lists are recommended to be ordered by likelihood of being resident, so
 // the first entries are kept. Guards against an unbounded via list spawning an
 // unbounded number of make_join probe threads. `max_candidates == 0` is clamped to 1.
-[[nodiscard]] auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_candidates)
-    -> std::vector<std::string>;
+[[nodiscard]] auto cap_join_candidates(std::vector<std::string> candidates,
+                                       std::uint32_t max_candidates) -> std::vector<std::string>;
 [[nodiscard]] auto validate_make_join_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                std::string_view body) -> ValidatedMakeJoinResponse;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
@@ -145,8 +146,8 @@ struct SendJoinStateSplit final
 [[nodiscard]] auto perform_bounded_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                                  federation::OutboundTransaction const& transaction,
                                                  std::string_view key_id, core::SecretBuffer secret_key,
-                                                 std::string_view diagnostic_event, std::uint32_t deadline_seconds)
-    -> std::pair<bool, std::string>;
+                                                 std::string_view diagnostic_event,
+                                                 std::uint32_t deadline_seconds) -> std::pair<bool, std::string>;
 
 // The limits of a bounded call: one wall-clock deadline for discovery plus the
 // request, and the margin the federation-worker round trip may add to it.
@@ -158,12 +159,11 @@ struct BoundedOutboundLimits final
 
 // The shared implementation of perform_sync_outbound_call (bounded == nullopt)
 // and perform_bounded_outbound_call. Prefer those two.
-[[nodiscard]] auto perform_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
-                                         federation::OutboundTransaction const& transaction, std::string_view key_id,
-                                         core::SecretBuffer secret_key, std::string_view diagnostic_event,
-                                         std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
-                                         std::optional<BoundedOutboundLimits> const& bounded)
-    -> std::pair<bool, std::string>;
+[[nodiscard]] auto perform_outbound_call(
+    HomeserverRuntime& runtime, std::string_view room_id, federation::OutboundTransaction const& transaction,
+    std::string_view key_id, core::SecretBuffer secret_key, std::string_view diagnostic_event,
+    std::uint32_t timeout_seconds, std::uint64_t max_response_bytes,
+    std::optional<BoundedOutboundLimits> const& bounded) -> std::pair<bool, std::string>;
 
 // ADR-0064 phase B1: joined_members is what callers used before (the user
 // IDs found with membership="join" among the ingested state entries);
@@ -192,8 +192,8 @@ struct SendJoinStateIngestResult final
 // to current_state, never counted as a member. join_room filters the arrays
 // before verification as well; this is the last line, at the writer.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, std::string_view room_id,
-                                          canonicaljson::Array const& state_arr, rooms::RoomVersionPolicy const& policy)
-    -> SendJoinStateIngestResult;
+                                          canonicaljson::Array const& state_arr,
+                                          rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult;
 // FED-1 (ADR-0083): returns the entries of a send_join response's `state` or
 // `auth_chain` array that belong to `room_id`, the room being joined, dropping
 // every other entry. An event belongs to the room when its `room_id` equals
@@ -224,8 +224,8 @@ struct SendJoinStateIngestResult final
 // runtime.mutex released: the only runtime state read is the signing-key
 // snapshot, which takes its own lock.
 [[nodiscard]] auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
-                                                    rooms::RoomVersionPolicy const& policy, std::string_view our_server)
-    -> canonicaljson::Array;
+                                                    rooms::RoomVersionPolicy const& policy,
+                                                    std::string_view our_server) -> canonicaljson::Array;
 // Splits a send_join response's `state` array into "critical" state (every
 // event except another user's m.room.member — create, power_levels,
 // join_rules, history_visibility, encryption, our own membership, etc.) and
@@ -235,8 +235,8 @@ struct SendJoinStateIngestResult final
 // immediately usable — and defers `background` (which scales with room size
 // and can span hundreds of distinct member home servers) to an async task,
 // so the join response does not wait on the full membership list.
-[[nodiscard]] auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::string_view our_user_id)
-    -> SendJoinStateSplit;
+[[nodiscard]] auto split_send_join_state_events(canonicaljson::Array const& state_arr,
+                                                std::string_view our_user_id) -> SendJoinStateSplit;
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
@@ -286,8 +286,8 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
 // unsigned.replaces_state (Matrix v1.19). Used by every client-event path
 // (/sync, /messages, /rooms/{roomId}/state, etc.) so the emitted shape is
 // consistent.
-[[nodiscard]] auto client_event_with_id(database::PersistentStore const& store, database::PersistentEvent const& event)
-    -> canonicaljson::Value;
+[[nodiscard]] auto client_event_with_id(database::PersistentStore const& store,
+                                        database::PersistentEvent const& event) -> canonicaljson::Value;
 
 struct FetchRelationsRequest final
 {

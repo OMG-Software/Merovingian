@@ -97,14 +97,14 @@ SCENARIO("HTTP endpoint defaults protect sensitive Matrix endpoints", "[http][ra
                 merovingian::http::endpoint_default_rate_limit(put, "/_matrix/federation/v1/send/1");
             auto const generic = merovingian::http::endpoint_default_rate_limit(get, "/_matrix/client/v3/sync");
 
-            THEN("sensitive endpoints receive stricter limits")
+            THEN("the new route-aware burst defaults apply while login remains tight")
             {
                 REQUIRE(login.max_requests == 20U);
-                REQUIRE(keys.max_requests == 30U);
-                REQUIRE(media.max_requests == 20U);
-                REQUIRE(media_v1.max_requests == 20U);
-                REQUIRE(federation.max_requests == 120U);
-                REQUIRE(generic.max_requests == 90U);
+                REQUIRE(keys.max_requests == 120U);
+                REQUIRE(media.max_requests == 120U);
+                REQUIRE(media_v1.max_requests == 120U);
+                REQUIRE(federation.max_requests == 3000U);
+                REQUIRE(generic.max_requests == 3000U);
             }
         }
     }
@@ -136,7 +136,7 @@ SCENARIO("HTTP default client rate limit config resolves the design-doc caps per
             auto const generic = engine.resolve_per_ip_policy("/_matrix/client/v3/account/whoami");
             auto const user_login = engine.resolve_per_user_policy("/_matrix/client/v3/login");
 
-            THEN("the design-doc caps apply")
+            THEN("the configured defaults apply and login remains per-user limited")
             {
                 REQUIRE(login.has_value());
                 REQUIRE(login->max_requests == 20U);
@@ -147,23 +147,23 @@ SCENARIO("HTTP default client rate limit config resolves the design-doc caps per
                 REQUIRE(request_token.has_value());
                 REQUIRE(request_token->max_requests == 20U);
                 REQUIRE(keys.has_value());
-                REQUIRE(keys->max_requests == 30U);
+                REQUIRE(keys->max_requests == 120U);
                 REQUIRE(devices.has_value());
-                REQUIRE(devices->max_requests == 30U);
+                REQUIRE(devices->max_requests == 120U);
                 REQUIRE(search.has_value());
                 REQUIRE(search->max_requests == 20U);
                 REQUIRE(media.has_value());
-                REQUIRE(media->max_requests == 20U);
+                REQUIRE(media->max_requests == 120U);
                 REQUIRE(media_v1.has_value());
-                REQUIRE(media_v1->max_requests == 20U);
+                REQUIRE(media_v1->max_requests == 120U);
                 REQUIRE(sync.has_value());
-                REQUIRE(sync->max_requests == 90U);
+                REQUIRE(sync->max_requests == 3000U);
                 REQUIRE(federation.has_value());
-                REQUIRE(federation->max_requests == 120U);
+                REQUIRE(federation->max_requests == 3000U);
                 REQUIRE(admin.has_value());
                 REQUIRE(admin->max_requests == 30U);
                 REQUIRE(generic.has_value());
-                REQUIRE(generic->max_requests == 90U);
+                REQUIRE(generic->max_requests == 600U);
                 REQUIRE(user_login.has_value());
                 REQUIRE(user_login->max_requests == 5U);
             }
@@ -202,9 +202,12 @@ SCENARIO("Rate limit bucket keys are hashed with a keyed, collision-resistant ha
     {
         auto const hasher = merovingian::http::BucketKeyHash{};
         auto const keys = std::vector<std::string>{
-            "203.0.113.7|/_matrix/client/v3/login", "203.0.113.7|/_matrix/client/v3/register",
-            "198.51.100.4|/_matrix/client/v3/login", "@alice:example.org",
-            "@bob:example.org", "2001:db8::1|/_matrix/client/v3/sync",
+            "203.0.113.7|/_matrix/client/v3/login",
+            "203.0.113.7|/_matrix/client/v3/register",
+            "198.51.100.4|/_matrix/client/v3/login",
+            "@alice:example.org",
+            "@bob:example.org",
+            "2001:db8::1|/_matrix/client/v3/sync",
         };
 
         WHEN("each key is hashed")

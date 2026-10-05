@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX FEDERATION INBOUND FLOW CONFORMANCE TESTS                |
@@ -65,9 +66,12 @@ namespace
     security.federation.max_transaction_size = "1MiB";
     security.federation.remote_timeout = "30s";
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -552,6 +556,12 @@ SCENARIO("Homeserver routes an inbound m.direct_to_device EDU with a realistic O
             runtime.database.persistent_store.users.push_back(std::move(persistent));
         }
         auto const target_device = std::string{"DEVICE1"};
+        {
+            auto device = merovingian::database::PersistentDevice{};
+            device.user_id = target_user;
+            device.device_id = target_device;
+            runtime.database.persistent_store.devices.push_back(std::move(device));
+        }
         auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
         // ~2KB placeholder ciphertext body, matching the size of a real Olm
         // payload rather than a short test token.
@@ -834,10 +844,19 @@ struct ToDeviceFixture final
         auto local = merovingian::homeserver::LocalUser{};
         local.user_id = user_id;
         started.runtime.database.users.push_back(std::move(local));
+        add_local_device(user_id, "DEV1");
     }
 
-    [[nodiscard]] auto deliver(std::string const& origin,
-                               std::string const& content_json) -> merovingian::federation::EduDispositionResult
+    auto add_local_device(std::string const& user_id, std::string const& device_id) -> void
+    {
+        auto device = merovingian::database::PersistentDevice{};
+        device.user_id = user_id;
+        device.device_id = device_id;
+        started.runtime.database.persistent_store.devices.push_back(std::move(device));
+    }
+
+    [[nodiscard]] auto deliver(std::string const& origin, std::string const& content_json)
+        -> merovingian::federation::EduDispositionResult
     {
         auto envelope = merovingian::federation::InboundEduEnvelope{};
         envelope.type = merovingian::federation::EduType::direct_to_device;
@@ -851,8 +870,8 @@ struct ToDeviceFixture final
     // Delivers a device-list-style EDU (m.device_list_update or
     // m.signing_key_update) through the wired edu_sink.
     [[nodiscard]] auto deliver_key_edu(merovingian::federation::EduType type, std::string const& edu_type,
-                                       std::string const& origin,
-                                       std::string const& content_json) -> merovingian::federation::EduDispositionResult
+                                       std::string const& origin, std::string const& content_json)
+        -> merovingian::federation::EduDispositionResult
     {
         auto envelope = merovingian::federation::InboundEduEnvelope{};
         envelope.type = type;
@@ -1035,6 +1054,10 @@ SCENARIO("An m.direct_to_device EDU is capped at 1000 deliveries",
         auto fixture = ToDeviceFixture{};
         auto const local_user = std::string{"@alice:example.org"};
         fixture.add_local_user(local_user);
+        for (auto index = 0; index < 1200; ++index)
+        {
+            fixture.add_local_device(local_user, "D" + std::to_string(index));
+        }
         auto devices = std::string{"{"};
         for (auto index = 0; index < 1200; ++index)
         {

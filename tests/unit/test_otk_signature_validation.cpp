@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |  MATRIX END-TO-END ENCRYPTION OTK SIGNATURE VALIDATION (REGRESSION)     |
@@ -20,8 +21,8 @@
 // |    -> Do NOT weaken, comment out, or remove assertions to make CI pass. |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -65,9 +66,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -83,8 +87,8 @@ namespace
 }
 
 // Convenience: build the login body for a freshly registered user.
-[[nodiscard]] auto login_body(std::string_view user_id, std::string_view password, std::string_view device_id)
-    -> std::string
+[[nodiscard]] auto login_body(std::string_view user_id, std::string_view password,
+                              std::string_view device_id) -> std::string
 {
     auto out = std::string{};
     out.append(R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")");

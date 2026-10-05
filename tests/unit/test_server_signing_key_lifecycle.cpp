@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         SERVER SIGNING KEY LIFECYCLE TESTS                              |
@@ -21,10 +22,9 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/master_key.hpp"
+#include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/events/event_signer.hpp"
-#include "merovingian/crypto/secret_box.hpp"
-#include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -37,8 +37,8 @@
 #include <chrono>
 #include <cstdint>
 #include <span>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -51,9 +51,12 @@ namespace
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -495,9 +498,12 @@ namespace
     // Deliberately no security.secrets.master_key_file: this is the state
     // finding 1 says must never produce a stored plaintext secret.
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -561,8 +567,8 @@ SCENARIO("A generated signing secret is always stored encrypted at rest", "[home
                 // still match the prefix check above; this catches it.
                 auto const& secret = started.runtime.database.signing_secret_key;
                 REQUIRE(secret.bytes().size() == merovingian::crypto::ed25519_secret_key_bytes);
-                auto const raw = std::string{reinterpret_cast<char const*>(secret.bytes().data()),
-                                             secret.bytes().size()};
+                auto const raw =
+                    std::string{reinterpret_cast<char const*>(secret.bytes().data()), secret.bytes().size()};
                 REQUIRE(own->secret_key.find(raw) == std::string::npos);
             }
         }
@@ -626,8 +632,7 @@ SCENARIO("Rotating a legacy plaintext signing key refuses rather than minting an
     }
 }
 
-SCENARIO("Every holder of an active signing secret keeps it in locked memory",
-         "[homeserver][signing][security]")
+SCENARIO("Every holder of an active signing secret keeps it in locked memory", "[homeserver][signing][security]")
 {
     GIVEN("a started runtime with an active signing key")
     {
@@ -688,8 +693,8 @@ namespace
 // Build the at-rest form of a secret exactly as room_service stores it:
 // "secretbox:v1:" + base64(nonce || mac || ciphertext), sealed under the
 // secret-box key derived from `master_key_path`.
-[[nodiscard]] auto sealed_secret_under(std::string const& master_key_path, std::span<std::uint8_t const> plaintext)
-    -> std::string
+[[nodiscard]] auto sealed_secret_under(std::string const& master_key_path,
+                                       std::span<std::uint8_t const> plaintext) -> std::string
 {
     auto const key = merovingian::crypto::signing_secret_box_key(master_key_path);
     REQUIRE(key.has_value());
@@ -714,8 +719,7 @@ auto overwrite_stored_secret(merovingian::homeserver::HomeserverRuntime& runtime
 
 } // namespace
 
-SCENARIO("An encrypted signing secret is refused when no master key is configured",
-         "[homeserver][signing][security]")
+SCENARIO("An encrypted signing secret is refused when no master key is configured", "[homeserver][signing][security]")
 {
     GIVEN("a server whose stored secret is encrypted, started without a master key")
     {
@@ -740,8 +744,7 @@ SCENARIO("An encrypted signing secret is refused when no master key is configure
     }
 }
 
-SCENARIO("A signing secret sealed under a different master key is refused",
-         "[homeserver][signing][security]")
+SCENARIO("A signing secret sealed under a different master key is refused", "[homeserver][signing][security]")
 {
     GIVEN("a stored secret sealed under one master key and a server holding another")
     {

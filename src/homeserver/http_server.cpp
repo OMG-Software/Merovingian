@@ -1169,6 +1169,56 @@ namespace
 
 } // namespace
 
+auto sync_admission_caps(config::HttpTransportConfig const& settings, std::size_t pool_worker_count) noexcept
+    -> SyncAdmissionCaps
+{
+    auto const configured_pool_size =
+        pool_worker_count == 0U ? static_cast<std::size_t>(settings.sync_threads) : pool_worker_count;
+    auto const pool_cap = static_cast<std::uint32_t>(std::min<std::size_t>(
+        configured_pool_size, static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    auto const global = std::min(settings.sync_max_in_flight, pool_cap);
+    return SyncAdmissionCaps{
+        .global = global,
+        .per_user = std::min(settings.sync_max_per_user, global),
+        .per_device = std::min(settings.sync_max_per_device, global),
+    };
+}
+
+auto http_request_limits_for(ClientServerRuntime const& runtime, HttpDispatchMode dispatch_mode,
+                             std::string_view method, std::string_view target) -> http::RequestLimits
+{
+    auto limits = http::RequestLimits{};
+    auto const& runtime_config = runtime.homeserver.config;
+    auto const& http_config = runtime_config.server().http;
+    auto const body_limit = config::parse_size_limit(http_config.max_body_size);
+    if (!body_limit.valid)
+    {
+        return limits;
+    }
+
+    limits.max_start_line_bytes = http_config.max_start_line_bytes;
+    limits.max_header_bytes = http_config.max_header_bytes;
+    limits.max_header_count = http_config.max_header_count;
+    limits.max_body_bytes = body_limit.bytes;
+    if (!http::request_limits_are_valid(limits))
+    {
+        return http::RequestLimits{};
+    }
+
+    constexpr auto send_prefix = std::string_view{"/_matrix/federation/v1/send/"};
+    if (dispatch_mode == HttpDispatchMode::federation && method == "PUT" && target.starts_with(send_prefix))
+    {
+        auto const transaction_limit =
+            config::parse_size_limit(runtime_config.security().federation.max_transaction_size);
+        if (transaction_limit.valid && transaction_limit.bytes <= 64U * 1024U * 1024U)
+        {
+            limits.max_body_bytes = transaction_limit.bytes;
+        }
+    }
+
+    return limits;
+}
+
 // The dispatcher's internals (ADR-0077). Shared: every pool task that carries a
 // connection holds a reference, so a worker finishing a round can always hand
 // its connection back (or close it once stopped) even if the public
@@ -1311,6 +1361,8 @@ namespace
         sync::SyncNotifier& notifier;
         http::HttpVersion version;
         std::string connection_header;
+        http::InFlightBudget::Slot user_slot;
+        http::InFlightBudget::Slot device_slot;
     };
 
     auto run_sync_handoff(SyncHandoff& handoff) -> void
@@ -1430,8 +1482,8 @@ namespace
         {
             return RoundOutcome::close_connection;
         }
-        auto const limits = http::RequestLimits{};
-        auto const head_cap = header_size_cap(limits);
+        auto const head_limits = http_request_limits_for(ctx.runtime, ctx.dispatch_mode, {}, {});
+        auto const head_cap = header_size_cap(head_limits);
         auto const first_request = std::exchange(connection.first_request, false);
         auto [buffer, head_end] = read_request_head(*stream, std::move(connection.leftover), head_cap);
         // std::move leaves it valid-but-unspecified; reset it. It is re-assigned
@@ -1472,7 +1524,7 @@ namespace
             return RoundOutcome::close_connection;
         }
 
-        auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end});
+        auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end}, head_limits);
         if (parse.error != http::RequestErrorCode::none)
         {
             ++ctx.stats.rejected_requests;
@@ -1490,19 +1542,21 @@ namespace
         }
 
         auto const connection_header = find_header_value(parse.request, "connection");
+        auto const request_limits =
+            http_request_limits_for(ctx.runtime, ctx.dispatch_mode, parse.request.method, parse.request.target);
         auto body_tail = std::string{buffer.substr(head_end)};
         auto body = std::string{};
         if (parse.request.has_content_length && parse.request.content_length > 0U)
         {
-            auto const expected = static_cast<std::size_t>(parse.request.content_length);
-            auto effective_cap = body_size_cap(limits);
+            auto const expected_body_bytes = parse.request.content_length;
+            auto effective_cap = body_size_cap(request_limits);
             // HTTP-1 / HTTP-6: the media upload routes may carry up to
             // max_upload_size, but only for a request whose head already
             // authenticates. Anything else is answered from the head alone,
             // before a byte of a large body is read, and the connection closed
             // (its unread body cannot be skipped).
             if (ctx.dispatch_mode == HttpDispatchMode::client_server && parse.request.method == "POST" &&
-                is_media_upload_target(parse.request.target) && expected > effective_cap)
+                is_media_upload_target(parse.request.target) && expected_body_bytes > effective_cap)
             {
                 auto const head_only = build_local_request(parse.request, {}, ctx.peer_addr);
                 if (auto const refusal = media_upload_authentication_refusal(ctx.runtime, head_only);
@@ -1514,7 +1568,7 @@ namespace
                                        {"method",              parse.request.method,                                       false},
                                        {"target",              observability::sanitized_http_target(parse.request.target), false},
                                        {"status",              std::to_string(refusal->status),                            false},
-                                       {"expected_body_bytes", std::to_string(expected),                                   false},
+                                       {"expected_body_bytes", std::to_string(expected_body_bytes),                        false},
                                        {"reason",              "upload body refused before authentication",                false}
                     });
                     std::ignore = send_all(*stream, format_response(refusal->status, refusal->body, refusal->headers));
@@ -1522,7 +1576,7 @@ namespace
                 }
                 effective_cap = max_upload_bytes(ctx.runtime);
             }
-            if (expected > effective_cap)
+            if (expected_body_bytes > effective_cap)
             {
                 ++ctx.stats.rejected_requests;
                 log_diagnostic("request.rejected",
@@ -1530,7 +1584,7 @@ namespace
                                    {"method",              parse.request.method,                                       false},
                                    {"target",              observability::sanitized_http_target(parse.request.target), false},
                                    {"status",              "413",                                                      false},
-                                   {"expected_body_bytes", std::to_string(expected),                                   false},
+                                   {"expected_body_bytes", std::to_string(expected_body_bytes),                        false},
                                    {"limit_bytes",         std::to_string(effective_cap),                              false},
                                    {"reason",              "request body too large",                                   false}
                 });
@@ -1544,6 +1598,7 @@ namespace
             }
             // Drain the body exactly: read precisely Content-Length bytes and
             // keep any surplus (a pipelined next request) for the next round.
+            auto const expected = static_cast<std::size_t>(expected_body_bytes);
             auto body_result = read_remaining_body(*stream, std::move(body_tail), expected, effective_cap, ctx.tuning);
             if (!body_result.complete)
             {
@@ -1593,28 +1648,52 @@ namespace
                 return RoundOutcome::close_connection;
             }
 
+            // Admit before submitting: queued waits count too. One account must
+            // not occupy the sync pool, even across tokens, devices and protocols.
+            auto const& sync_settings = ctx.runtime.homeserver.config.server().http;
+            auto const sync_caps = sync_admission_caps(
+                sync_settings, ctx.sync_pool == nullptr ? std::size_t{0U} : ctx.sync_pool->worker_count());
+            auto user_slot =
+                ctx.runtime.sync_user_budget->try_acquire(result.wait.user_id, sync_caps.global, sync_caps.per_user);
+            auto const device_key =
+                std::to_string(result.wait.user_id.size()) + ":" + result.wait.user_id + result.wait.device_id;
+            auto device_slot =
+                user_slot.has_value()
+                    ? ctx.runtime.sync_device_budget->try_acquire(device_key, sync_caps.global, sync_caps.per_device)
+                    : std::nullopt;
+            if (result.wait.user_id.empty() || !user_slot.has_value() || !device_slot.has_value())
+            {
+                write_error_response(*stream, 429U,
+                                     matrix_error("M_LIMIT_EXCEEDED", "too many concurrent sync waits", 1000U),
+                                     transport_cors_headers(ctx, find_header_value(parse.request, "origin")));
+                return RoundOutcome::close_connection;
+            }
+
             if (ctx.sync_pool != nullptr)
             {
                 // Hand off to the dedicated sync pool: this main-pool worker is
                 // freed at once, and the sync task owns the connection from
                 // here (closing it, or handing it back to the dispatcher for
                 // the next keep-alive round).
-                auto handoff =
-                    std::make_shared<SyncHandoff>(SyncHandoff{// SHARED_PTR: reviewed — copyable pool task
-                                                              std::move(owner), ctx, local_request, result.wait,
-                                                              *notifier, parse.request.version, connection_header});
+                auto handoff = std::make_shared<SyncHandoff>(
+                    SyncHandoff{// SHARED_PTR: reviewed — copyable pool task
+                                std::move(owner), ctx, local_request, result.wait, *notifier, parse.request.version,
+                                connection_header, std::move(*user_slot), std::move(*device_slot)});
                 if (ctx.sync_pool->submit([handoff] {
                         run_sync_handoff(*handoff);
                     }))
                 {
                     return RoundOutcome::transferred;
                 }
-                // The sync pool is stopping: take the connection back and wait
-                // here instead.
+                // A refused handoff is backpressure, never a reason to wait on
+                // a main request worker. Take ownership back before answering.
                 owner = std::move(handoff->connection);
+                write_error_response(*stream, 429U, matrix_error("M_LIMIT_EXCEEDED", "sync pool unavailable", 1000U),
+                                     transport_cors_headers(ctx, find_header_value(parse.request, "origin")));
+                return RoundOutcome::close_connection;
             }
 
-            // No sync pool (tests, pool stopping): block this thread until new
+            // No sync pool (embedded callers and tests): wait until new
             // events arrive or the timeout expires. The re-wait loop mirrors
             // the sync-pool path.
             {

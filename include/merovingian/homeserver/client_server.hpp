@@ -8,6 +8,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/connection_limiter.hpp"
 #include "merovingian/http/rate_limit.hpp"
+#include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
 #include <chrono>
@@ -58,12 +59,10 @@ struct RegistrationValidationSession final
 
 struct ClientApiLimits final
 {
-    // 64 KiB covers real Matrix API calls including keys/upload (device keys +
-    // many one-time keys) while staying well below the HTTP-layer 1 MiB cap in
-    // http::RequestLimits::max_body_bytes.
-    std::size_t max_body_bytes{65536U};
-    std::size_t max_sync_rooms{16U};
-    std::size_t max_sync_events_per_room{8U};
+    // The body limit is snapshotted from server.client_api.max_body_size at startup.
+    std::size_t max_body_bytes{1024U * 1024U};
+    std::uint32_t max_sync_rooms{1000U};
+    std::uint32_t max_sync_events_per_room{100U};
     // POST /search has no per-room scope (unlike /messages) and no secondary
     // full-text index (see docs/architecture.md's "Server-side search"
     // section): it walks the joined-room subset of PersistentStore::events
@@ -71,12 +70,26 @@ struct ClientApiLimits final
     // will JSON-parse and text-match before it must stop and hand back a
     // `next_batch` continuation, so one cheap authenticated request cannot
     // force an O(store size) scan.
-    std::size_t max_search_events_scanned{2000U};
+    std::uint32_t max_search_events_scanned{10000U};
     // GET /messages hides events the user may not see (m.room.history_visibility), and
     // any number of consecutive events can be hidden. This bounds how many events one page
     // examines before it returns what it has, with an `end` token to continue from; the spec
     // allows it ("an empty chunk does not necessarily imply that no more events are available").
-    std::size_t max_messages_events_examined{2000U};
+    std::uint32_t max_messages_events_examined{10000U};
+    std::uint32_t max_messages_page_size{500U};
+    std::uint32_t max_context_events{100U};
+    std::uint32_t max_search_page_size{100U};
+    std::uint32_t max_search_context_events{100U};
+    std::uint32_t max_registration_validation_sessions{1024U};
+    std::uint32_t max_registration_validation_sessions_per_remote{16U};
+    std::uint32_t max_uia_sessions{2048U};
+    std::uint32_t max_safety_report_rows{1000U};
+    std::uint32_t max_notifications_page_size{1000U};
+    std::uint32_t max_relations_page_size{500U};
+    std::uint32_t max_public_rooms_page_size{1000U};
+    std::uint32_t max_hierarchy_rooms{1000U};
+    sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
+    std::uint32_t sliding_sync_connections_per_device{16U};
 };
 
 // Wall-clock source for the rate-limit engine. The engine takes a
@@ -145,6 +158,10 @@ struct ClientServerRuntime final
     // instance the first time something sync-relevant happens, so legacy
     // callers that never touch /sync are unaffected.
     std::unique_ptr<sync::SyncNotifier> sync_notifier{};
+    // HTTP-4: shared admission for v3 and sliding-sync waits. Slots outlive the
+    // initial dispatch and are released on completion, disconnect or failed handoff.
+    std::unique_ptr<http::InFlightBudget> sync_user_budget{std::make_unique<http::InFlightBudget>()};
+    std::unique_ptr<http::InFlightBudget> sync_device_budget{std::make_unique<http::InFlightBudget>()};
     // Enabled only by the server's --debug startup argument. When enabled,
     // Sliding Sync emits request-shape diagnostics without request bodies,
     // connection IDs, tokens, or event content.
@@ -170,10 +187,10 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
 // Sync surface mutators. Each enqueues the row through the persistent
 // store and bumps the SyncNotifier so a parked /sync request can wake.
 // Returns true on success, false if the store rejected the row.
-[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime,
-                                          database::PersistentToDeviceMessage message) -> bool;
-[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime,
-                                             database::PersistentDeviceListChange change) -> bool;
+[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message)
+    -> bool;
+[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
+    -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
 
@@ -191,11 +208,11 @@ struct ClientServerStartOptions final
     bool debug_startup_enabled{false};
 };
 
-[[nodiscard]] auto start_client_server(config::Config const& config,
-                                       ClientServerStartOptions options = {}) -> ClientServerStartResult;
+[[nodiscard]] auto start_client_server(config::Config const& config, ClientServerStartOptions options = {})
+    -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
-[[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message,
-                                std::uint32_t retry_after_ms) -> std::string;
+[[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message, std::uint32_t retry_after_ms)
+    -> std::string;
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                 bool can_wait = true) -> DispatchResult;
@@ -209,13 +226,13 @@ struct ClientServerStartOptions final
 // itself would answer. Takes the runtime lock; call it holding nothing.
 [[nodiscard]] auto media_upload_authentication_refusal(ClientServerRuntime& runtime, LocalHttpRequest const& head)
     -> std::optional<LocalHttpResponse>;
-[[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime,
-                                                     std::string_view raw_request) -> LocalHttpResponse;
+[[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime, std::string_view raw_request)
+    -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;
-[[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime,
-                                     std::string_view user_id) noexcept -> std::size_t;
-[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime,
-                                        std::string_view user_id) noexcept -> std::size_t;
+[[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
+    -> std::size_t;
+[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
+    -> std::size_t;
 [[nodiscard]] auto run_client_server_flow(config::Config const& config) -> OperationResult;
 
 } // namespace merovingian::homeserver

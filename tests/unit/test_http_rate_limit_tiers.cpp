@@ -120,7 +120,7 @@ SCENARIO("Rate-limit tier names round-trip with the config parser's vocabulary",
     }
 }
 
-SCENARIO("Rate-limit tier defaults carry the secure design-doc caps", "[http][rate-limit][tier]")
+SCENARIO("Rate-limit tier defaults carry the configured operational caps", "[http][rate-limit][tier]")
 {
     GIVEN("the tier default table in rate_limit_tier_default()")
     {
@@ -133,14 +133,14 @@ SCENARIO("Rate-limit tier defaults carry the secure design-doc caps", "[http][ra
             auto const admin = merovingian::http::rate_limit_tier_default(RateLimitTier::admin);
             auto const generic = merovingian::http::rate_limit_tier_default(RateLimitTier::generic);
 
-            THEN("unauthenticated and expensive surfaces are tighter than the generic fallback")
+            THEN("auth-sensitive and media surfaces stay tighter than the generic fallback")
             {
                 REQUIRE(auth_sensitive == RateLimitPolicy{20U, 60U});
-                REQUIRE(media == RateLimitPolicy{20U, 60U});
-                REQUIRE(sync == RateLimitPolicy{90U, 60U});
-                REQUIRE(federation == RateLimitPolicy{120U, 60U});
+                REQUIRE(media == RateLimitPolicy{120U, 60U});
+                REQUIRE(sync == RateLimitPolicy{3000U, 60U});
+                REQUIRE(federation == RateLimitPolicy{3000U, 60U});
                 REQUIRE(admin == RateLimitPolicy{30U, 60U});
-                REQUIRE(generic == RateLimitPolicy{90U, 60U});
+                REQUIRE(generic == RateLimitPolicy{600U, 60U});
             }
         }
     }
@@ -156,17 +156,17 @@ SCENARIO("Thumbnail bursts have a scoped rate-limit refinement", "[http][rate-li
 
         WHEN("thumbnail, upload, and download policies are resolved")
         {
-            THEN("both thumbnail API forms allow 60 requests per minute")
+            THEN("both thumbnail API forms allow 240 requests per minute")
             {
-                REQUIRE(resolved_max(engine, "/_matrix/client/v1/media/thumbnail/example.org/media") == 60U);
-                REQUIRE(resolved_max(engine, "/_matrix/media/v3/thumbnail/example.org/media") == 60U);
+                REQUIRE(resolved_max(engine, "/_matrix/client/v1/media/thumbnail/example.org/media") == 240U);
+                REQUIRE(resolved_max(engine, "/_matrix/media/v3/thumbnail/example.org/media") == 240U);
             }
 
-            AND_THEN("other media operations retain the 20 request tier default")
+            AND_THEN("other media operations share the 120 request tier default")
             {
-                REQUIRE(resolved_max(engine, "/_matrix/client/v1/media/upload") == 20U);
-                REQUIRE(resolved_max(engine, "/_matrix/client/v1/media/download/example.org/media") == 20U);
-                REQUIRE(resolved_max(engine, "/_matrix/media/v3/download/example.org/media") == 20U);
+                REQUIRE(resolved_max(engine, "/_matrix/client/v1/media/upload") == 120U);
+                REQUIRE(resolved_max(engine, "/_matrix/client/v1/media/download/example.org/media") == 120U);
+                REQUIRE(resolved_max(engine, "/_matrix/media/v3/download/example.org/media") == 120U);
             }
         }
     }
@@ -193,8 +193,8 @@ SCENARIO("Rate-limit tier overrides apply to every route in the tier", "[http][r
             }
             AND_THEN("routes in other tiers keep their own defaults")
             {
-                REQUIRE(resolved_max(engine, "/_matrix/client/v3/account/whoami") == 90U);
-                REQUIRE(resolved_max(engine, "/_matrix/client/v3/sync") == 90U);
+                REQUIRE(resolved_max(engine, "/_matrix/client/v3/account/whoami") == 600U);
+                REQUIRE(resolved_max(engine, "/_matrix/client/v3/sync") == 3000U);
             }
         }
     }
@@ -212,7 +212,7 @@ SCENARIO("Rate-limit policy resolution honours most-specific-first precedence", 
 
         WHEN("a keys route is resolved with only a tier override present")
         {
-            THEN("the tier override beats the built-in 30/60s refinement")
+            THEN("the tier override beats the built-in 120/60s refinement")
             {
                 REQUIRE(resolved_max(engine, "/_matrix/client/v3/keys/upload") == 7U);
                 REQUIRE(resolved_max(engine, "/_matrix/client/v3/devices") == 7U);
@@ -243,7 +243,7 @@ SCENARIO("Rate-limit policy resolution honours most-specific-first precedence", 
             THEN("generic routes resolve to default_per_ip while built-in refinements still win inside the tier")
             {
                 REQUIRE(resolved_max(engine3, "/_matrix/client/v3/account/whoami") == 42U);
-                REQUIRE(resolved_max(engine3, "/_matrix/client/v3/keys/upload") == 30U);
+                REQUIRE(resolved_max(engine3, "/_matrix/client/v3/keys/upload") == 120U);
             }
         }
     }
@@ -297,6 +297,40 @@ SCENARIO("Unauthenticated auth-sensitive routes get the tight tier cap, not the 
                     REQUIRE(decisions.at(i));
                 }
                 REQUIRE_FALSE(decisions.at(20U));
+            }
+        }
+    }
+}
+
+SCENARIO("Raised generic and media defaults still enforce their configured burst limits",
+         "[http][rate-limit][tier][regression]")
+{
+    GIVEN("the route-aware default rate-limit engine")
+    {
+        auto clock = ManualClock{};
+        auto engine = RateLimitEngine{merovingian::http::default_client_rate_limit_config(), clock};
+        auto const generic_target = std::string_view{"/_matrix/client/v3/account/whoami"};
+        auto const media_target = std::string_view{"/_matrix/media/v3/download/example.org/media"};
+
+        WHEN("one address consumes each route's full default window")
+        {
+            auto generic_allowed = true;
+            auto media_allowed = true;
+            for (auto i = 0U; i < 600U; ++i)
+            {
+                generic_allowed = generic_allowed && engine.check("203.0.113.10|generic", generic_target, "").allowed;
+            }
+            for (auto i = 0U; i < 120U; ++i)
+            {
+                media_allowed = media_allowed && engine.check("203.0.113.10|media", media_target, "").allowed;
+            }
+
+            THEN("the approved burst succeeds and the next request is still rejected")
+            {
+                REQUIRE(generic_allowed);
+                REQUIRE(media_allowed);
+                REQUIRE_FALSE(engine.check("203.0.113.10|generic", generic_target, "").allowed);
+                REQUIRE_FALSE(engine.check("203.0.113.10|media", media_target, "").allowed);
             }
         }
     }

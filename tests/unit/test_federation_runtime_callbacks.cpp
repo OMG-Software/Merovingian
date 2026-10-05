@@ -178,8 +178,15 @@ private:
     return merovingian::canonicaljson::Value{std::move(new_root)};
 }
 
-[[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
-    -> std::string
+struct SignedJsonPdu final
+{
+    std::string json{};
+    std::string event_id{};
+};
+
+[[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id, std::string const& token,
+                                          std::string const& membership = "join")
+    -> SignedJsonPdu
 {
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -187,9 +194,9 @@ private:
     // No hashes field: make_content_hash strips it anyway before computing, so
     // omitting it here gives the same result as including a placeholder.
     auto const event_json =
-        "{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},\"depth\":1,"
+        "{\"auth_events\":[],\"content\":{\"membership\":\"" + membership + "\"},\"depth\":1,"
         "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
-        origin + "\",\"type\":\"m.room.message\"}";
+        origin + "\",\"state_key\":\"@alice:" + origin + "\",\"type\":\"m.room.member\"}";
     auto const base_parsed = merovingian::canonicaljson::parse_lossless(event_json);
     auto const* policy = merovingian::rooms::find_room_version_policy("12");
     REQUIRE(base_parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -206,7 +213,8 @@ private:
     auto provider = TestEd25519Provider{token};
     auto signed_event = merovingian::events::sign_event_for_server(event_with_hash, *policy, store, provider, origin);
     REQUIRE(signed_event.error.empty());
-    return signed_event.event_json;
+    auto const id = merovingian::events::make_reference_hash_event_id(event_with_hash, *policy);
+    return {signed_event.event_json, id.event_id};
 }
 
 [[nodiscard]] auto signed_get_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
@@ -306,7 +314,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         request.destination = "local.example.org";
         request.now_ts = 1000U;
         request.canonical_json_verified = true;
-        request.body = transaction_body(origin, json_pdu);
+        request.body = transaction_body(origin, json_pdu.json);
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);
@@ -351,7 +359,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         request.destination = "local.example.org";
         request.now_ts = 1000U;
         request.canonical_json_verified = true;
-        request.body = transaction_body(origin, json_pdu);
+        request.body = transaction_body(origin, json_pdu.json);
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);
@@ -485,9 +493,9 @@ SCENARIO("Membership acceptor is invoked for send_join", "[federation][callbacks
             return result;
         };
 
-        auto const join_event_json = signed_json_pdu(origin, key_id, token);
-        auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/$ev1:example.org"};
-        auto const request = signed_put_request(origin, key_id, token, target, join_event_json);
+        auto const join_pdu = signed_json_pdu(origin, key_id, token);
+        auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/"} + join_pdu.event_id;
+        auto const request = signed_put_request(origin, key_id, token, target, join_pdu.json);
 
         WHEN("the send_join request is handled")
         {
@@ -497,7 +505,7 @@ SCENARIO("Membership acceptor is invoked for send_join", "[federation][callbacks
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(*acceptor_invoked);
-                REQUIRE(*captured_event_id == "$ev1:example.org");
+                REQUIRE(*captured_event_id == join_pdu.event_id);
             }
         }
     }
@@ -592,10 +600,10 @@ SCENARIO("send_join response carries the room_version from the membership accept
 
         WHEN("the send_join request is handled")
         {
-            auto const join_event_json = signed_json_pdu(origin, key_id, token);
-            auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/$ev1:example.org"};
+            auto const join_pdu = signed_json_pdu(origin, key_id, token);
+            auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/"} + join_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, token, target, join_event_json));
+                runtime, signed_put_request(origin, key_id, token, target, join_pdu.json));
 
             THEN("the response body carries room_version 11, not the hardcoded default")
             {
@@ -626,10 +634,10 @@ SCENARIO("send_join response carries the room_version from the membership accept
 
         WHEN("the send_join request is handled")
         {
-            auto const join_event_json = signed_json_pdu(origin, key_id, token);
-            auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/$ev2:example.org"};
+            auto const join_pdu = signed_json_pdu(origin, key_id, token);
+            auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/"} + join_pdu.event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, token, target, join_event_json));
+                runtime, signed_put_request(origin, key_id, token, target, join_pdu.json));
 
             THEN("the response body falls back to room_version 12")
             {
@@ -1005,7 +1013,7 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
         // PDU whose signature won't verify against the registered key
         auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
         auto const request = signed_put_request(origin, key_id, reg_seed, "/_matrix/federation/v1/send/txn-bad-sig-001",
-                                                transaction_body(origin, bad_pdu));
+                                                transaction_body(origin, bad_pdu.json));
 
         WHEN("the transaction containing the bad PDU is handled")
         {
@@ -1049,8 +1057,8 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
         auto const good_pdu = signed_json_pdu(origin, key_id, good_seed);
         auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
         // Wrap both PDUs in a proper transaction body
-        auto const body = std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + good_pdu +
-                          "," + bad_pdu + "]}";
+        auto const body = std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + good_pdu.json +
+                          "," + bad_pdu.json + "]}";
         auto const request =
             signed_put_request(origin, key_id, good_seed, "/_matrix/federation/v1/send/txn-mixed-001", body);
 
@@ -1383,9 +1391,9 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
         auto const token = std::string{"send-join-event-echo-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
-        auto const join_event_json = signed_json_pdu(origin, key_id, token);
+        auto const join_pdu = signed_json_pdu(origin, key_id, token);
 
-        runtime.membership_acceptor = [join_event_json](merovingian::federation::FederationEndpoint /*endpoint*/,
+        runtime.membership_acceptor = [join_pdu](merovingian::federation::FederationEndpoint /*endpoint*/,
                                                         std::string_view /*room_id*/, std::string_view /*event_id*/,
                                                         merovingian::federation::InboundPduEnvelope const& /*envelope*/)
             -> merovingian::federation::MembershipAcceptResult {
@@ -1393,12 +1401,12 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
             result.accepted = true;
             result.status = 200U;
             result.room_version = "12";
-            result.signed_event_json = join_event_json;
+            result.signed_event_json = join_pdu.json;
             return result;
         };
 
-        auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/$ev1:example.org"};
-        auto const request = signed_put_request(origin, key_id, token, target, join_event_json);
+        auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/"} + join_pdu.event_id;
+        auto const request = signed_put_request(origin, key_id, token, target, join_pdu.json);
 
         WHEN("the send_join request is handled")
         {
@@ -1429,10 +1437,10 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
         auto const token = std::string{"send-leave-no-event-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
-        auto const leave_event_json = signed_json_pdu(origin, key_id, token);
+        auto const leave_pdu = signed_json_pdu(origin, key_id, token, "leave");
 
         runtime.membership_acceptor =
-            [leave_event_json](merovingian::federation::FederationEndpoint /*endpoint*/, std::string_view /*room_id*/,
+            [leave_pdu](merovingian::federation::FederationEndpoint /*endpoint*/, std::string_view /*room_id*/,
                                std::string_view /*event_id*/,
                                merovingian::federation::InboundPduEnvelope const& /*envelope*/)
             -> merovingian::federation::MembershipAcceptResult {
@@ -1440,12 +1448,12 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
             result.accepted = true;
             result.status = 200U;
             // signed_event_json is populated but must be ignored for send_leave
-            result.signed_event_json = leave_event_json;
+            result.signed_event_json = leave_pdu.json;
             return result;
         };
 
-        auto const target = std::string{"/_matrix/federation/v2/send_leave/!room:example.org/$ev2:example.org"};
-        auto const request = signed_put_request(origin, key_id, token, target, leave_event_json);
+        auto const target = std::string{"/_matrix/federation/v2/send_leave/!room:example.org/"} + leave_pdu.event_id;
+        auto const request = signed_put_request(origin, key_id, token, target, leave_pdu.json);
 
         WHEN("the send_leave request is handled")
         {
@@ -1614,6 +1622,10 @@ SCENARIO("A receipt EDU skips rooms this server is not in without discarding the
 
         WHEN("one receipt EDU batches a known room and an invented one")
         {
+            // The receipt subject must be a joined member of the known room (FED-8).
+            runtime->database.persistent_store.memberships.push_back(
+                {"!known:matrix.example.org", "@b:matrix.example.org", "join", 2U});
+
             auto const unknown_room = std::string{R"("!invented:matrix.example.org":{"m.read":{)"} +
                                       R"("@a:matrix.example.org":{"event_ids":)" +
                                       R"(["$x:matrix.example.org"],"data":{"ts":1}}}})";
@@ -1662,6 +1674,10 @@ SCENARIO("Receipt state stays bounded when a peer floods a room it is legitimate
 
         WHEN("one more distinct user sends a read receipt")
         {
+            // The new receipt subject must be a joined member of the room (FED-8).
+            runtime->database.persistent_store.memberships.push_back(
+                {"!busy:matrix.example.org", "@overflow:matrix.example.org", "join", 2U});
+
             auto const content =
                 std::string{R"({"!busy:matrix.example.org":{"m.read":{"@overflow:matrix.example.org":)"} +
                 R"({"event_ids":["$z:matrix.example.org"],"data":{"ts":3}}}}})";
@@ -1714,7 +1730,7 @@ SCENARIO("PDU sink overload is returned to the federation peer as a retryable 5x
         request.destination = "local.example.org";
         request.now_ts = 1000U;
         request.canonical_json_verified = true;
-        request.body = transaction_body(origin, json_pdu);
+        request.body = transaction_body(origin, json_pdu.json);
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);

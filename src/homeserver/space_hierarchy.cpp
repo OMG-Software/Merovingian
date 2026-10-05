@@ -754,7 +754,6 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
     }
 
     auto constexpr default_limit = std::size_t{100U};
-    auto constexpr max_limit = std::size_t{1000U};
     auto constexpr default_max_depth = std::size_t{3U};
     auto constexpr hard_max_depth = std::size_t{10U};
 
@@ -763,7 +762,7 @@ auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view 
     {
         return {400U, matrix_error("M_INVALID_PARAM", "limit must be greater than zero")};
     }
-    limit = std::min(limit, max_limit);
+    limit = std::min(limit, request.max_rooms);
 
     auto max_depth = request.max_depth.value_or(default_max_depth);
     max_depth = std::min(max_depth, hard_max_depth);

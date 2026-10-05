@@ -264,6 +264,35 @@ SCENARIO("handle_client_space_hierarchy paginates with next_batch", "[homeserver
     }
 }
 
+SCENARIO("handle_client_space_hierarchy applies the caller's configured room ceiling",
+         "[homeserver][space-hierarchy][limits]")
+{
+    GIVEN("a space tree and a configured maximum of two rooms")
+    {
+        auto runtime = setup_space_runtime();
+        auto request = merovingian::homeserver::SpaceHierarchyRequest{};
+        request.room_id = "!space:example.org";
+        request.limit = 4U;
+        request.max_rooms = 2U;
+
+        WHEN("the client hierarchy is built")
+        {
+            auto const result =
+                merovingian::homeserver::handle_client_space_hierarchy(runtime, "@alice:example.org", request);
+
+            THEN("the explicit ceiling bounds the response even when the requested page is larger")
+            {
+                REQUIRE(result.status == 200U);
+                auto const body = merovingian::tests::parse_object(result.body);
+                auto const* rooms = merovingian::tests::object_member_as_array(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->size() == 2U);
+                REQUIRE(merovingian::tests::string_member(body, "next_batch") != nullptr);
+            }
+        }
+    }
+}
+
 SCENARIO("handle_client_space_hierarchy honours suggested_only", "[homeserver][space-hierarchy]")
 {
     GIVEN("a public space tree with one suggested child")

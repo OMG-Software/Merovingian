@@ -475,9 +475,8 @@ SCENARIO("Inbound invite handler accepts a v2 invite through the path parser",
 
         WHEN("a v2 invite request is handled")
         {
-            auto const request =
-                signed_put_request(origin, key_id, token,
-                                   "/_matrix/federation/v2/invite/!room:example.org/" + *expected_event_id, body);
+            auto const request = signed_put_request(
+                origin, key_id, token, "/_matrix/federation/v2/invite/!room:example.org/" + *expected_event_id, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the handler is invoked with the parsed room_id and event_id")
@@ -539,8 +538,9 @@ SCENARIO("Send_join auth_chain must not include message events", "[federation][m
             return result;
         };
 
+        auto const join_event_id = merovingian::federation::test::reference_hash_event_id(member_event_json, "12");
         auto const request = signed_put_request(
-            origin, key_id, token, "/_matrix/federation/v2/send_join/!room:local.example.org/$join:remote.example.org",
+            origin, key_id, token, "/_matrix/federation/v2/send_join/!room:local.example.org/" + join_event_id,
             member_event_json);
 
         WHEN("the send_join response is parsed")
@@ -639,8 +639,9 @@ SCENARIO("Send_join auth_chain contains only state events", "[federation][member
             return result;
         };
 
+        auto const join_event_id = merovingian::federation::test::reference_hash_event_id(member_event_json, "12");
         auto const request = signed_put_request(
-            origin, key_id, token, "/_matrix/federation/v2/send_join/!room:local.example.org/$join:remote.example.org",
+            origin, key_id, token, "/_matrix/federation/v2/send_join/!room:local.example.org/" + join_event_id,
             member_event_json);
 
         WHEN("the send_join request is handled")
@@ -696,7 +697,7 @@ SCENARIO("Backfill query parser clamps an oversized limit to the server maximum"
             auto const in_range = merovingian::federation::parse_backfill_query(
                 "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=50");
             auto const at_maximum = merovingian::federation::parse_backfill_query(
-                "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=100");
+                "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=500");
             auto const oversized =
                 merovingian::federation::parse_backfill_query("/_matrix/federation/v1/backfill/"
                                                               "!room:example.org?v=$e1&limit=999999");
@@ -712,12 +713,35 @@ SCENARIO("Backfill query parser clamps an oversized limit to the server maximum"
                 REQUIRE(in_range.has_value());
                 REQUIRE(in_range->limit == 50U);
                 REQUIRE(at_maximum.has_value());
-                REQUIRE(at_maximum->limit == 100U);
+                REQUIRE(at_maximum->limit == 500U);
                 // The provider must never see an unbounded request count.
                 REQUIRE(oversized.has_value());
-                REQUIRE(oversized->limit == 100U);
+                REQUIRE(oversized->limit == 500U);
                 REQUIRE(enormous.has_value());
-                REQUIRE(enormous->limit == 100U);
+                REQUIRE(enormous->limit == 500U);
+            }
+        }
+    }
+}
+
+SCENARIO("Backfill query parser honors an explicitly configured response cap",
+         "[federation][backfill][routing][limits]")
+{
+    GIVEN("a server policy with a small backfill PDU cap")
+    {
+        auto const policy = merovingian::federation::FederationQueryPolicy{
+            .max_backfill_pdus = 7U,
+        };
+
+        WHEN("a remote requests more events than the configured cap")
+        {
+            auto const parsed = merovingian::federation::parse_backfill_query(
+                "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=50", policy);
+
+            THEN("the provider receives no more than the configured number")
+            {
+                REQUIRE(parsed.has_value());
+                REQUIRE(parsed->limit == 7U);
             }
         }
     }

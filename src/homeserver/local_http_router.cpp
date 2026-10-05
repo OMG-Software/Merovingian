@@ -143,6 +143,7 @@ namespace
             if (entry.event_type == "m.room.create" && entry.state_key.empty())
             {
                 result.create = load(entry.event_id);
+                result.create_event_id = entry.event_id;
             }
             else if (entry.event_type == "m.room.power_levels" && entry.state_key.empty())
             {
@@ -359,7 +360,15 @@ namespace
     {
         if (std::holds_alternative<std::nullptr_t>(map.create.storage()))
         {
-            map.create = create_event_json_for_room(store, room_id);
+            auto const create_state =
+                std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+                    return state.room_id == room_id && state.event_type == "m.room.create" && state.state_key.empty();
+                });
+            if (create_state != store.state.end())
+            {
+                map.create = create_event_json_for_room(store, room_id);
+                map.create_event_id = create_state->event_id;
+            }
         }
     }
 
@@ -966,6 +975,66 @@ namespace
         return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
     }
 
+    struct StatePutPathParts final
+    {
+        std::string room_id{};
+        std::string event_type{};
+        std::string state_key{};
+    };
+
+    // Parses the path suffix after /_matrix/client/v3/rooms/ for a
+    // PUT .../state/{eventType}[/{stateKey}] request.  The room_id,
+    // event type and optional state key are percent-decoded exactly as
+    // the full client-server path parser does in client_server.cpp.
+    [[nodiscard]] auto room_state_put_path_parts(std::string_view suffix) -> std::optional<StatePutPathParts>
+    {
+        auto constexpr marker = std::string_view{"/state/"};
+        auto const marker_pos = suffix.find(marker);
+        if (marker_pos == std::string_view::npos || marker_pos == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const event_and_key = suffix.substr(marker_pos + marker.size());
+        if (event_and_key.empty())
+        {
+            return std::nullopt;
+        }
+        auto const separator = event_and_key.find('/');
+        auto const event_type =
+            separator == std::string_view::npos ? event_and_key : event_and_key.substr(0U, separator);
+        auto const state_key =
+            separator == std::string_view::npos ? std::string_view{} : event_and_key.substr(separator + 1U);
+        return StatePutPathParts{
+            core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+            core::percent_decode_path_component(event_type),
+            core::percent_decode_path_component(state_key),
+        };
+    }
+
+    // Builds the JSON body expected by send_event for a state event created
+    // from a PUT /rooms/{roomId}/state/{eventType}[/{stateKey}] request.
+    // The content must be a JSON object; otherwise std::nullopt is returned.
+    [[nodiscard]] auto make_state_event_body(std::string_view event_type, std::string_view state_key,
+                                             std::string_view content) -> std::optional<std::string>
+    {
+        auto parsed = canonicaljson::parse_lossless(content);
+        if (parsed.error != canonicaljson::ParseError::none ||
+            std::get_if<canonicaljson::Object>(&parsed.value.storage()) == nullptr)
+        {
+            return std::nullopt;
+        }
+        // State events on this route always carry a state_key, even when it is
+        // the empty string.  Omitting the key would make the event a message
+        // event and prevent it from replacing current room state.
+        auto members = canonicaljson::Object{
+            canonicaljson::make_member("type", canonicaljson::Value{std::string{event_type}}),
+            canonicaljson::make_member("content", std::move(parsed.value)),
+            canonicaljson::make_member("state_key", canonicaljson::Value{std::string{state_key}}),
+        };
+        return canonicaljson::serialize_canonical(canonicaljson::Value{canonicaljson::Object{std::move(members)}})
+            .output;
+    }
+
     // Tiny, allocation-light query string parser used by the audit-filter
     // handler. Splits on '&', then on '=' once per segment. Empty keys
     // are dropped, empty values are kept. The returned views are
@@ -1131,6 +1200,37 @@ namespace
         });
     }
 
+    // FED-8: a receipt's subject user must be joined to the room. Receipts for
+    // invited, knocked, left or banned users are dropped per-room, not per-EDU,
+    // because a transaction legitimately batches rooms with different member
+    // states. Spec: Matrix Server-Server API v1.19 §m.receipt — receipt updates
+    // are only meaningful for users who can actually see the room's events.
+    [[nodiscard]] auto user_is_joined_in_room(HomeserverRuntime const& runtime, std::string_view room_id,
+                                              std::string_view user_id) -> bool
+    {
+        auto const& memberships = runtime.database.persistent_store.memberships;
+        return std::ranges::any_of(memberships, [&](database::PersistentMembership const& membership) {
+            return membership.room_id == room_id && membership.user_id == user_id && membership.membership == "join";
+        });
+    }
+
+    // FED-11: a remote-only, departed or banned membership row does not make
+    // this server interested in further unsolicited PDUs. Room metadata and
+    // the room-version resolver are not admission signals either.
+    [[nodiscard]] auto room_has_current_local_interest(HomeserverRuntime const& runtime, std::string_view room_id)
+        -> bool
+    {
+        return std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& membership) {
+            return membership.room_id == room_id && membership.user_id.starts_with('@') &&
+                   membership.user_id.find(':') > 1U && membership.user_id.find(':') != std::string::npos &&
+                   std::string_view{membership.user_id}.substr(membership.user_id.find(':') + 1U) ==
+                       runtime.config.server().server_name &&
+
+                   (membership.membership == "join" || membership.membership == "invite" ||
+                    membership.membership == "knock");
+        });
+    }
+
     // Outcome of a direct_to_device enqueue attempt. `targeted` counts every
     // per-device entry that was well-formed enough to attempt a store;
     // `stored` counts how many of those actually persisted. The two can
@@ -1148,6 +1248,9 @@ namespace
         bool sender_not_on_origin{false};
         // message_id absent, not a string, empty or over 32 codepoints: whole EDU dropped.
         bool invalid_message_id{false};
+        // The per-message "type" field is empty: the EDU cannot be stored with a
+        // valid message_type, so it must not be reported as accepted.
+        bool invalid_message_type{false};
         // (origin, message_id) was already seen inside the replay window: whole EDU dropped.
         bool replay{false};
         // Target entries skipped because the user is not a local, active account.
@@ -1166,6 +1269,24 @@ namespace
                                    [user_id](database::PersistentUser const& user) {
                                        return user.user_id == user_id && !user.deactivated;
                                    });
+    }
+
+    // The registered devices of `user_id` that a to-device `device_key`
+    // addresses: every one of them for "*" (S-S API "Send-to-device
+    // messaging": "all known devices for the user"), the named device when it
+    // belongs to the user, and none otherwise.
+    [[nodiscard]] auto addressed_devices_for_user(HomeserverRuntime const& runtime, std::string_view user_id,
+                                                  std::string_view device_key) -> std::vector<std::string>
+    {
+        auto devices = std::vector<std::string>{};
+        for (auto const& device : runtime.database.persistent_store.devices)
+        {
+            if (device.user_id == user_id && (device_key == "*" || device.device_id == device_key))
+            {
+                devices.push_back(device.device_id);
+            }
+        }
+        return devices;
     }
 
     // Active local users who are joined to at least one room that `subject` is
@@ -1248,6 +1369,11 @@ namespace
             result.sender_not_on_origin = true;
             return result;
         }
+        if (message_type->empty())
+        {
+            result.invalid_message_type = true;
+            return result;
+        }
         auto const* message_id = object_member_as_string(*root, "message_id");
         if (message_id == nullptr || !federation::direct_to_device_message_id_is_valid(*message_id))
         {
@@ -1279,26 +1405,36 @@ namespace
                 {
                     continue;
                 }
-                if (result.targeted >= max_inbound_direct_to_device_deliveries)
+                auto const devices = addressed_devices_for_user(runtime, user_entry.key, device_entry.key);
+                if (devices.empty())
                 {
-                    result.truncated = true;
-                    return result;
+                    continue;
                 }
                 auto const serialized = canonicaljson::serialize_canonical(*device_entry.value);
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
                     continue;
                 }
-                ++result.targeted;
-                auto message = database::PersistentToDeviceMessage{};
-                message.sender_user_id = *sender;
-                message.target_user_id = user_entry.key;
-                message.target_device_id = device_entry.key;
-                message.message_type = *message_type;
-                message.content_json = serialized.output;
-                if (database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message)))
+                // Each device a wildcard expands to is one delivery against
+                // the per-EDU cap, so "*" cannot multiply past it.
+                for (auto const& device_id : devices)
                 {
-                    ++result.stored;
+                    if (result.targeted >= max_inbound_direct_to_device_deliveries)
+                    {
+                        result.truncated = true;
+                        return result;
+                    }
+                    ++result.targeted;
+                    auto message = database::PersistentToDeviceMessage{};
+                    message.sender_user_id = *sender;
+                    message.target_user_id = user_entry.key;
+                    message.target_device_id = device_id;
+                    message.message_type = *message_type;
+                    message.content_json = serialized.output;
+                    if (database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message)))
+                    {
+                        ++result.stored;
+                    }
                 }
             }
         }
@@ -1493,19 +1629,24 @@ namespace
                 }
                 for (auto const& room_member : *root)
                 {
+                    // 0.12.5 audit, finding 13: skip rooms this server holds no
+                    // membership in. Skipping rather than rejecting the whole
+                    // EDU: a receipt transaction legitimately batches several
+                    // rooms, and one stale room_id must not discard the rest.
+                    if (!room_has_local_membership(*rt, room_member.key) ||
+                        !federation::room_server_acl_allows(rt->database.persistent_store, room_member.key,
+                                                            envelope.origin))
+                    {
+                        // FED-8: receipts are keyed by room, not a top-level
+                        // room_id. Check the authenticated origin before any
+                        // receipt or stream mutation, including worker relays.
+                        continue;
+                    }
                     auto const* receipt_types = std::get_if<canonicaljson::Object>(&room_member.value->storage());
                     if (receipt_types == nullptr)
                     {
                         return {federation::EduDispositionStatus::rejected_invalid,
                                 "receipt room entry must be an object"};
-                    }
-                    // 0.12.5 audit, finding 13: skip rooms this server holds no
-                    // membership in. Skipping rather than rejecting the whole
-                    // EDU: a receipt transaction legitimately batches several
-                    // rooms, and one stale room_id must not discard the rest.
-                    if (!room_has_local_membership(*rt, room_member.key))
-                    {
-                        continue;
                     }
                     for (auto const& receipt_type_member : *receipt_types)
                     {
@@ -1526,6 +1667,15 @@ namespace
                         }
                         for (auto const& user_member : *users)
                         {
+                            // FED-8: the receipt subject must be a joined member
+                            // of this room. Invited, knocked, left or banned users
+                            // cannot legitimately update read receipts, so this
+                            // per-subject drop prevents a peer from using a
+                            // receipt EDU to probe or influence non-member state.
+                            if (!user_is_joined_in_room(*rt, room_member.key, user_member.key))
+                            {
+                                continue;
+                            }
                             if (!user_belongs_to_origin(user_member.key, envelope.origin))
                             {
                                 return {federation::EduDispositionStatus::rejected_invalid,
@@ -1646,23 +1796,33 @@ namespace
             case federation::EduType::direct_to_device: {
                 auto const enqueue_result =
                     enqueue_direct_to_device_messages(*rt, envelope.origin, envelope.content_json);
-                if (enqueue_result.sender_not_on_origin || enqueue_result.invalid_message_id)
+                if (enqueue_result.sender_not_on_origin || enqueue_result.invalid_message_id ||
+                    enqueue_result.invalid_message_type)
                 {
                     // Whole EDU dropped; the transaction itself still succeeds
                     // (EDUs are best-effort).
-                    log_diagnostic(
-                        "federation.edu.direct_to_device.dropped",
-                        {
-                            {"origin", envelope.origin,                                                           false},
-                            {"reason",
-                             enqueue_result.sender_not_on_origin ? "sender_not_on_origin" : "invalid_message_id",
-                             false                                                                                     },
+                    log_diagnostic("federation.edu.direct_to_device.dropped",
+                                   {
+                                       {"origin", envelope.origin,                                    false},
+                                       {"reason",
+                                        enqueue_result.sender_not_on_origin ? "sender_not_on_origin"
+                                        : enqueue_result.invalid_message_id ? "invalid_message_id"
+                                                                            : "invalid_message_type",
+                                        false                                                              },
                     },
-                        observability::LogEventSeverity::warning);
+                                   observability::LogEventSeverity::warning);
+                    if (enqueue_result.sender_not_on_origin)
+                    {
+                        return {federation::EduDispositionStatus::rejected_invalid,
+                                "direct_to_device sender must belong to the sending origin"};
+                    }
+                    if (enqueue_result.invalid_message_id)
+                    {
+                        return {federation::EduDispositionStatus::rejected_invalid,
+                                "direct_to_device message_id must be 1 to 32 codepoints"};
+                    }
                     return {federation::EduDispositionStatus::rejected_invalid,
-                            enqueue_result.sender_not_on_origin
-                                ? "direct_to_device sender must belong to the sending origin"
-                                : "direct_to_device message_id must be 1 to 32 codepoints"};
+                            "direct_to_device message_type must not be empty"};
                 }
                 if (enqueue_result.replay)
                 {
@@ -1880,8 +2040,7 @@ namespace
         };
 
         runtime.federation.membership_acceptor =
-            [rt](federation::FederationEndpoint endpoint, std::string_view room_id,
-                 [[maybe_unused]] std::string_view event_id,
+            [rt](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
                  federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
             // Locking: this callback mutates store.rooms/state/events and the
             // stream-ordering/sync-stream-id counters, so it needs rt->mutex held.
@@ -1958,6 +2117,23 @@ namespace
                 if (pdu_parsed.error != canonicaljson::ParseError::none)
                 {
                     return {false, 400U, "invalid PDU JSON", {}, {}};
+                }
+                // FED-6: repeat endpoint agreement at the mutation boundary,
+                // including membership PDUs relayed by a federation worker.
+                // Origin authentication and event-ID computation belong to the
+                // callers; the relay has no URL event_id, so it passes empty.
+                auto const expected_membership = membership_for_endpoint(endpoint);
+                if (expected_membership.empty() || envelope.event_type != "m.room.member" ||
+                    envelope.room_id != room_id || (!event_id.empty() && envelope.event_id != event_id) ||
+                    !envelope.state_key.has_value() || *envelope.state_key != envelope.sender ||
+                    events::extract_content_membership(pdu_parsed.value) != expected_membership ||
+                    (!envelope.origin.empty() && server_name_from_user_id(envelope.sender) != envelope.origin))
+                {
+                    return {false,
+                            400U,
+                            matrix_error("M_INVALID_PARAM", "membership event does not match endpoint, path or origin"),
+                            {},
+                            {}};
                 }
                 // Prefer the room version recorded in m.room.create over the one
                 // the envelope claims: the sender does not get to choose which
@@ -2059,7 +2235,9 @@ namespace
             // the same trust boundary as ingest_pdu_event, so it gets the
             // same state-before treatment: fail closed rather than guess
             // when a prev_event has no recorded state group.
-            auto const state_before = compute_state_before(store, room_id, *room_policy, envelope.prev_event_ids);
+            auto const state_before =
+                compute_state_before(store, room_id, *room_policy, envelope.prev_event_ids,
+                                     state_resolution_limits(rt->config.security().federation.state_resolution));
             if (!state_before.ok)
             {
                 return {false, 400U, "no recorded state group for a prev_event; awaiting backfill", {}, {}};
@@ -2167,7 +2345,9 @@ namespace
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
-                else if (!recompute_current_state(store, room_id, *room_policy))
+                else if (!recompute_current_state(
+                             store, room_id, *room_policy,
+                             state_resolution_limits(rt->config.security().federation.state_resolution)))
                 {
                     LOG_WARNING("Current-state recomputation failed after membership PDU was accepted; event_id=" +
                                 accepted_event_id + " room_id=" + std::string{room_id});
@@ -2180,7 +2360,7 @@ namespace
             if (envelope.event_type == "m.room.member" && envelope.state_key.has_value() &&
                 outcome == MembershipReceiptOutcome::accepted)
             {
-                auto const membership = membership_for_endpoint(endpoint);
+                auto const membership = events::extract_content_membership(membership_effective_pdu);
                 if (!membership.empty())
                 {
                     if (!upsert_membership(store, room_id, *envelope.state_key, membership, event_stream_ordering))
@@ -2472,7 +2652,8 @@ namespace
             [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
             // FED-2: refuses (403) a server with no joined user in the room unless
             // the room is world readable.
-            return federation::build_backfill_response(rt->database.persistent_store, req);
+            return federation::build_backfill_response(rt->database.persistent_store, req,
+                                                       rt->federation.config.query_policy);
         };
 
         runtime.federation.profile_query_provider = [rt](std::string_view user_id) -> federation::FederationProfile {
@@ -2523,7 +2704,8 @@ namespace
 
         runtime.federation.missing_events_query_provider = [rt](std::string_view room_id, std::string_view body,
                                                                 std::string_view origin) -> federation::RoomReadResult {
-            return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin);
+            return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body, origin,
+                                                                 rt->federation.config.query_policy);
         };
 
         runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id,
@@ -2602,6 +2784,8 @@ namespace
             }
             auto dispatch_config = federation::DispatchWorkerConfig{};
             dispatch_config.origin = runtime.config.server().server_name;
+            dispatch_config.max_queue_depth = runtime.federation.config.outbound_queue_capacity;
+            dispatch_config.max_retries = runtime.federation.config.outbound_max_retries;
             dispatch_config.key_id = key->key_id;
             // Move the signing key into the worker's own mlocked, zeroised
             // SecretBuffer rather than an unpinned std::string. The runtime
@@ -2669,32 +2853,47 @@ namespace
 namespace
 {
 
-    // ADR-0064 phase C: per-PDU backfill limits. These bound the work a single
-    // inbound PDU can trigger when its prev_events / auth_events are missing,
-    // preventing a malicious or delayed origin from driving unbounded outbound
-    // fetches.
-    constexpr auto k_max_get_missing_events_per_pdu = std::size_t{20U};
-    constexpr auto k_max_backfill_outbound_calls = std::size_t{5U};
+    // Configured per-PDU limits bound backfill call fan-out and snapshot size.
+    // The separate per-PDU snapshot-call cap limits snapshot fan-out; all these
+    // calls also consume BackfillBudget's shared total-call and wall-clock caps.
+    struct BackfillBudget final
+    {
+        std::size_t calls{};
+        std::size_t max_calls{};
+        std::chrono::steady_clock::time_point deadline{};
 
-    // ADR-0064 phase C: /state_ids fallback caps. These bound the size of a
-    // remote-claimed snapshot and the work we will do to materialise it.
-    constexpr auto k_max_state_ids_per_pdu = std::size_t{1000U};
-    constexpr auto k_max_auth_chain_ids_per_pdu = std::size_t{1000U};
-    // ADR-0069 option A: real rooms routinely have more than 100 state events,
-    // so the snapshot materialisation cap must be sized for real rooms while
-    // still bounding a malicious response. The per-event fetches are counted
-    // against a separate snapshot budget below, not the general PDU backfill
-    // budget, so a large but legitimate snapshot does not starve other gaps.
-    constexpr auto k_max_state_snapshot_events_per_pdu = std::size_t{1000U};
-    constexpr auto k_max_backfill_recursion_depth = std::size_t{2U};
+        [[nodiscard]] auto within_deadline() const noexcept -> bool
+        {
+            return std::chrono::steady_clock::now() < deadline;
+        }
 
-    // ADR-0069 option A: separate budget for outbound calls made while
-    // materialising a /state_ids snapshot. This covers /event/{id} fetches for
-    // the named snapshot and auth-chain events plus /event_auth calls for
-    // historical state events, and is independent of the general PDU backfill
-    // budget so that one large room does not exhaust the cap for the whole
-    // inbound transaction.
-    constexpr auto k_max_snapshot_outbound_calls = std::size_t{100U};
+        [[nodiscard]] auto can_begin_call() const noexcept -> bool
+        {
+            return calls < max_calls && within_deadline();
+        }
+
+        [[nodiscard]] auto begin_call() noexcept -> bool
+        {
+            if (!can_begin_call())
+            {
+                return false;
+            }
+            ++calls;
+            return true;
+        }
+
+        [[nodiscard]] auto timeout_seconds(std::uint32_t remote_timeout_seconds) const noexcept -> std::uint32_t
+        {
+            auto const remaining = deadline - std::chrono::steady_clock::now();
+            if (remaining <= std::chrono::steady_clock::duration::zero())
+            {
+                return 0U;
+            }
+            auto const rounded = std::chrono::ceil<std::chrono::seconds>(remaining).count();
+            auto const ceiling = static_cast<std::uint32_t>(std::max<std::int64_t>(1, rounded));
+            return remote_timeout_seconds == 0U ? ceiling : std::min(remote_timeout_seconds, ceiling);
+        }
+    };
 
     // Returns true when the store has an event with this event_id and it has a
     // recorded after-state group (so it can serve as a prev_event for state-
@@ -2783,8 +2982,8 @@ namespace
     // "events" array on success. Must be called with runtime.mutex released.
     [[nodiscard]] auto fetch_get_missing_events(HomeserverRuntime& runtime, std::string_view room_id,
                                                 std::string_view origin, std::vector<std::string> const& latest_events,
-                                                std::vector<std::string> const& earliest_events, std::size_t limit)
-        -> std::optional<std::vector<std::string>>
+                                                std::vector<std::string> const& earliest_events, std::size_t limit,
+                                                BackfillBudget& budget) -> std::optional<std::vector<std::string>>
     {
         auto [key_id, secret_key] = signing_material_for_backfill(runtime);
         if (secret_key.bytes().empty())
@@ -2819,9 +3018,18 @@ namespace
         auto tx = federation::make_outbound_transaction(
             std::string{origin}, "POST", "/_matrix/federation/v1/get_missing_events/" + std::string{room_id},
             runtime.config.server().server_name, serialized.output);
+        if (!budget.begin_call())
+        {
+            return std::nullopt;
+        }
+        auto const timeout = budget.timeout_seconds(runtime.federation.config.remote_timeout_seconds);
+        if (timeout == 0U)
+        {
+            return std::nullopt;
+        }
         auto const [ok, body] = perform_sync_outbound_call(
             runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.get_missing_events_failed",
-            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
+            timeout, static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
         if (!ok)
         {
             return std::nullopt;
@@ -2964,9 +3172,10 @@ namespace
 
     [[nodiscard]] auto fetch_event_by_id(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
                                          std::string_view event_id, rooms::RoomVersionPolicy const& policy,
-                                         std::size_t& outbound_calls) -> std::optional<std::string>
+                                         std::size_t& outbound_calls, BackfillBudget& budget)
+        -> std::optional<std::string>
     {
-        if (outbound_calls >= k_max_backfill_outbound_calls)
+        if (outbound_calls >= runtime.federation.config.backfill.max_outbound_calls || !budget.can_begin_call())
         {
             return std::nullopt;
         }
@@ -2978,14 +3187,23 @@ namespace
         auto tx = federation::make_outbound_transaction(
             std::string{origin}, "GET", "/_matrix/federation/v1/event/" + core::percent_encode_path_component(event_id),
             runtime.config.server().server_name, "");
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_fetch_failed",
-            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
-        if (!ok)
+        if (!budget.begin_call())
         {
             return std::nullopt;
         }
         ++outbound_calls;
+        auto const timeout = budget.timeout_seconds(runtime.federation.config.remote_timeout_seconds);
+        if (timeout == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_fetch_failed", timeout,
+            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        if (!ok)
+        {
+            return std::nullopt;
+        }
         return requested_pdu_from_event_response(body, event_id, policy);
     }
 
@@ -2993,10 +3211,11 @@ namespace
     // budget (ADR-0069 option A) instead of the general PDU backfill budget.
     [[nodiscard]] auto fetch_snapshot_event_by_id(HomeserverRuntime& runtime, std::string_view room_id,
                                                   std::string_view origin, std::string_view event_id,
-                                                  rooms::RoomVersionPolicy const& policy, std::size_t& snapshot_calls)
-        -> std::optional<std::string>
+                                                  rooms::RoomVersionPolicy const& policy, std::size_t& snapshot_calls,
+                                                  BackfillBudget& budget) -> std::optional<std::string>
     {
-        if (snapshot_calls >= k_max_snapshot_outbound_calls)
+        if (snapshot_calls >= runtime.federation.config.backfill.max_snapshot_outbound_calls ||
+            !budget.can_begin_call())
         {
             return std::nullopt;
         }
@@ -3008,14 +3227,23 @@ namespace
         auto tx = federation::make_outbound_transaction(
             std::string{origin}, "GET", "/_matrix/federation/v1/event/" + core::percent_encode_path_component(event_id),
             runtime.config.server().server_name, "");
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.snapshot_event_fetch_failed",
-            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
-        if (!ok)
+        if (!budget.begin_call())
         {
             return std::nullopt;
         }
         ++snapshot_calls;
+        auto const timeout = budget.timeout_seconds(runtime.federation.config.remote_timeout_seconds);
+        if (timeout == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.snapshot_event_fetch_failed",
+            timeout, static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        if (!ok)
+        {
+            return std::nullopt;
+        }
         return requested_pdu_from_event_response(body, event_id, policy);
     }
 
@@ -3052,10 +3280,10 @@ namespace
     // Spec: GET /_matrix/federation/v1/state_ids/{roomId}?event_id=...
     // Returns the "pdu_ids" and "auth_chain_ids" arrays on success.
     [[nodiscard]] auto fetch_state_ids(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
-                                       std::string_view event_id, std::size_t& outbound_calls)
+                                       std::string_view event_id, std::size_t& outbound_calls, BackfillBudget& budget)
         -> std::optional<std::pair<std::vector<std::string>, std::vector<std::string>>>
     {
-        if (outbound_calls >= k_max_backfill_outbound_calls)
+        if (outbound_calls >= runtime.federation.config.backfill.max_outbound_calls || !budget.can_begin_call())
         {
             return std::nullopt;
         }
@@ -3069,14 +3297,23 @@ namespace
                           "?event_id=" + core::percent_encode_path_component(event_id);
         auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
                                                         runtime.config.server().server_name, "");
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.state_ids_failed",
-            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
-        if (!ok)
+        if (!budget.begin_call())
         {
             return std::nullopt;
         }
         ++outbound_calls;
+        auto const timeout = budget.timeout_seconds(runtime.federation.config.remote_timeout_seconds);
+        if (timeout == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.state_ids_failed", timeout,
+            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        if (!ok)
+        {
+            return std::nullopt;
+        }
 
         auto const parsed = canonicaljson::parse_json(body);
         if (parsed.error != canonicaljson::ParseError::none)
@@ -3102,10 +3339,11 @@ namespace
     // /state_ids fallback to verify historical state events whose prev_events
     // have no recorded state groups (ADR-0069 option A).
     [[nodiscard]] auto fetch_event_auth(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
-                                        std::string_view event_id, std::size_t& snapshot_calls)
+                                        std::string_view event_id, std::size_t& snapshot_calls, BackfillBudget& budget)
         -> std::optional<std::vector<std::string>>
     {
-        if (snapshot_calls >= k_max_snapshot_outbound_calls)
+        if (snapshot_calls >= runtime.federation.config.backfill.max_snapshot_outbound_calls ||
+            !budget.can_begin_call())
         {
             return std::nullopt;
         }
@@ -3119,14 +3357,23 @@ namespace
                           core::percent_encode_path_component(event_id);
         auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
                                                         runtime.config.server().server_name, "");
-        auto const [ok, body] = perform_sync_outbound_call(
-            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_auth_failed",
-            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
-        if (!ok)
+        if (!budget.begin_call())
         {
             return std::nullopt;
         }
         ++snapshot_calls;
+        auto const timeout = budget.timeout_seconds(runtime.federation.config.remote_timeout_seconds);
+        if (timeout == 0U)
+        {
+            return std::nullopt;
+        }
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, std::move(secret_key), "federation.backfill.event_auth_failed", timeout,
+            static_cast<std::size_t>(runtime.federation.config.backfill_response_max_bytes));
+        if (!ok)
+        {
+            return std::nullopt;
+        }
         return extract_pdus_from_auth_chain_response(body);
     }
 
@@ -3320,7 +3567,8 @@ namespace
                 return *forced_state_before;
             }
             auto const computed =
-                compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids);
+                compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids,
+                                     state_resolution_limits(runtime.config.security().federation.state_resolution));
             if (!computed.ok)
             {
                 return std::nullopt;
@@ -3493,21 +3741,22 @@ namespace
     [[nodiscard]] auto backfill_state_ids_snapshot(HomeserverRuntime& runtime, std::string_view room_id,
                                                    std::string_view origin, std::string_view target_event_id,
                                                    rooms::RoomVersionPolicy const& policy, std::size_t& outbound_calls,
-                                                   std::size_t recursion_depth = 0U) -> bool
+                                                   std::size_t& snapshot_calls, BackfillBudget& budget) -> bool
     {
-        if (outbound_calls >= k_max_backfill_outbound_calls || recursion_depth > k_max_backfill_recursion_depth)
+        auto const& limits = runtime.federation.config.backfill;
+        if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
         {
             return false;
         }
 
-        auto const state_ids = fetch_state_ids(runtime, room_id, origin, target_event_id, outbound_calls);
+        auto const state_ids = fetch_state_ids(runtime, room_id, origin, target_event_id, outbound_calls, budget);
         if (!state_ids.has_value())
         {
             return false;
         }
         auto const& [pdu_ids, auth_chain_ids] = *state_ids;
 
-        if (pdu_ids.size() > k_max_state_ids_per_pdu || auth_chain_ids.size() > k_max_auth_chain_ids_per_pdu)
+        if (pdu_ids.size() > limits.max_state_ids || auth_chain_ids.size() > limits.max_auth_chain_ids)
         {
             LOG_WARNING(
                 "backfill_state_ids_snapshot: oversized /state_ids response rejected; room_id=" + std::string{room_id} +
@@ -3523,6 +3772,10 @@ namespace
             auto seen = std::unordered_set<std::string>{};
             for (auto const& id : pdu_ids)
             {
+                if (!budget.within_deadline())
+                {
+                    return false;
+                }
                 if (id != target_event_id && seen.insert(id).second)
                 {
                     needed_ids.push_back(id);
@@ -3531,6 +3784,10 @@ namespace
             }
             for (auto const& id : auth_chain_ids)
             {
+                if (!budget.within_deadline())
+                {
+                    return false;
+                }
                 if (id != target_event_id && seen.insert(id).second)
                 {
                     needed_ids.push_back(id);
@@ -3538,12 +3795,9 @@ namespace
             }
         }
 
-        // ADR-0069 option A: snapshot materialisation gets its own outbound budget
-        // so that verifying a large legitimate state snapshot does not exhaust
-        // the general per-PDU backfill budget.
-        auto snapshot_calls = std::size_t{0U};
-
-        if (needed_ids.size() > k_max_state_snapshot_events_per_pdu)
+        // Snapshot materialisation keeps its own per-PDU call ceiling, while
+        // the shared budget below still bounds the entire recovery attempt.
+        if (needed_ids.size() > limits.max_snapshot_events)
         {
             LOG_WARNING("backfill_state_ids_snapshot: snapshot too large to materialise; room_id=" +
                         std::string{room_id} + " target_event_id=" + std::string{target_event_id} +
@@ -3553,6 +3807,10 @@ namespace
 
         for (auto const& id : needed_ids)
         {
+            if (!budget.within_deadline())
+            {
+                return false;
+            }
             {
                 auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
                 auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
@@ -3571,11 +3829,11 @@ namespace
                     continue;
                 }
             }
-            if (snapshot_calls >= k_max_snapshot_outbound_calls)
+            if (snapshot_calls >= limits.max_snapshot_outbound_calls)
             {
                 return false;
             }
-            auto const json = fetch_snapshot_event_by_id(runtime, room_id, origin, id, policy, snapshot_calls);
+            auto const json = fetch_snapshot_event_by_id(runtime, room_id, origin, id, policy, snapshot_calls, budget);
             if (!json.has_value())
             {
                 return false;
@@ -3617,7 +3875,7 @@ namespace
                     std::string{room_id} + " event_id=" + id);
                 return false;
             }
-            auto const auth_pdus = fetch_event_auth(runtime, room_id, origin, id, snapshot_calls);
+            auto const auth_pdus = fetch_event_auth(runtime, room_id, origin, id, snapshot_calls, budget);
             if (!auth_pdus.has_value())
             {
                 LOG_WARNING("backfill_state_ids_snapshot: /event_auth fallback failed; room_id=" +
@@ -3626,6 +3884,10 @@ namespace
             }
             for (auto const& auth_json : *auth_pdus)
             {
+                if (!budget.within_deadline())
+                {
+                    return false;
+                }
                 if (!verify_and_store_backfilled_event(runtime, room_id, origin, auth_json, policy, std::nullopt, true))
                 {
                     LOG_WARNING("backfill_state_ids_snapshot: auth-chain PDU failed verification; room_id=" +
@@ -3653,6 +3915,10 @@ namespace
             auto seen_keys = std::unordered_set<std::string>{};
             for (auto const& id : pdu_ids)
             {
+                if (!budget.within_deadline())
+                {
+                    return false;
+                }
                 if (id == target_event_id)
                 {
                     continue;
@@ -3710,12 +3976,12 @@ namespace
             }
         }
 
-        if (snapshot_calls >= k_max_snapshot_outbound_calls)
+        if (snapshot_calls >= limits.max_snapshot_outbound_calls || !budget.can_begin_call())
         {
             return false;
         }
         auto const target_json =
-            fetch_snapshot_event_by_id(runtime, room_id, origin, target_event_id, policy, snapshot_calls);
+            fetch_snapshot_event_by_id(runtime, room_id, origin, target_event_id, policy, snapshot_calls, budget);
         if (!target_json.has_value())
         {
             return false;
@@ -3775,13 +4041,21 @@ namespace
         }
 
         auto outbound_calls = std::size_t{0U};
+        auto snapshot_calls = std::size_t{0U};
+        auto const& limits = runtime.federation.config.backfill;
+        auto const timeout = std::chrono::seconds{runtime.federation.config.backfill_timeout_seconds};
+        auto budget = BackfillBudget{0U, limits.max_total_outbound_calls, std::chrono::steady_clock::now() + timeout};
         auto stored_any = false;
 
-        if (!missing_prev.empty() && outbound_calls < k_max_backfill_outbound_calls)
+        if (!missing_prev.empty() && outbound_calls < limits.max_outbound_calls && budget.can_begin_call())
         {
+            auto const calls_before = budget.calls;
             auto const fetched = fetch_get_missing_events(runtime, room_id, envelope.origin, envelope.prev_event_ids,
-                                                          missing_prev, k_max_get_missing_events_per_pdu);
-            ++outbound_calls;
+                                                          missing_prev, limits.max_missing_events, budget);
+            if (budget.calls != calls_before)
+            {
+                ++outbound_calls;
+            }
             if (fetched.has_value())
             {
                 // A backfilled event needs its prev_events' state groups, so
@@ -3789,6 +4063,10 @@ namespace
                 // is the remote's choice (0.12.13 audit item 9).
                 for (auto const& json : order_by_ascending_depth(*fetched, policy))
                 {
+                    if (!budget.within_deadline())
+                    {
+                        break;
+                    }
                     if (verify_and_store_backfilled_event(runtime, room_id, envelope.origin, json, policy))
                     {
                         stored_any = true;
@@ -3801,11 +4079,11 @@ namespace
 
         for (auto const& id : missing_auth)
         {
-            if (outbound_calls >= k_max_backfill_outbound_calls)
+            if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
             {
                 break;
             }
-            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls);
+            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls, budget);
             if (json.has_value() && verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy))
             {
                 stored_any = true;
@@ -3813,11 +4091,11 @@ namespace
         }
         for (auto const& id : missing_prev)
         {
-            if (outbound_calls >= k_max_backfill_outbound_calls)
+            if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
             {
                 break;
             }
-            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls);
+            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls, budget);
             if (json.has_value() && verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy))
             {
                 stored_any = true;
@@ -3830,11 +4108,12 @@ namespace
         // no recorded state group after /get_missing_events and /event/{id}.
         for (auto const& id : missing_prev)
         {
-            if (outbound_calls >= k_max_backfill_outbound_calls)
+            if (outbound_calls >= limits.max_outbound_calls || !budget.can_begin_call())
             {
                 break;
             }
-            if (backfill_state_ids_snapshot(runtime, room_id, envelope.origin, id, policy, outbound_calls))
+            if (backfill_state_ids_snapshot(runtime, room_id, envelope.origin, id, policy, outbound_calls,
+                                            snapshot_calls, budget))
             {
                 stored_any = true;
             }
@@ -3910,12 +4189,46 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // must not happen while a room stripe is also held — that would pin the
     // stripe for the whole database write and prevent concurrent progress on
     // unrelated rooms.
-    auto const [stream_ordering, sync_stream_id] = [&]() {
+    auto stream_ordering = std::uint64_t{0U};
+    auto sync_stream_id = std::uint64_t{0U};
+    {
         auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-        auto const ordering = allocate_stream_ordering(runtime.database);
-        auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
-        return std::make_pair(ordering, sync_id);
-    }();
+        // Admission and allocation are atomic under the runtime mutex. Nothing
+        // below (including missing-history fetches) runs for an unsolicited
+        // room. The explicit /send_join state bootstrap and verified, requested
+        // backfill writers are separate paths, not exceptions derived from PDU
+        // content, room IDs, event types or claimed membership.
+        if (!room_has_current_local_interest(runtime, room_id))
+        {
+            auto const pending = runtime.pending_federated_joins.find(room_id);
+            if (pending == runtime.pending_federated_joins.end())
+            {
+                return {federation::PduIngestionStatus::rejected_invalid, "unsolicited PDU for an uninterested room"};
+            }
+            auto& queue = pending->second;
+            if (std::ranges::any_of(queue.pdus, [&](auto const& pdu) {
+                    return pdu.event_id == envelope.event_id;
+                }))
+            {
+                return {federation::PduIngestionStatus::missing_prev_state, "PDU already deferred until join commits"};
+            }
+            auto const max_pdus = static_cast<std::size_t>(runtime.federation.config.pending_join_max_pdus);
+            auto const max_bytes = runtime.federation.config.pending_join_max_bytes;
+            if (queue.pdus.size() >= max_pdus || queue.json_bytes > max_bytes ||
+                stored_json.size() > max_bytes - queue.json_bytes)
+            {
+                return {federation::PduIngestionStatus::main_overloaded, "pending join PDU capacity exhausted"};
+            }
+            auto deferred = envelope;
+            deferred.json = std::move(stored_json);
+            auto const bytes = deferred.json.size();
+            queue.pdus.push_back(std::move(deferred));
+            queue.json_bytes += bytes;
+            return {federation::PduIngestionStatus::missing_prev_state, "PDU deferred until outbound join commits"};
+        }
+        stream_ordering = allocate_stream_ordering(runtime.database);
+        sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+    }
 
     auto const stripe = std::hash<std::string>{}(room_id) % room_mutex_stripe_count;
     auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
@@ -3957,10 +4270,12 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
                 ScopedStripeReacquire(ScopedStripeReacquire const&) = delete;
                 auto operator=(ScopedStripeReacquire const&) -> ScopedStripeReacquire& = delete;
             };
-            auto const stripe_released = ScopedStripeReacquire{stripe_guard};
-            std::ignore = stripe_released;
+            // Restore stripe BEFORE global on scope exit, matching the
+            // ingestion lock order even when the backfill call throws.
             auto const global_released = RuntimeLockRelease{global_guard};
             std::ignore = global_released;
+            auto const stripe_released = ScopedStripeReacquire{stripe_guard};
+            std::ignore = stripe_released;
             std::ignore = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
         }
     }
@@ -4057,7 +4372,8 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // `outcome` above: a rejected event's after-state is still defined as
     // "the state before it", so that state must still be resolvable.
     auto const state_before =
-        compute_state_before(runtime.database.persistent_store, room_id, *room_policy, envelope.prev_event_ids);
+        compute_state_before(runtime.database.persistent_store, room_id, *room_policy, envelope.prev_event_ids,
+                             state_resolution_limits(runtime.config.security().federation.state_resolution));
     if (!state_before.ok)
     {
         return {federation::PduIngestionStatus::missing_prev_state,
@@ -4176,7 +4492,9 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
             LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
-        else if (!recompute_current_state(runtime.database.persistent_store, room_id, *room_policy))
+        else if (!recompute_current_state(
+                     runtime.database.persistent_store, room_id, *room_policy,
+                     state_resolution_limits(runtime.config.security().federation.state_resolution)))
         {
             LOG_WARNING("Current-state recomputation failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
@@ -4764,6 +5082,33 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto result = fetch_room_state(runtime, request.access_token, room_id);
         return result.ok ? response(200U, result.value)
                          : response(result.status != 0U ? result.status : 403U, result.reason);
+    }
+    if (request.method == "PUT")
+    {
+        if (auto const path = room_state_put_path_parts(suffix); path.has_value())
+        {
+            auto const event_body = make_state_event_body(path->event_type, path->state_key, request.body);
+            if (!event_body.has_value())
+            {
+                log_diagnostic("room.state_put.rejected",
+                               {
+                                   {"room_id",    path->room_id,                         false},
+                                   {"event_type", path->event_type,                      false},
+                                   {"reason",     "state content must be a JSON object", false}
+                });
+                return response(400U, "state content must be a JSON object");
+            }
+            auto result = send_event(runtime, request.access_token, path->room_id, *event_body);
+            log_diagnostic(result.ok ? "room.state_put.accepted" : "room.state_put.rejected",
+                           {
+                               {"room_id",    path->room_id,                                              false},
+                               {"event_type", path->event_type,                                           false},
+                               {"status",     std::to_string(result.status != 0U ? result.status : 403U), false},
+                               {"reason",     result.ok ? std::string{"ok"} : result.reason,              false}
+            });
+            return result.ok ? response(200U, result.value)
+                             : response(result.status != 0U ? result.status : 403U, result.reason);
+        }
     }
     log_diagnostic("request.route_not_found",
                    {

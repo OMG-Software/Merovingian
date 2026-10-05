@@ -6,7 +6,7 @@ Shared test utilities used across unit, conformance, and integration tests.
 
 | File | Purpose |
 |---|---|
-| `joining_threads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
+| `joining_threads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit, or earlier with `join()` when a scenario asserts on what the threads did. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
 | `json_test_support.hpp` | JSON assertion helpers: `require_json_key()`, `parse_or_fail()` |
 | `master_key.hpp` | Deterministic Ed25519 key pair for signing in tests; do not use in production |
 | `process_tasks.hpp` | `count_process_tasks()`: number of threads in this process from `/proc/self/task`; used by the no-thread-before-hardening scenarios (ISO-1) |

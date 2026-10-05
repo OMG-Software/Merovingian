@@ -16,6 +16,7 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/token_key.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -947,8 +948,24 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
 
     if (registration.require_token)
     {
+        // AUTH-4: registration-token verification is Argon2id and must respect
+        // the same admission cap as /login. Shed load with 429 before doing any
+        // hash work.
+        auto const argon_slot = runtime.argon2id_admission->try_acquire();
+        if (!argon_slot)
+        {
+            auto throttled = make_operation_result(false, {}, "too many concurrent authentication attempts", 429U);
+            throttled.retry_after_ms = 1000U;
+            return throttled;
+        }
         auto const expected_hash = load_hashed_registration_token(registration);
-        if (!expected_hash.has_value() || !auth::registration_token_matches(*expected_hash, registration_token))
+        auto const token_ok = [expected_hash = expected_hash.value_or(std::string{}), registration_token]() {
+            // AUTH-4: registration-token verification is also Argon2id; release
+            // the runtime mutex while it runs.
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            return !expected_hash.empty() && auth::registration_token_matches(expected_hash, registration_token);
+        }();
+        if (!token_ok)
         {
             return make_operation_result(false, {}, "registration token rejected", 403U);
         }
@@ -1026,14 +1043,53 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
         return throttled;
     }
 
-    auto* user = find_user(runtime.database, user_id);
-    auto const* password_hash = user != nullptr ? &user->password_hash : dummy_password_hash();
-    auto const password_valid = password_hash != nullptr && auth::password_matches(*password_hash, password);
-    if (user == nullptr || !password_valid)
+    // Snapshot the claimed identity and the hash to verify against. The user
+    // pointer itself must not outlive the RuntimeLockRelease below: the vector
+    // may be reallocated while runtime.mutex is dropped around Argon2id.
+    auto const verified_user_id = std::string{user_id};
+    // An unknown user is verified against the dummy hash so the response time
+    // does not reveal which accounts exist. The dummy is absent only if hashing
+    // it failed at first use; there is then nothing to verify against and the
+    // login is refused like any other bad credential.
+    auto const password_hash = [&]() -> std::optional<std::string> {
+        if (auto const* initial_user = find_user(runtime.database, verified_user_id); initial_user != nullptr)
+        {
+            return initial_user->password_hash;
+        }
+        if (auto const* dummy = dummy_password_hash(); dummy != nullptr)
+        {
+            return *dummy;
+        }
+        return std::nullopt;
+    }();
+    // AUTH-4: bound concurrent Argon2id work before it can start. Shedding load
+    // here returns 429/M_LIMIT_EXCEEDED and never counts as a failed login, so
+    // an admission-saturated pile-on does not also exhaust the lockout budget.
+    auto const argon_slot = runtime.argon2id_admission->try_acquire();
+    if (!argon_slot)
+    {
+        auto throttled = make_operation_result(false, {}, "too many concurrent authentication attempts", 429U);
+        throttled.retry_after_ms = 1000U;
+        return throttled;
+    }
+    // AUTH-4: release the runtime mutex around Argon2id verification so a pile
+    // of login attempts cannot serialise every other request. Snapshot the hash
+    // by value first; then verify outside the lock.
+    auto password_valid = false;
+    {
+        auto const released = merovingian::homeserver::RuntimeLockRelease{};
+        password_valid = password_hash.has_value() && auth::password_matches(*password_hash, password);
+    }
+    // RuntimeLockRelease has re-acquired the lock. Re-find the user and insist
+    // the stored password hash is still the one we just verified. A concurrent
+    // password change (or account deletion) during Argon2id must not issue a
+    // session against the old credentials.
+    auto* user = find_user(runtime.database, verified_user_id);
+    if (user == nullptr || !password_valid || user->password_hash != *password_hash)
     {
         // Counted against the *claimed* user_id whether or not it exists, so the
         // lockout cannot be used to probe which accounts are real.
-        record_failed_login(runtime, user_id);
+        record_failed_login(runtime, verified_user_id);
         auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
         // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",

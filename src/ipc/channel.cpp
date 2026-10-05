@@ -30,6 +30,33 @@ namespace merovingian::ipc
 namespace
 {
 
+    constexpr auto kIpcEnvelopeHeadroom = std::uint64_t{2U * 1024U * 1024U};
+    constexpr auto kIpcRequestEscapeMultiplier = std::uint64_t{6U};
+    // The frame prefix stores ciphertext bytes in uint32, and each plaintext
+    // frame gains the secretstream's fixed 17-byte authentication overhead.
+    constexpr auto kMaxPlaintextFrameBytes =
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) - 17U;
+
+    [[nodiscard]] auto saturating_add(std::uint64_t lhs, std::uint64_t rhs) noexcept -> std::uint64_t
+    {
+        return rhs > std::numeric_limits<std::uint64_t>::max() - lhs ? std::numeric_limits<std::uint64_t>::max()
+                                                                     : lhs + rhs;
+    }
+
+    [[nodiscard]] auto saturating_multiply(std::uint64_t value, std::uint64_t multiplier) noexcept -> std::uint64_t
+    {
+        return multiplier != 0U && value > std::numeric_limits<std::uint64_t>::max() / multiplier
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : value * multiplier;
+    }
+
+    [[nodiscard]] auto response_frame_budget(std::uint64_t response_bytes) noexcept -> std::uint64_t
+    {
+        // ceil(response_bytes / 3) * 4 without overflowing the intermediate.
+        auto const groups = saturating_add(response_bytes / 3U, response_bytes % 3U == 0U ? 0U : 1U);
+        return saturating_add(saturating_multiply(groups, 4U), kIpcEnvelopeHeadroom);
+    }
+
     // Extracts a uint64 value for a JSON key from a parsed object. The
     // canonicaljson DOM stores integers as int64; values are monotonic frame
     // ids/reply_tos starting at 0, so the int64 range is sufficient. Returns
@@ -56,12 +83,23 @@ namespace
 
 auto frame_bytes_for_response_cap(std::uint64_t max_response_body_bytes) noexcept -> std::uint32_t
 {
-    constexpr std::uint64_t kEnvelopeHeadroom{2U * 1024U * 1024U};
-    constexpr std::uint64_t kU32Max{static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())};
-    // base64 expands by 4/3, rounded up to a whole 4-byte group.
-    auto const encoded = ((max_response_body_bytes + 2U) / 3U) * 4U;
-    auto const needed = std::max<std::uint64_t>(encoded + kEnvelopeHeadroom, kIpcMaxFrameBytes);
-    return static_cast<std::uint32_t>(std::min(needed, kU32Max));
+    auto const needed =
+        std::max(response_frame_budget(max_response_body_bytes), static_cast<std::uint64_t>(kIpcMaxFrameBytes));
+    return static_cast<std::uint32_t>(std::min(needed, kMaxPlaintextFrameBytes));
+}
+
+auto frame_bytes_for_transport_caps(std::uint64_t max_response_body_bytes, std::uint64_t federation_request_body_bytes,
+                                    std::uint64_t general_request_body_bytes, std::uint64_t header_bytes,
+                                    std::uint64_t start_line_bytes) noexcept -> std::uint32_t
+{
+    auto const request_body_bytes = std::max(federation_request_body_bytes, general_request_body_bytes);
+    auto request_bytes = saturating_add(request_body_bytes, header_bytes);
+    request_bytes = saturating_add(request_bytes, start_line_bytes);
+    auto const request_budget =
+        saturating_add(saturating_multiply(request_bytes, kIpcRequestEscapeMultiplier), kIpcEnvelopeHeadroom);
+    auto const needed = std::max({response_frame_budget(max_response_body_bytes), request_budget,
+                                  static_cast<std::uint64_t>(kIpcMaxFrameBytes)});
+    return static_cast<std::uint32_t>(std::min(needed, kMaxPlaintextFrameBytes));
 }
 
 IpcChannel::IpcChannel(core::FileDescriptor fd, Role role, crypto::IpcAuthKey auth_key, std::uint32_t max_frame_bytes)

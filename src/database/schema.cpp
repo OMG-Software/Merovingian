@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{17U};
+    constexpr auto schema_version = std::uint32_t{18U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -280,7 +280,16 @@ auto initial_schema_definitions() -> std::vector<SchemaTableDefinition>
 
 auto current_schema_definitions() -> std::vector<SchemaTableDefinition>
 {
-    return {core_tables.begin(), core_tables.end()};
+    auto definitions = std::vector<SchemaTableDefinition>{core_tables.begin(), core_tables.end()};
+    for (auto& table : definitions)
+    {
+        if (table.name == "rooms")
+        {
+            table.columns_sql = "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, "
+                                "directory_public TEXT NOT NULL DEFAULT 'false'";
+        }
+    }
+    return definitions;
 }
 
 auto initial_schema_tables() -> std::vector<std::string_view>
@@ -310,6 +319,11 @@ auto current_schema_tables() -> std::vector<std::string_view>
 
 auto schema_table_definition(std::string_view table_name) noexcept -> std::optional<SchemaTableDefinition>
 {
+    if (table_name == "rooms")
+    {
+        return SchemaTableDefinition{"rooms", "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL, "
+                                              "directory_public TEXT NOT NULL DEFAULT 'false'"};
+    }
     auto const iterator = std::ranges::find_if(core_tables, [table_name](SchemaTableDefinition const& table) {
         return table.name == table_name;
     });

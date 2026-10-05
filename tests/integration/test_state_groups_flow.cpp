@@ -118,7 +118,8 @@ struct SeededRoom final
     auto const msg_a_id = "$msg-a-" + std::string{suffix};
     auto const msg_b_id = "$msg-b-" + std::string{suffix};
 
-    REQUIRE(exec(connection, "INSERT INTO rooms VALUES ('" + room.room_id + "', '@alice:example.org')"));
+    REQUIRE(exec(connection,
+                 "INSERT INTO rooms (room_id, creator_user_id) VALUES ('" + room.room_id + "', '@alice:example.org')"));
 
     auto const insert_event = [&](std::string const& event_id, std::uint64_t depth, std::uint64_t stream_ordering) {
         return exec(connection, "INSERT INTO events (event_id, room_id, sender_user_id, json, depth, "

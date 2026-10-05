@@ -301,6 +301,25 @@ named `SingleLog` method now routes its composed line through
 as a `printf` format argument, CWE-134 — had no call site in `src/` and were
 deleted outright rather than deprecated.
 
+**One log record is one physical line (AUTH-9).** A logged value such as a
+login `identifier.user` or `device_id` is client-controlled. `SingleLog`
+escapes the module name and message of every line it writes, console and file
+alike, through `escape_log_controls` before appending the record's own `\n`:
+
+| Input | Written as |
+| --- | --- |
+| line feed, carriage return, tab | `\n`, `\r`, `\t` |
+| any other C0 control (U+0000–U+001F) and DEL | `\xHH` (lowercase hex), e.g. `\x1b` |
+| a UTF-8 encoded C1 control (U+0080–U+009F) | `\u00HH`, e.g. `\u009b` |
+| every other byte, including the rest of UTF-8 | unchanged |
+
+A value therefore cannot forge an extra log record or send a terminal control
+sequence to an operator's console. Backslash is not escaped, so a value that
+literally contains the two characters `\n` is indistinguishable in the log from
+an escaped line feed; the record boundary is still unforgeable. Redaction runs
+on the escaped line and treats every whitespace character as a token boundary,
+so a sensitive field at the end of a line keeps the record terminator.
+
 The event signer no longer logs the canonical signing payload or the signed
 event JSON. It emits each one's byte count and SHA-256 digest instead, which is
 still enough to compare byte-for-byte with a federation peer when triaging a

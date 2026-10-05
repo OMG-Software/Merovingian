@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX SERVER ACL (MSC4436) INTEGRATION FLOW TESTS              |
@@ -12,9 +13,9 @@
 //  endpoints, per-PDU inside /send transactions, and per-room-local EDU.    |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
@@ -52,9 +53,12 @@ auto constexpr local_server_name = std::string_view{"example.org"};
     security.federation.max_transaction_size = "1MiB";
     security.federation.remote_timeout = "30s";
     auto config = merovingian::config::Config{
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
     config.database().backend = merovingian::config::DatabaseBackend::sqlite;
     config.database().sqlite_path =
@@ -82,8 +86,8 @@ auto constexpr local_server_name = std::string_view{"example.org"};
     return *string_member(parse_object(login.response.body), "access_token");
 }
 
-[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
-    -> std::string
+[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& runtime,
+                               std::string const& token) -> std::string
 {
     auto const create = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat","room_version":"12"})"});
@@ -100,8 +104,8 @@ auto constexpr local_server_name = std::string_view{"example.org"};
     return response.response.status == 200U;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
+                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -142,8 +146,8 @@ auto constexpr local_server_name = std::string_view{"example.org"};
 }
 
 [[nodiscard]] auto signed_message_pdu(std::string const& room_id, std::string const& sender_localpart,
-                                      std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> std::string
+                                      std::string const& origin, std::string const& key_id,
+                                      std::string const& key_seed) -> std::string
 {
     auto const sender = std::string{"@"} + sender_localpart + ":" + origin;
     auto const unsigned_json =

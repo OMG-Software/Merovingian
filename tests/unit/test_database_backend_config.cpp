@@ -54,6 +54,8 @@ SCENARIO("Database backend helpers parse SQLite and expose performance warnings"
                         "postgresql");
                 REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::sqlite) ==
                         "sqlite");
+                REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::memory) ==
+                        "memory");
                 REQUIRE(sqlite_warning.find("small installations") != std::string_view::npos);
                 REQUIRE(postgresql_warning.empty());
             }
@@ -125,6 +127,25 @@ SCENARIO("Key-value config parser applies SQLite database settings", "[config][p
                 REQUIRE(result.config.database().backend == merovingian::config::DatabaseBackend::sqlite);
                 REQUIRE(result.config.database().sqlite_path == "/var/lib/merovingian/small.sqlite3");
                 REQUIRE(result.config.database().pool_size == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser does not expose the in-memory test backend", "[config][parser][database][db-3]")
+{
+    GIVEN("configuration selecting the programmatic test backend")
+    {
+        auto const input = std::string{"database.backend=memory\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the parser reports an unsupported backend and keeps the durable default")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(result.config.database().backend == merovingian::config::DatabaseBackend::postgresql);
             }
         }
     }

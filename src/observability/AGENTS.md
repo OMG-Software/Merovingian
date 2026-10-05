@@ -60,6 +60,12 @@ durability distinction:
 
 ## Rules
 
+- **One log record is one physical line.** `SingleLog::make_log_line` passes the module and
+  message through `escape_log_controls` (AUTH-9), so control characters in any logged value are
+  written as printable escapes. Write log records only through `SingleLog`; never write log
+  data to `std::cout`/`std::cerr` directly, never remove that escaping, and do not pre-escape
+  values at call sites. `redact_log_message` must keep treating every whitespace character as a
+  token boundary, or a sensitive last field swallows the record's `\n`.
 - **Never log secret material.** No tokens, passwords, private keys, or full request bodies. Do
   not truncate a secret to a "safe prefix" for logging — a prefix of the real secret is still
   live secret material. Use automatic redaction (fields flagged sensitive, or matched by

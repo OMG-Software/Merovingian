@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 
 #include "merovingian/appservice/registration.hpp"
+#include "merovingian/auth/password.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -14,6 +15,7 @@
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -142,6 +144,7 @@ namespace
                                              : (media_row.quarantined ? media::LocalMediaState::quarantined
                                                                       : media::LocalMediaState::available);
             record.quarantine_reason = media_row.quarantined ? "persisted quarantine" : std::string{};
+            record.legacy_endpoint_visible = media_row.legacy_endpoint_visible;
             records.push_back(std::move(record));
         }
 
@@ -315,6 +318,7 @@ auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 
 HomeserverRuntime::HomeserverRuntime()
     : audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
+    , argon2id_admission{std::make_unique<auth::Argon2idAdmission>(auth::default_argon2id_capacity())}
 {
 }
 
@@ -398,6 +402,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
     , client_outbound_budget(std::move(other.client_outbound_budget))
     , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
+    , argon2id_admission(std::move(other.argon2id_admission))
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
 {
@@ -442,6 +447,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     room_typing_stream_id = std::move(other.room_typing_stream_id);
     client_outbound_budget = std::move(other.client_outbound_budget);
     client_outbound_proxy_policy = other.client_outbound_proxy_policy;
+    argon2id_admission = std::move(other.argon2id_admission);
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
     return *this;
@@ -507,7 +513,7 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     database.rooms.reserve(database.persistent_store.rooms.size());
     for (auto const& room : database.persistent_store.rooms)
     {
-        database.rooms.push_back({room.room_id, room.creator_user_id, {}, {}});
+        database.rooms.push_back({room.room_id, room.creator_user_id, {}, {}, room.directory_public});
     }
 
     for (auto const& membership : database.persistent_store.memberships)
@@ -592,12 +598,15 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
 {
     auto database = LocalDatabase{};
     auto opened = database::PersistentStoreOpenResult{};
-    if (config.database().backend == config::DatabaseBackend::sqlite)
+    switch (config.database().backend)
     {
+    case config::DatabaseBackend::sqlite:
         opened = database::open_sqlite_persistent_store(config.database().sqlite_path);
-    }
-    else
-    {
+        break;
+    case config::DatabaseBackend::memory:
+        opened = database::open_persistent_store(std::move(existing_state));
+        break;
+    case config::DatabaseBackend::postgresql: {
         // ADR-0062 part 2: the federation worker never reads database.uri_file
         // itself. When federation_worker::apply_worker_database_uri has set
         // worker_conninfo_override on this process's own Config copy (from
@@ -608,9 +617,14 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
                                   ? config.database().worker_conninfo_override
                                   : read_database_uri_file(config.database().uri_file);
         opened = conninfo.empty()
-                     ? database::open_persistent_store(std::move(existing_state))
+                     ? database::PersistentStoreOpenResult{false, "PostgreSQL connection URI is missing or empty", {}}
                      : database::open_postgresql_persistent_store(conninfo, config.database().runtime_role,
                                                                   config.database().migration_role, profile);
+        break;
+    }
+    default:
+        opened = {false, "unsupported database backend", {}};
+        break;
     }
     if (!opened.ok)
     {
@@ -834,6 +848,42 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
             },
                            observability::LogEventSeverity::warning);
         }
+        // Create or verify every appservice's sender_localpart user. The
+        // sender is the bridge's own identity; it must exist and must not be
+        // claimable by ordinary registration (AUTH-3). Registration is
+        // passwordless — the bridge authenticates by as_token and masquerades
+        // by user_id.
+        for (auto const& registration : runtime.appservices.all())
+        {
+            auto const sender_id = appservice::sender_user_id(registration, runtime.config.server().server_name);
+            auto const user_exists = std::ranges::any_of(runtime.database.users, [&sender_id](LocalUser const& user) {
+                return user.user_id == sender_id;
+            });
+            if (!user_exists)
+            {
+                auto const result = register_appservice_user(runtime, registration.sender_localpart);
+                if (!result.ok)
+                {
+                    log_diagnostic("start.appservice_sender_creation_failed",
+                                   {
+                                       {"appservice_id", registration.id, false},
+                                       {"sender",        sender_id,       false},
+                                       {"reason",        result.reason,   false}
+                    },
+                                   observability::LogEventSeverity::error);
+                }
+                else
+                {
+                    log_diagnostic("start.appservice_sender_created",
+                                   {
+                                       {"appservice_id", registration.id, false},
+                                       {"sender",        sender_id,       false}
+                    },
+                                   observability::LogEventSeverity::info);
+                }
+            }
+        }
+
         log_diagnostic("start.appservices_ready",
                        {
                            {"count", std::to_string(loaded.registry.size()), false}

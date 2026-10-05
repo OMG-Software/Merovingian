@@ -495,13 +495,8 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
     }
 }
 
-// Regression test for #416: FederationRuntimeState::accepted_transactions
-// previously grew without bound — every accepted transaction with a distinct
-// transaction_id was appended and never evicted, so a stream of distinct
-// ids (from one origin with valid keys, or a Sybil of many) exhausted main
-// process memory over time. The fix caps the ring at kMaxAcceptedTransactions
-// (10,000, inbound_request.cpp) and evicts the oldest entry first.
-SCENARIO("Inbound federation accepted-transaction dedup ring is bounded, not unbounded",
+// Configured replay and audit retention limits evict oldest entries first.
+SCENARIO("Inbound federation dedup and audit rings honor configured entry caps",
          "[federation][inbound][transaction][security]")
 {
     GIVEN("a runtime with a known public remote")
@@ -513,6 +508,8 @@ SCENARIO("Inbound federation accepted-transaction dedup ring is bounded, not unb
         // unrelated 429.
         runtime.config.per_origin_transaction_rate = {1'000'000U, 60U};
         runtime.config.per_origin_pdu_rate = {1'000'000U, 60U};
+        runtime.config.accepted_transaction_cache_entries = 10U;
+        runtime.config.audit_event_cache_entries = 7U;
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
@@ -521,9 +518,9 @@ SCENARIO("Inbound federation accepted-transaction dedup ring is bounded, not unb
         auto const body = transaction_body(origin, json_pdu);
         auto const secret_key = merovingian::federation::test::keypair_from_seed(token).secret_key;
 
-        WHEN("far more than the dedup-ring cap worth of distinct transaction ids are accepted")
+        WHEN("more than each configured retention cap worth of distinct transaction ids are accepted")
         {
-            constexpr auto transactions = 10'010U;
+            constexpr auto transactions = 12U;
             for (auto i = 0U; i < transactions; ++i)
             {
                 auto request = signed_request(origin, key_id, token, body);
@@ -534,17 +531,10 @@ SCENARIO("Inbound federation accepted-transaction dedup ring is bounded, not unb
                 REQUIRE(response.status == 200U);
             }
 
-            THEN("the dedup ring is bounded rather than growing to the full transaction count")
+            THEN("both rings retain only their configured number of newest entries")
             {
-                REQUIRE(runtime.accepted_transactions.size() <= 10'000U);
-                REQUIRE(runtime.accepted_transactions.size() < transactions);
-
-                // Regression for #423: every federation decision also appends
-                // an audit event, so the audit log must be bounded by the same
-                // sustained-traffic reasoning (kMaxAuditEvents, FIFO eviction)
-                // and the safety check must stay accurate across evictions.
-                REQUIRE(runtime.audit_events.size() <= 10'000U);
-                REQUIRE(runtime.audit_events.size() < transactions);
+                REQUIRE(runtime.accepted_transactions.size() == 10U);
+                REQUIRE(runtime.audit_events.size() == 7U);
                 REQUIRE(merovingian::federation::federation_audit_is_safe(runtime));
             }
         }
@@ -755,9 +745,10 @@ SCENARIO("Inbound federation fails closed for unknown private denied and quarant
 namespace
 {
 
-[[nodiscard]] auto genuine_transaction_from(
-    std::string const& origin, std::string const& key_id, std::string const& token, std::string const& transaction_id,
-    std::string const& remote_addr) -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto genuine_transaction_from(std::string const& origin, std::string const& key_id,
+                                            std::string const& token, std::string const& transaction_id,
+                                            std::string const& remote_addr)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request =
         signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
@@ -2623,9 +2614,10 @@ SCENARIO("A malformed origin is rejected without reaching the resolver",
 
         WHEN("origins that are not valid server names are presented")
         {
-            // No dot; and longer than the 255-byte server-name limit.
+            // An embedded space violates the Matrix server-name grammar;
+            // single-label DNS names such as "localhost" are valid.
             std::ignore = merovingian::federation::handle_inbound_federation_request(
-                runtime, key_resolution_request("nodothere", "198.51.100.68"));
+                runtime, key_resolution_request("matrix.example.org invalid", "198.51.100.68"));
             std::ignore = merovingian::federation::handle_inbound_federation_request(
                 runtime, key_resolution_request(std::string(300U, 'a') + ".example", "198.51.100.68"));
 

@@ -33,7 +33,7 @@ SCENARIO("Reload plan is empty for identical configs", "[config][reload]")
     }
 }
 
-SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][reload]")
+SCENARIO("Reload plan marks federation policies as restart required", "[config][reload]")
 {
     GIVEN("current and next configs with runtime policy changes")
     {
@@ -59,23 +59,23 @@ SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][rel
         {
             auto const plan = merovingian::config::build_reload_plan(current, next);
 
-            THEN("the changes are reloadable")
+            THEN("the startup snapshots require a restart")
             {
                 REQUIRE(plan.has_changes());
-                REQUIRE_FALSE(plan.has_restart_required_changes());
+                REQUIRE(plan.has_restart_required_changes());
                 REQUIRE(plan.changes().size() == 4U);
-                REQUIRE(plan.reloadable_change_count() == 4U);
-                REQUIRE(plan.restart_required_change_count() == 0U);
+                REQUIRE(plan.reloadable_change_count() == 0U);
+                REQUIRE(plan.restart_required_change_count() == 4U);
                 REQUIRE(plan.changes()[0].key == "security.federation.allowed_servers");
                 REQUIRE(plan.changes()[1].key == "security.federation.denied_servers");
                 REQUIRE(plan.changes()[2].key == "security.federation.max_transaction_size");
                 REQUIRE(plan.changes()[3].key == "security.federation.remote_timeout");
-                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(plan.changes()[1].policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(plan.changes()[2].policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(plan.changes()[3].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
+                REQUIRE(plan.changes()[1].policy == merovingian::config::ReloadPolicy::restart_required);
+                REQUIRE(plan.changes()[2].policy == merovingian::config::ReloadPolicy::restart_required);
+                REQUIRE(plan.changes()[3].policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(merovingian::config::reload_plan_summary(plan) ==
-                        "Reload plan: changes=4 reloadable=4 restart_required=0");
+                        "Reload plan: changes=4 reloadable=0 restart_required=4");
             }
         }
     }
@@ -256,7 +256,8 @@ SCENARIO("Reload plan emits a diff for every documented config block", "[config]
                 {
                     if (change.key == "security.secrets.master_key_file" ||
                         change.key.starts_with("federation.worker.") || change.key.starts_with("server.cors.") ||
-                        change.key.starts_with("client_rate_limits.") || change.key.starts_with("log_modules."))
+                        change.key.starts_with("client_rate_limits.") || change.key.starts_with("log_modules.") ||
+                        change.key.starts_with("security.federation."))
                     {
                         REQUIRE(change.policy == merovingian::config::ReloadPolicy::restart_required);
                     }
@@ -285,7 +286,7 @@ SCENARIO("Reload plan flags every HTTP transport change as restart required", "[
         server.http.keep_alive_max_connections = 16U;
         server.http.max_connections_per_ip = 8U;
         server.http.ipv6_client_prefix_length = 48U;
-        server.http.request_threads = 32U;
+        server.http.request_threads = 64U;
 
         auto const next = merovingian::config::Config{
             server,

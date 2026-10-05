@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,8 +47,10 @@ struct OutboundHeader final
 //   - pinned_addresses must contain at least one address; perform() does not
 //     resolve the host itself so the SSRF policy in
 //     merovingian::federation::security stays the single source of truth.
-//     The addresses are bound to the URL host:port through libcurl's
-//     CURLOPT_RESOLVE so the connection cannot drift to a different address.
+//     One CURLOPT_RESOLVE entry retains all approved addresses. Every actual
+//     socket destination is checked against those numeric IPs and the parsed
+//     port before opening it. Proxies and socket reuse are disabled because
+//     they bypass that request's peer check.
 //
 // libcurl is configured with peer and hostname certificate verification on,
 // redirects refused, and the protocol restricted to https. Responses larger
@@ -88,6 +91,22 @@ struct OutboundResponse final
     std::string body{};
 };
 
+// Canonical, strictly parsed URL fields for callers that must resolve or
+// authorize a destination before passing it to OutboundClient. IPv6 literals
+// are returned without square brackets; `url` retains those brackets and the
+// original path/query after libcurl canonicalization with path normalization
+// disabled.
+struct ParsedOutboundUrl final
+{
+    std::string scheme{};
+    std::string host{};
+    std::uint16_t port{0U};
+    std::string path{};
+    std::string query{};
+    std::string url{};
+    bool ipv6_literal{false};
+};
+
 struct OutboundResult final
 {
     bool ok{false};
@@ -120,6 +139,14 @@ struct SystemCaTrust final
 // deployment host; perform() points libcurl at the resolved locations
 // explicitly when a request carries no in-memory CA bundle.
 [[nodiscard]] auto detect_system_ca_trust() -> SystemCaTrust;
+
+// Parses one absolute HTTPS URL (or HTTP only when explicitly allowed),
+// rejecting URL forms whose authority could diverge from the transport pin:
+// userinfo, fragments, control bytes, backslashes, encoded authority bytes,
+// invalid IP literals, and malformed ports. This performs no DNS or network
+// I/O and shares its parser and rules with OutboundClient::perform().
+[[nodiscard]] auto parse_outbound_url(std::string_view url,
+                                      bool allow_cleartext_http = false) -> std::optional<ParsedOutboundUrl>;
 
 // Pure validator. Returns OutboundError::none when the request is well-formed.
 // Does not perform DNS, TLS, or any network I/O.

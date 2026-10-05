@@ -127,7 +127,8 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
     }
 }
 
-SCENARIO("Local media repository does not deduplicate against removed zero-reference blobs", "[media][repository]")
+SCENARIO("Local media repository revives removed storage without duplicate blob identities",
+         "[media][repository][med-3]")
 {
     GIVEN("a configured local media repository with removed media")
     {
@@ -144,17 +145,31 @@ SCENARIO("Local media repository does not deduplicate against removed zero-refer
             auto const downloaded =
                 merovingian::media::download_local_media(repository, "example.org", second.media_id);
 
-            THEN("a new live blob is created and downloads return the original bytes")
+            THEN("one live blob holds the re-upload and its final removal erases the bytes")
             {
                 REQUIRE(first.ok);
                 REQUIRE(removed.ok);
                 REQUIRE(second.ok);
                 REQUIRE_FALSE(second.deduplicated);
-                REQUIRE(repository.blobs.size() == 2U);
-                REQUIRE(repository.blobs.front().ref_count == 0U);
-                REQUIRE(repository.blobs.back().ref_count == 1U);
-                REQUIRE(downloaded.ok);
-                REQUIRE(downloaded.bytes == "reupload");
+                CHECK(repository.blobs.size() == 1U);
+                CHECK(repository.blobs.front().ref_count == 1U);
+                CHECK(downloaded.ok);
+                CHECK(downloaded.bytes == "reupload");
+                auto const* stored =
+                    merovingian::media::find_local_media_blob(repository, repository.records.back().storage_id);
+                CHECK(stored != nullptr);
+                if (stored != nullptr)
+                {
+                    CHECK(stored->bytes == "reupload");
+                }
+                auto const removed_again =
+                    merovingian::media::remove_local_media(repository, second.media_id, "removed again");
+                CHECK(removed_again.ok);
+                for (auto const& blob : repository.blobs)
+                {
+                    CHECK(blob.ref_count == 0U);
+                    CHECK(blob.bytes.empty());
+                }
             }
         }
     }
@@ -257,7 +272,7 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
 // specifically because remote media has no accountable local uploader and no
 // real scanner verdict is ever produced for it today.
 SCENARIO("Remote-fetched media is quarantined by the default acceptance policy even when reported scanner-clean",
-         "[media][repository][remote][security]")
+         "[media][repository][remote][security][med-2]")
 {
     GIVEN("a repository using RuntimeMediaConfig's default acceptance policies")
     {
@@ -269,23 +284,30 @@ SCENARIO("Remote-fetched media is quarantined by the default acceptance policy e
         WHEN("a remote fetch reports scanner_clean=true, exactly as fetch_remote_media_live() would if it "
              "fabricated the verdict")
         {
-            auto const fetched = merovingian::media::fetch_remote_media(repository, {"remote.example.org",
-                                                                                     "media999",
-                                                                                     "remote.example.org",
-                                                                                     {"203.0.113.20"},
-                                                                                     "image/png",
-                                                                                     "png-bytes",
-                                                                                     true,
-                                                                                     16U,
-                                                                                     64U,
-                                                                                     1U,
-                                                                                     true});
+            auto const fetched =
+                merovingian::media::fetch_remote_media(repository, {
+                                                                       "remote.example.org",
+                                                                       "media999",
+                                                                       "remote.example.org",
+                                                                       {"203.0.113.20"},
+                                                                       "image/png",
+                                                                       std::string{"\x89PNG\r\n\x1a\n", 8U},
+                                                                       true,
+                                                                       16U,
+                                                                       64U,
+                                                                       1U,
+                                                                       true
+            });
 
             THEN("the bytes are still quarantined rather than served, because the acceptance policy overrides it")
             {
-                REQUIRE(fetched.ok);
+                CHECK_FALSE(fetched.ok);
+                CHECK(fetched.status == 451U);
+                CHECK(fetched.bytes.empty());
                 REQUIRE(fetched.quarantined);
                 REQUIRE(repository.records.front().state == merovingian::media::LocalMediaState::quarantined);
+                CHECK(repository.metrics.remote_fetches_accepted == 0U);
+                CHECK(repository.metrics.remote_fetch_rejections == 1U);
             }
         }
 

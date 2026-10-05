@@ -101,43 +101,6 @@ namespace
         return nullptr;
     }
 
-    // Find the m.room.power_levels event among `event_json`'s auth_events.
-    // Returns the ancestor's id, or nullptr if none is present or its JSON is
-    // not available in the index (the walk cannot continue past unknown events).
-    [[nodiscard]] auto power_levels_auth_ancestor(canonicaljson::Object const& event_json,
-                                                  EventJsonIndex const& events_by_id) -> std::string const*
-    {
-        auto const* auth = array_member(event_json, "auth_events");
-        if (auth == nullptr)
-        {
-            return nullptr;
-        }
-        for (auto const& entry : *auth)
-        {
-            auto const* id = auth_entry_event_id(entry);
-            if (id == nullptr)
-            {
-                continue;
-            }
-            auto const it = events_by_id.find(*id);
-            if (it == events_by_id.end())
-            {
-                continue;
-            }
-            auto const* obj = value_is_object(it->second.get());
-            if (obj == nullptr)
-            {
-                continue;
-            }
-            auto const* type = string_member(*obj, "type");
-            if (type != nullptr && *type == "m.room.power_levels")
-            {
-                return &it->first;
-            }
-        }
-        return nullptr;
-    }
-
     [[nodiscard]] auto value_has_content(canonicaljson::Value const& value) noexcept -> bool
     {
         return !std::holds_alternative<std::nullptr_t>(value.storage());
@@ -151,40 +114,6 @@ namespace
             return candidate.depth > existing.depth ? candidate : existing;
         }
         return candidate.event_id < existing.event_id ? candidate : existing;
-    }
-
-    // Build the mainline [P0, P1, …, Pn] of the resolved power_levels event:
-    // P(i+1) is the m.room.power_levels event in Pi's auth_events, walked
-    // transitively (spec rooms/v10 — Mainline ordering). The walk is bounded by
-    // max_mainline_auth_chain_depth to prevent cyclic or adversarially deep
-    // auth chains from consuming unbounded time/memory, and stops when an
-    // ancestor's JSON is not available in the index.
-    [[nodiscard]] auto collect_mainline_power_events(std::string const& head_event_id,
-                                                     canonicaljson::Value const& power_levels_event,
-                                                     EventJsonIndex const& events_by_id) -> std::vector<std::string>
-    {
-        auto result = std::vector<std::string>{};
-        auto visited = std::unordered_set<std::string>{};
-
-        auto current_id = head_event_id;
-        auto const* current = value_is_object(power_levels_event);
-        while (current != nullptr && result.size() < max_mainline_auth_chain_depth)
-        {
-            if (current_id.empty() || !visited.insert(current_id).second)
-            {
-                break;
-            }
-            result.push_back(current_id);
-
-            auto const* ancestor_id = power_levels_auth_ancestor(*current, events_by_id);
-            if (ancestor_id == nullptr)
-            {
-                break;
-            }
-            current_id = *ancestor_id;
-            current = value_is_object(events_by_id.at(*ancestor_id).get());
-        }
-        return result;
     }
 
     // Fetches event JSON by id for the auth-chain walk (auth difference,
@@ -279,6 +208,104 @@ namespace
         std::deque<StateEventReference> fetched_{};
         std::unordered_map<std::string, std::size_t> fetched_index_{};
     };
+
+    struct PowerLevelsAncestor final
+    {
+        bool valid{false};
+        std::optional<std::string> event_id{};
+    };
+
+    // Resolve every auth_events reference before concluding that no older
+    // power_levels event exists. Mainline ordering is defined by repeated
+    // auth_events lookups, including events absent from the submitted state
+    // groups; a missing/malformed ancestor makes the ordering incomplete.
+    [[nodiscard]] auto power_levels_auth_ancestor(canonicaljson::Object const& event_json, AuthChainEventSource& source)
+        -> PowerLevelsAncestor
+    {
+        auto const* auth = array_member(event_json, "auth_events");
+        if (auth == nullptr || auth->size() > max_auth_events_per_event)
+        {
+            return {};
+        }
+
+        auto result = PowerLevelsAncestor{true, std::nullopt};
+        for (auto const& entry : *auth)
+        {
+            auto const* id = auth_entry_event_id(entry);
+            if (id == nullptr || id->empty())
+            {
+                return {};
+            }
+            auto const* json = source.find_required(*id);
+            auto const* object = json != nullptr ? value_is_object(*json) : nullptr;
+            auto const* type = object != nullptr ? string_member(*object, "type") : nullptr;
+            auto const* state_key = object != nullptr ? string_member(*object, "state_key") : nullptr;
+            if (object == nullptr || type == nullptr || state_key == nullptr)
+            {
+                return {};
+            }
+            if (*type == "m.room.power_levels")
+            {
+                if (!state_key->empty() || result.event_id.has_value())
+                {
+                    return {};
+                }
+                result.event_id = *id;
+            }
+        }
+        return result;
+    }
+
+    // Build [P0, P1, …, Pn] by repeatedly resolving the power-level event in
+    // each predecessor's auth_events. Both a cycle and a truncated walk make
+    // the ordering unusable and therefore fail closed.
+    [[nodiscard]] auto collect_mainline_power_events(std::string const& head_event_id,
+                                                     canonicaljson::Value const& power_levels_event,
+                                                     AuthChainEventSource& source, std::size_t max_depth)
+        -> std::optional<std::vector<std::string>>
+    {
+        auto result = std::vector<std::string>{};
+        auto visited = std::unordered_set<std::string>{};
+        auto current_id = head_event_id;
+        auto const* current = value_is_object(power_levels_event);
+        if (current == nullptr || current_id.empty())
+        {
+            return std::nullopt;
+        }
+
+        while (result.size() < max_depth)
+        {
+            if (!visited.insert(current_id).second)
+            {
+                return std::nullopt;
+            }
+            result.push_back(current_id);
+            auto const ancestor = power_levels_auth_ancestor(*current, source);
+            if (!ancestor.valid)
+            {
+                return std::nullopt;
+            }
+            if (!ancestor.event_id.has_value())
+            {
+                return result;
+            }
+            if (result.size() == max_depth)
+            {
+                return std::nullopt;
+            }
+            current_id = *ancestor.event_id;
+            auto const* json = source.find_required(current_id);
+            current = json != nullptr ? value_is_object(*json) : nullptr;
+            auto const* type = current != nullptr ? string_member(*current, "type") : nullptr;
+            auto const* state_key = current != nullptr ? string_member(*current, "state_key") : nullptr;
+            if (type == nullptr || *type != "m.room.power_levels" || state_key == nullptr || !state_key->empty())
+            {
+                return std::nullopt;
+            }
+        }
+
+        return std::nullopt;
+    }
 
     // BFS over `start_json`'s auth_events, following ancestors transitively via
     // `source`. Returns the chain (excluding the starting event itself) or
@@ -426,63 +453,122 @@ namespace
                                                          AuthChainEventSource& source, std::size_t cap)
         -> std::optional<std::unordered_set<std::string>>
     {
-        auto subgraph = std::unordered_set<std::string>{};
-        auto visits = std::size_t{0U};
-
-        std::function<bool(std::string const&, std::string const&, std::vector<std::string>&)> dfs =
-            [&](std::string const& start_id, std::string const& id, std::vector<std::string>& path) -> bool {
-            // Two independent bounds: `visits` caps total work (DoS), and the
-            // path-length check caps recursion depth well below `visits` so an
-            // adversarial deep chain cannot exhaust the call stack before the
-            // work budget would otherwise catch it.
-            if (++visits > cap || path.size() > max_mainline_auth_chain_depth)
-            {
-                return false;
-            }
-            auto const* json = source.find_required(id);
-            if (json == nullptr)
-            {
-                return false;
-            }
-            auto const* obj = value_is_object(*json);
-            if (obj == nullptr)
-            {
-                return true;
-            }
-            auto const* auth = array_member(*obj, "auth_events");
-            if (auth == nullptr)
-            {
-                return true;
-            }
-            for (auto const& entry : *auth)
-            {
-                auto const* nid = auth_entry_event_id(entry);
-                if (nid == nullptr)
-                {
-                    continue;
-                }
-                path.push_back(*nid);
-                if (*nid != start_id && conflicted_ids.contains(*nid))
-                {
-                    subgraph.insert(path.begin(), path.end());
-                }
-                auto const ok = dfs(start_id, *nid, path);
-                path.pop_back();
-                if (!ok)
-                {
-                    return false;
-                }
-            }
-            return true;
-        };
-
-        for (auto const& start_id : conflicted_ids)
+        auto graph = std::unordered_map<std::string, std::vector<std::string>>{};
+        graph.reserve(std::min(cap, conflicted_ids.size() * 2U));
+        auto pending = std::deque<std::string>{};
+        for (auto const& id : conflicted_ids)
         {
-            subgraph.insert(start_id); // endpoints included
-            auto path = std::vector<std::string>{start_id};
-            if (!dfs(start_id, start_id, path))
+            if (id.empty())
             {
                 return std::nullopt;
+            }
+            pending.push_back(id);
+        }
+
+        while (!pending.empty())
+        {
+            auto id = std::move(pending.front());
+            pending.pop_front();
+            if (graph.contains(id))
+            {
+                continue;
+            }
+            if (graph.size() >= cap)
+            {
+                return std::nullopt;
+            }
+            auto const* json = source.find_required(id);
+            auto const* object = json != nullptr ? value_is_object(*json) : nullptr;
+            auto const* auth = object != nullptr ? array_member(*object, "auth_events") : nullptr;
+            if (auth == nullptr || auth->size() > max_auth_events_per_event)
+            {
+                return std::nullopt;
+            }
+
+            auto neighbours = std::vector<std::string>{};
+            neighbours.reserve(auth->size());
+            auto unique_neighbours = std::unordered_set<std::string>{};
+            for (auto const& entry : *auth)
+            {
+                auto const* ancestor_id = auth_entry_event_id(entry);
+                if (ancestor_id == nullptr || ancestor_id->empty() || !unique_neighbours.insert(*ancestor_id).second)
+                {
+                    return std::nullopt;
+                }
+                neighbours.push_back(*ancestor_id);
+                pending.push_back(*ancestor_id);
+            }
+            graph.emplace(std::move(id), std::move(neighbours));
+        }
+
+        // Reject cycles in the reachable auth graph with Kahn's algorithm.
+        // The graph is bounded by distinct events and each event has at most
+        // max_auth_events_per_event outgoing edges.
+        auto indegree = std::unordered_map<std::string, std::size_t>{};
+        auto reverse = std::unordered_map<std::string, std::vector<std::string>>{};
+        indegree.reserve(graph.size());
+        reverse.reserve(graph.size());
+        for (auto const& [id, ancestors] : graph)
+        {
+            indegree.try_emplace(id, 0U);
+            for (auto const& ancestor_id : ancestors)
+            {
+                if (!graph.contains(ancestor_id))
+                {
+                    return std::nullopt;
+                }
+                ++indegree[ancestor_id];
+                reverse[ancestor_id].push_back(id);
+            }
+        }
+        auto ready = std::deque<std::string>{};
+        for (auto const& [id, degree] : indegree)
+        {
+            if (degree == 0U)
+            {
+                ready.push_back(id);
+            }
+        }
+        auto processed = std::size_t{0U};
+        while (!ready.empty())
+        {
+            auto id = std::move(ready.front());
+            ready.pop_front();
+            ++processed;
+            for (auto const& ancestor_id : graph[id])
+            {
+                auto& degree = indegree[ancestor_id];
+                if (--degree == 0U)
+                {
+                    ready.push_back(ancestor_id);
+                }
+            }
+        }
+        if (processed != graph.size())
+        {
+            return std::nullopt;
+        }
+
+        // Every graph vertex is reachable from a conflicted endpoint by
+        // construction. The desired union of paths between conflicted events
+        // is exactly the subset that can also reach an endpoint.
+        auto subgraph = std::unordered_set<std::string>{};
+        auto reaches_endpoint = std::deque<std::string>{};
+        for (auto const& id : conflicted_ids)
+        {
+            subgraph.insert(id); // paths include their endpoints
+            reaches_endpoint.push_back(id);
+        }
+        while (!reaches_endpoint.empty())
+        {
+            auto id = std::move(reaches_endpoint.front());
+            reaches_endpoint.pop_front();
+            for (auto const& predecessor : reverse[id])
+            {
+                if (subgraph.insert(predecessor).second)
+                {
+                    reaches_endpoint.push_back(predecessor);
+                }
             }
         }
         return subgraph;
@@ -556,7 +642,8 @@ namespace
     // skipping it could silently treat a real, unfetched power-levels
     // ancestor as absent, defaulting the sender's power in a way the actual
     // room state would not support.
-    [[nodiscard]] auto find_auth_ancestor_context(canonicaljson::Value const& event_json, AuthChainEventSource& source)
+    [[nodiscard]] auto find_auth_ancestor_context(canonicaljson::Value const& event_json, AuthChainEventSource& source,
+                                                  rooms::RoomVersionPolicy const& policy)
         -> std::optional<AuthAncestorContext>
     {
         auto result = AuthAncestorContext{};
@@ -564,6 +651,37 @@ namespace
         if (obj == nullptr)
         {
             return result;
+        }
+        // Room v12 treats the create event as an implicit auth event derived
+        // from room_id. Keep each candidate's explicit power-level ancestor,
+        // but resolve creator privileges from that room's immutable create.
+        if (policy.create_event_is_room_id)
+        {
+            if (auto const* room_id = string_member(*obj, "room_id"); room_id != nullptr)
+            {
+                if (room_id->size() < 2U || room_id->front() != '!')
+                {
+                    return std::nullopt;
+                }
+                auto const create_id = "$" + room_id->substr(1);
+                auto const* create = source.find_required(create_id);
+                if (create == nullptr)
+                {
+                    return std::nullopt;
+                }
+                auto const* create_obj = value_is_object(*create);
+                if (create_obj == nullptr)
+                {
+                    return std::nullopt;
+                }
+                auto const* type = string_member(*create_obj, "type");
+                auto const* state_key = string_member(*create_obj, "state_key");
+                if (type == nullptr || *type != "m.room.create" || state_key == nullptr || !state_key->empty())
+                {
+                    return std::nullopt;
+                }
+                result.create = *create;
+            }
         }
         auto const* auth = array_member(*obj, "auth_events");
         if (auth == nullptr)
@@ -608,7 +726,7 @@ namespace
     // ordering. Spec (rooms/v10.md — Definitions, "Reverse topological power
     // ordering", rule 1): "x's sender has greater power level than y's
     // sender, when looking at their respective auth_events" — the power MUST
-    // come from the power_levels (and, for v12, create) event in the
+    // come from the power_levels event in the
     // candidate's OWN auth_events, never from the candidate's own new
     // content (a self-elevating m.room.power_levels event would otherwise
     // rank itself by the level it grants itself, not the level it actually
@@ -617,15 +735,15 @@ namespace
     // whatever happens to be unconflicted at resolution time). Reuses
     // events::effective_sender_power (authorization.cpp) so this ordering
     // and the auth rules agree on every default: MSC4289 creator-infinite
-    // power (decided from the create event in the SAME auth_events, per
-    // MSC4289 — sender plus content.additional_creators), the pre-v12
+    // power (decided from the implicit create event derived from room_id,
+    // per MSC4289 — sender plus content.additional_creators), the pre-v12
     // content.creator default of 100, and 0 otherwise.
     // Returns nullopt (fail closed, per ADR-0063) when an auth_events entry
     // needed to answer the question could not be fetched.
     [[nodiscard]] auto power_level_from_event(StateEventReference const& event, AuthChainEventSource& source,
                                               rooms::RoomVersionPolicy const& policy) -> std::optional<std::int64_t>
     {
-        auto const context = find_auth_ancestor_context(event.event_json, source);
+        auto const context = find_auth_ancestor_context(event.event_json, source, policy);
         if (!context.has_value())
         {
             return std::nullopt;
@@ -645,7 +763,7 @@ namespace
     // event's own auth check degrades (as if the key were simply absent),
     // exactly as it already did before this fallback existed.
     [[nodiscard]] auto find_own_auth_event(canonicaljson::Object const& event_obj, AuthChainEventSource& source,
-                                           StateKey const& wanted) -> canonicaljson::Value
+                                           StateKey const& wanted, std::string& found_event_id) -> canonicaljson::Value
     {
         auto const* auth = array_member(event_obj, "auth_events");
         if (auth == nullptr)
@@ -675,10 +793,18 @@ namespace
             auto const key_state_key = state_key != nullptr ? *state_key : std::string{};
             if (key_type == wanted.event_type && key_state_key == wanted.state_key)
             {
+                found_event_id = *id;
                 return *candidate;
             }
         }
         return {};
+    }
+
+    [[nodiscard]] auto find_own_auth_event(canonicaljson::Object const& event_obj, AuthChainEventSource& source,
+                                           StateKey const& wanted) -> canonicaljson::Value
+    {
+        auto ignored_event_id = std::string{};
+        return find_own_auth_event(event_obj, source, wanted, ignored_event_id);
     }
 
     [[nodiscard]] auto build_auth_event_map_from_state(canonicaljson::Value const& event, StateMap const& current_state,
@@ -707,10 +833,11 @@ namespace
         if (auto it = current_state.find(StateKey{"m.room.create", ""}); it != current_state.end())
         {
             result.create = it->second.event_json;
+            result.create_event_id = it->second.event_id;
         }
         else
         {
-            result.create = find_own_auth_event(*obj, source, StateKey{"m.room.create", ""});
+            result.create = find_own_auth_event(*obj, source, StateKey{"m.room.create", ""}, result.create_event_id);
         }
         if (auto it = current_state.find(StateKey{"m.room.power_levels", ""}); it != current_state.end())
         {
@@ -802,6 +929,105 @@ namespace
         return result;
     }
 
+    [[nodiscard]] auto mainline_order_with_source(std::vector<StateEventReference>& events, StateMap const& resolved,
+                                                  AuthChainEventSource& source, StateResolutionLimits const& limits)
+        -> bool
+    {
+        auto const pl_key = StateKey{"m.room.power_levels", ""};
+        auto mainline = std::vector<std::string>{};
+        if (auto const it = resolved.find(pl_key); it != resolved.end() && value_has_content(it->second.event_json))
+        {
+            auto collected = collect_mainline_power_events(it->second.event_id, it->second.event_json, source,
+                                                           limits.max_mainline_auth_chain_depth);
+            if (!collected.has_value())
+            {
+                return false;
+            }
+            mainline = std::move(*collected);
+        }
+
+        auto mainline_depth = std::unordered_map<std::string, std::size_t>{};
+        mainline_depth.reserve(mainline.size());
+        for (std::size_t i = 0; i < mainline.size(); ++i)
+        {
+            mainline_depth.emplace(mainline[i], i);
+        }
+
+        auto const infinity = std::numeric_limits<std::size_t>::max();
+        auto position_by_event_id = std::unordered_map<std::string, std::size_t>{};
+        position_by_event_id.reserve(events.size());
+        for (auto const& event : events)
+        {
+            auto position = infinity;
+            if (!mainline.empty())
+            {
+                auto const* current = value_is_object(event.event_json);
+                if (current == nullptr)
+                {
+                    return false;
+                }
+                auto visited = std::unordered_set<std::string>{};
+                auto found_position = false;
+                for (std::size_t hop = 0; hop < limits.max_mainline_auth_chain_depth; ++hop)
+                {
+                    auto const ancestor = power_levels_auth_ancestor(*current, source);
+                    if (!ancestor.valid)
+                    {
+                        return false;
+                    }
+                    if (!ancestor.event_id.has_value())
+                    {
+                        found_position = true;
+                        break;
+                    }
+                    if (auto const position_it = mainline_depth.find(*ancestor.event_id);
+                        position_it != mainline_depth.end())
+                    {
+                        position = position_it->second;
+                        found_position = true;
+                        break;
+                    }
+                    if (!visited.insert(*ancestor.event_id).second)
+                    {
+                        return false;
+                    }
+                    auto const* json = source.find_required(*ancestor.event_id);
+                    auto const* object = json != nullptr ? value_is_object(*json) : nullptr;
+                    auto const* type = object != nullptr ? string_member(*object, "type") : nullptr;
+                    auto const* state_key = object != nullptr ? string_member(*object, "state_key") : nullptr;
+                    if (object == nullptr || type == nullptr || *type != "m.room.power_levels" ||
+                        state_key == nullptr || !state_key->empty())
+                    {
+                        return false;
+                    }
+                    current = object;
+                }
+                if (!found_position)
+                {
+                    return false;
+                }
+            }
+            position_by_event_id.emplace(event.event_id, position);
+        }
+
+        auto const compare = [&position_by_event_id](StateEventReference const& a,
+                                                     StateEventReference const& b) -> bool {
+            auto const pos_a = position_by_event_id.at(a.event_id);
+            auto const pos_b = position_by_event_id.at(b.event_id);
+            if (pos_a != pos_b)
+            {
+                return pos_a > pos_b;
+            }
+            if (a.origin_server_ts != b.origin_server_ts)
+            {
+                return a.origin_server_ts < b.origin_server_ts;
+            }
+            return a.event_id < b.event_id;
+        };
+        std::stable_sort(events.begin(), events.end(), compare);
+        return !source.missing();
+    }
+
 } // namespace
 
 auto state_key_matches(StateKey const& left, StateKey const& right) noexcept -> bool
@@ -832,17 +1058,27 @@ auto state_group_event(StateGroup const& group, StateKey const& key) noexcept ->
 [[nodiscard]] auto validate_state_resolution_request(StateResolutionRequest const& request)
     -> std::optional<std::string>
 {
-    if (request.state_groups.size() > max_state_groups)
+    auto const& limits = request.limits;
+    if (request.state_groups.size() > limits.max_state_groups)
     {
         return "too many state groups";
     }
 
+    auto total_events = std::size_t{0U};
     for (auto const& group : request.state_groups)
     {
-        if (group.state.size() > max_events_per_state_group)
+        if (group.state.size() > limits.max_events_per_state_group)
         {
             return "too many events in state group";
         }
+        // Keep the subtraction guarded so no untrusted input can overflow the
+        // aggregate count while checking the configured ceiling.
+        if (total_events > limits.max_total_state_events ||
+            group.state.size() > limits.max_total_state_events - total_events)
+        {
+            return "too many total state events";
+        }
+        total_events += group.state.size();
     }
     return std::nullopt;
 }
@@ -905,7 +1141,8 @@ auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResu
     return result;
 }
 
-auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>
+auto partition_conflicted_state(std::vector<StateGroup> const& groups, StateResolutionLimits const& limits)
+    -> std::pair<StateMap, StateMap>
 {
     // Spec (rooms/v10.md — Definitions, "Unconflicted state map and
     // conflicted state set"): "If a given key K is present in every Si with
@@ -924,6 +1161,21 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
         std::size_t last_group_counted{0};
     };
 
+    auto total_events = std::size_t{0U};
+    if (groups.size() > limits.max_state_groups)
+    {
+        return {};
+    }
+    for (auto const& group : groups)
+    {
+        if (group.state.size() > limits.max_events_per_state_group || total_events > limits.max_total_state_events ||
+            group.state.size() > limits.max_total_state_events - total_events)
+        {
+            return {};
+        }
+        total_events += group.state.size();
+    }
+
     auto tallies = std::unordered_map<StateKey, KeyTally, StateKeyHash>{};
     tallies.reserve(groups.size() * 8U);
 
@@ -933,7 +1185,7 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
         {
             auto [it, inserted] = tallies.try_emplace(event.key);
             auto& tally = it->second;
-            if (tallies.size() > max_conflicted_state_keys)
+            if (tallies.size() > limits.max_conflicted_state_keys)
             {
                 // Fail fast: too many distinct state keys to resolve safely.
                 return {};
@@ -976,7 +1228,7 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
 
 auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
                                     EventJsonIndex const& known_events, EventLookupFn const& event_lookup,
-                                    rooms::RoomVersionPolicy const& policy)
+                                    rooms::RoomVersionPolicy const& policy, StateResolutionLimits const& limits)
     -> std::optional<std::vector<StateEventReference>>
 {
     // Powers are computed once up front, rather than inside the sort
@@ -984,7 +1236,11 @@ auto reverse_topological_power_sort(std::vector<StateEventReference> const& conf
     // clean way to report a fail-closed condition (a missing auth_events
     // ancestor — see power_level_from_event), and recomputing per comparison
     // would re-walk the same auth_events on every comparator call.
-    auto source = AuthChainEventSource{known_events, event_lookup, max_auth_chain_walk_events};
+    if (conflicted.size() > limits.max_conflicted_state_keys)
+    {
+        return std::nullopt;
+    }
+    auto source = AuthChainEventSource{known_events, event_lookup, limits.max_auth_chain_walk_events};
     auto power_by_id = std::unordered_map<std::string, std::int64_t>{};
     power_by_id.reserve(conflicted.size());
     for (auto const& event : conflicted)
@@ -1158,107 +1414,12 @@ auto build_event_json_index(std::vector<StateGroup> const& groups) -> EventJsonI
     return index;
 }
 
-// Verified against the same defect class as power_level_from_event (self-
-// content or a shared state map, instead of the event's own auth_events)
-// while fixing the reverse topological power ordering: this function does
-// NOT have that mistake. It never computes a power LEVEL at all — the
-// mainline position comparison only ever needs the event's own
-// power_levels-ancestor auth_events chain (walked below via
-// power_levels_auth_ancestor(*current, events_by_id), starting from
-// `event.event_json`'s own "auth_events" array), never `resolved` or any
-// other event's data. `resolved` is used only to locate the mainline's own
-// head (P0, the already-resolved power_levels event) — not to read any
-// individual candidate's power.
 auto mainline_order(std::vector<StateEventReference>& events, StateMap const& resolved,
-                    EventJsonIndex const& events_by_id) -> void
+                    EventJsonIndex const& events_by_id, StateResolutionLimits const& limits) -> void
 {
-    auto const pl_key = StateKey{"m.room.power_levels", ""};
-    std::vector<std::string> mainline;
-
-    auto it = resolved.find(pl_key);
-    if (it != resolved.end() && value_has_content(it->second.event_json))
-    {
-        mainline = collect_mainline_power_events(it->second.event_id, it->second.event_json, events_by_id);
-    }
-
-    // If the mainline hit the depth cap, sorting by it would be misleading;
-    // fall back to a timestamp ordering so we still terminate but do not
-    // produce an ordering that depends on truncated data.
-    auto const mainline_truncated = mainline.size() >= max_mainline_auth_chain_depth;
-
-    auto mainline_depth = std::unordered_map<std::string, std::size_t>{};
-    mainline_depth.reserve(mainline.size());
-    for (std::size_t i = 0; i < mainline.size(); ++i)
-    {
-        mainline_depth[mainline[i]] = i;
-    }
-
-    // Spec (rooms/v10 — Mainline ordering): walk the event's power-levels
-    // ancestry (e1, e2, …) until an event on the mainline is found; its
-    // mainline index is the event's position. If the walk exhausts without
-    // reaching the mainline, the position is ∞ — a sentinel greater than any
-    // index — so the event sorts as oldest.
-    auto const infinity = std::numeric_limits<std::size_t>::max();
-    auto mainline_position = [&](StateEventReference const& event) -> std::size_t {
-        auto visited = std::unordered_set<std::string>{};
-        auto const* current = value_is_object(event.event_json);
-        for (std::size_t hops = 0; current != nullptr && hops < max_mainline_auth_chain_depth; ++hops)
-        {
-            auto const* auth = array_member(*current, "auth_events");
-            if (auth == nullptr)
-            {
-                return infinity;
-            }
-            // A mainline hit among the auth entries wins immediately: every
-            // mainline entry is a power_levels event, and a valid event cites
-            // at most one power_levels event in its auth_events.
-            for (auto const& entry : *auth)
-            {
-                auto const* id = auth_entry_event_id(entry);
-                if (id == nullptr)
-                {
-                    continue;
-                }
-                if (auto dit = mainline_depth.find(*id); dit != mainline_depth.end())
-                {
-                    return dit->second;
-                }
-            }
-            auto const* ancestor_id = power_levels_auth_ancestor(*current, events_by_id);
-            if (ancestor_id == nullptr || !visited.insert(*ancestor_id).second)
-            {
-                return infinity;
-            }
-            current = value_is_object(events_by_id.at(*ancestor_id).get());
-        }
-        return infinity;
-    };
-
-    auto position_by_event_id = std::unordered_map<std::string, std::size_t>{};
-    position_by_event_id.reserve(events.size());
-    for (auto const& event : events)
-    {
-        position_by_event_id.emplace(event.event_id, mainline_truncated ? infinity : mainline_position(event));
-    }
-
-    auto mainline_compare = [&position_by_event_id](StateEventReference const& a,
-                                                    StateEventReference const& b) -> bool {
-        auto const pos_a = position_by_event_id.at(a.event_id);
-        auto const pos_b = position_by_event_id.at(b.event_id);
-        if (pos_a != pos_b)
-        {
-            // Spec: x < y when x's mainline position is GREATER than y's
-            // (an auth chain based on an earlier mainline event sorts first).
-            return pos_a > pos_b;
-        }
-        if (a.origin_server_ts != b.origin_server_ts)
-        {
-            return a.origin_server_ts < b.origin_server_ts;
-        }
-        return a.event_id < b.event_id;
-    };
-
-    std::stable_sort(events.begin(), events.end(), mainline_compare);
+    auto const no_lookup = EventLookupFn{};
+    auto source = AuthChainEventSource{events_by_id, no_lookup, limits.max_auth_chain_walk_events};
+    std::ignore = mainline_order_with_source(events, resolved, source, limits);
 }
 
 auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionPolicy const& policy)
@@ -1283,7 +1444,7 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     }
 
     // Step 1: Partition into conflicted and unconflicted
-    auto [unconflicted, conflicted_events] = partition_conflicted_state(request.state_groups);
+    auto [unconflicted, conflicted_events] = partition_conflicted_state(request.state_groups, request.limits);
 
     // Step 3: Collect all conflicted events and sort by reverse topological power ordering
     if (unconflicted.empty() && conflicted_events.empty())
@@ -1300,6 +1461,7 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
 
     auto all_conflicted = std::vector<StateEventReference>{};
     all_conflicted.reserve(conflicted_events.size());
+    auto seen_conflicted_ids = std::unordered_map<StateKey, std::unordered_set<std::string>, StateKeyHash>{};
     for (auto const& group : request.state_groups)
     {
         for (auto const& event : group.state)
@@ -1309,13 +1471,11 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
                 continue;
             }
 
-            auto const duplicate = std::ranges::any_of(all_conflicted, [&event](StateEventReference const& existing) {
-                return state_key_matches(existing.key, event.key) && existing.event_id == event.event_id;
-            });
-            if (!duplicate)
+            auto& seen_ids = seen_conflicted_ids.try_emplace(event.key).first->second;
+            if (seen_ids.insert(event.event_id).second)
             {
                 all_conflicted.push_back(event);
-                if (all_conflicted.size() > max_conflicted_state_keys)
+                if (all_conflicted.size() > request.limits.max_conflicted_state_keys)
                 {
                     log_diagnostic("resolve_state_v2.rejected", {
                                                                     {"room_version", request.room_version,         false},
@@ -1358,11 +1518,12 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     // chains are not silently ignored. Backed by the submitted state groups
     // plus request.event_lookup for anything else.
     auto const known_index = build_event_json_index(request.state_groups);
-    auto source = AuthChainEventSource{known_index, request.event_lookup, max_auth_chain_walk_events};
+    auto source = AuthChainEventSource{known_index, request.event_lookup, request.limits.max_auth_chain_walk_events};
 
     // Spec (rooms/v10.md — Definitions, "Auth difference"): "∪Ci − ∩Ci",
     // where Ci is the full auth chain of state group i.
-    auto const auth_difference = compute_auth_difference(request.state_groups, source, max_auth_chain_walk_events);
+    auto const auth_difference =
+        compute_auth_difference(request.state_groups, source, request.limits.max_auth_chain_walk_events);
     if (!auth_difference.has_value() || source.missing())
     {
         log_diagnostic("resolve_state_v2.rejected",
@@ -1409,7 +1570,8 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         {
             conflicted_ids.insert(event.event_id);
         }
-        auto const subgraph = compute_conflicted_state_subgraph(conflicted_ids, source, max_auth_chain_walk_events);
+        auto const subgraph =
+            compute_conflicted_state_subgraph(conflicted_ids, source, request.limits.max_auth_chain_walk_events);
         if (!subgraph.has_value() || source.missing())
         {
             log_diagnostic("resolve_state_v2.rejected",
@@ -1546,7 +1708,7 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         auto const id = std::move(enlarge_queue.back());
         enlarge_queue.pop_back();
         auto const& event = full_conflicted_by_id.at(id);
-        auto const chain = walk_auth_chain(event.event_json, source, max_auth_chain_walk_events);
+        auto const chain = walk_auth_chain(event.event_json, source, request.limits.max_auth_chain_walk_events);
         if (!chain.has_value() || source.missing())
         {
             log_diagnostic("resolve_state_v2.rejected", {
@@ -1582,7 +1744,8 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     // The reverse topological power ordering sort reads each candidate's own
     // auth_events, regardless of algorithm variant — only the iterative auth
     // checks' starting map changes for v12 (modification 1 above).
-    auto sorted_power_result = reverse_topological_power_sort(power_events, known_index, request.event_lookup, policy);
+    auto sorted_power_result =
+        reverse_topological_power_sort(power_events, known_index, request.event_lookup, policy, request.limits);
     if (!sorted_power_result.has_value())
     {
         auto const sort_failure_fields = std::vector<observability::StructuredLogField>{
@@ -1600,7 +1763,14 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
 
     // Algorithm step 3: order only the remaining events by the mainline
     // ordering based on the power levels in the partially resolved state.
-    mainline_order(remaining_events, resolved, known_index);
+    if (!mainline_order_with_source(remaining_events, resolved, source, request.limits) || source.missing())
+    {
+        log_diagnostic("resolve_state_v2.rejected", {
+                                                        {"room_version", request.room_version,                       false},
+                                                        {"reason",       "mainline ordering auth-chain walk failed", false}
+        });
+        return {false, {}, "state-res v2: mainline ordering auth-chain walk failed"};
+    }
 
     // Algorithm step 4: auth-check the remaining events against the partially
     // resolved state.

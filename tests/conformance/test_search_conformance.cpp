@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |            POST /_matrix/client/v3/search — CONFORMANCE                 |
@@ -14,8 +15,8 @@
 // |  result set cannot pass the negative check by accident.                 |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
@@ -43,14 +44,17 @@ using namespace merovingian::tests;
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
-[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt, std::string const& localpart)
-    -> std::string
+[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt,
+                                      std::string const& localpart) -> std::string
 {
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 rt, {"POST",
@@ -77,8 +81,8 @@ using namespace merovingian::tests;
 // as `1` and parsed back as an integer. Asserting purely on the double
 // alternative would therefore fail for correct integral ranks. Returns nullopt
 // when the member is absent or not a number at all.
-[[nodiscard]] auto number_member(merovingian::canonicaljson::Object const& object, std::string_view key)
-    -> std::optional<double>
+[[nodiscard]] auto number_member(merovingian::canonicaljson::Object const& object,
+                                 std::string_view key) -> std::optional<double>
 {
     if (auto const* as_double = double_member(object, key); as_double != nullptr)
     {
@@ -113,8 +117,8 @@ using namespace merovingian::tests;
     return *room_id;
 }
 
-auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token, std::string const& room_id)
-    -> void
+auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+               std::string const& room_id) -> void
 {
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", token, "{}"})
@@ -122,8 +126,8 @@ auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string con
 }
 
 [[nodiscard]] auto send_text_message(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                                     std::string const& room_id, std::string const& txn_id, std::string const& body)
-    -> std::string
+                                     std::string const& room_id, std::string const& txn_id,
+                                     std::string const& body) -> std::string
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
         rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn_id, token,
@@ -147,8 +151,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // POSTs /search and returns the raw DispatchResult, for scenarios that need
 // to inspect the status code themselves (unauthenticated / malformed body).
 [[nodiscard]] auto raw_search(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                              std::string const& request_body, std::string const& query = {})
-    -> merovingian::homeserver::DispatchResult
+                              std::string const& request_body,
+                              std::string const& query = {}) -> merovingian::homeserver::DispatchResult
 {
     return merovingian::homeserver::handle_client_server_request(
         rt, {"POST", "/_matrix/client/v3/search" + query, token, request_body});
@@ -157,8 +161,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // POSTs /search, requires 200, and returns the parsed
 // `search_categories.room_events` object.
 [[nodiscard]] auto search(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                          std::string const& request_body, std::string const& query = {})
-    -> merovingian::canonicaljson::Object
+                          std::string const& request_body,
+                          std::string const& query = {}) -> merovingian::canonicaljson::Object
 {
     auto const resp = raw_search(rt, token, request_body, query);
     REQUIRE(resp.response.status == 200U);
@@ -187,8 +191,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // `result.event_id` field, never a substring search over serialized JSON —
 // prev_events/auth_events on a *different*, legitimately-returned event can
 // quote a suppressed event's id verbatim.
-[[nodiscard]] auto results_contain_event(merovingian::canonicaljson::Array const& results, std::string const& event_id)
-    -> bool
+[[nodiscard]] auto results_contain_event(merovingian::canonicaljson::Array const& results,
+                                         std::string const& event_id) -> bool
 {
     return std::ranges::any_of(results, [&](merovingian::canonicaljson::Value const& entry) {
         auto const* entry_obj = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
@@ -198,8 +202,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
     });
 }
 
-[[nodiscard]] auto find_result(merovingian::canonicaljson::Array const& results, std::string const& event_id)
-    -> merovingian::canonicaljson::Object const*
+[[nodiscard]] auto find_result(merovingian::canonicaljson::Array const& results,
+                               std::string const& event_id) -> merovingian::canonicaljson::Object const*
 {
     for (auto const& entry : results)
     {

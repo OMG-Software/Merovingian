@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 
 namespace merovingian::homeserver
 {
@@ -17,6 +18,9 @@ struct SyncWaitParams final
     std::uint64_t since_stream_ordering{0U};
     std::uint64_t since_sync_stream_id{0U};
     std::chrono::milliseconds timeout{0U};
+    // Authenticated identities, supplied by the handler while holding the runtime lock.
+    std::string user_id{};
+    std::string device_id{};
 };
 
 // Result of a handler dispatch. Most handlers complete synchronously

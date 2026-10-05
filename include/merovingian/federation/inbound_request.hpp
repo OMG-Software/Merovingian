@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -419,6 +420,11 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
     -> bool;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin)
     -> FederationDecision;
+[[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+                                            std::optional<FederationKeyRecord> const& key,
+                                            RemoteKeyResolver const& remote_key_resolver, crypto::Ed25519Provider& provider)
+    -> FederationDecision;
+
 // Verifies the sender server's signature on `pdu` with `key`. From room
 // version 5 the key must also be valid at the event's own origin_server_ts
 // (`key.valid_until_ts >= origin_server_ts`, rooms/v5.md "Signing key validity

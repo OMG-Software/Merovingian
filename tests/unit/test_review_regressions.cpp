@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-
 #include "../federation_signing_test_support.hpp"
+#include "../support/in_memory_database_config.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
@@ -81,9 +81,12 @@ private:
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -98,9 +101,12 @@ private:
     security.registration.require_token = true;
     security.registration.token_file = token_file.string();
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -128,8 +134,8 @@ private:
     return body.substr(value_start, value_end - value_start);
 }
 
-[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id,
+                                  std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -163,8 +169,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
-        -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view,
+                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
     {
         {
             auto lock = std::scoped_lock<std::mutex>{mutex_};
@@ -180,8 +186,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view,
+                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
     {
         return {false, {}, "address lookup blocked for regression test"};
     }
@@ -507,10 +513,13 @@ SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id 
                                                remote_runtime(remote_origin, remote_key_id, remote_key_seed));
 
         // Receipt EDUs are only stored for rooms this server is in (0.12.5
-        // audit, finding 13), so the room needs a membership row before the
-        // event_ids shape behaviour under test can be reached.
+        // audit, finding 13), and the receipt subject must be a joined member
+        // of the room (FED-8), so seed both a local member and the remote
+        // receipt subject before testing event_ids shape behaviour.
         runtime.homeserver.database.persistent_store.memberships.push_back(
             {"!room:example.org", "@local:example.org", "join", 1U});
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@alice:remote.example.org", "join", 2U});
 
         auto const content =
             R"({"!room:example.org":{"m.read":{"@alice:remote.example.org":{"event_ids":["$event:remote.example.org"],"data":{"ts":42}}}}})";
@@ -560,6 +569,8 @@ SCENARIO("Inbound receipt EDUs keep only m.read receipts", "[homeserver][federat
                                                remote_runtime(remote_origin, remote_key_id, remote_key_seed));
         runtime.homeserver.database.persistent_store.memberships.push_back(
             {"!room:example.org", "@local:example.org", "join", 1U});
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@alice:remote.example.org", "join", 2U});
 
         auto const content =
             R"({"!room:example.org":{)"
@@ -986,9 +997,9 @@ SCENARIO("SQLite persistent transactions roll back failed statement groups",
         merovingian::database::enable_statement_capture(store, 256U);
         auto const statements = std::vector<merovingian::database::PreparedStatement>{
             {"insert_room",
-             "INSERT INTO rooms VALUES ($1, $2)", {{"!room1:example.org", false}, {"@alice:example.org", false}}},
+             "INSERT INTO rooms (room_id, creator_user_id) VALUES ($1, $2)", {{"!room1:example.org", false}, {"@alice:example.org", false}}},
             {"insert_room_duplicate",
-             "INSERT INTO rooms VALUES ($1, $2)", {{"!room1:example.org", false}, {"@bob:example.org", false}}  },
+             "INSERT INTO rooms (room_id, creator_user_id) VALUES ($1, $2)", {{"!room1:example.org", false}, {"@bob:example.org", false}}  },
         };
 
         WHEN("the transaction is committed")

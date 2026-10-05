@@ -11,6 +11,11 @@
 #include <string_view>
 #include <vector>
 
+namespace merovingian::config
+{
+struct FederationStateResolutionConfig;
+}
+
 // ADR-0064 phase B1: state bookkeeping for every stored event (local or
 // federated) — state-before/state-after via delta state groups, forward
 // extremities, and current state as a cache of the resolution over them.
@@ -19,6 +24,12 @@
 // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md.
 namespace merovingian::homeserver
 {
+
+// Maps the operator's restart-required state-resolution budget to the
+// resolver's typed limits. Kept in one place so every homeserver path uses
+// the same policy.
+[[nodiscard]] auto state_resolution_limits(config::FederationStateResolutionConfig const& config)
+    -> events::StateResolutionLimits;
 
 // Builds a store-backed events::EventLookupFn for the state-res v2
 // auth-chain walk (auth difference / v12 conflicted state subgraph):
@@ -57,7 +68,8 @@ struct StateBeforeResult final
 // receipt of a PDU".
 [[nodiscard]] auto compute_state_before(database::PersistentStore const& store, std::string_view room_id,
                                         rooms::RoomVersionPolicy const& policy,
-                                        std::vector<std::string> const& prev_event_ids) -> StateBeforeResult;
+                                        std::vector<std::string> const& prev_event_ids,
+                                        events::StateResolutionLimits const& limits = {}) -> StateBeforeResult;
 
 // State after an event = the state before it, plus the event itself when it
 // is a state event (state_key has a value): upserts (event_type, state_key)
@@ -131,7 +143,8 @@ struct StateBeforeResult final
 // these are defensive fallbacks for degenerate inputs, not an expected
 // runtime path.
 [[nodiscard]] auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
-                                           rooms::RoomVersionPolicy const& policy) -> bool;
+                                           rooms::RoomVersionPolicy const& policy,
+                                           events::StateResolutionLimits const& limits = {}) -> bool;
 
 // ---- Local event-creation choke point (ADR-0064 phase B1, continued) ----
 //
@@ -173,6 +186,7 @@ struct StateBeforeResult final
 // composition); this function does not re-authorise.
 [[nodiscard]] auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
                                      database::PersistentEvent event,
-                                     std::optional<database::PersistentStateEvent> state) -> bool;
+                                     std::optional<database::PersistentStateEvent> state,
+                                     events::StateResolutionLimits const& limits = {}) -> bool;
 
 } // namespace merovingian::homeserver

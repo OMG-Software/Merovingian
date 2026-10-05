@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // HTTP-2 and OUT-7 (security audit 2026-09-29, ADR-0079).
 //
@@ -136,8 +137,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
-        -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view,
+                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
     {
         m_calls->fetch_add(1);
         return {};
@@ -149,8 +150,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view,
+                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
     {
         m_calls->fetch_add(1);
         return {false, {}, "not found"};
@@ -170,8 +171,12 @@ private:
     merovingian::tests::enable_token_registration(security);
     security.media.remote_fetch_enabled = remote_fetch_enabled;
     return {
-        std::move(server), merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        security,          merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -183,8 +188,8 @@ struct Answer final
 };
 
 [[nodiscard]] auto send(ClientServerRuntime& runtime, std::string method, std::string target,
-                        std::string const& client_address, std::string const& token = {}, std::string body = {})
-    -> Answer
+                        std::string const& client_address, std::string const& token = {},
+                        std::string body = {}) -> Answer
 {
     auto request = merovingian::homeserver::LocalHttpRequest{};
     request.method = std::move(method);
@@ -647,7 +652,8 @@ SCENARIO("Every unauthenticated proxy route shares one budget, and authenticated
                     },
                     2000ms);
                 get_rooms = send(runtime, "GET", silent_rooms_target, "192.0.2.21");
-                post_rooms = send(runtime, "POST", silent_rooms_target, "192.0.2.22", {}, R"({"limit":5})");
+                // Matrix v1.19 POST /publicRooms requires authentication before proxy admission.
+                post_rooms = send(runtime, "POST", silent_rooms_target, "192.0.2.22", token, R"({"limit":5})");
                 alias = send(runtime, "GET", silent_alias_target, "192.0.2.23");
                 authenticated_alias = send(runtime, "GET", silent_alias_target, "192.0.2.24", token);
                 media = send(runtime, "GET", "/_matrix/media/v3/download/" + std::string{silent_server} + "/abc",

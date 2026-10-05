@@ -139,6 +139,13 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
 
 ## Authenticated media and legacy endpoint freeze (M05)
 
+Remote quarantine is a storage disposition, not download permission. Held
+remote content returns 451 with a fixed reason and no payload bytes, and cannot
+enter thumbnail processing. Only an admitted 200 result can become a media
+response; other internal success statuses are refused with a fixed 502 error.
+Held records remain available for moderation and count as rejected remote
+fetches rather than accepted deliveries.
+
 Local uploads are assigned 128-bit random, URL-safe media IDs: 16 bytes of
 CSPRNG output encoded as 22 unpadded base64url characters (`[A-Za-z0-9_-]`).
 The same content uploaded twice receives different IDs because deduplication
@@ -153,7 +160,9 @@ without a token, every new upload is persisted with
 404, while authenticated `/_matrix/client/v1/media/download` and
 `/thumbnail` routes continue to serve the media. Pre-upgrade rows default to
 `legacy_endpoint_visible = 'true'` via migration 016, so existing
-unauthenticated links keep working. See
+unauthenticated links keep working. Hydration restores the persisted visibility
+flag on every restart; a record without an explicit flag defaults to private.
+See
 [ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md).
 
 ## Encrypted media is never scannable
@@ -295,7 +304,13 @@ and blocking network calls".
 
 ## Deduplication
 
-Local media deduplication uses a LibSodium `crypto_generichash` (`blake2b`) digest and byte size. Removed blobs with a zero reference count are not reused for future uploads, because their bytes have been cleared and reusing them would corrupt successful reuploads.
+Local media deduplication uses a LibSodium `crypto_generichash` (`blake2b`)
+digest and byte size. Each storage ID identifies one blob row. Re-uploading
+removed content restores that row with the new bytes and one reference;
+it does not deduplicate against cleared bytes or append a duplicate storage ID.
+Download and thumbnail lookups require a live reference. Persistence also writes
+zero-reference tombstones so final removal clears durable bytes.
+See [ADR-0094](adr/0094-revive-removed-media-storage-identities.md).
 
 ## Persistence
 
@@ -306,3 +321,7 @@ blob bytes through `media_blobs`, and hydrate the runtime repository from those
 rows after a SQLite/PostgreSQL restart.
 
 Media moderation events are persisted with the `moderation` audit category so operator filtering can distinguish media policy and admin moderation events from auth or generic admin activity.
+
+### Security audit follow-up (0.12.17)
+
+Administrative quarantine, release and removal validate without changing repository state. Metadata, optional blob reference-count/byte clearing, admin_actions and audit_log commit atomically before repository state or metrics change. Any required write failure returns 500 and preserves the prior state across restart (ADR-0100).

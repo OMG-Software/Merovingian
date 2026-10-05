@@ -14,12 +14,10 @@
 namespace merovingian::federation
 {
 
-// Server-side caps for `POST /get_missing_events`. The spec default for `limit`
-// is 10; the cap bounds how much history one request can pull. `latest_events`
-// is capped because every entry costs one lookup in the event store.
+// Default server policy for `POST /get_missing_events`. The spec default for
+// `limit` is 10; configured policy bounds event output, request roots and walk
+// work without requiring the server to honour arbitrary remote counts.
 inline constexpr auto default_missing_events_limit = std::size_t{10U};
-inline constexpr auto max_missing_events_limit = std::size_t{20U};
-inline constexpr auto max_missing_events_latest = std::size_t{100U};
 
 // True when `origin` may read `room_id` over federation: the room's CURRENT state
 // holds a `m.room.member` event with `membership: join` for a user whose server
@@ -84,8 +82,9 @@ inline constexpr auto max_missing_events_latest = std::size_t{100U};
 // Serves `GET /_matrix/federation/v1/backfill/{roomId}`: 403 M_FORBIDDEN unless
 // `request.origin` passes `origin_may_read_room`, otherwise the PDUs from
 // `build_backfill_pdus`.
-[[nodiscard]] auto build_backfill_response(database::PersistentStore const& store,
-                                           BackfillRequest const& request) -> BackfillResult;
+[[nodiscard]] auto build_backfill_response(database::PersistentStore const& store, BackfillRequest const& request,
+                                           FederationQueryPolicy const& policy = FederationQueryPolicy{})
+    -> BackfillResult;
 
 // Builds the response for an inbound federation
 // `POST /_matrix/federation/v1/get_missing_events/{roomId}` request.
@@ -95,13 +94,15 @@ inline constexpr auto max_missing_events_latest = std::size_t{100U};
 // walk of `prev_events` from `latest_events`: it never returns or walks past an
 // event in `earliest_events`, never returns the `latest_events` themselves, skips
 // (and does not walk past) events with `depth` below `min_depth`, and stops at
-// `limit` (default 10, at most 20). Events come back oldest first. The walk
-// touches at most a bounded number of events and never scans the room. A body
+// `limit` (default 10, clamped to `policy.max_missing_events_pdus`). Events
+// come back oldest first. The walk touches at most
+// `policy.max_missing_events_traversal` events and never scans the room. A body
 // that is not a JSON object with string-list `latest_events` and `earliest_events`
-// (at most `max_missing_events_latest` latest events) and integer `limit` /
+// (at most `policy.max_missing_events_latest` latest events) and integer `limit` /
 // `min_depth` is `malformed`.
 [[nodiscard]] auto build_get_missing_events_response(database::PersistentStore const& store, std::string_view room_id,
-                                                     std::string_view request_body,
-                                                     std::string_view origin) -> RoomReadResult;
+                                                     std::string_view request_body, std::string_view origin,
+                                                     FederationQueryPolicy const& policy = FederationQueryPolicy{})
+    -> RoomReadResult;
 
 } // namespace merovingian::federation

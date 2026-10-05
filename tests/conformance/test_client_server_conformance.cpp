@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/in_memory_database_config.hpp"
 //
 // +-------------------------------------------------------------------------+
 // |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
@@ -60,9 +61,12 @@ using namespace merovingian::tests;
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},         security,
-        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -325,7 +329,7 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
-        runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+        runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat","visibility":"public"})"});
     REQUIRE(r.response.status == 200U);
     auto const body = parse_object(r.response.body);
     auto const* rid = string_member(body, "room_id");
@@ -8228,20 +8232,22 @@ SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate", "[confo
 // Spec: Matrix Client-Server API v1.19
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
 //
-// POST /publicRooms accepts an optional JSON body with filter and pagination
-// parameters and returns 200 with chunk (array) and total_room_count_estimate.
+// POST /publicRooms requires authentication and accepts an optional JSON body
+// with filter and pagination parameters. It returns 200 with chunk (array) and
+// total_room_count_estimate.
 SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate",
          "[conformance][client-server][room-discovery]")
 {
-    GIVEN("a running client-server")
+    GIVEN("a running client-server and an authenticated user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
 
         WHEN("POST /publicRooms is called with no body")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, {}});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, {}});
 
             THEN("the server returns 200 with a chunk array and total_room_count_estimate")
             {
@@ -8258,7 +8264,7 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
         WHEN("POST /publicRooms is called with limit=0")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, R"({"limit":0})"});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, R"({"limit":0})"});
 
             THEN("the server returns 200 with an empty chunk because limit=0 is treated as no-op")
             {
@@ -8273,7 +8279,7 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
         WHEN("POST /publicRooms is called with a filter body containing limit=1")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, R"({"limit":1})"});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, R"({"limit":1})"});
 
             THEN("the server returns 200 and the chunk contains at most one room")
             {
@@ -14894,7 +14900,7 @@ SCENARIO("GET /publicRooms returns chunk array and total_room_count_estimate",
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     rt, {"POST", "/_matrix/client/v3/createRoom", token,
-                         R"({"preset":"public_chat","name":"Public Test"})"})
+                         R"({"preset":"public_chat","visibility":"public","name":"Public Test"})"})
                     .response.status == 200U);
 
         WHEN("GET /publicRooms is called")
@@ -15769,7 +15775,7 @@ SCENARIO("rate limiting uses the path without query parameters as the bucket key
         auto cfg = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
+            merovingian::tests::in_memory_database_config(),
             security,
             std::move(rate_limits),
             merovingian::config::LogModulesConfig{},
@@ -15839,7 +15845,7 @@ SCENARIO("a rate-limited request returns the standard 429 error shape with retry
         auto cfg = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
+            merovingian::tests::in_memory_database_config(),
             security,
             std::move(rate_limits),
             merovingian::config::LogModulesConfig{},
@@ -16578,8 +16584,12 @@ namespace
     server.sso.redirect_url_allowlist = {"https://client.example.com/"};
     server.sso.identity_providers.push_back({"com.example.idp.github", "GitHub", {}, "github"});
     return {
-        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
-        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        std::move(security),
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 

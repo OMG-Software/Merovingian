@@ -47,7 +47,7 @@ Implemented now:
   keyed by room ID; see [`docs/architecture.md`](architecture.md) "Per-room
   inbound PDU ingestion") so independent rooms can prepare, commit, and apply
   concurrently instead of serialising on one global mutex
-- a dedicated `sync_pool` (32 threads by default) separate from the main
+- a dedicated `sync_pool` (128 threads by default) separate from the main
   request pool, so long-polling `/sync` clients cannot starve federation and
   other short-lived requests
 - self-sufficient CORS emission: every response carries
@@ -93,7 +93,7 @@ Not implemented yet:
 ## Connection dispatcher (ADR-0077)
 
 A worker thread of the main request pool (`server.http.request_threads`,
-default 16) is only ever given a connection that has something to read. Until
+default 32) is only ever given a connection that has something to read. Until
 the 2026-09-29 audit (HTTP-1) a worker stayed with its connection through the
 wait for the first byte, the wait between keep-alive requests, and every
 partial read; the pool was a hard-coded 8 threads, so eight sockets from one
@@ -204,10 +204,10 @@ Configuration (`server.http.*`, restart required — read when listeners start):
 |---|---|---|
 | `server.http.keep_alive` | `true` | Enable persistent connections. `false` restores one-request-per-connection. |
 | `server.http.keep_alive_idle_seconds` | `15` | Idle window per parked connection, 1..300. |
-| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. A parked connection is held by the dispatcher, not a worker. |
-| `server.http.max_connections_per_ip` | `64` | Open connections one client key may hold, 1..65535 (see below). |
+| `server.http.keep_alive_max_connections` | `256` | Process-wide cap on connections parked awaiting a next request, 1..4096. A parked connection is held by the dispatcher, not a worker. |
+| `server.http.max_connections_per_ip` | `256` | Open connections one client key may hold, 1..65535 (see below). |
 | `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by, 1..128. |
-| `server.http.request_threads` | `16` | Threads in the main request pool, 4..256. One client address may hold at most a quarter of them; client-triggered outbound proxying at most half (ADR-0079). |
+| `server.http.request_threads` | `32` | Threads in the main request pool, 4..256. One client address may hold at most a quarter of them; client-triggered outbound proxying at most half (ADR-0079). |
 
 ### Per-client connection cap (ADR-0072)
 
@@ -314,6 +314,15 @@ posture:
   fields
 - `CURLOPT_RESOLVE` populated from `pinned_addresses` so the connection
   is locked to addresses validated by the federation security policy
+
+Transport and media redirects use libcurl's URL API with path normalization
+disabled. Credentials, fragments, authority escapes, controls, backslashes and
+IPv6 zones are refused. The same URL handle supplies the transfer authority and
+pin key; one resolve entry retains every approved address. An open-socket
+callback checks the actual numeric peer and port before opening a socket.
+Environment proxies and socket reuse are disabled so each request checks its
+own pin set; deployments need direct outbound access. TLS session caching
+remains. See [ADR-0097](adr/0097-check-outbound-socket-peers-against-request-pins.md).
 
 The response body is captured up to `max_response_body_bytes`. The write
 callback guards against unsigned underflow: it checks `body.size() >= cap`
@@ -574,14 +583,14 @@ cap applies regardless of which room, device, or media ID appears in the URL.
 | Tier | Routes | Default per-IP policy |
 | --- | --- | --- |
 | `auth_sensitive` | `/login`, `/register`, `/refresh`, and every `*/requestToken` route (matched by suffix) — unauthenticated, so the per-IP bucket is the only defense | 20/60s |
-| `media` | `/_matrix/media/*` and `/_matrix/client/v1/media/*` | 20/60s; thumbnail refinement 60/60s |
-| `sync` | `/sync` plus the MSC4186 and simplified MSC3575 sliding-sync long-polls | 90/60s |
-| `federation` | `/_matrix/federation/*` routes reaching the client-server dispatcher | 120/60s |
+| `media` | `/_matrix/media/*` and `/_matrix/client/v1/media/*` | 120/60s; thumbnail refinement 240/60s |
+| `sync` | `/sync` plus the MSC4186 and simplified MSC3575 sliding-sync long-polls | 3000/60s |
+| `federation` | `/_matrix/federation/*` routes reaching the client-server dispatcher | 3000/60s |
 | `admin` | `/_merovingian/admin/*` | 30/60s |
-| `generic` | every other client-server route | `client_rate_limits.default_per_ip` (90/60s) |
+| `generic` | every other client-server route | `client_rate_limits.default_per_ip` (600/60s) |
 
 Built-in per-endpoint refinements inside a tier: device and key APIs at
-30/60s, search at 20/60s, and thumbnails at 60/60s. Search requests do real
+120/60s, search at 20/60s, and thumbnails at 240/60s. Search requests do real
 work (a bounded in-memory
 scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap
 lookup. The built-in per-user cap is 5/60s on `/login`.
@@ -605,7 +614,7 @@ Per-IP policy resolution is most-specific-first:
 
 1. `client_rate_limits.per_ip.<target-prefix>` (longest prefix match wins),
 2. `client_rate_limits.tier.<name>` for the route's tier,
-3. the built-in per-endpoint refinement (keys/devices 30/60s, search 20/60s),
+3. the built-in per-endpoint refinement (keys/devices 120/60s, search 20/60s),
 4. the tier default; the `generic` tier resolves to
    `client_rate_limits.default_per_ip`.
 
@@ -624,7 +633,7 @@ non-`POST` hits on `/login`/`/register`, which previously fell into the 90/60s
 generic fallback.
 
 Different thumbnail media IDs normalize to the same per-IP action bucket.
-The 60/minute refinement accommodates ordinary room-rendering bursts while
+The 240/minute refinement accommodates ordinary room-rendering bursts while
 uploads and full media downloads retain the 20/minute tier default. Prefer a
 thumbnail-prefix override over raising the whole media tier if local usage
 still needs a higher cap; the [user manual](user-manual.md) provides an
@@ -642,19 +651,34 @@ exists, because the per-IP bucket is the only defense on unauthenticated
 routes. A misconfigured policy must never silently disable rate limiting.
 
 **Bounded bucket tables (issue #427):** `m_ip_buckets`/`m_user_buckets` are
-hash maps capped at 100,000 entries each, with stale-entry and
-least-recently-touched eviction, so a client rotating a spoofable
-`X-Forwarded-For` value (see below) cannot grow the table or the per-check
-cost without bound.
+hash maps capped at 100,000 entries each, so a client rotating a spoofable
+`X-Forwarded-For` value (see below) cannot grow the table. Each bucket also
+has an engine-owned recency-list entry; an existing bucket moves to the tail,
+and a new key at capacity evicts the head and corresponding map entry. This
+keeps admission eviction expected O(1) instead of scanning all 100,000 entries.
+
+`normalized_target()` normalizes only recognized route shapes and preserves
+their action names. It coalesces variable room, event, transaction, media,
+directory-alias, device, user-data, room-tag, presence, key-backup and SSO
+identity-provider components into route templates. All unmatched paths share
+one fallback bucket, while known static endpoints keep separate keys. Policy
+lookup, for operator policies and the built-in refinements alike, checks both
+the normalized template and the original query-free target. Operators can
+therefore configure route-wide template prefixes without losing existing
+prefixes written against the original path, and a built-in cap such as the
+120/min `/_matrix/client/v3/keys/` refinement still applies to a path that
+falls back. Every implemented route with a variable path component must have
+a template; the fallback is only for paths the server does not implement
+(ADR-0092).
 
 ### Inbound federation
 
 `/send` transactions are limited per **verified origin server name** (the
 X-Matrix-authenticated peer, not the IP) by a weighted trio:
-`security.federation.per_origin_transaction_rate` (120/60s),
-`per_origin_pdu_rate` (600/60s), `per_origin_edu_rate` (1200/60s). Every other
+`security.federation.per_origin_transaction_rate` (600/60s),
+`per_origin_pdu_rate` (6000/60s), `per_origin_edu_rate` (12000/60s). Every other
 inbound federation endpoint (query, backfill, membership, key and state routes)
-is limited by `security.federation.per_origin_request_rate` (600/60s), checked
+is limited by `security.federation.per_origin_request_rate` (3000/60s), checked
 after signature verification and the server-ACL check, before dispatch.
 Non-`/send` traffic is counted only against `per_origin_request_rate` and
 `/send` only against the weighted trio, so a transaction and its contents are
@@ -717,14 +741,24 @@ per-IP limiting on `/login`, `/register`, and every other endpoint entirely.
 
 ## Sync long-poll thread pool
 
-`/sync` long-polls are dispatched to a dedicated `sync_pool` (32 threads),
+`/sync` long-polls are dispatched to a dedicated `sync_pool` (128 threads by default, `server.http.sync_threads`),
 separate from the main request pool (`server.http.request_threads`, default
-16) that serves every other client-server and federation request. This split exists because a burst of
+32) that serves every other client-server and federation request. This split exists because a burst of
 long-polling clients on the main pool could previously exhaust it entirely,
 starving federation and other short-lived requests. See
 [`docs/architecture.md`](architecture.md) "Runtime model" for the full pool
 layout and [`src/sync/AGENTS.md`](../src/sync/AGENTS.md) for sync-specific
 conventions.
+
+Both v3 and sliding-sync waits share admission budgets keyed by authenticated
+account and device, rather than bearer token or IP address: eight waits per
+account and four per device by default. The configured global cap defaults to
+128 and is clamped to the sync pool's worker count; per-account and per-device
+caps cannot exceed that global cap. All three caps are `server.http` settings. Queued tasks count against these limits. Excess
+waits get 429 `M_LIMIT_EXCEEDED` with `retry_after_ms`, and a refused sync-pool
+submission also returns 429 immediately instead of waiting on a main worker.
+Slots are released on response, disconnect, exception and failed handoff.
+Timeouts are capped at 120 seconds. See [ADR-0091](adr/0091-bound-sync-waits-with-admission.md).
 
 ## Request lock and blocking network calls
 
@@ -996,3 +1030,11 @@ change needs before/after evidence.
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.
+
+## Configurable transport budgets (0.12.18)
+
+`server.http` now configures sync workers/admission and HTTP start-line/header/body ceilings. Defaults are 128 sync workers and global long-polls, 8 per user and 4 per device; admission is clamped to the actual worker count. Head defaults remain 8KiB start-line, 32KiB headers and 100 headers. Generic HTTP bodies remain 1MiB. Federation `PUT /_matrix/federation/v1/send/{txnId}` uses `security.federation.max_transaction_size` (20MiB), rather than being shadowed by the generic body cap. Media uploads retain their early token check and media quota.
+
+Worker IPC derives a common bidirectional frame ceiling from the larger of join/backfill response caps and the configured request limits. Response bytes expand by padded base64 (4/3); arbitrary request/head bytes nested in JSON can expand sixfold. Each budget reserves 2MiB envelope headroom and a 24MiB minimum; arithmetic saturates below the uint32 ciphertext length boundary, leaving space for the 17-byte tag. This is a per-frame allocation ceiling, not preallocated memory. Main and worker must restart together after a policy change.
+
+See [operator budgets](user-manual.md#operational-budgets) for validated ranges and combined constraints. Search/login/admin controls and fixed slow-client/sandbox boundaries retain their tighter budgets. These defaults have behavioral regression coverage, not a 100-user throughput benchmark.

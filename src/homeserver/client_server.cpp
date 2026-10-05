@@ -35,7 +35,6 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -1034,6 +1033,43 @@ namespace
         return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
     }
 
+    // Matrix v1.19 #stripped-state permits only these four properties. Its suggested
+    // room-summary types plus the recipient's own membership are our disclosure policy;
+    // never pass persisted/federated snapshots through as full room state.
+    [[nodiscard]] auto stripped_state_event_value(std::string_view event_json, std::string_view user_id)
+        -> std::optional<canonicaljson::Value>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (event == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* type = string_member(*event, "type");
+        auto const* state_key = string_member(*event, "state_key");
+        auto const* sender = string_member(*event, "sender");
+        auto const* content = object_member(*event, "content");
+        if (type == nullptr || state_key == nullptr || sender == nullptr || content == nullptr ||
+            !std::holds_alternative<canonicaljson::Object>(content->storage()))
+        {
+            return std::nullopt;
+        }
+        auto const is_summary =
+            state_key->empty() && (*type == "m.room.create" || *type == "m.room.name" || *type == "m.room.avatar" ||
+                                   *type == "m.room.topic" || *type == "m.room.join_rules" ||
+                                   *type == "m.room.canonical_alias" || *type == "m.room.encryption");
+        if (!is_summary && !(*type == "m.room.member" && *state_key == user_id))
+        {
+            return std::nullopt;
+        }
+        return json_obj({json_member("sender", json_str(*sender)), json_member("type", json_str(*type)),
+                         json_member("state_key", json_str(*state_key)), json_member("content", *content)});
+    }
+
     [[nodiscard]] auto build_invite_state_events_array(database::PersistentStore const& store, std::string_view room_id,
                                                        std::string_view user_id) -> canonicaljson::Array
     {
@@ -1044,41 +1080,35 @@ namespace
             return result;
         }
 
-        auto seen_event_ids = std::vector<std::string>{};
+        auto seen_state = std::vector<std::pair<std::string, std::string>>{};
         auto append_event_json = [&](std::string const& event_json) {
-            auto parsed = canonicaljson::parse_lossless(event_json);
-            if (parsed.error != canonicaljson::ParseError::none)
+            auto stripped = stripped_state_event_value(event_json, user_id);
+            if (!stripped.has_value())
             {
                 return;
             }
-            auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (event == nullptr)
+            auto const& event = std::get<canonicaljson::Object>(stripped->storage());
+            auto const key = std::pair{*string_member(event, "type"), *string_member(event, "state_key")};
+            if (std::ranges::find(seen_state, key) != seen_state.end())
             {
                 return;
             }
-            if (auto const* event_id = string_member(*event, "event_id"); event_id != nullptr && !event_id->empty())
-            {
-                if (std::ranges::any_of(seen_event_ids, [event_id](std::string const& seen) {
-                        return seen == *event_id;
-                    }))
-                {
-                    return;
-                }
-                seen_event_ids.push_back(*event_id);
-            }
-            result.push_back(std::move(parsed.value));
+            seen_state.push_back(key);
+            result.push_back(std::move(*stripped));
         };
 
+        // The actual invitation takes precedence over a stale own-member entry in a
+        // snapshot. Deduplicate by state tuple: stripped events have no event_id.
+        append_event_json(invite->signed_event_json);
         for (auto const& state_event_json : invite->invite_state_events_json)
         {
             append_event_json(state_event_json);
         }
-        append_event_json(invite->signed_event_json);
         return result;
     }
 
-    [[nodiscard]] auto build_knock_state_events_array(database::PersistentStore const& store, std::string_view room_id)
-        -> canonicaljson::Array
+    [[nodiscard]] auto build_knock_state_events_array(database::PersistentStore const& store, std::string_view room_id,
+                                                      std::string_view user_id) -> canonicaljson::Array
     {
         auto result = canonicaljson::Array{};
         for (auto const& state : store.state)
@@ -1092,10 +1122,10 @@ namespace
             {
                 continue;
             }
-            auto const parsed = canonicaljson::parse_lossless(*event_json);
-            if (parsed.error == canonicaljson::ParseError::none)
+            auto stripped = stripped_state_event_value(*event_json, user_id);
+            if (stripped.has_value())
             {
-                result.push_back(parsed.value);
+                result.push_back(std::move(*stripped));
             }
         }
         return result;
@@ -1720,8 +1750,6 @@ namespace
     }
 
     auto constexpr registration_validation_session_ttl_ms = std::uint64_t{15U * 60U * 1000U};
-    auto constexpr registration_validation_max_sessions_per_remote = std::size_t{4U};
-    auto constexpr registration_validation_max_sessions_global = std::size_t{256U};
 
     [[nodiscard]] auto wall_clock_milliseconds() -> std::uint64_t
     {
@@ -1754,7 +1782,6 @@ namespace
     // means adding persisted completed-stage tracking; see ADR-0057.
     auto constexpr uia_session_ttl_ms = std::uint64_t{10U * 60U * 1000U};
     // Bounds what an unauthenticated caller can grow: every 401 mints an entry.
-    auto constexpr uia_max_sessions = std::size_t{512U};
 
     [[nodiscard]] auto issue_uia_session(ClientServerRuntime& rt, std::string_view purpose) -> std::string
     {
@@ -1764,7 +1791,7 @@ namespace
         });
         // Oldest-first eviction keeps the newest challenges usable under a
         // flood; an evicted client simply receives a fresh challenge on retry.
-        while (rt.uia_sessions.size() >= uia_max_sessions && !rt.uia_sessions.empty())
+        while (rt.uia_sessions.size() >= rt.limits.max_uia_sessions && !rt.uia_sessions.empty())
         {
             rt.uia_sessions.erase(rt.uia_sessions.begin());
         }
@@ -1876,8 +1903,8 @@ namespace
                 rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
                     return session.client_ip == client_ip;
                 }));
-            if (per_remote_sessions >= registration_validation_max_sessions_per_remote ||
-                rt.registration_validation_sessions.size() >= registration_validation_max_sessions_global)
+            if (per_remote_sessions >= rt.limits.max_registration_validation_sessions_per_remote ||
+                rt.registration_validation_sessions.size() >= rt.limits.max_registration_validation_sessions)
             {
                 return nullptr;
             }
@@ -1904,8 +1931,8 @@ namespace
             rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
                 return session.client_ip == client_ip;
             }));
-        if (per_remote_sessions >= registration_validation_max_sessions_per_remote ||
-            rt.registration_validation_sessions.size() >= registration_validation_max_sessions_global)
+        if (per_remote_sessions >= rt.limits.max_registration_validation_sessions_per_remote ||
+            rt.registration_validation_sessions.size() >= rt.limits.max_registration_validation_sessions)
         {
             return nullptr;
         }
@@ -2269,6 +2296,10 @@ namespace
         if (status == 403U)
         {
             return "M_FORBIDDEN";
+        }
+        if (status == 429U)
+        {
+            return "M_LIMIT_EXCEEDED";
         }
         return "M_UNKNOWN";
     }
@@ -2660,45 +2691,234 @@ namespace
         // Strip the query string so /sync?x=1 and /sync?x=2 land in the same bucket.
         auto const q = target.find('?');
         auto out = std::string{q == std::string_view::npos ? target : target.substr(0U, q)};
+
+        auto replace_two_tail_segments = [](std::string_view prefix, std::string_view path, std::string_view first,
+                                            std::string_view second) {
+            auto const first_end = path.find('/');
+            if (first_end == std::string_view::npos || first_end == 0U || first_end + 1U == path.size() ||
+                path.find('/', first_end + 1U) != std::string_view::npos)
+            {
+                return std::string{};
+            }
+            return std::string{prefix} + std::string{first} + "/" + std::string{second};
+        };
+        auto constexpr unmatched = std::string_view{"/_matrix/client/{unmatched}"};
+        auto has_one_segment = [](std::string_view path) {
+            return !path.empty() && path.find('/') == std::string_view::npos;
+        };
         auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         if (starts_with(out, room_prefix))
         {
-            // /_matrix/client/v3/rooms/{roomId}/{action}
+            // Coalesce the identifier and every variable component for the
+            // room endpoints whose limit is meaningful across room/event IDs.
             auto rest = std::string_view{out}.substr(room_prefix.size());
             auto const slash = rest.find('/');
-            if (slash != std::string_view::npos)
+            if (slash != std::string_view::npos && slash != 0U)
             {
-                out = std::string{room_prefix} + "{roomId}" + std::string{rest.substr(slash)};
+                auto const normalized_room = std::string{room_prefix} + "{roomId}";
+                auto const suffix = rest.substr(slash + 1U);
+                auto const action_end = suffix.find('/');
+                auto const action = suffix.substr(0U, action_end);
+                auto const tail =
+                    action_end == std::string_view::npos ? std::string_view{} : suffix.substr(action_end + 1U);
+                if (action == "send")
+                {
+                    out = replace_two_tail_segments(normalized_room + "/send/", tail, "{eventType}", "{txnId}");
+                    if (out.empty())
+                    {
+                        return std::string{unmatched};
+                    }
+                }
+                else if (action == "redact")
+                {
+                    out = replace_two_tail_segments(normalized_room + "/redact/", tail, "{eventId}", "{txnId}");
+                    if (out.empty())
+                    {
+                        return std::string{unmatched};
+                    }
+                }
+                else if (action == "event")
+                {
+                    if (!has_one_segment(tail))
+                    {
+                        return std::string{unmatched};
+                    }
+                    out = normalized_room + "/event/{eventId}";
+                }
+                else if (action == "state")
+                {
+                    if (action_end == std::string_view::npos)
+                    {
+                        out = normalized_room + "/state";
+                    }
+                    else
+                    {
+                        auto const state_key_end = tail.find('/');
+                        if (tail.empty() || state_key_end == 0U ||
+                            (state_key_end != std::string_view::npos &&
+                             tail.find('/', state_key_end + 1U) != std::string_view::npos))
+                        {
+                            return std::string{unmatched};
+                        }
+                        out = normalized_room + "/state/{eventType}/{stateKey}";
+                    }
+                }
+                else
+                {
+                    auto const variable_room_action = [&](std::string_view expected, std::size_t segments,
+                                                          std::string_view route_template) {
+                        if (action != expected)
+                        {
+                            return std::string{};
+                        }
+                        auto const count = static_cast<std::size_t>(std::ranges::count(tail, '/')) + 1U;
+                        if (tail.empty() || count != segments || tail.front() == '/' || tail.back() == '/')
+                        {
+                            return std::string{unmatched};
+                        }
+                        return normalized_room + std::string{route_template};
+                    };
+                    if (action == "context")
+                    {
+                        return variable_room_action("context", 1U, "/context/{eventId}");
+                    }
+                    if (action == "report")
+                    {
+                        return variable_room_action("report", 1U, "/report/{eventId}");
+                    }
+                    if (action == "receipt")
+                    {
+                        return variable_room_action("receipt", 2U, "/receipt/{receiptType}/{eventId}");
+                    }
+                    if (action == "typing")
+                    {
+                        return variable_room_action("typing", 1U, "/typing/{userId}");
+                    }
+                    static constexpr auto room_actions = std::to_array<std::string_view>({
+                        "aliases",     "joined_members", "members",
+                        "state_ids",   "messages",       "context",
+                        "initialSync", "threads",        "read_markers",
+                        "forget",      "invite",         "kick",
+                        "ban",         "leave",          "join",
+                        "upgrade",     "report",         "receipt",
+                        "typing",      "hierarchy",      "timestamp_to_event",
+                        "unban",
+                    });
+                    if (std::ranges::find(room_actions, action) == room_actions.end() ||
+                        action_end != std::string_view::npos)
+                    {
+                        return std::string{unmatched};
+                    }
+                    out = normalized_room + "/" + std::string{action};
+                }
+                return out;
             }
         }
         auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
         if (starts_with(out, device_prefix))
         {
-            out = std::string{device_prefix} + "{deviceId}";
-        }
-        auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
-        if (starts_with(out, user_prefix))
-        {
-            // /_matrix/client/v3/user/{userId}/{action}
-            auto rest = std::string_view{out}.substr(user_prefix.size());
-            auto const slash = rest.find('/');
-            if (slash != std::string_view::npos)
+            auto const device_id = std::string_view{out}.substr(device_prefix.size());
+            if (has_one_segment(device_id))
             {
-                out = std::string{user_prefix} + "{userId}" + std::string{rest.substr(slash)};
+                return std::string{device_prefix} + "{deviceId}";
             }
+            return std::string{unmatched};
         }
         auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
         if (starts_with(out, profile_prefix))
         {
-            out = std::string{profile_prefix} + "{userId}";
+            auto const rest = std::string_view{out}.substr(profile_prefix.size());
+            auto const slash = rest.find('/');
+            auto const user_id = rest.substr(0U, slash);
+            if (user_id.empty())
+            {
+                return std::string{unmatched};
+            }
+            auto const suffix = slash == std::string_view::npos ? std::string_view{} : rest.substr(slash);
+            if (!suffix.empty() && suffix != "/displayname" && suffix != "/avatar_url")
+            {
+                return std::string{unmatched};
+            }
+            return std::string{profile_prefix} + "{userId}" + std::string{suffix};
         }
-        if (starts_with(out, "/_matrix/client/v3/join/"))
+        auto constexpr join_prefix = std::string_view{"/_matrix/client/v3/join/"};
+        if (starts_with(out, join_prefix))
         {
-            out = "/_matrix/client/v3/join/{roomIdOrAlias}";
+            if (has_one_segment(std::string_view{out}.substr(join_prefix.size())))
+            {
+                return std::string{join_prefix} + "{roomIdOrAlias}";
+            }
+            return std::string{unmatched};
         }
-        if (starts_with(out, "/_matrix/client/v3/knock/"))
+        auto constexpr knock_prefix = std::string_view{"/_matrix/client/v3/knock/"};
+        if (starts_with(out, knock_prefix))
         {
-            out = "/_matrix/client/v3/knock/{roomIdOrAlias}";
+            if (has_one_segment(std::string_view{out}.substr(knock_prefix.size())))
+            {
+                return std::string{knock_prefix} + "{roomIdOrAlias}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr sso_redirect_prefix = std::string_view{"/_matrix/client/v3/login/sso/redirect/"};
+        if (starts_with(out, sso_redirect_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(sso_redirect_prefix.size())))
+            {
+                return std::string{sso_redirect_prefix} + "{idpId}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr presence_prefix = std::string_view{"/_matrix/client/v3/presence/"};
+        if (starts_with(out, presence_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(presence_prefix.size());
+            auto constexpr status_suffix = std::string_view{"/status"};
+            if (rest.ends_with(status_suffix) && has_one_segment(rest.substr(0U, rest.size() - status_suffix.size())))
+            {
+                return std::string{presence_prefix} + "{userId}/status";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr room_keys_version_prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
+        if (starts_with(out, room_keys_version_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(room_keys_version_prefix.size())))
+            {
+                return std::string{room_keys_version_prefix} + "{version}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr room_keys_keys_prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+        if (starts_with(out, room_keys_keys_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(room_keys_keys_prefix.size());
+            if (has_one_segment(rest))
+            {
+                return std::string{room_keys_keys_prefix} + "{roomId}";
+            }
+            auto const normalized = replace_two_tail_segments(room_keys_keys_prefix, rest, "{roomId}", "{sessionId}");
+            return normalized.empty() ? std::string{unmatched} : normalized;
+        }
+        // Nheko's unstable room-summary probes (im.nheko.summary).
+        auto constexpr nheko_summary_prefix = std::string_view{"/_matrix/client/unstable/im.nheko.summary/"};
+        if (starts_with(out, nheko_summary_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(nheko_summary_prefix.size());
+            auto constexpr summary_by_id = std::string_view{"summary/"};
+            if (starts_with(rest, summary_by_id) && has_one_segment(rest.substr(summary_by_id.size())))
+            {
+                return std::string{nheko_summary_prefix} + "summary/{roomIdOrAlias}";
+            }
+            auto constexpr rooms_part = std::string_view{"rooms/"};
+            auto constexpr summary_suffix = std::string_view{"/summary"};
+            if (starts_with(rest, rooms_part) && rest.ends_with(summary_suffix) &&
+                rest.size() > rooms_part.size() + summary_suffix.size() &&
+                has_one_segment(
+                    rest.substr(rooms_part.size(), rest.size() - rooms_part.size() - summary_suffix.size())))
+            {
+                return std::string{nheko_summary_prefix} + "rooms/{roomIdOrAlias}/summary";
+            }
+            return std::string{unmatched};
         }
 
         // v1 room endpoints carry the room id (and, for relations, the event id)
@@ -2709,43 +2929,321 @@ namespace
         {
             auto rest = std::string_view{out}.substr(rooms_v1_prefix.size());
             auto const slash = rest.find('/');
-            if (slash != std::string_view::npos)
+            if (slash != std::string_view::npos && slash != 0U)
             {
                 auto suffix = rest.substr(slash);
                 auto normalized = std::string{rooms_v1_prefix} + "{roomId}";
                 auto constexpr relations_prefix = std::string_view{"/relations/"};
                 if (starts_with(suffix, relations_prefix))
                 {
-                    auto after_relations = suffix.substr(relations_prefix.size());
-                    auto const event_slash = after_relations.find('/');
-                    auto const after_event = event_slash == std::string_view::npos
-                                                 ? std::string_view{}
-                                                 : after_relations.substr(event_slash);
-                    out = normalized + "/relations/{eventId}" + std::string{after_event};
+                    auto const tail = suffix.substr(relations_prefix.size());
+                    auto const event_slash = tail.find('/');
+                    if (!has_one_segment(tail.substr(0U, event_slash)))
+                    {
+                        return std::string{unmatched};
+                    }
+                    auto const relation_tail =
+                        event_slash == std::string_view::npos ? std::string_view{} : tail.substr(event_slash + 1U);
+                    if (relation_tail.empty())
+                    {
+                        out = normalized + "/relations/{eventId}";
+                    }
+                    else
+                    {
+                        auto const relation_slash = relation_tail.find('/');
+                        if (!has_one_segment(relation_tail.substr(0U, relation_slash)))
+                        {
+                            return std::string{unmatched};
+                        }
+                        auto const event_type = relation_slash == std::string_view::npos
+                                                    ? std::string_view{}
+                                                    : relation_tail.substr(relation_slash + 1U);
+                        if (!event_type.empty() && !has_one_segment(event_type))
+                        {
+                            return std::string{unmatched};
+                        }
+                        out = normalized + "/relations/{eventId}/{relType}";
+                        if (!event_type.empty())
+                        {
+                            out += "/{eventType}";
+                        }
+                    }
+                }
+                else if (suffix == "/threads")
+                {
+                    out = normalized + "/threads";
+                }
+                else if (suffix == "/hierarchy")
+                {
+                    out = normalized + "/hierarchy";
                 }
                 else
                 {
-                    out = normalized + std::string{suffix};
+                    return std::string{unmatched};
+                }
+                return out;
+            }
+        }
+
+        auto normalize_media_route = [&](std::string_view prefix) {
+            if (!starts_with(out, prefix))
+            {
+                return false;
+            }
+            auto rest = std::string_view{out}.substr(prefix.size());
+            auto const action_end = rest.find('/');
+            if (action_end == std::string_view::npos)
+            {
+                return false;
+            }
+            auto const action = rest.substr(0U, action_end);
+            if (action != "download" && action != "thumbnail")
+            {
+                return false;
+            }
+            auto const media_path = rest.substr(action_end + 1U);
+            auto const media_slash = media_path.find('/');
+            if (media_slash == std::string_view::npos || !has_one_segment(media_path.substr(0U, media_slash)) ||
+                !has_one_segment(media_path.substr(media_slash + 1U)))
+            {
+                return false;
+            }
+            out = std::string{prefix} + std::string{action} + "/{server}/{mediaId}";
+            return true;
+        };
+
+        // Legacy and authenticated media place server and media identifiers in
+        // the path; neither can mint a fresh bucket per remote object.
+        if (normalize_media_route("/_matrix/media/v3/") || normalize_media_route("/_matrix/client/v1/media/"))
+        {
+            return out;
+        }
+
+        auto constexpr directory_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
+        if (starts_with(out, directory_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(directory_prefix.size())))
+            {
+                return std::string{directory_prefix} + "{roomAlias}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr directory_list_prefix = std::string_view{"/_matrix/client/v3/directory/list/room/"};
+        if (starts_with(out, directory_list_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(directory_list_prefix.size())))
+            {
+                return std::string{directory_list_prefix} + "{roomId}";
+            }
+            return std::string{unmatched};
+        }
+
+        auto constexpr to_device_prefix = std::string_view{"/_matrix/client/v3/sendToDevice/"};
+        if (starts_with(out, to_device_prefix))
+        {
+            auto rest = std::string_view{out}.substr(to_device_prefix.size());
+            auto normalized = replace_two_tail_segments(to_device_prefix, rest, "{eventType}", "{txnId}");
+            if (!normalized.empty())
+            {
+                return normalized;
+            }
+            return std::string{unmatched};
+        }
+
+        auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
+        if (starts_with(out, user_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(user_prefix.size());
+            auto const user_end = rest.find('/');
+            if (user_end == std::string_view::npos || user_end == 0U)
+            {
+                return std::string{unmatched};
+            }
+            auto const suffix = rest.substr(user_end);
+            if (suffix == "/filter")
+            {
+                return std::string{user_prefix} + "{userId}/filter";
+            }
+            auto constexpr filter_prefix = std::string_view{"/filter/"};
+            if (starts_with(suffix, filter_prefix) && has_one_segment(suffix.substr(filter_prefix.size())))
+            {
+                return std::string{user_prefix} + "{userId}/filter/{filterId}";
+            }
+            if (suffix == "/openid/request_token")
+            {
+                return std::string{user_prefix} + "{userId}/openid/request_token";
+            }
+            auto constexpr account_data = std::string_view{"/account_data/"};
+            if (starts_with(suffix, account_data) && has_one_segment(suffix.substr(account_data.size())))
+            {
+                return std::string{user_prefix} + "{userId}/account_data/{type}";
+            }
+            auto constexpr room_data = std::string_view{"/rooms/"};
+            if (starts_with(suffix, room_data))
+            {
+                auto const after_room = suffix.substr(room_data.size());
+                auto const room_end = after_room.find('/');
+                if (room_end != std::string_view::npos && has_one_segment(after_room.substr(0U, room_end)))
+                {
+                    auto const data_path = after_room.substr(room_end);
+                    auto constexpr account_data_suffix = std::string_view{"/account_data/"};
+                    if (starts_with(data_path, account_data_suffix) &&
+                        has_one_segment(data_path.substr(account_data_suffix.size())))
+                    {
+                        return std::string{user_prefix} + "{userId}/rooms/{roomId}/account_data/{type}";
+                    }
+                    auto constexpr tags_suffix = std::string_view{"/tags"};
+                    if (data_path == tags_suffix)
+                    {
+                        return std::string{user_prefix} + "{userId}/rooms/{roomId}/tags";
+                    }
+                    if (starts_with(data_path, std::string{tags_suffix} + "/") &&
+                        has_one_segment(data_path.substr(tags_suffix.size() + 1U)))
+                    {
+                        return std::string{user_prefix} + "{userId}/rooms/{roomId}/tags/{tag}";
+                    }
                 }
             }
+            return std::string{unmatched};
         }
 
-        // Authenticated media v1 endpoints place the remote server name and
-        // media id in the path. Replace the parameter tail with a placeholder
-        // so every download/thumbnail for different media shares one bucket.
-        auto constexpr media_v1_prefix = std::string_view{"/_matrix/client/v1/media/"};
-        if (starts_with(out, media_v1_prefix))
-        {
-            auto rest = std::string_view{out}.substr(media_v1_prefix.size());
-            auto const slash = rest.find('/');
-            if (slash != std::string_view::npos)
+        auto normalize_pushrule = [&]() -> std::optional<std::string> {
+            auto constexpr prefix = std::string_view{"/_matrix/client/v3/pushrules/global/"};
+            if (!starts_with(out, prefix))
             {
-                auto action = rest.substr(0U, slash);
-                out = std::string{media_v1_prefix} + std::string{action} + "/{mediaPath}";
+                return std::nullopt;
             }
+            auto const tail = std::string_view{out}.substr(prefix.size());
+            auto const kind_end = tail.find('/');
+            if (kind_end == std::string_view::npos || kind_end == 0U)
+            {
+                return std::string{unmatched};
+            }
+            auto const remainder = tail.substr(kind_end + 1U);
+            auto const rule_end = remainder.find('/');
+            if (remainder.empty() || remainder.front() == '/' || remainder.back() == '/')
+            {
+                return std::string{unmatched};
+            }
+            auto const suffix = rule_end == std::string_view::npos ? std::string_view{} : remainder.substr(rule_end);
+            if (!suffix.empty() && suffix != "/actions" && suffix != "/enabled")
+            {
+                return std::string{unmatched};
+            }
+            return std::string{prefix} + "{kind}/{ruleId}" + std::string{suffix};
+        };
+        if (auto const pushrule = normalize_pushrule(); pushrule.has_value())
+        {
+            return *pushrule;
         }
 
-        return out;
+        auto constexpr admin_account_prefix = std::string_view{"/_matrix/client/v1/admin/"};
+        if (starts_with(out, admin_account_prefix))
+        {
+            auto const tail = std::string_view{out}.substr(admin_account_prefix.size());
+            auto const separator = tail.find('/');
+            if (separator != std::string_view::npos &&
+                (tail.substr(0U, separator) == "lock" || tail.substr(0U, separator) == "suspend") &&
+                has_one_segment(tail.substr(separator + 1U)))
+            {
+                return std::string{admin_account_prefix} + std::string{tail.substr(0U, separator)} + "/{userId}";
+            }
+            return std::string{unmatched};
+        }
+
+        auto constexpr review_prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
+        if (starts_with(out, review_prefix))
+        {
+            auto const tail = std::string_view{out}.substr(review_prefix.size());
+            auto const separator = tail.find('/');
+            if (separator != std::string_view::npos && separator != 0U && has_one_segment(tail.substr(separator + 1U)))
+            {
+                return std::string{review_prefix} + "{target}/{entityId}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr policy_rule_prefix = std::string_view{"/_matrix/client/v3/admin/safety/policy_rules/"};
+        if (starts_with(out, policy_rule_prefix))
+        {
+            auto const tail = std::string_view{out}.substr(policy_rule_prefix.size());
+            auto const separator = tail.find('/');
+            if (separator != std::string_view::npos && separator != 0U && has_one_segment(tail.substr(separator + 1U)))
+            {
+                return std::string{policy_rule_prefix} + "{scope}/{entity}";
+            }
+            return std::string{unmatched};
+        }
+
+        // Preserve the path key for known static routes. Everything the local
+        // router does not recognize shares one fallback bucket; policy lookup
+        // separately receives the original path so older operator prefixes
+        // still select their configured cap.
+        static constexpr auto static_routes = std::to_array<std::string_view>({
+            "/_matrix/client/v3/admin/safety/reports",
+            "/_matrix/client/v3/admin/safety/policy_rules",
+            "/_matrix/client/v3/pushrules/",
+            "/_matrix/client/v3/pushrules/global/",
+            "/.well-known/matrix/client",
+            "/_matrix/client/versions",
+            "/_matrix/client/v3/sync",
+            "/_matrix/client/v4/sync",
+            "/_matrix/client/unstable/org.matrix.msc4186/sync",
+            "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+            "/_matrix/client/v3/publicRooms",
+            "/_matrix/client/v3/register/available",
+            "/_matrix/client/v1/register/m.login.registration_token/validity",
+            "/_matrix/client/v3/register/email/requestToken",
+            "/_matrix/client/v3/register/msisdn/requestToken",
+            "/_matrix/client/v3/register",
+            "/_matrix/client/v3/login",
+            "/_matrix/client/v3/login/sso/redirect",
+            "/_matrix/client/v3/refresh",
+            "/_matrix/client/v3/logout",
+            "/_matrix/client/v3/logout/all",
+            "/_matrix/client/v1/auth_metadata",
+            "/_matrix/client/v3/account/3pid/email/requestToken",
+            "/_matrix/client/v3/account/3pid/msisdn/requestToken",
+            "/_matrix/client/v3/account/whoami",
+            "/_matrix/client/v3/account/password",
+            "/_matrix/client/v3/account/deactivate",
+            "/_matrix/client/v3/account/3pid",
+            "/_matrix/client/v3/account/3pid/add",
+            "/_matrix/client/v3/account/3pid/bind",
+            "/_matrix/client/v3/account/3pid/unbind",
+            "/_matrix/client/v3/account/3pid/delete",
+            "/_matrix/client/v3/pushers",
+            "/_matrix/client/v3/pushers/set",
+            "/_matrix/client/v3/notifications",
+            "/_matrix/client/v3/capabilities",
+            "/_matrix/client/v3/keys/changes",
+            "/_matrix/client/v3/keys/claim",
+            "/_matrix/client/v3/keys/device_signing/upload",
+            "/_matrix/client/v3/keys/query",
+            "/_matrix/client/v3/keys/signatures/upload",
+            "/_matrix/client/v3/keys/upload",
+            "/_matrix/client/v3/thirdparty/protocols",
+            "/_matrix/client/v3/thirdparty/location",
+            "/_matrix/client/v3/thirdparty/user",
+            "/_matrix/media/v3/config",
+            "/_matrix/media/v3/upload",
+            "/_matrix/client/v1/media/config",
+            "/_matrix/client/v1/media/upload",
+            "/_matrix/client/v3/voip/turnServer",
+            "/_matrix/client/v3/room_keys/version",
+            "/_matrix/client/v3/room_keys/keys",
+            "/_matrix/client/v3/devices",
+            "/_matrix/client/v3/delete_devices",
+            "/_matrix/client/v3/createRoom",
+            "/_matrix/client/v3/joined_rooms",
+            "/_matrix/client/v1/mutual_rooms",
+            "/_matrix/client/v3/user_directory/search",
+            "/_matrix/client/v3/search",
+        });
+        if (std::ranges::find(static_routes, out) != static_routes.end())
+        {
+            return out;
+        }
+        return "/_matrix/client/{unmatched}";
     }
 
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> http::RateLimitDecision
@@ -2784,6 +3282,7 @@ namespace
         // IPv6-prefix grouping for the same reason, and two copies would be
         // free to drift apart.
         auto const effective_ip = rate_limit_client_key(req, rt.homeserver.config.server());
+        auto const policy_target = std::string_view{req.target}.substr(0U, req.target.find('?'));
         // Per-IP bucket keyed by (effective_ip, normalised_route) so
         // different endpoints get independent counters and route
         // templates (e.g. /rooms/{roomId}/send) coalesce into the
@@ -2815,7 +3314,7 @@ namespace
             }
         }
         auto const decision =
-            rt.rate_limit_engine->check(std::string_view{ip_key}, req.target, std::string_view{user_key});
+            rt.rate_limit_engine->check(std::string_view{ip_key}, norm, std::string_view{user_key}, policy_target);
         if (!decision.allowed)
         {
             // Audit-routing: rate-limit denial is one of the five
@@ -3103,7 +3602,7 @@ namespace
         for (auto const& room : rt.homeserver.database.rooms)
         {
             auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
-            if (!join_rule.has_value() || *join_rule != "public")
+            if (!room.directory_public)
                 continue;
 
             auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
@@ -3124,7 +3623,10 @@ namespace
             room_entry.push_back(json_member("room_id", json_str(room.room_id)));
             room_entry.push_back(json_member(
                 "num_joined_members", json_int(static_cast<std::int64_t>(joined_member_count(rt, room.room_id)))));
-            room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
+            if (join_rule.has_value())
+            {
+                room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
+            }
 
             auto const history_visibility =
                 room_state_string(store, index, room.room_id, "m.room.history_visibility", "history_visibility");
@@ -3164,11 +3666,6 @@ namespace
             response.push_back(json_member("next_batch", json_str(std::to_string(end))));
 
         return json_serialize(json_obj(std::move(response)));
-    }
-
-    [[nodiscard]] auto public_rooms_json(ClientServerRuntime const& rt) -> std::string
-    {
-        return public_rooms_filtered_json(rt, {}, std::nullopt, 0U);
     }
 
     // Builds the federation target path for /_matrix/federation/v1/publicRooms,
@@ -3626,9 +4123,28 @@ namespace
     {
         auto events = canonicaljson::Array{};
         auto emitted = std::size_t{0U};
+        // Presence is shared only with current joined peers (Matrix v1.19
+        // Presence security considerations). Build the scope once per response.
+        auto joined_rooms = std::unordered_set<std::string_view>{};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.user_id == user && membership.membership == "join")
+            {
+                joined_rooms.insert(membership.room_id);
+            }
+        }
+        auto visible_users = std::unordered_set<std::string_view>{};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.membership == "join" && joined_rooms.contains(membership.room_id))
+            {
+                visible_users.insert(membership.user_id);
+            }
+        }
         for (auto const& presence : store.presence_states)
         {
-            if (presence.user_id == user || presence.stream_id <= since_sync_stream_id)
+            if (presence.user_id == user || presence.stream_id <= since_sync_stream_id ||
+                !visible_users.contains(presence.user_id))
             {
                 continue;
             }
@@ -3783,8 +4299,11 @@ namespace
         // in the timeline ordering, both of which the mutator helpers below
         // publish through `ensure_sync_notifier(rt).publish(...)`.
         // Spec §9.4: omitting `timeout` means respond immediately — no default.
+        // HTTP-4: cap the client-supplied timeout so a single sync cannot pin a
+        // worker indefinitely; the client receives the capped wait.
         if (can_wait && request.timeout.has_value() && *request.timeout > 0U)
         {
+            auto const capped_timeout_ms = std::min(*request.timeout, sync::k_max_sync_timeout_ms);
             auto const has_timeline_advance = rt.homeserver.database.next_stream_ordering - 1U > since_ordering;
             auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
             if (!has_timeline_advance && !has_sync_advance)
@@ -3792,7 +4311,8 @@ namespace
                 return DispatchResult{
                     DispatchResult::Status::needs_wait,
                     {},
-                    {since_ordering, since_sync_stream_id, std::chrono::milliseconds{*request.timeout}}
+                    {since_ordering, since_sync_stream_id, std::chrono::milliseconds{capped_timeout_ms},
+                                          std::string{user}, std::string{device_id}}
                 };
             }
         }
@@ -3832,9 +4352,10 @@ namespace
             {
                 continue;
             }
-            auto const timeline_cap = filter.room.timeline.limit != 0U
-                                          ? std::min(filter.room.timeline.limit, rt.limits.max_sync_events_per_room)
-                                          : rt.limits.max_sync_events_per_room;
+            auto const timeline_cap =
+                filter.room.timeline.limit != 0U
+                    ? std::min(filter.room.timeline.limit, static_cast<std::size_t>(rt.limits.max_sync_events_per_room))
+                    : static_cast<std::size_t>(rt.limits.max_sync_events_per_room);
 
             // Collect this room's timeline-eligible events that are newer than
             // `since`, in stream-ordering order. `limited` and `prev_batch` are
@@ -4050,11 +4571,12 @@ namespace
             {
                 if (knock_count < rt.limits.max_sync_rooms)
                 {
-                    knock_members.push_back(json_member(
-                        membership.room_id,
-                        json_obj({json_member("knock_state",
-                                              json_obj({json_member("events", json_arr(build_knock_state_events_array(
-                                                                                  store, membership.room_id)))}))})));
+                    auto knock_state_events = build_knock_state_events_array(store, membership.room_id, user);
+                    knock_members.push_back(
+                        json_member(membership.room_id,
+                                    json_obj({json_member(
+                                        "knock_state",
+                                        json_obj({json_member("events", json_arr(std::move(knock_state_events)))}))})));
                     ++knock_count;
                 }
             }
@@ -4347,8 +4869,6 @@ namespace
     // in practice hold one or two (matrix-rust-sdk uses "room-list" and
     // "encryption"); this leaves generous headroom while bounding what a client
     // minting fresh conn_ids can retain.
-    constexpr auto sliding_sync_connections_per_device = std::size_t{8U};
-
     // Evicts idle sliding-sync connection state, then bounds how many connections
     // one user/device may hold, discarding least-recently-used first. See the
     // call site in sliding_sync_json for why this is required (#487).
@@ -4370,7 +4890,7 @@ namespace
     }
 
     auto prune_sliding_sync_connections(HomeserverRuntime& runtime, std::string_view user, std::string_view device_id,
-                                        std::string const& conn_key) -> void
+                                        std::string const& conn_key, std::uint32_t max_per_device) -> void
     {
         auto const now = std::chrono::steady_clock::now();
         auto& connections = runtime.sliding_sync_connections;
@@ -4398,7 +4918,8 @@ namespace
         {
             owned.push_back(it);
         }
-        if (owned.size() < sliding_sync_connections_per_device)
+        auto const cap = static_cast<std::size_t>(std::max(1U, max_per_device));
+        if (owned.size() < cap)
         {
             return;
         }
@@ -4407,7 +4928,7 @@ namespace
         std::ranges::sort(owned, [](auto const& left, auto const& right) {
             return left->second.last_used < right->second.last_used;
         });
-        auto const to_evict = owned.size() - (sliding_sync_connections_per_device - 1U);
+        auto const to_evict = owned.size() - (cap - 1U);
         for (auto index = std::size_t{0U}; index < to_evict; ++index)
         {
             connections.erase(owned[index]);
@@ -4481,7 +5002,8 @@ namespace
         //
         // Pruned before taking the reference below, so the reference cannot be to
         // an entry this sweep then erases.
-        prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key);
+        prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key,
+                                       rt.limits.sliding_sync_connections_per_device);
 
         auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
         conn.last_used = std::chrono::steady_clock::now();
@@ -4607,7 +5129,8 @@ namespace
                     return DispatchResult{
                         DispatchResult::Status::needs_wait,
                         {},
-                        {cur_event, cur_sync, std::chrono::milliseconds{timeout_ms}}
+                        {cur_event, cur_sync, std::chrono::milliseconds{timeout_ms}, std::string{user},
+                                              std::string{device_id}}
                     };
                 }
             }
@@ -6120,6 +6643,16 @@ namespace
                 }
                 if (is_local)
                 {
+                    // Silently discard local deliveries to unknown users or to
+                    // devices that do not belong to the named user. Revealing
+                    // which users/devices exist would be an existence oracle,
+                    // and queueing for invented targets lets senders create
+                    // durable state without owning a real device.
+                    if (!user_exists(rt, user_entry.key))
+                    {
+                        continue;
+                    }
+
                     if (device_entry.key == "*")
                     {
                         // Spec §10.5: "*" delivers to all devices of the target user.
@@ -6135,7 +6668,17 @@ namespace
                     }
                     else
                     {
-                        // Enqueue directly; /sync drains it into to_device.events.
+                        // Enqueue only when the named device really belongs to
+                        // the target local user.
+                        auto const device_known = std::ranges::any_of(
+                            rt.homeserver.database.persistent_store.devices,
+                            [&user_entry, &device_entry](database::PersistentDevice const& device) {
+                                return device.user_id == user_entry.key && device.device_id == device_entry.key;
+                            });
+                        if (!device_known)
+                        {
+                            continue;
+                        }
                         std::ignore = push_to_device_message(rt, {0U, std::string{sender}, user_entry.key,
                                                                   device_entry.key, std::string{event_type}, *content});
                     }
@@ -6707,10 +7250,11 @@ namespace
         auto const backwards = dir != "f"; // both default and "b" walk backward
         auto const from_text = messages_query_value(target, "from");
         auto const from_token = parse_u64(from_text);
-        auto limit = std::size_t{10U};
+        auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_messages_page_size));
         if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
         {
-            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
+            limit = static_cast<std::size_t>(
+                std::min<std::uint64_t>(*parsed, static_cast<std::uint64_t>(rt.limits.max_messages_page_size)));
         }
         // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
         // #ignoring-users). Resolved once for this request. Events from an
@@ -6980,15 +7524,7 @@ namespace
     // corners deliberately left out (rooms the caller has left; the MSC3765
     // `content['m.topic']` extensible-topic representation).
 
-    // Page-size and event-context bounds. `kSearchMaxPageLimit` is smaller
-    // than /messages'/context's 100-event ceiling because each result also
-    // pays for its own event-context scan (see build_search_event_context),
-    // so the worst case per request is roughly
-    // kSearchMaxPageLimit * (kSearchMaxEventContextLimit * 2) context events
-    // on top of the `max_search_events_scanned` matching budget.
     constexpr std::size_t kSearchDefaultPageLimit = 10U;
-    constexpr std::size_t kSearchMaxPageLimit = 25U;
-    constexpr std::size_t kSearchMaxEventContextLimit = 50U;
 
     struct SearchMatch final
     {
@@ -7092,9 +7628,15 @@ namespace
     // responds 400 M_BAD_JSON) -- distinct from an empty/missing
     // `search_term`, which the caller checks separately so it can return the
     // more specific 400 M_MISSING_PARAM.
-    [[nodiscard]] auto parse_search_request(canonicaljson::Object const& room_events) -> std::optional<SearchRequest>
+    [[nodiscard]] auto parse_search_request(canonicaljson::Object const& room_events, ClientApiLimits const& limits)
+        -> std::optional<SearchRequest>
     {
         auto out = SearchRequest{};
+        out.page_limit = std::min(kSearchDefaultPageLimit, static_cast<std::size_t>(limits.max_search_page_size));
+        out.before_limit =
+            std::min<std::size_t>(out.before_limit, static_cast<std::size_t>(limits.max_search_context_events));
+        out.after_limit =
+            std::min<std::size_t>(out.after_limit, static_cast<std::size_t>(limits.max_search_context_events));
         if (auto const* term = string_member(room_events, "search_term"); term != nullptr)
         {
             out.search_term = *term;
@@ -7128,7 +7670,8 @@ namespace
             }
             if (out.filter.timeline.limit > 0U)
             {
-                out.page_limit = std::min(out.filter.timeline.limit, kSearchMaxPageLimit);
+                out.page_limit =
+                    std::min(out.filter.timeline.limit, static_cast<std::size_t>(limits.max_search_page_size));
             }
         }
         if (auto const* ec = object_member(room_events, "event_context"); ec != nullptr)
@@ -7140,11 +7683,13 @@ namespace
             }
             if (auto const* bl = integer_member(*ec_obj, "before_limit"); bl != nullptr && *bl >= 0)
             {
-                out.before_limit = std::min<std::size_t>(static_cast<std::size_t>(*bl), kSearchMaxEventContextLimit);
+                out.before_limit = std::min<std::size_t>(static_cast<std::size_t>(*bl),
+                                                         static_cast<std::size_t>(limits.max_search_context_events));
             }
             if (auto const* al = integer_member(*ec_obj, "after_limit"); al != nullptr && *al >= 0)
             {
-                out.after_limit = std::min<std::size_t>(static_cast<std::size_t>(*al), kSearchMaxEventContextLimit);
+                out.after_limit = std::min<std::size_t>(static_cast<std::size_t>(*al),
+                                                        static_cast<std::size_t>(limits.max_search_context_events));
             }
             if (auto const* ip = boolean_member(*ec_obj, "include_profile"); ip != nullptr)
             {
@@ -7811,6 +8356,12 @@ namespace
         }
         if (local_response.status != 200U)
         {
+            if (local_response.status >= 200U && local_response.status < 300U)
+            {
+                // Internal admission statuses must never serialize a media
+                // payload as an error message or permit thumbnail processing.
+                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "media was not admitted");
+            }
             return dispatch_err(req, rt, local_response.status,
                                 local_response.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", local_response.body);
         }
@@ -8506,9 +9057,6 @@ namespace
         return err(404U, "M_UNRECOGNIZED", "route not found");
     }
 
-    // Most audit rows the admin safety-report listing returns (newest kept).
-    constexpr auto max_safety_report_rows = std::size_t{1000U};
-
     [[nodiscard]] auto safety_reports_json(ClientServerRuntime const& rt) -> std::string
     {
         auto reports = canonicaljson::Array{};
@@ -8516,8 +9064,8 @@ namespace
         // lost when later audit rows push it out of the window (AUTH-1). The query
         // returns the newest `max_safety_report_rows` rows newest first; list them
         // oldest first, as this endpoint always has.
-        auto const events = database::load_audit_events_by_type_prefix(rt.homeserver.database.persistent_store,
-                                                                       "trust_safety.", max_safety_report_rows);
+        auto const events = database::load_audit_events_by_type_prefix(
+            rt.homeserver.database.persistent_store, "trust_safety.", rt.limits.max_safety_report_rows);
         for (auto const& event : std::views::reverse(events))
         {
             reports.push_back(json_obj({
@@ -8828,6 +9376,34 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     auto rt = ClientServerRuntime{};
     rt.homeserver = std::move(started.runtime);
     rt.sliding_sync_debug_diagnostics_enabled = options.debug_startup_enabled;
+    auto const& client_api = config.server().client_api;
+    auto const configured_body_limit = config::parse_size_limit(client_api.max_body_size);
+    if (configured_body_limit.valid)
+    {
+        rt.limits.max_body_bytes = static_cast<std::size_t>(
+            std::min<std::uint64_t>(configured_body_limit.bytes, std::numeric_limits<std::size_t>::max()));
+    }
+    rt.limits.max_sync_rooms = client_api.max_sync_rooms;
+    rt.limits.max_sync_events_per_room = client_api.max_sync_events_per_room;
+    rt.limits.max_search_events_scanned = client_api.max_search_events_scanned;
+    rt.limits.max_messages_events_examined = client_api.max_messages_events_examined;
+    rt.limits.max_messages_page_size = client_api.max_messages_page_size;
+    rt.limits.max_context_events = client_api.max_context_events;
+    rt.limits.max_search_page_size = client_api.max_search_page_size;
+    rt.limits.max_search_context_events = client_api.max_search_context_events;
+    rt.limits.max_registration_validation_sessions = client_api.max_registration_validation_sessions;
+    rt.limits.max_registration_validation_sessions_per_remote =
+        client_api.max_registration_validation_sessions_per_remote;
+    rt.limits.max_uia_sessions = client_api.max_uia_sessions;
+    rt.limits.max_safety_report_rows = client_api.max_safety_report_rows;
+    rt.limits.max_notifications_page_size = client_api.max_notifications_page_size;
+    rt.limits.max_relations_page_size = client_api.max_relations_page_size;
+    rt.limits.max_public_rooms_page_size = client_api.max_public_rooms_page_size;
+    rt.limits.max_hierarchy_rooms = client_api.max_hierarchy_rooms;
+    rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
+                              client_api.sliding_sync_max_room_subscriptions,
+                              client_api.sliding_sync_max_required_state_entries};
+    rt.limits.sliding_sync_connections_per_device = client_api.sliding_sync_connections_per_device;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
@@ -9160,6 +9736,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // GET /_matrix/federation/v1/publicRooms on that server.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/publicRooms")
     {
+        auto limit = std::optional<std::size_t>{rt.limits.max_public_rooms_page_size};
+        if (auto const value = query_param_value(req.target, "limit"); value.has_value() && !value->empty())
+        {
+            auto parsed = std::size_t{0U};
+            auto const [ptr, ec] = std::from_chars(value->data(), value->data() + value->size(), parsed);
+            if (ec == std::errc{} && ptr == value->data() + value->size() && parsed > 0U)
+            {
+                limit = std::min(parsed, static_cast<std::size_t>(rt.limits.max_public_rooms_page_size));
+            }
+        }
+        auto since_offset = std::size_t{0U};
+        if (auto const since = query_param_value(req.target, "since"); since.has_value() && !since->empty())
+        {
+            auto const [ptr, ec] = std::from_chars(since->data(), since->data() + since->size(), since_offset);
+            if (ec != std::errc{} || ptr != since->data() + since->size())
+            {
+                since_offset = 0U;
+            }
+        }
         auto const server_param = query_param_value(req.target, "server");
         auto const& our_server = rt.homeserver.config.server().server_name;
         if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
@@ -9177,18 +9772,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
-            auto limit = std::optional<std::size_t>{};
+            auto remote_limit = limit;
             if (auto const lv = query_param_value(req.target, "limit"); lv.has_value() && !lv->empty())
             {
                 auto result = std::size_t{0U};
                 auto const [ptr, ec] = std::from_chars(lv->data(), lv->data() + lv->size(), result);
                 if (ec == std::errc{} && result > 0U)
-                    limit = result;
+                    remote_limit = std::min(result, static_cast<std::size_t>(rt.limits.max_public_rooms_page_size));
             }
             auto const since = query_param_value(req.target, "since");
             auto const since_sv = since.has_value() ? std::optional<std::string_view>{*since} : std::nullopt;
             auto const tx = federation::make_outbound_transaction(
-                *server_param, "GET", public_rooms_fed_target(limit, since_sv), our_server, {});
+                *server_param, "GET", public_rooms_fed_target(remote_limit, since_sv), our_server, {});
             auto const [ok, body] = [&] {
                 // Re-acquire before returning: dispatch_resp/dispatch_err read
                 // reloadable runtime state (rt.cors), and every other return path
@@ -9201,93 +9796,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
         }
-        return dispatch_resp(req, rt, 200U, public_rooms_json(rt));
-    }
-    // Spec: POST /_matrix/client/v3/publicRooms
-    // ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
-    if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
-    {
-        auto filter_term = std::string{};
-        auto limit = std::optional<std::size_t>{};
-        auto since_raw = std::string{};      // raw string; forwarded as-is to remote
-        auto since_offset = std::size_t{0U}; // parsed integer for local pagination
-
-        if (auto const body = parsed_json_object(req.body); body.has_value())
-        {
-            if (auto const* filter_val = object_member(*body, "filter"); filter_val != nullptr)
-            {
-                if (auto const* filter_obj = std::get_if<canonicaljson::Object>(&filter_val->storage());
-                    filter_obj != nullptr)
-                {
-                    if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
-                        filter_term = *term;
-                }
-            }
-            if (auto const* lv = object_member(*body, "limit"); lv != nullptr)
-            {
-                if (auto const* li = std::get_if<std::int64_t>(&lv->storage()); li != nullptr && *li > 0)
-                    limit = static_cast<std::size_t>(*li);
-            }
-            if (auto const* sv = string_member(*body, "since"); sv != nullptr && !sv->empty())
-            {
-                since_raw = *sv;
-                auto result = std::size_t{0U};
-                auto const [ptr, ec] = std::from_chars(sv->data(), sv->data() + sv->size(), result);
-                if (ec == std::errc{})
-                    since_offset = result;
-            }
-        }
-
-        auto const server_param = query_param_value(req.target, "server");
-        auto const& our_server = rt.homeserver.config.server().server_name;
-        if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
-        {
-            // ADR-0079: reachable without authentication and blocks this thread
-            // on a peer we do not control, so it runs under the in-flight budget.
-            auto const proxy_slot = admit_client_proxy(rt, req);
-            if (!proxy_slot.has_value())
-            {
-                return client_proxy_refused(req, rt);
-            }
-            auto const proxy_deadline = effective_client_outbound_deadline(
-                rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
-            wire_federation_callbacks(rt.homeserver);
-            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
-            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
-            auto const opt_since = since_raw.empty() ? std::nullopt : std::make_optional<std::string_view>(since_raw);
-            // Use POST when filter_term is set so servers supporting
-            // POST /_matrix/federation/v1/publicRooms can apply the filter.
-            // Fall back to GET for unfiltered requests (wider server compatibility).
-            auto fed_body = std::string{};
-            auto const fed_method = filter_term.empty() ? std::string_view{"GET"} : std::string_view{"POST"};
-            if (!filter_term.empty())
-            {
-                auto filter_obj = canonicaljson::Object{};
-                filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
-                auto body_obj = canonicaljson::Object{};
-                body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
-                if (limit.has_value())
-                    body_obj.push_back(json_member("limit", json_int(static_cast<std::int64_t>(*limit))));
-                if (!since_raw.empty())
-                    body_obj.push_back(json_member("since", json_str(since_raw)));
-                fed_body = json_serialize(json_obj(std::move(body_obj)));
-            }
-            auto const tx = federation::make_outbound_transaction(
-                *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
-            auto const [ok, body] = [&] {
-                // Re-acquire before returning: dispatch_resp/dispatch_err read
-                // reloadable runtime state (rt.cors), and every other return path
-                // from this handler leaves the guard held.
-                auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
-                                                     "public_rooms.proxy", proxy_deadline);
-            }();
-            if (!ok)
-                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
-            return dispatch_resp(req, rt, 200U, body);
-        }
-        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset));
+        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, {}, limit, since_offset));
     }
     auto constexpr directory_room_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
     auto constexpr directory_list_room_prefix = std::string_view{"/_matrix/client/v3/directory/list/room/"};
@@ -9351,7 +9860,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         continue;
                     }
-                    auto client = appservice::AppserviceClient{*alias_outbound, *alias_discovery};
+                    auto client = appservice::AppserviceClient{*alias_outbound, *alias_discovery,
+                                                               rt.homeserver.config.appservice()};
                     auto const query = [&] {
                         auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
                         return client.query_room_alias(registration, room_alias);
@@ -9416,7 +9926,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
         }
         auto const user_id = matrix_user_id(rt.homeserver.config.server().server_name, *username);
-        if (user_exists(rt, user_id))
+        if (user_exists(rt, user_id) ||
+            rt.homeserver.appservices.is_sender_user_id(user_id, rt.homeserver.config.server().server_name))
         {
             return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
         }
@@ -9431,11 +9942,31 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "token is required");
         }
+        // Spec: this endpoint must refuse to compare tokens when registration is
+        // disabled, otherwise it leaks whether a configured token exists and burns
+        // Argon2id work for unauthenticated callers (AUTH-4).
+        if (!rt.homeserver.config.security().registration.enabled)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "registration is disabled");
+        }
         // Compare via the Argon2id hash rather than holding the plaintext token on
         // the request path (matches /register).  Only the hash is consulted; a missing
         // or unreadable token file means no token is configured -> valid:false.
+        // AUTH-4: route is now auth_sensitive, and verification runs without the
+        // runtime mutex so Argon2id work cannot block other requests. Admission is
+        // checked first so an unauthenticated endpoint cannot be used to pile on
+        // memory-hard work.
+        auto const argon_slot = rt.homeserver.argon2id_admission->try_acquire();
+        if (!argon_slot)
+        {
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many concurrent authentication attempts",
+                                1000U);
+        }
         auto const expected_hash = load_hashed_registration_token(rt.homeserver.config.security().registration);
-        auto const valid = expected_hash.has_value() && auth::registration_token_matches(*expected_hash, *token);
+        auto const valid = [expected_hash = expected_hash.value_or(std::string{}), token = *token]() {
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            return !expected_hash.empty() && auth::registration_token_matches(expected_hash, token);
+        }();
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
     }
@@ -9776,7 +10307,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // (non-appservice) registration — the m.login.application_service
         // branch above already returned.
         if (auto const desired_user_id = "@" + body->localpart + ":" + rt.homeserver.config.server().server_name;
-            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}))
+            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}) ||
+            rt.homeserver.appservices.is_sender_user_id(desired_user_id, rt.homeserver.config.server().server_name))
         {
             return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
         }
@@ -10150,7 +10682,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         continue;
                     }
-                    auto client = appservice::AppserviceClient{*user_outbound, *user_discovery};
+                    auto client = appservice::AppserviceClient{*user_outbound, *user_discovery,
+                                                               rt.homeserver.config.appservice()};
                     auto const query = [&] {
                         auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
                         return client.query_user(registration, target_user);
@@ -10471,6 +11004,96 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
     }
 
+    // Spec: POST /_matrix/client/v3/publicRooms
+    // ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
+    {
+        auto filter_term = std::string{};
+        auto limit = std::optional<std::size_t>{};
+        auto since_raw = std::string{};      // raw string; forwarded as-is to remote
+        auto since_offset = std::size_t{0U}; // parsed integer for local pagination
+
+        if (auto const body = parsed_json_object(req.body); body.has_value())
+        {
+            if (auto const* filter_val = object_member(*body, "filter"); filter_val != nullptr)
+            {
+                if (auto const* filter_obj = std::get_if<canonicaljson::Object>(&filter_val->storage());
+                    filter_obj != nullptr)
+                {
+                    if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
+                        filter_term = *term;
+                }
+            }
+            if (auto const* lv = object_member(*body, "limit"); lv != nullptr)
+            {
+                if (auto const* li = std::get_if<std::int64_t>(&lv->storage()); li != nullptr && *li > 0)
+                    limit = static_cast<std::size_t>(*li);
+            }
+            if (auto const* sv = string_member(*body, "since"); sv != nullptr && !sv->empty())
+            {
+                since_raw = *sv;
+                auto result = std::size_t{0U};
+                auto const [ptr, ec] = std::from_chars(sv->data(), sv->data() + sv->size(), result);
+                if (ec == std::errc{})
+                    since_offset = result;
+            }
+        }
+
+        limit = std::min(limit.value_or(rt.limits.max_public_rooms_page_size),
+                         static_cast<std::size_t>(rt.limits.max_public_rooms_page_size));
+
+        auto const server_param = query_param_value(req.target, "server");
+        auto const& our_server = rt.homeserver.config.server().server_name;
+        if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
+        {
+            // ADR-0079: reachable without authentication and blocks this thread
+            // on a peer we do not control, so it runs under the in-flight budget.
+            auto const proxy_slot = admit_client_proxy(rt, req);
+            if (!proxy_slot.has_value())
+            {
+                return client_proxy_refused(req, rt);
+            }
+            auto const proxy_deadline = effective_client_outbound_deadline(
+                rt.homeserver, rt.homeserver.client_outbound_proxy_policy.directory_deadline_seconds);
+            wire_federation_callbacks(rt.homeserver);
+            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+            auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
+            auto const opt_since = since_raw.empty() ? std::nullopt : std::make_optional<std::string_view>(since_raw);
+            // Use POST when filter_term is set so servers supporting
+            // POST /_matrix/federation/v1/publicRooms can apply the filter.
+            // Fall back to GET for unfiltered requests (wider server compatibility).
+            auto fed_body = std::string{};
+            auto const fed_method = filter_term.empty() ? std::string_view{"GET"} : std::string_view{"POST"};
+            if (!filter_term.empty())
+            {
+                auto filter_obj = canonicaljson::Object{};
+                filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
+                auto body_obj = canonicaljson::Object{};
+                body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
+                if (limit.has_value())
+                    body_obj.push_back(json_member("limit", json_int(static_cast<std::int64_t>(*limit))));
+                if (!since_raw.empty())
+                    body_obj.push_back(json_member("since", json_str(since_raw)));
+                fed_body = json_serialize(json_obj(std::move(body_obj)));
+            }
+            auto const tx = federation::make_outbound_transaction(
+                *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
+                return perform_bounded_outbound_call(rt.homeserver, {}, tx, key_id, std::move(secret),
+                                                     "public_rooms.proxy", proxy_deadline);
+            }();
+            if (!ok)
+                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
+            return dispatch_resp(req, rt, 200U, body);
+        }
+        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset));
+    }
+
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
     // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
     // Authenticated media endpoints (MSC3860 / Matrix v1.11). The v1 routes
@@ -10594,7 +11217,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
         }
-        room_it->directory_public = (*vis_str == "public");
+        auto const published = *vis_str == "public";
+        if (!database::set_room_directory_public(rt.homeserver.database.persistent_store, room_id, published))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "directory visibility persistence failed");
+        }
+        room_it->directory_public = published;
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/password")
@@ -11320,10 +11948,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // Spec leaves the default unspecified; 50 balances a useful first
         // page against response size, clamped to bound a hostile/careless
         // limit= value the same way GET /messages clamps its own.
-        auto limit = std::size_t{50U};
+        auto limit = std::min<std::size_t>(50U, rt.limits.max_notifications_page_size);
         if (auto const parsed = parse_u64(messages_query_value(req.target, "limit")); parsed.has_value())
         {
-            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{1000U}));
+            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, rt.limits.max_notifications_page_size));
         }
 
         // Memoizes read_receipt_ordering per room_id: a user can have many
@@ -11459,7 +12087,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto protocols_obj = canonicaljson::Object{};
             if (can_call_appservices)
             {
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -11508,7 +12137,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
             }
-            auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+            auto client =
+                appservice::AppserviceClient{*outbound_client, *cached_discovery, rt.homeserver.config.appservice()};
             auto const* owner_ptr = owner;
             auto const result = [&] {
                 auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
@@ -11544,7 +12174,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (can_call_appservices)
             {
                 auto const fields = thirdparty_query_fields(req.target);
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -11580,7 +12211,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto locations = canonicaljson::Array{};
             if (can_call_appservices)
             {
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -11628,7 +12260,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (can_call_appservices)
             {
                 auto const fields = thirdparty_query_fields(req.target);
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -11664,7 +12297,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto users = canonicaljson::Array{};
             if (can_call_appservices)
             {
-                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
+                                                           rt.homeserver.config.appservice()};
                 {
                     // runtime.mutex is released across these network calls via RAII
                     // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
@@ -12087,6 +12721,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const& body = *body_object;
         auto const* preset_value = string_member(body, "preset");
         auto const* visibility_value = string_member(body, "visibility");
+        if (object_member(body, "visibility") != nullptr &&
+            (visibility_value == nullptr || (*visibility_value != "public" && *visibility_value != "private")))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "visibility must be public or private");
+        }
         auto const effective_preset = [&]() -> std::string {
             if (preset_value != nullptr && !preset_value->empty())
             {
@@ -12124,6 +12763,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
 
         auto options = CreateRoomOptions{};
+        options.directory_public = visibility_value != nullptr && *visibility_value == "public";
         options.room_version = room_version;
         options.preset = effective_preset;
         options.invitees = invitees;
@@ -12180,7 +12820,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, create_result.status, errcode, create_result.reason);
         }
         auto const& room_id = create_result.value;
-
         for (auto const& invitee : invitees)
         {
             auto const invitee_server = server_name_from_user_id(invitee);
@@ -12343,13 +12982,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto const session_4186 = authenticated_session(rt.homeserver, req.access_token);
         auto const device_id_4186 = session_4186.has_value() ? session_4186->device_id : std::string{};
-        auto const sliding_req = sync::parse_sliding_sync_request(req.body);
+        auto const sliding_req = sync::parse_sliding_sync_request(req.body, rt.limits.sliding_sync);
         if (!sliding_req.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invalid sliding sync request body");
         }
         // CSAZ-1: bound what one request may ask for (each named room costs an event-store scan).
-        if (auto const violation = sync::sliding_sync_request_limit_violation(*sliding_req); violation.has_value())
+        if (auto const violation = sync::sliding_sync_request_limit_violation(*sliding_req, rt.limits.sliding_sync);
+            violation.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", std::string{*violation});
         }
@@ -12359,7 +12999,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             pos = sync::decode_stream_token(*sliding_req->pos);
         }
-        auto const timeout = sync::parse_sliding_sync_timeout(req.target).value_or(sliding_req->timeout.value_or(0U));
+        auto const timeout =
+            std::min(sync::parse_sliding_sync_timeout(req.target).value_or(sliding_req->timeout.value_or(0U)),
+                     sync::k_max_sync_timeout_ms);
         log_diagnostic("sliding_sync.dispatch", {
                                                     {"actor",     *user,          false},
                                                     {"device_id", device_id_4186, false}
@@ -12400,6 +13042,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         if (auto const path = room_relations_path_parts(req.target); path.has_value())
         {
+            auto const requested_limit = parse_query_uint(query_param_value(req.target, "limit"));
+            auto const relations_limit =
+                std::min<std::uint64_t>(requested_limit.value_or(100U), rt.limits.max_relations_page_size);
             auto const request = FetchRelationsRequest{
                 path->room_id,
                 path->event_id,
@@ -12407,7 +13052,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 path->event_type,
                 query_param_value(req.target, "dir"),
                 query_param_value(req.target, "from"),
-                parse_query_uint(query_param_value(req.target, "limit")),
+                relations_limit,
                 parse_query_bool(query_param_value(req.target, "recurse")),
                 query_param_value(req.target, "to"),
             };
@@ -12695,11 +13340,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // Spec: limit applies to the sum of events_before and
                 // events_after; defaults to 10. Clamp to the same maximum
                 // GET /messages uses to bound resource usage.
-                auto limit = std::size_t{10U};
+                auto limit = std::min<std::size_t>(10U, static_cast<std::size_t>(rt.limits.max_context_events));
                 if (auto const parsed_limit = parse_u64(messages_query_value(req.target, "limit"));
                     parsed_limit.has_value())
                 {
-                    limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed_limit, std::uint64_t{100U}));
+                    limit = static_cast<std::size_t>(std::min<std::uint64_t>(
+                        *parsed_limit, static_cast<std::uint64_t>(rt.limits.max_context_events)));
                 }
 
                 return dispatch_resp(req, rt, 200U,
@@ -13888,7 +14534,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "search_categories.room_events is required");
         }
-        auto const parsed_request = parse_search_request(*room_events_obj);
+        auto const parsed_request = parse_search_request(*room_events_obj, rt.limits);
         if (!parsed_request.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "search_categories.room_events is malformed");
@@ -13918,13 +14564,28 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto const body = canonicaljson::parse_lossless(req.body);
             auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
-            if (body_obj == nullptr)
+            if (body.error != canonicaljson::ParseError::none || body_obj == nullptr)
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "presence body must be Matrix JSON");
             }
             auto const* presence_str = string_member(*body_obj, "presence");
-            auto const presence_state = presence_str != nullptr ? *presence_str : std::string{"offline"};
+            if (presence_str == nullptr ||
+                (*presence_str != "online" && *presence_str != "offline" && *presence_str != "unavailable"))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "presence must be online, offline or unavailable");
+            }
+            auto const& presence_state = *presence_str;
             auto const* status_msg = string_member(*body_obj, "status_msg");
+            if (object_member(*body_obj, "status_msg") != nullptr && status_msg == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg must be a string");
+            }
+            // Local resource policy, not a Matrix protocol limit (ADR-0098).
+            if (status_msg != nullptr && status_msg->size() > 1024U)
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "status_msg exceeds 1024 UTF-8 bytes");
+            }
             auto state = database::PersistentPresence{};
             state.stream_id = 0U;
             state.user_id = std::string{*user};
@@ -14436,6 +15097,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
             };
             request.limit = parse_size(query_param_value(req.target, "limit"));
+            request.max_rooms = rt.limits.max_hierarchy_rooms;
             request.max_depth = parse_size(query_param_value(req.target, "max_depth"));
             if (auto const suggested = query_param_value(req.target, "suggested_only"); suggested == "true")
             {

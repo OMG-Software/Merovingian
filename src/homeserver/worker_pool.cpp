@@ -20,6 +20,7 @@
 #include "merovingian/net/thread_pool.hpp"
 #include "merovingian/observability/logger.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -1053,13 +1054,25 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
     , worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
 {
-    // Both sides of the worker IPC channel must agree on max_frame_bytes (see
-    // ipc::frame_bytes_for_response_cap); this side derives it from the same
-    // config the worker itself parses from --config at spawn time.
+    // Both sides derive one frame cap from the same response and request budgets
+    // in --config. Request bodies cross as JSON strings and may expand more than
+    // response bodies, which use fixed base64 encoding.
     auto const join_response_max_size =
         config::parse_size_limit(runtime_.config.security().federation.join_response_max_size);
-    auto const max_frame_bytes =
-        ipc::frame_bytes_for_response_cap(join_response_max_size.valid ? join_response_max_size.bytes : 0U);
+    auto const backfill_response_max_size =
+        config::parse_size_limit(runtime_.config.security().federation.backfill.response_max_size);
+    auto const federation_request_body_size =
+        config::parse_size_limit(runtime_.config.security().federation.max_transaction_size);
+    auto const http_body_size = config::parse_size_limit(runtime_.config.server().http.max_body_size);
+    auto const client_api_body_size = config::parse_size_limit(runtime_.config.server().client_api.max_body_size);
+    auto const http_config = runtime_.config.server().http;
+    auto const max_frame_bytes = ipc::frame_bytes_for_transport_caps(
+        std::max(join_response_max_size.valid ? join_response_max_size.bytes : 0U,
+                 backfill_response_max_size.valid ? backfill_response_max_size.bytes : 0U),
+        federation_request_body_size.valid ? federation_request_body_size.bytes : 0U,
+        std::max(http_body_size.valid ? http_body_size.bytes : 0U,
+                 client_api_body_size.valid ? client_api_body_size.bytes : 0U),
+        http_config.max_header_bytes, http_config.max_start_line_bytes);
 
     // Derive the worker IPC auth key ONCE, here, from the operator master-key
     // file — instead of letting each WorkerSupervisor independently open that
@@ -1257,6 +1270,17 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     ch->send_response(id, overload_response_for(type));
                 }
             }
+            else if (type == "room_sync_result")
+            {
+                // Fire-and-forget notification from the worker reporting the
+                // outcome of an asynchronous room_sync reload.  No response is
+                // sent.  Handle it inline on the dispatch thread: it only
+                // updates an in-memory status map.
+                auto const result_room_id = json_get_str(json, "room_id");
+                auto const result_state = json_get_str(json, "state");
+                auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
+                record_room_sync_result(result_room_id, result_state, result_generation);
+            }
             else
             {
                 LOG_WARNING("WorkerPool shard " + std::to_string(ptr == nullptr ? 0U : ptr->shard_index()) +
@@ -1337,7 +1361,15 @@ auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
     {
         return;
     }
-    ch->send_notification(ipc::serialize_room_sync_notification(room_id));
+
+    auto const generation = [this, room_id]() {
+        auto guard = std::lock_guard{room_sync_mu_};
+        auto const next = ++room_sync_generations_[std::string{room_id}];
+        room_sync_status_[std::string{room_id}] = RoomSyncStatus{"pending", next};
+        return next;
+    }();
+
+    ch->send_notification(ipc::serialize_room_sync_notification(room_id, generation));
 }
 
 auto WorkerPool::healthy() const noexcept -> bool
@@ -1375,6 +1407,35 @@ auto WorkerPool::stop() noexcept -> void
 auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size_t
 {
     return federation_worker_shard_for(room_id, cfg_.shards);
+}
+
+auto WorkerPool::room_sync_status(std::string_view room_id) const -> RoomSyncStatus
+{
+    auto guard = std::lock_guard{room_sync_mu_};
+    auto const it = room_sync_status_.find(std::string{room_id});
+    if (it == room_sync_status_.end())
+    {
+        return RoomSyncStatus{"ok", 0U};
+    }
+    return it->second;
+}
+
+auto WorkerPool::record_room_sync_result(std::string_view room_id, std::string_view state, std::uint64_t generation)
+    -> void
+{
+    auto guard = std::lock_guard{room_sync_mu_};
+    auto const it = room_sync_generations_.find(std::string{room_id});
+    if (it == room_sync_generations_.end() || generation > it->second)
+    {
+        // Stale or unmatched result for a room we no longer track; ignore it.
+        return;
+    }
+    if (generation == it->second)
+    {
+        room_sync_status_[std::string{room_id}] = RoomSyncStatus{std::string{state}, generation};
+    }
+    // An older generation is also ignored; the pending entry for the latest
+    // generation remains until its own result arrives or the room is re-synced.
 }
 
 auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,

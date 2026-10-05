@@ -148,7 +148,16 @@ auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bo
 
 auto database_backend_name(DatabaseBackend backend) noexcept -> std::string_view
 {
-    return backend == DatabaseBackend::sqlite ? "sqlite" : "postgresql";
+    switch (backend)
+    {
+    case DatabaseBackend::memory:
+        return "memory";
+    case DatabaseBackend::postgresql:
+        return "postgresql";
+    case DatabaseBackend::sqlite:
+        return "sqlite";
+    }
+    return "unknown";
 }
 
 auto parse_database_backend(std::string_view value) noexcept -> std::optional<DatabaseBackend>
@@ -166,10 +175,12 @@ auto parse_database_backend(std::string_view value) noexcept -> std::optional<Da
 
 auto database_backend_performance_warning(DatabaseBackend backend) noexcept -> std::string_view
 {
-    return backend == DatabaseBackend::sqlite
-               ? "SQLite is intended only for small installations and development; PostgreSQL is recommended for "
-                 "production or high-throughput deployments."
-               : std::string_view{};
+    if (backend == DatabaseBackend::sqlite)
+    {
+        return "SQLite is intended only for small installations and development; PostgreSQL is recommended for "
+               "production or high-throughput deployments.";
+    }
+    return {};
 }
 
 auto database_role_name(DatabaseRole role) noexcept -> std::string_view
@@ -595,6 +606,136 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         }
     }
 
+    // Operational work budgets stay finite even when an operator tunes them.
+    auto const validate_count = [&findings](std::string_view key, std::uint64_t value, std::uint64_t maximum) {
+        if (value == 0U || value > maximum)
+        {
+            findings.push_back({std::string{key}, "must be between 1 and " + std::to_string(maximum)});
+        }
+    };
+    auto const validate_bytes = [&findings](std::string_view key, std::string_view value, std::uint64_t maximum) {
+        auto const parsed = parse_size_limit(value);
+        if (!parsed.valid || parsed.bytes == 0U || parsed.bytes > maximum)
+        {
+            findings.push_back(
+                {std::string{key}, "must be a positive byte size no greater than " + std::to_string(maximum)});
+        }
+    };
+    validate_count("server.client_api.max_sync_rooms", config.server().client_api.max_sync_rooms, 10000U);
+    validate_count("server.client_api.max_sync_events_per_room", config.server().client_api.max_sync_events_per_room,
+                   1000U);
+    validate_count("server.client_api.max_search_events_scanned", config.server().client_api.max_search_events_scanned,
+                   1000000U);
+    validate_count("server.client_api.max_messages_events_examined",
+                   config.server().client_api.max_messages_events_examined, 1000000U);
+    validate_count("server.client_api.max_messages_page_size", config.server().client_api.max_messages_page_size,
+                   1000U);
+    validate_count("server.client_api.max_context_events", config.server().client_api.max_context_events, 1000U);
+    validate_count("server.client_api.max_search_page_size", config.server().client_api.max_search_page_size, 1000U);
+    validate_count("server.client_api.max_search_context_events", config.server().client_api.max_search_context_events,
+                   1000U);
+    validate_count("server.client_api.sliding_sync_max_timeline_limit",
+                   config.server().client_api.sliding_sync_max_timeline_limit, 1000U);
+    validate_count("server.client_api.sliding_sync_max_room_subscriptions",
+                   config.server().client_api.sliding_sync_max_room_subscriptions, 4096U);
+    validate_count("server.client_api.sliding_sync_max_required_state_entries",
+                   config.server().client_api.sliding_sync_max_required_state_entries, 4096U);
+    validate_count("server.client_api.sliding_sync_connections_per_device",
+                   config.server().client_api.sliding_sync_connections_per_device, 64U);
+    validate_count("server.http.sync_threads", config.server().http.sync_threads, 512U);
+    validate_count("server.http.sync_max_in_flight", config.server().http.sync_max_in_flight, 512U);
+    validate_count("server.http.sync_max_per_user", config.server().http.sync_max_per_user, 64U);
+    validate_count("server.http.sync_max_per_device", config.server().http.sync_max_per_device, 16U);
+    validate_count("server.http.max_start_line_bytes", config.server().http.max_start_line_bytes, 8192U);
+    validate_count("server.http.max_header_bytes", config.server().http.max_header_bytes, 65536U);
+    validate_count("server.http.max_header_count", config.server().http.max_header_count, 200U);
+    validate_count("security.federation.backfill.max_missing_events",
+                   config.security().federation.backfill.max_missing_events, 100U);
+    validate_count("security.federation.backfill.max_outbound_calls",
+                   config.security().federation.backfill.max_outbound_calls, 256U);
+    validate_count("security.federation.backfill.max_state_ids", config.security().federation.backfill.max_state_ids,
+                   262144U);
+    validate_count("security.federation.backfill.max_auth_chain_ids",
+                   config.security().federation.backfill.max_auth_chain_ids, 262144U);
+    validate_count("security.federation.backfill.max_snapshot_events",
+                   config.security().federation.backfill.max_snapshot_events, 524288U);
+    validate_count("security.federation.backfill.max_snapshot_outbound_calls",
+                   config.security().federation.backfill.max_snapshot_outbound_calls, 4096U);
+    validate_count("security.federation.accepted_transaction_cache_entries",
+                   config.security().federation.accepted_transaction_cache_entries, 1000000U);
+    validate_count("security.federation.audit_event_cache_entries",
+                   config.security().federation.audit_event_cache_entries, 1000000U);
+    validate_count("security.federation.key_resolution_cache_entries",
+                   config.security().federation.key_resolution_cache_entries, 1000000U);
+    validate_count("security.federation.bad_signature_cache_entries",
+                   config.security().federation.bad_signature_cache_entries, 1000000U);
+    validate_count("security.federation.pending_join_max_rooms", config.security().federation.pending_join_max_rooms,
+                   256U);
+    validate_count("security.federation.pending_join_max_pdus", config.security().federation.pending_join_max_pdus,
+                   4096U);
+    validate_count("server.push.max_pushers_per_delivery", config.server().push.max_pushers_per_delivery, 256U);
+    validate_count("server.push.max_in_flight_deliveries", config.server().push.max_in_flight_deliveries, 4096U);
+    validate_bytes("server.client_api.max_body_size", config.server().client_api.max_body_size, 67108864U);
+    validate_bytes("server.http.max_body_size", config.server().http.max_body_size, 67108864U);
+    validate_bytes("security.federation.backfill.response_max_size",
+                   config.security().federation.backfill.response_max_size, 67108864U);
+    validate_bytes("security.federation.pending_join_max_size", config.security().federation.pending_join_max_size,
+                   16777216U);
+    validate_count("security.federation.backfill.max_total_outbound_calls",
+                   config.security().federation.backfill.max_total_outbound_calls, 4096U);
+    auto const backfill_timeout = parse_duration_seconds(config.security().federation.backfill.timeout);
+    if (!backfill_timeout.valid || backfill_timeout.seconds == 0U || backfill_timeout.seconds > 300U)
+    {
+        findings.push_back({"security.federation.backfill.timeout", "must be between 1s and 300s"});
+    }
+    validate_count("server.client_api.max_registration_validation_sessions",
+                   config.server().client_api.max_registration_validation_sessions, 65536U);
+    validate_count("server.client_api.max_registration_validation_sessions_per_remote",
+                   config.server().client_api.max_registration_validation_sessions_per_remote, 256U);
+    validate_count("server.client_api.max_uia_sessions", config.server().client_api.max_uia_sessions, 65536U);
+    validate_count("server.client_api.max_safety_report_rows", config.server().client_api.max_safety_report_rows,
+                   10000U);
+    validate_count("security.federation.state_resolution.max_state_groups",
+                   config.security().federation.state_resolution.max_state_groups, 4096U);
+    validate_count("security.federation.state_resolution.max_events_per_state_group",
+                   config.security().federation.state_resolution.max_events_per_state_group, 262144U);
+    validate_count("security.federation.state_resolution.max_total_state_events",
+                   config.security().federation.state_resolution.max_total_state_events, 1048576U);
+    validate_count("security.federation.state_resolution.max_conflicted_state_keys",
+                   config.security().federation.state_resolution.max_conflicted_state_keys, 262144U);
+    validate_count("security.federation.state_resolution.max_mainline_auth_chain_depth",
+                   config.security().federation.state_resolution.max_mainline_auth_chain_depth, 100000U);
+    validate_count("security.federation.state_resolution.max_auth_chain_walk_events",
+                   config.security().federation.state_resolution.max_auth_chain_walk_events, 524288U);
+    validate_count("server.client_api.max_notifications_retained_per_user",
+                   config.server().client_api.max_notifications_retained_per_user, 100000U);
+    validate_count("server.client_api.max_notifications_page_size",
+                   config.server().client_api.max_notifications_page_size, 10000U);
+    validate_count("server.client_api.max_threads_page_size", config.server().client_api.max_threads_page_size, 1000U);
+    validate_count("server.client_api.max_relations_page_size", config.server().client_api.max_relations_page_size,
+                   1000U);
+    validate_count("server.client_api.max_public_rooms_page_size",
+                   config.server().client_api.max_public_rooms_page_size, 10000U);
+    validate_count("server.client_api.max_hierarchy_rooms", config.server().client_api.max_hierarchy_rooms, 10000U);
+    validate_count("security.federation.outbound_queue_capacity", config.security().federation.outbound_queue_capacity,
+                   65536U);
+    validate_count("security.federation.outbound_max_retries", config.security().federation.outbound_max_retries, 256U);
+    validate_count("appservice.connect_timeout_seconds", config.appservice().connect_timeout_seconds, 120U);
+    validate_count("appservice.total_timeout_seconds", config.appservice().total_timeout_seconds, 300U);
+    validate_bytes("appservice.response_max_size", config.appservice().response_max_size, 67108864U);
+    if (config.appservice().connect_timeout_seconds > config.appservice().total_timeout_seconds)
+    {
+        findings.push_back({"appservice.connect_timeout_seconds", "must not exceed total_timeout_seconds"});
+    }
+    if (config.server().http.sync_threads < 4U)
+    {
+        findings.push_back({"server.http.sync_threads", "sync pool needs at least 4 threads"});
+    }
+    if (!http::rate_limit_policy_is_valid(config.security().federation.bad_signature_per_ip_rate))
+    {
+        findings.push_back({"security.federation.bad_signature_per_ip_rate", "must be a positive bounded rate policy"});
+    }
+
     // HTTP keep-alive transport policy. Range-validate here so bad config is
     // rejected at startup rather than silently closing every connection at
     // request time (http::keep_alive_policy_is_valid is fail-closed, but the
@@ -975,11 +1116,20 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.federation.deny_ip_ranges", "federation must block private or loopback ranges"});
     }
 
+    validate_count("security.federation.query.max_backfill_pdus", config.security().federation.query.max_backfill_pdus,
+                   10000U);
+    validate_count("security.federation.query.max_missing_events_pdus",
+                   config.security().federation.query.max_missing_events_pdus, 1000U);
+    validate_count("security.federation.query.max_missing_events_latest",
+                   config.security().federation.query.max_missing_events_latest, 1000U);
+    validate_count("security.federation.query.max_missing_events_traversal",
+                   config.security().federation.query.max_missing_events_traversal, 100000U);
     auto const federation_max_transaction_size = parse_size_limit(config.security().federation.max_transaction_size);
-    if (!federation_max_transaction_size.valid)
+    if (!federation_max_transaction_size.valid || federation_max_transaction_size.bytes == 0U ||
+        federation_max_transaction_size.bytes > 64U * 1024U * 1024U)
     {
         findings.push_back({"security.federation.max_transaction_size",
-                            "federation transaction size must be a positive bounded byte size"});
+                            "federation transaction size must be a positive byte size no greater than 64MiB"});
     }
     if (config.security().federation.max_transaction_pdus == 0U ||
         config.security().federation.max_transaction_pdus > 50U)

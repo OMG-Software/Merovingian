@@ -510,9 +510,10 @@ namespace
                                   static_cast<std::uint32_t>(parse_u64(column_text(row, 7))),
                                   parse_u64(column_text(row, 8))});
                          }) &&
-               load_rows(connection, "SELECT room_id, creator_user_id FROM rooms",
+               load_rows(connection, "SELECT room_id, creator_user_id, directory_public FROM rooms",
                          [&store](sqlite3_stmt& row) {
-                             store.rooms.push_back({column_text(row, 0), column_text(row, 1)});
+                             store.rooms.push_back(
+                                 {column_text(row, 0), column_text(row, 1), text_is_true(column_text(row, 2))});
                          }) &&
                load_rows(connection, "SELECT room_id, user_id, membership, stream_ordering FROM membership",
                          [&store](sqlite3_stmt& row) {
@@ -898,16 +899,18 @@ namespace
         return result;
     }
 
-    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection,
+                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
         auto ok = true;
 
-        ok = ok && load_rows_bound(connection, "SELECT room_id, creator_user_id FROM rooms WHERE room_id = ?1",
+        ok = ok && load_rows_bound(connection,
+                                   "SELECT room_id, creator_user_id, directory_public FROM rooms WHERE room_id = ?1",
                                    {room_id_str}, [&](sqlite3_stmt& row) {
-                                       snapshot.room = PersistentRoom{column_text(row, 0), column_text(row, 1)};
+                                       snapshot.room = PersistentRoom{column_text(row, 0), column_text(row, 1),
+                                                                      text_is_true(column_text(row, 2))};
                                    });
         ok = ok &&
              load_rows_bound(connection,
@@ -1037,8 +1040,8 @@ namespace
         return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
     }
 
-    [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
-        -> bool
+    [[nodiscard]] auto execute_transaction(sqlite3& connection,
+                                           std::vector<PreparedStatement> const& statements) -> bool
     {
         auto transaction = SqliteTransaction{connection};
         if (!transaction.active())
@@ -1163,8 +1166,8 @@ namespace detail
         return persist_transaction_to_backend(store, {statement});
     }
 
-    auto persist_transaction_to_backend(PersistentStore const& store, std::vector<PreparedStatement> const& statements)
-        -> bool
+    auto persist_transaction_to_backend(PersistentStore const& store,
+                                        std::vector<PreparedStatement> const& statements) -> bool
     {
         if (store.backend == PersistentStoreBackend::memory)
         {
@@ -1183,8 +1186,8 @@ namespace detail
                execute_transaction(**connection, statements);
     }
 
-    auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_backend(PersistentStore const& store,
+                                         std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         if (store.backend == PersistentStoreBackend::postgresql)
         {
@@ -1198,8 +1201,8 @@ namespace detail
         return load_room_snapshot_from_sqlite(store.sqlite_path, room_id);
     }
 
-    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_sqlite(std::string const& path,
+                                        std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         if (path.empty())
         {

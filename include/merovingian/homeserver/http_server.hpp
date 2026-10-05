@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/tls.hpp"
+#include "merovingian/http/request_limits.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
@@ -83,6 +85,26 @@ struct HttpServeTuning final
     std::uint32_t max_requests_per_connection{1000U};
     std::chrono::seconds max_connection_lifetime{3600};
 };
+
+struct SyncAdmissionCaps final
+{
+    std::uint32_t global{0U};
+    std::uint32_t per_user{0U};
+    std::uint32_t per_device{0U};
+};
+
+// Resolve the configured long-poll admission budgets against the actual pool
+// size. The global cap includes queued and active waits and cannot exceed the
+// number of sync workers available to serve them.
+[[nodiscard]] auto sync_admission_caps(config::HttpTransportConfig const& settings,
+                                       std::size_t pool_worker_count) noexcept -> SyncAdmissionCaps;
+
+// Construct the request limits from the startup config snapshot. Federation
+// /send has its own configured body cap; all other request bodies use the
+// server.http.max_body_size setting. Media uploads are expanded separately
+// only after their request head passes the authentication gate.
+[[nodiscard]] auto http_request_limits_for(ClientServerRuntime const& runtime, HttpDispatchMode dispatch_mode,
+                                           std::string_view method, std::string_view target) -> http::RequestLimits;
 
 // Owns every connection that is not being served (ADR-0077, audit finding
 // HTTP-1): fresh connections before their first byte, and kept-alive connections
