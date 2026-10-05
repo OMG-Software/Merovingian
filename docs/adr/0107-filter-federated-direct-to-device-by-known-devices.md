@@ -27,6 +27,10 @@ Chosen option: "Silently skip unknown devices while still queuing known ones".
 
 The inbound federation path now checks `runtime.database.persistent_store.devices` for a matching `(user_id, device_id)` before incrementing `targeted` or attempting to enqueue. Unknown devices are ignored; the rest of the EDU is processed normally. The transaction still returns 200 because EDUs are best-effort.
 
+The device ID `*` is not a device to look up: the spec defines it as "all known devices for the user". It is expanded, when the EDU is received, into one queued row per device the target user has registered, exactly as the client-server `sendToDevice` path expands it (ADR-0105). Each expanded row counts as one delivery against the per-EDU delivery cap, so a wildcard cannot multiply past it. A user with no devices receives nothing.
+
+Storing a single `*` row and fanning it out when each device syncs was rejected: the federated and local paths would then queue the same request differently; `drain_to_device_messages` never deletes a broadcast row, because no single device's acknowledgement covers it, so such rows would accumulate; and a device registered later, syncing from the start of its stream, would receive wildcard messages sent before it existed. An earlier revision of this decision matched `*` literally against registered devices, which silently dropped every wildcard message (for example `m.room_key_request` cancellations) while returning 200.
+
 ### Positive Consequences
 
 * Remote servers cannot probe device existence through federation to-device.

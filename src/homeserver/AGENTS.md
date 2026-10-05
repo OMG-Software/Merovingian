@@ -51,6 +51,11 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
 3. Add a conformance test in `tests/conformance/test_client_server_conformance.cpp`
 4. Add a unit test in `tests/unit/test_client_server.cpp`
 5. Update `docs/matrix-v1.19-client-server-api.md` with the new endpoint
+6. If the path has a variable component (an ID, type or key), add its template to
+   `normalized_target()` in `client_server.cpp` and a row to the HTTP-3 scenario
+   "gives every implemented dynamic client route its own coalesced bucket" in
+   `tests/unit/test_security_audit_http_3.cpp`. Without it the route shares the
+   rate-limit fallback bucket with every unknown path (ADR-0092)
 
 ## The runtime lock and blocking calls
 

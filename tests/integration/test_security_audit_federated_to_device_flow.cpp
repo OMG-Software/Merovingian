@@ -21,7 +21,9 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -199,6 +201,85 @@ SCENARIO("a verified federation to-device EDU queues only known active local dev
                 REQUIRE(store.to_device_messages.front().target_device_id == bob_device.device_id);
                 REQUIRE(store.to_device_messages.front().content_json == R"({"value":"deliver"})");
                 REQUIRE(store.next_sync_stream_id == sync_stream_before + 1U);
+            }
+        }
+    }
+}
+
+// Matrix Server-Server API v1.19, "Send-to-device messaging": in
+// m.direct_to_device "The device ID may also be `*`, meaning all known devices
+// for the user."
+SCENARIO("a verified federation to-device EDU addressed to device '*' reaches every device of the local user",
+         "[integration][sqlite][security_audit_federated_to_device_flow]")
+{
+    GIVEN("Bob with several registered devices, Carol with her own device, and a trusted remote signing key")
+    {
+        auto const sqlite = TemporarySqliteDirectory{};
+        auto started = merovingian::homeserver::start_client_server(to_device_config(sqlite.database_path()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const bob = register_bob(runtime);
+        std::ignore = login_bob_device(runtime, "BOB_PHONE");
+        std::ignore = login_bob_device(runtime, "BOB_LAPTOP");
+        auto const carol = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("carol", "CorrectHorse7!")});
+        REQUIRE(carol.response.status == 200U);
+
+        auto const& store = runtime.homeserver.database.persistent_store;
+        auto bob_devices = std::vector<std::string>{};
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id == bob.user_id)
+            {
+                bob_devices.push_back(device.device_id);
+            }
+        }
+        std::ranges::sort(bob_devices);
+        REQUIRE(bob_devices.size() == 3U);
+
+        auto const origin = std::string{"matrix.ping.me.uk"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const keypair = merovingian::federation::test::keypair_from_seed("federated-to-device-wildcard-seed");
+        merovingian::federation::upsert_remote(runtime.homeserver.federation, remote_for(origin, key_id, keypair));
+
+        auto const remote_sender = std::string{"@james:"} + origin;
+        auto const transaction_target = std::string{"/_matrix/federation/v1/send/txn-wildcard-device"};
+        auto const transaction_body =
+            std::string{"{\"origin\":\""} + origin +
+            R"(","origin_server_ts":1000,"pdus":[],"edus":[{"edu_type":"m.direct_to_device","content":{"sender":")" +
+            remote_sender +
+            R"(","type":"m.room_key_request","message_id":"wildcard-device","messages":{"@bob:example.org":{"*":{"action":"request_cancellation"}}}}}]})";
+        auto const authorization = signed_authorization(origin, "example.org", key_id, "PUT", transaction_target,
+                                                        transaction_body, keypair.secret_key);
+        auto const sync_stream_before = store.next_sync_stream_id;
+
+        WHEN("the signed federation transaction addresses Bob's wildcard device")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{};
+            request.method = "PUT";
+            request.target = transaction_target;
+            request.access_token = authorization;
+            request.body = transaction_body;
+            auto const response = merovingian::homeserver::handle_federation_http_request(runtime.homeserver, request);
+
+            THEN("each of Bob's devices gets one copy, Carol gets none, and no literal '*' device is queued")
+            {
+                REQUIRE(response.status == 200U);
+                auto queued_devices = std::vector<std::string>{};
+                for (auto const& message : store.to_device_messages)
+                {
+                    REQUIRE(message.sender_user_id == remote_sender);
+                    REQUIRE(message.target_user_id == bob.user_id);
+                    REQUIRE(message.message_type == "m.room_key_request");
+                    REQUIRE(message.content_json == R"({"action":"request_cancellation"})");
+                    queued_devices.push_back(message.target_device_id);
+                }
+                std::ranges::sort(queued_devices);
+                REQUIRE(queued_devices == bob_devices);
+                REQUIRE(store.next_sync_stream_id == sync_stream_before + bob_devices.size());
             }
         }
     }

@@ -7,7 +7,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -18,8 +20,8 @@ namespace
 
 using RatePolicies = std::unordered_map<std::string, merovingian::http::RateLimitPolicy>;
 
-[[nodiscard]] auto start_with_limits(RatePolicies per_ip = {}, RatePolicies per_user = {},
-                                     RatePolicies tier = {}) -> merovingian::homeserver::ClientServerStartResult
+[[nodiscard]] auto start_with_limits(RatePolicies per_ip = {}, RatePolicies per_user = {}, RatePolicies tier = {})
+    -> merovingian::homeserver::ClientServerStartResult
 {
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
@@ -314,6 +316,127 @@ SCENARIO("HTTP-3 keeps valid room actions separate and coalesces unknown room ac
                 CHECK(unknown_one != 429U);
                 CHECK(unknown_two != 429U);
                 CHECK(unknown_three == 429U);
+            }
+        }
+    }
+}
+
+SCENARIO("HTTP-3 keeps the built-in device-key cap on each E2EE key route in its own bucket",
+         "[security][http][http-3][rate-limit]")
+{
+    GIVEN("a runtime with only the built-in rate limits, which cap /_matrix/client/v3/keys/ at 120 per minute")
+    {
+        auto started = start_with_limits();
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("one address sends 121 key-claim requests, then one key-upload and one unrelated unknown request")
+        {
+            auto claim_statuses = std::vector<std::uint16_t>{};
+            for (auto attempt = 0U; attempt < 121U; ++attempt)
+            {
+                claim_statuses.push_back(request(runtime, "/_matrix/client/v3/keys/claim"));
+            }
+            auto const upload = request(runtime, "/_matrix/client/v3/keys/upload");
+            auto const unknown = request(runtime, "/_matrix/client/v3/mystery/route");
+
+            THEN("key claims stop at the built-in cap, while key upload and the fallback keep their own budgets")
+            {
+                CHECK(std::ranges::none_of(claim_statuses.begin(), claim_statuses.end() - 1, [](std::uint16_t status) {
+                    return status == 429U;
+                }));
+                CHECK(claim_statuses.back() == 429U);
+                CHECK(upload != 429U);
+                CHECK(unknown != 429U);
+            }
+        }
+    }
+}
+
+SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced bucket",
+         "[security][http][http-3][rate-limit]")
+{
+    struct RouteCase
+    {
+        std::string route_template;
+        std::string first_path;
+        std::string second_path;
+    };
+    auto const cases = std::vector<RouteCase>{
+        {"/_matrix/client/v3/keys/claim",                                           "/_matrix/client/v3/keys/claim",                         "/_matrix/client/v3/keys/claim"                                                  },
+        {"/_matrix/client/v3/keys/upload",                                          "/_matrix/client/v3/keys/upload",                        "/_matrix/client/v3/keys/upload"                                                 },
+        {"/_matrix/client/v3/room_keys/version/{version}",                          "/_matrix/client/v3/room_keys/version/1",
+         "/_matrix/client/v3/room_keys/version/2"                                                                                                                                                                             },
+        {"/_matrix/client/v3/room_keys/keys/{roomId}",                              "/_matrix/client/v3/room_keys/keys/%21a%3Aexample.org",
+         "/_matrix/client/v3/room_keys/keys/%21b%3Aexample.org"                                                                                                                                                               },
+        {"/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}",
+         "/_matrix/client/v3/room_keys/keys/%21a%3Aexample.org/session-one",                                                                 "/_matrix/client/v3/room_keys/keys/%21b%3Aexample.org/session-two"               },
+        {"/_matrix/client/v3/rooms/{roomId}/unban",                                 "/_matrix/client/v3/rooms/%21a%3Aexample.org/unban",
+         "/_matrix/client/v3/rooms/%21b%3Aexample.org/unban"                                                                                                                                                                  },
+        {"/_matrix/client/v3/user/{userId}/rooms/{roomId}/tags",
+         "/_matrix/client/v3/user/%40a%3Aexample.org/rooms/%21a%3Aexample.org/tags",                                                         "/_matrix/client/v3/user/%40b%3Aexample.org/rooms/%21b%3Aexample.org/tags"       },
+        {"/_matrix/client/v3/user/{userId}/rooms/{roomId}/tags/{tag}",
+         "/_matrix/client/v3/user/%40a%3Aexample.org/rooms/%21a%3Aexample.org/tags/m.favourite",                                             "/_matrix/client/v3/user/%40b%3Aexample.org/rooms/%21b%3Aexample.org/tags/u.work"},
+        {"/_matrix/client/v3/presence/{userId}/status",                             "/_matrix/client/v3/presence/%40a%3Aexample.org/status",
+         "/_matrix/client/v3/presence/%40b%3Aexample.org/status"                                                                                                                                                              },
+        {"/_matrix/client/v3/login/sso/redirect/{idpId}",                           "/_matrix/client/v3/login/sso/redirect/one",
+         "/_matrix/client/v3/login/sso/redirect/two"                                                                                                                                                                          },
+        {"/_matrix/client/unstable/im.nheko.summary/summary/{roomIdOrAlias}",
+         "/_matrix/client/unstable/im.nheko.summary/summary/%21a%3Aexample.org",                                                             "/_matrix/client/unstable/im.nheko.summary/summary/%21b%3Aexample.org"           },
+        {"/_matrix/client/unstable/im.nheko.summary/rooms/{roomIdOrAlias}/summary",
+         "/_matrix/client/unstable/im.nheko.summary/rooms/%21a%3Aexample.org/summary",                                                       "/_matrix/client/unstable/im.nheko.summary/rooms/%21b%3Aexample.org/summary"     },
+    };
+
+    GIVEN("a one-request operator cap keyed on each route template")
+    {
+        auto policies = RatePolicies{};
+        for (auto const& route : cases)
+        {
+            policies.emplace(route.route_template, merovingian::http::RateLimitPolicy{1U, 60U});
+        }
+        auto started = start_with_limits(std::move(policies));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("each route is called twice with different identifiers in its variable segments")
+        {
+            THEN("the template cap admits the first call and refuses the second, so the route neither falls back "
+                 "nor mints a bucket per identifier")
+            {
+                for (auto const& route : cases)
+                {
+                    INFO(route.route_template);
+                    CHECK(request(runtime, route.first_path) != 429U);
+                    CHECK(request(runtime, route.second_path) == 429U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("HTTP-3 applies a built-in prefix cap to a path that normalizes to the shared fallback",
+         "[security][http][http-3][rate-limit]")
+{
+    GIVEN("a runtime with only the built-in rate limits")
+    {
+        auto started = start_with_limits();
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("one address sends 121 requests to an unrecognised path beneath /_matrix/client/v3/keys/")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            for (auto attempt = 0U; attempt < 121U; ++attempt)
+            {
+                statuses.push_back(request(runtime, "/_matrix/client/v3/keys/not-a-route"));
+            }
+
+            THEN("the built-in 120-per-minute keys cap is matched against the original path")
+            {
+                CHECK(std::ranges::none_of(statuses.begin(), statuses.end() - 1, [](std::uint16_t status) {
+                    return status == 429U;
+                }));
+                CHECK(statuses.back() == 429U);
             }
         }
     }

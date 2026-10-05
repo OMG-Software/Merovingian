@@ -27,6 +27,18 @@ components with fixed placeholders while retaining the action name. Map every
 unmatched path to one shared fallback bucket. Resolve operator prefix policies
 against both this normalized route and the original query-free target, so
 existing prefixes keep applying and operators can configure route templates.
+Resolve the built-in per-IP and per-user refinements the same way: they are
+prefixes of real paths (`/_matrix/client/v3/keys/`), so matching them against
+the normalized route alone silently drops a refinement whenever a route falls
+back. That is how `/keys/claim` and `/keys/upload` once lost their 120/min
+cap.
+
+Every implemented client-server route with a variable path component must
+have a template in the matcher. The fallback is for paths the server does not
+implement: an implemented route left there shares one bucket with every
+unknown path, so traffic on one throttles the others. The HTTP-3 scenario
+"gives every implemented dynamic client route its own coalesced bucket" lists
+the routes a new endpoint should be added to.
 
 Bound each per-IP and per-user bucket table with a recency list. Touching an
 existing bucket moves it to the list tail; admitting a new key at capacity

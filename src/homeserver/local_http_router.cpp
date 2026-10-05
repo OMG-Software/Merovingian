@@ -1271,13 +1271,22 @@ namespace
                                    });
     }
 
-    [[nodiscard]] auto device_exists_for_user(HomeserverRuntime const& runtime, std::string_view user_id,
-                                              std::string_view device_id) -> bool
+    // The registered devices of `user_id` that a to-device `device_key`
+    // addresses: every one of them for "*" (S-S API "Send-to-device
+    // messaging": "all known devices for the user"), the named device when it
+    // belongs to the user, and none otherwise.
+    [[nodiscard]] auto addressed_devices_for_user(HomeserverRuntime const& runtime, std::string_view user_id,
+                                                  std::string_view device_key) -> std::vector<std::string>
     {
-        return std::ranges::any_of(runtime.database.persistent_store.devices,
-                                   [user_id, device_id](database::PersistentDevice const& device) {
-                                       return device.user_id == user_id && device.device_id == device_id;
-                                   });
+        auto devices = std::vector<std::string>{};
+        for (auto const& device : runtime.database.persistent_store.devices)
+        {
+            if (device.user_id == user_id && (device_key == "*" || device.device_id == device_key))
+            {
+                devices.push_back(device.device_id);
+            }
+        }
+        return devices;
     }
 
     // Active local users who are joined to at least one room that `subject` is
@@ -1396,30 +1405,36 @@ namespace
                 {
                     continue;
                 }
-                if (!device_exists_for_user(runtime, user_entry.key, device_entry.key))
+                auto const devices = addressed_devices_for_user(runtime, user_entry.key, device_entry.key);
+                if (devices.empty())
                 {
                     continue;
-                }
-                if (result.targeted >= max_inbound_direct_to_device_deliveries)
-                {
-                    result.truncated = true;
-                    return result;
                 }
                 auto const serialized = canonicaljson::serialize_canonical(*device_entry.value);
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
                     continue;
                 }
-                ++result.targeted;
-                auto message = database::PersistentToDeviceMessage{};
-                message.sender_user_id = *sender;
-                message.target_user_id = user_entry.key;
-                message.target_device_id = device_entry.key;
-                message.message_type = *message_type;
-                message.content_json = serialized.output;
-                if (database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message)))
+                // Each device a wildcard expands to is one delivery against
+                // the per-EDU cap, so "*" cannot multiply past it.
+                for (auto const& device_id : devices)
                 {
-                    ++result.stored;
+                    if (result.targeted >= max_inbound_direct_to_device_deliveries)
+                    {
+                        result.truncated = true;
+                        return result;
+                    }
+                    ++result.targeted;
+                    auto message = database::PersistentToDeviceMessage{};
+                    message.sender_user_id = *sender;
+                    message.target_user_id = user_entry.key;
+                    message.target_device_id = device_id;
+                    message.message_type = *message_type;
+                    message.content_json = serialized.output;
+                    if (database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message)))
+                    {
+                        ++result.stored;
+                    }
                 }
             }
         }

@@ -659,13 +659,17 @@ keeps admission eviction expected O(1) instead of scanning all 100,000 entries.
 
 `normalized_target()` normalizes only recognized route shapes and preserves
 their action names. It coalesces variable room, event, transaction, media,
-directory-alias, device, and user-data components into route templates. All
-unmatched paths share one fallback bucket, while known static endpoints keep
-separate keys. Policy lookup checks both the normalized template and the
-original query-free target: operators can configure route-wide template
-prefixes without losing existing prefixes written against the original path.
-The route matcher must be extended when a new dynamic endpoint needs its own
-bucket.
+directory-alias, device, user-data, room-tag, presence, key-backup and SSO
+identity-provider components into route templates. All unmatched paths share
+one fallback bucket, while known static endpoints keep separate keys. Policy
+lookup, for operator policies and the built-in refinements alike, checks both
+the normalized template and the original query-free target. Operators can
+therefore configure route-wide template prefixes without losing existing
+prefixes written against the original path, and a built-in cap such as the
+120/min `/_matrix/client/v3/keys/` refinement still applies to a path that
+falls back. Every implemented route with a variable path component must have
+a template; the fallback is only for paths the server does not implement
+(ADR-0092).
 
 ### Inbound federation
 

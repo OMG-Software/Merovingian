@@ -214,7 +214,11 @@ public:
         {
             return valid_or_nullopt(it->second);
         }
-        if (auto const* refinement = lookup_policy(m_config.builtin_per_ip, target); refinement != nullptr)
+        // Built-in refinements are prefixes of real paths, so they must also
+        // see the original path: a route that normalizes to the shared
+        // fallback would otherwise lose its refinement.
+        if (auto const* refinement = lookup_policy(m_config.builtin_per_ip, target, policy_target);
+            refinement != nullptr)
         {
             return valid_or_nullopt(*refinement);
         }
@@ -234,7 +238,7 @@ public:
         auto const* policy = lookup_policy(m_config.per_user, target, policy_target);
         if (policy == nullptr)
         {
-            policy = lookup_policy(m_config.builtin_per_user, target);
+            policy = lookup_policy(m_config.builtin_per_user, target, policy_target);
         }
         if (policy == nullptr || !rate_limit_policy_is_valid(*policy))
         {

@@ -2802,6 +2802,7 @@ namespace
                         "ban",         "leave",          "join",
                         "upgrade",     "report",         "receipt",
                         "typing",      "hierarchy",      "timestamp_to_event",
+                        "unban",
                     });
                     if (std::ranges::find(room_actions, action) == room_actions.end() ||
                         action_end != std::string_view::npos)
@@ -2855,6 +2856,67 @@ namespace
             if (has_one_segment(std::string_view{out}.substr(knock_prefix.size())))
             {
                 return std::string{knock_prefix} + "{roomIdOrAlias}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr sso_redirect_prefix = std::string_view{"/_matrix/client/v3/login/sso/redirect/"};
+        if (starts_with(out, sso_redirect_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(sso_redirect_prefix.size())))
+            {
+                return std::string{sso_redirect_prefix} + "{idpId}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr presence_prefix = std::string_view{"/_matrix/client/v3/presence/"};
+        if (starts_with(out, presence_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(presence_prefix.size());
+            auto constexpr status_suffix = std::string_view{"/status"};
+            if (rest.ends_with(status_suffix) && has_one_segment(rest.substr(0U, rest.size() - status_suffix.size())))
+            {
+                return std::string{presence_prefix} + "{userId}/status";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr room_keys_version_prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
+        if (starts_with(out, room_keys_version_prefix))
+        {
+            if (has_one_segment(std::string_view{out}.substr(room_keys_version_prefix.size())))
+            {
+                return std::string{room_keys_version_prefix} + "{version}";
+            }
+            return std::string{unmatched};
+        }
+        auto constexpr room_keys_keys_prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+        if (starts_with(out, room_keys_keys_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(room_keys_keys_prefix.size());
+            if (has_one_segment(rest))
+            {
+                return std::string{room_keys_keys_prefix} + "{roomId}";
+            }
+            auto const normalized = replace_two_tail_segments(room_keys_keys_prefix, rest, "{roomId}", "{sessionId}");
+            return normalized.empty() ? std::string{unmatched} : normalized;
+        }
+        // Nheko's unstable room-summary probes (im.nheko.summary).
+        auto constexpr nheko_summary_prefix = std::string_view{"/_matrix/client/unstable/im.nheko.summary/"};
+        if (starts_with(out, nheko_summary_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(nheko_summary_prefix.size());
+            auto constexpr summary_by_id = std::string_view{"summary/"};
+            if (starts_with(rest, summary_by_id) && has_one_segment(rest.substr(summary_by_id.size())))
+            {
+                return std::string{nheko_summary_prefix} + "summary/{roomIdOrAlias}";
+            }
+            auto constexpr rooms_part = std::string_view{"rooms/"};
+            auto constexpr summary_suffix = std::string_view{"/summary"};
+            if (starts_with(rest, rooms_part) && rest.ends_with(summary_suffix) &&
+                rest.size() > rooms_part.size() + summary_suffix.size() &&
+                has_one_segment(
+                    rest.substr(rooms_part.size(), rest.size() - rooms_part.size() - summary_suffix.size())))
+            {
+                return std::string{nheko_summary_prefix} + "rooms/{roomIdOrAlias}/summary";
             }
             return std::string{unmatched};
         }
@@ -3030,6 +3092,16 @@ namespace
                     {
                         return std::string{user_prefix} + "{userId}/rooms/{roomId}/account_data/{type}";
                     }
+                    auto constexpr tags_suffix = std::string_view{"/tags"};
+                    if (data_path == tags_suffix)
+                    {
+                        return std::string{user_prefix} + "{userId}/rooms/{roomId}/tags";
+                    }
+                    if (starts_with(data_path, std::string{tags_suffix} + "/") &&
+                        has_one_segment(data_path.substr(tags_suffix.size() + 1U)))
+                    {
+                        return std::string{user_prefix} + "{userId}/rooms/{roomId}/tags/{tag}";
+                    }
                 }
             }
             return std::string{unmatched};
@@ -3144,9 +3216,11 @@ namespace
             "/_matrix/client/v3/notifications",
             "/_matrix/client/v3/capabilities",
             "/_matrix/client/v3/keys/changes",
+            "/_matrix/client/v3/keys/claim",
             "/_matrix/client/v3/keys/device_signing/upload",
             "/_matrix/client/v3/keys/query",
             "/_matrix/client/v3/keys/signatures/upload",
+            "/_matrix/client/v3/keys/upload",
             "/_matrix/client/v3/thirdparty/protocols",
             "/_matrix/client/v3/thirdparty/location",
             "/_matrix/client/v3/thirdparty/user",
