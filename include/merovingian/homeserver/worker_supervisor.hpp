@@ -101,6 +101,14 @@ public:
     // start() and is reapplied on every worker restart.
     auto set_max_in_flight(std::size_t cap) noexcept -> void;
 
+    // CRY-2 (0.12.12 audit): configures the per-channel cap on request frames
+    // and queued bytes the IPC reader thread will hold before treating the
+    // channel as flooded. Bound together so a compromised worker cannot OOM
+    // main with a flood of large frames that have not yet reached the in-flight
+    // handler cap. May be called before start() and is reapplied on every worker
+    // restart.
+    auto set_dispatch_queue_limits(std::size_t max_count, std::uint64_t max_bytes) noexcept -> void;
+
     [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto request_timeout() const noexcept -> std::uint32_t;
     [[nodiscard]] auto shard_index() const noexcept -> std::uint32_t;
@@ -121,6 +129,8 @@ private:
     core::SecretBuffer ipc_auth_key_material_{};
     std::uint32_t max_frame_bytes_{};
     std::size_t ipc_max_in_flight_{0U};
+    std::size_t ipc_max_dispatch_queue_count_{0U};
+    std::uint64_t ipc_max_dispatch_queue_bytes_{0U};
     core::SecretBuffer worker_database_uri_material_{};
     ipc::IpcChannel::RequestHandler request_handler_{};
 

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -64,22 +65,39 @@ namespace
         return iterator == repository.blobs.end() ? nullptr : &(*iterator);
     }
 
-    [[nodiscard]] auto find_blob(LocalMediaRepository const& repository,
-                                 std::string_view storage_id) noexcept -> LocalMediaBlob const*
+    auto ensure_blob_index(LocalMediaRepository& repository) -> void;
+    auto ensure_record_index(LocalMediaRepository& repository) -> void;
+
+    [[nodiscard]] auto find_blob(LocalMediaRepository& repository, std::string_view storage_id) noexcept
+        -> LocalMediaBlob*
     {
-        auto const iterator = std::ranges::find_if(repository.blobs, [storage_id](LocalMediaBlob const& blob) {
-            return blob.storage_id == storage_id && blob.ref_count > 0U;
-        });
-        return iterator == repository.blobs.end() ? nullptr : &(*iterator);
+        ensure_blob_index(repository);
+        auto const iterator = repository.blob_index.find(std::string{storage_id});
+        if (iterator == repository.blob_index.end())
+        {
+            return nullptr;
+        }
+        if (iterator->second >= repository.blobs.size() || repository.blobs[iterator->second].ref_count == 0U)
+        {
+            return nullptr;
+        }
+        return &repository.blobs[iterator->second];
     }
 
-    [[nodiscard]] auto find_record(LocalMediaRepository& repository,
-                                   std::string_view media_id) noexcept -> LocalMediaRecord*
+    [[nodiscard]] auto find_record(LocalMediaRepository& repository, std::string_view media_id) noexcept
+        -> LocalMediaRecord*
     {
-        auto const iterator = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record) {
-            return record.media_id == media_id;
-        });
-        return iterator == repository.records.end() ? nullptr : &(*iterator);
+        ensure_record_index(repository);
+        auto const iterator = repository.record_index.find(std::string{media_id});
+        if (iterator == repository.record_index.end())
+        {
+            return nullptr;
+        }
+        if (iterator->second >= repository.records.size())
+        {
+            return nullptr;
+        }
+        return &repository.records[iterator->second];
     }
 
     auto refresh_storage_metrics(LocalMediaRepository& repository) -> void
@@ -97,6 +115,83 @@ namespace
         }
         repository.metrics.stored_blobs = stored_blobs;
         repository.metrics.stored_bytes = stored_bytes;
+    }
+
+    [[nodiscard]] auto now_ms() noexcept -> std::uint64_t
+    {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
+
+    auto clear_repository_indices(LocalMediaRepository& repository) -> void
+    {
+        repository.record_index.clear();
+        repository.blob_index.clear();
+    }
+
+    auto rebuild_record_index(LocalMediaRepository& repository) -> void
+    {
+        repository.record_index.clear();
+        repository.record_index.reserve(repository.records.size());
+        for (std::size_t i = 0U; i < repository.records.size(); ++i)
+        {
+            repository.record_index.emplace(repository.records[i].media_id, i);
+        }
+    }
+
+    auto rebuild_blob_index(LocalMediaRepository& repository) -> void
+    {
+        repository.blob_index.clear();
+        repository.blob_index.reserve(repository.blobs.size());
+        for (std::size_t i = 0U; i < repository.blobs.size(); ++i)
+        {
+            if (repository.blobs[i].ref_count > 0U)
+            {
+                repository.blob_index.emplace(repository.blobs[i].storage_id, i);
+            }
+        }
+    }
+
+    auto rebuild_repository_indices(LocalMediaRepository& repository) -> void
+    {
+        rebuild_record_index(repository);
+        rebuild_blob_index(repository);
+    }
+
+    auto insert_record_index(LocalMediaRepository& repository, std::string media_id, std::size_t index) -> void
+    {
+        repository.record_index.emplace(std::move(media_id), index);
+    }
+
+    auto insert_blob_index(LocalMediaRepository& repository, std::string storage_id, std::size_t index) -> void
+    {
+        repository.blob_index.emplace(std::move(storage_id), index);
+    }
+
+    auto remove_blob_index(LocalMediaRepository& repository, std::string_view storage_id) -> void
+    {
+        repository.blob_index.erase(std::string{storage_id});
+    }
+
+    auto ensure_record_index(LocalMediaRepository& repository) -> void
+    {
+        if (repository.record_index.size() != repository.records.size())
+        {
+            rebuild_record_index(repository);
+        }
+    }
+
+    auto ensure_blob_index(LocalMediaRepository& repository) -> void
+    {
+        auto const live_count =
+            static_cast<std::size_t>(std::ranges::count_if(repository.blobs, [](LocalMediaBlob const& blob) {
+                return blob.ref_count > 0U;
+            }));
+        if (repository.blob_index.size() != live_count)
+        {
+            rebuild_blob_index(repository);
+        }
     }
 
     // M05: media IDs must be unpredictable. 16 bytes (128 bits) of CSPRNG
@@ -168,8 +263,8 @@ namespace
 
     [[nodiscard]] auto decoder_request(RuntimeMediaConfig const& config, std::uint64_t size_bytes,
                                        std::uint64_t decoded_size_bytes, std::uint64_t pixel_count,
-                                       std::uint64_t animation_frame_count,
-                                       bool decoder_marked_safe) -> DecoderSafetyRequest
+                                       std::uint64_t animation_frame_count, bool decoder_marked_safe)
+        -> DecoderSafetyRequest
     {
         auto const output_bytes = decoded_size_bytes == 0U ? size_bytes : decoded_size_bytes;
         auto const pixels =
@@ -374,26 +469,40 @@ auto media_repository_metrics(LocalMediaRepository const& repository) -> std::ve
     };
 }
 
-auto find_local_media_record(LocalMediaRepository const& repository,
-                             std::string_view media_id) noexcept -> LocalMediaRecord const*
+auto find_local_media_record(LocalMediaRepository& repository, std::string_view media_id) noexcept
+    -> LocalMediaRecord const*
 {
-    auto const iterator = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record) {
-        return record.media_id == media_id;
-    });
-    return iterator == repository.records.end() ? nullptr : &(*iterator);
+    ensure_record_index(repository);
+    auto const iterator = repository.record_index.find(std::string{media_id});
+    if (iterator == repository.record_index.end())
+    {
+        return nullptr;
+    }
+    if (iterator->second >= repository.records.size())
+    {
+        return nullptr;
+    }
+    return &repository.records[iterator->second];
 }
 
-auto find_local_media_blob(LocalMediaRepository const& repository,
-                           std::string_view storage_id) noexcept -> LocalMediaBlob const*
+auto find_local_media_blob(LocalMediaRepository& repository, std::string_view storage_id) noexcept
+    -> LocalMediaBlob const*
 {
-    auto const iterator = std::ranges::find_if(repository.blobs, [storage_id](LocalMediaBlob const& blob) {
-        return blob.storage_id == storage_id && blob.ref_count > 0U;
-    });
-    return iterator == repository.blobs.end() ? nullptr : &(*iterator);
+    ensure_blob_index(repository);
+    auto const iterator = repository.blob_index.find(std::string{storage_id});
+    if (iterator == repository.blob_index.end())
+    {
+        return nullptr;
+    }
+    if (iterator->second >= repository.blobs.size() || repository.blobs[iterator->second].ref_count == 0U)
+    {
+        return nullptr;
+    }
+    return &repository.blobs[iterator->second];
 }
 
-auto find_local_media_thumbnail(LocalMediaRepository const& repository,
-                                std::string_view media_id) noexcept -> LocalMediaThumbnail const*
+auto find_local_media_thumbnail(LocalMediaRepository const& repository, std::string_view media_id) noexcept
+    -> LocalMediaThumbnail const*
 {
     auto const iterator = std::ranges::find_if(repository.thumbnails, [media_id](LocalMediaThumbnail const& thumb) {
         return thumb.media_id == media_id;
@@ -404,6 +513,8 @@ auto find_local_media_thumbnail(LocalMediaRepository const& repository,
 auto restore_local_media_repository(LocalMediaRepository& repository, std::vector<LocalMediaRecord> records,
                                     std::vector<LocalMediaBlob> blobs) -> void
 {
+    clear_repository_indices(repository);
+    repository.remote_media_cache.clear();
     repository.records = std::move(records);
     repository.blobs = std::move(blobs);
     repository.thumbnails.clear();
@@ -411,6 +522,7 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
     {
         record_thumbnail(repository, record);
     }
+    rebuild_repository_indices(repository);
     refresh_storage_metrics(repository);
 }
 
@@ -539,11 +651,14 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         });
         if (dead == repository.blobs.end())
         {
+            insert_blob_index(repository, new_blob.storage_id, repository.blobs.size());
             repository.blobs.push_back(std::move(new_blob));
             blob = &repository.blobs.back();
         }
         else
         {
+            insert_blob_index(repository, new_blob.storage_id,
+                              static_cast<std::size_t>(std::distance(repository.blobs.begin(), dead)));
             *dead = std::move(new_blob);
             blob = &*dead;
         }
@@ -563,6 +678,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         // repeatedly. Roll back the blob reference we just added.
         if (--blob->ref_count == 0U)
         {
+            remove_blob_index(repository, blob->storage_id);
             blob->bytes.clear();
             blob->bytes.shrink_to_fit();
         }
@@ -596,7 +712,9 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     // New uploads are invisible to the legacy unauthenticated endpoints.
     record.legacy_endpoint_visible = false;
     auto const media_id = record.media_id;
+    auto const record_index = repository.records.size();
     repository.records.push_back(std::move(record));
+    insert_record_index(repository, media_id, record_index);
     record_thumbnail(repository, repository.records.back());
 
     ++repository.metrics.uploads_accepted;
@@ -696,8 +814,8 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     return id.has_value() ? "mrv_" + *id : "mrv_boundary_fallback";
 }
 
-auto build_federation_media_download_body(std::string_view media_content_type,
-                                          std::string_view bytes) -> FederationMediaDownloadBody
+auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
+    -> FederationMediaDownloadBody
 {
     auto const canonical_type =
         media_content_type.empty() ? std::string_view{"application/octet-stream"} : media_content_type;
@@ -771,8 +889,8 @@ auto validate_local_media_admin_action(LocalMediaRepository const& repository, s
     return {true, 200U, record->media_id, state, std::string{message}};
 }
 
-auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
-                            std::string_view reason) -> LocalMediaAdminResult
+auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id, std::string_view reason)
+    -> LocalMediaAdminResult
 {
     auto const validation =
         validate_local_media_admin_action(repository, media_id, LocalMediaAdminAction::quarantine, reason);
@@ -819,8 +937,8 @@ auto release_local_media(LocalMediaRepository& repository, std::string_view medi
     return {true, 200U, record->media_id, record->state, "released"};
 }
 
-auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
-                        std::string_view reason) -> LocalMediaAdminResult
+auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id, std::string_view reason)
+    -> LocalMediaAdminResult
 {
     auto const validation =
         validate_local_media_admin_action(repository, media_id, LocalMediaAdminAction::remove, reason);
@@ -837,15 +955,14 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     auto const storage_id = record->storage_id;
     record->state = LocalMediaState::removed;
     record->quarantine_reason = std::string{reason};
-    auto const iterator = std::ranges::find_if(repository.blobs, [&storage_id](LocalMediaBlob const& blob) {
-        return blob.storage_id == storage_id && blob.ref_count > 0U;
-    });
-    if (iterator != repository.blobs.end() && iterator->ref_count > 0U)
+    auto* blob = find_blob(repository, storage_id);
+    if (blob != nullptr && blob->ref_count > 0U)
     {
-        --iterator->ref_count;
-        if (iterator->ref_count == 0U)
+        --blob->ref_count;
+        if (blob->ref_count == 0U)
         {
-            iterator->bytes.clear();
+            remove_blob_index(repository, storage_id);
+            blob->bytes.clear();
         }
     }
 
@@ -858,8 +975,95 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     return {true, 200U, record->media_id, record->state, "removed"};
 }
 
-auto fetch_remote_media_disabled(LocalMediaRepository& repository,
-                                 RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult
+[[nodiscard]] auto remote_media_cache_key(std::string_view origin_server, std::string_view media_id) noexcept
+    -> std::string
+{
+    return std::string{origin_server} + '\0' + std::string{media_id};
+}
+
+[[nodiscard]] auto find_remote_media_cache_entry(LocalMediaRepository& repository, std::string_view origin_server,
+                                                 std::string_view media_id, std::uint64_t now_ms)
+    -> RemoteMediaCacheEntry*
+{
+    auto const key = remote_media_cache_key(origin_server, media_id);
+    auto const it = std::find_if(repository.remote_media_cache.begin(), repository.remote_media_cache.end(),
+                                 [&key](auto const& entry) {
+                                     return remote_media_cache_key(entry.origin_server, entry.media_id) == key;
+                                 });
+    if (it == repository.remote_media_cache.end())
+    {
+        return nullptr;
+    }
+    if (it->expires_at_ms <= now_ms)
+    {
+        // TTL expired: the cached mapping must not outlive the configured window.
+        return nullptr;
+    }
+    auto const* record = find_local_media_record(repository, it->local_media_id);
+    if (record == nullptr || record->state != LocalMediaState::available)
+    {
+        return nullptr;
+    }
+    it->last_access_ms = now_ms;
+    auto hit = std::move(*it);
+    repository.remote_media_cache.erase(it);
+    repository.remote_media_cache.push_back(std::move(hit));
+    return &repository.remote_media_cache.back();
+}
+
+auto evict_oldest_remote_media_cache_entry(LocalMediaRepository& repository) -> void
+{
+    if (repository.remote_media_cache.empty())
+    {
+        return;
+    }
+    // The cache is kept in recency order by find_remote_media_cache_entry,
+    // which moves a hit to the back. The front is therefore the LRU entry.
+    repository.remote_media_cache.erase(repository.remote_media_cache.begin());
+}
+
+auto cache_remote_media(LocalMediaRepository& repository, std::string_view origin_server, std::string_view media_id,
+                        std::string_view local_media_id, std::uint64_t now_ms) -> void
+{
+    auto const ttl_ms = static_cast<std::uint64_t>(repository.config.remote_media_cache_ttl_seconds) * 1000U;
+    if (repository.config.remote_media_cache_max_entries != 0U &&
+        repository.remote_media_cache.size() >= repository.config.remote_media_cache_max_entries)
+    {
+        evict_oldest_remote_media_cache_entry(repository);
+    }
+    repository.remote_media_cache.push_back(
+        {std::string{origin_server}, std::string{media_id}, std::string{local_media_id}, now_ms + ttl_ms, now_ms});
+}
+
+[[nodiscard]] auto serve_cached_remote_media(LocalMediaRepository& repository, RemoteMediaCacheEntry const& entry)
+    -> RemoteMediaDownloadResult
+{
+    auto const* record = find_local_media_record(repository, entry.local_media_id);
+    if (record == nullptr || record->state != LocalMediaState::available)
+    {
+        return {false, 404U, "cached remote media is no longer available"};
+    }
+    auto const* blob = find_local_media_blob(repository, record->storage_id);
+    if (blob == nullptr)
+    {
+        return {false, 404U, "cached remote media blob is missing"};
+    }
+    ++repository.metrics.downloads_served;
+    return {true,
+            200U,
+            {},
+            record->content_type,
+            blob->bytes,
+            record->size_bytes,
+            record->hash_algorithm,
+            record->digest,
+            record->storage_id,
+            record->media_id,
+            false};
+}
+
+auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
+    -> RemoteMediaDownloadResult
 {
     if (!repository.config.remote_fetch_enabled)
     {
@@ -878,8 +1082,8 @@ auto fetch_remote_media_disabled(LocalMediaRepository& repository,
     return {false, 501U, "remote media fetch is not implemented in this milestone"};
 }
 
-auto fetch_remote_media(LocalMediaRepository& repository,
-                        RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult
+auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
+    -> RemoteMediaDownloadResult
 {
     if (!repository.config.remote_fetch_enabled)
     {
@@ -898,6 +1102,16 @@ auto fetch_remote_media(LocalMediaRepository& repository,
     {
         ++repository.metrics.remote_fetch_rejections;
         return {false, 502U, "remote media response body is empty"};
+    }
+
+    // OUT-4: cache remote media downloads keyed by (origin_server, media_id) with
+    // a configurable TTL and LRU eviction, so repeated requests for the same
+    // remote mxc:// URI do not hit the network or re-admit the bytes.
+    auto const now = now_ms();
+    if (auto* cached = find_remote_media_cache_entry(repository, request.origin_server, request.media_id, now);
+        cached != nullptr)
+    {
+        return serve_cached_remote_media(repository, *cached);
     }
 
     auto upload = LocalMediaUploadRequest{};
@@ -935,8 +1149,10 @@ auto fetch_remote_media(LocalMediaRepository& repository,
                 result.hash_algorithm,
                 result.digest,
                 make_storage_id(result.digest, result.size_bytes),
+                result.media_id,
                 true};
     }
+    cache_remote_media(repository, request.origin_server, request.media_id, result.media_id, now);
     ++repository.metrics.remote_fetches_accepted;
     return {true,
             result.status,
@@ -947,6 +1163,7 @@ auto fetch_remote_media(LocalMediaRepository& repository,
             result.hash_algorithm,
             result.digest,
             make_storage_id(result.digest, result.size_bytes),
+            result.media_id,
             result.quarantined};
 }
 

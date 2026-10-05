@@ -111,6 +111,10 @@
 * [0108 - Federation worker stale snapshot fallback to main](0108-federation-worker-stale-snapshot-fallback-to-main.md)
 * [0109 - Configure operational budgets with shared recovery bounds](0109-configure-operational-budgets-with-shared-recovery-bounds.md)
 * [0110 - Federation worker trusts the main-process verified identity for room-scoped reads](0110-federation-worker-trusts-main-verified-identity.md)
+* [0111 - Bound the IPC dispatch queue](0111-bound-the-ipc-dispatch-queue.md)
+* [0112 - Restrict worker signals and resource limits](0112-restrict-worker-signals-and-resource-limits.md)
+* [0113 - Default media quotas and a single in-memory blob copy](0113-default-media-quotas-and-single-blob-copy.md)
+* [0114 - Cache remote media by origin server and media ID](0114-cache-remote-media-by-origin-and-media-id.md)
 
 ## Rejected Records
 

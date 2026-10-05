@@ -105,7 +105,7 @@ struct LandlockHardeningOps final
     // a negative value on failure. Only called after query_abi_version() has
     // returned >= 1, so a negative return here is always a genuine error,
     // never "Landlock is unavailable".
-    std::function<int(std::uint64_t handled_access_fs)> create_ruleset;
+    std::function<int(std::uint64_t handled_access_fs, int abi)> create_ruleset;
 
     // Opens `path` (O_PATH | O_CLOEXEC) and, on success, calls
     // landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
@@ -130,7 +130,7 @@ struct LandlockHardeningOps final
 // forward compatible, never fails just because the kernel is newer than this
 // build. A kernel that reports a lower ABI has its request masked down to
 // exactly the rights that ABI version supports (see landlock_handled_access_fs).
-inline constexpr int k_landlock_max_known_abi = 3;
+inline constexpr int k_landlock_max_known_abi = 6;
 
 // Rights masks, downgraded to whatever `abi` supports. `abi` must be >= 1.
 // Dropping unsupported bits for an older-but-still-supported kernel is

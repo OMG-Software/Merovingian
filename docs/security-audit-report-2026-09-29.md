@@ -53,6 +53,81 @@ must start with that test.
 | 10 | Database, persistence and migrations | done: 1 high, 3 medium, 6 low |
 | 11 | Configuration, observability, logging and packaging | done: 5 low |
 
+## Remediation status (re-verified 5 October 2026)
+
+**Checked against:** `07317921` (0.12.18). Each finding was re-checked by reading the
+current code and looking for a test that implements its acceptance criterion. Nothing was
+built or run for this check. CHANGELOG, ADR and `docs/todos/capability-gaps.md` claims
+were treated as claims, not evidence. The findings below are otherwise unchanged.
+
+**Summary:** the critical finding and all 23 high findings are fixed. Of the 31 medium
+findings, 21 are fixed, 6 are partly fixed and 4 are open. Of the 46 low findings, 3 are
+fixed, 2 are partly fixed and 41 are open.
+
+### Fixed
+
+- **Critical:** FED-1.
+- **High:** AUTH-1, AUTH-11, CSAZ-1, CSAZ-2, CSAZ-3, CSAZ-4, HTTP-1, HTTP-2, HTTP-5, FED-2,
+  FED-3, FED-4, FED-5, FED-7, EVT-1, EVT-2, EVT-3, EVT-4, EVT-6, OUT-7, CRY-1, ISO-1, DB-1.
+- **Medium:** AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, HTTP-3, HTTP-4, HTTP-8, FED-8,
+  FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, ISO-3, MED-1, MED-2, MED-3, DB-3.
+- **Low:** AUTH-9, HTTP-6, OUT-5. AUTH-9: the control-character escaping is done; the
+  field-length cap from its fix is not. OUT-5: `CURLOPT_PROXY` is set to `""` on the
+  only curl handle, but there is no regression test with `https_proxy` set.
+
+Residual notes on fixed findings:
+
+- **EVT-1:** rule 4.2 (v10 numbering) applies to every `m.room.member` event that carries
+  `join_authorised_via_users_server`. `src/events/authorization.cpp` checks it only in
+  the restricted branch, after the "already invited or joined" allow. Federation
+  ingestion verifies the signature for every PDU carrying the key
+  (`src/federation/inbound_request.cpp`), so remote events are covered, but the auth rule
+  is not ordered as the spec orders it and the cryptographic path has no test.
+- **AUTH-1:** fixed by rate-capping unauthenticated audit rows. `login.rejected` is not
+  gated and relies on the per-IP limit.
+- **AUTH-4:** Argon2id hashing in ordinary `/register` (`make_user`) and password
+  verification in user-interactive auth still run under the runtime mutex with no
+  admission limit.
+- **DB-1, DB-2:** the PostgreSQL integration tests skip unless
+  `MEROVINGIAN_TEST_POSTGRESQL_URI` is set.
+
+### Fixed — medium
+
+| ID | State | Resolution |
+|----|-------|------------|
+| CRY-2 | Fixed | `src/ipc/channel.cpp` now bounds `dispatch_queue_` and counts drops once the cap is reached. ADR-0111. |
+| ISO-2 | Fixed | The worker seccomp allow-list no longer permits `kill`, `tkill`, `setrlimit`, or `prlimit64`; `tgkill` is argument-filtered to the worker's own TGID; Landlock rulesets request ABI-6 signal scoping. ADR-0112. |
+| MED-6 | Fixed | Media quota defaults are now `1GiB` total, `10MiB` per user, and `100000` records; after hydration, blob bytes live only in the runtime repository. ADR-0113. |
+| OUT-4 | Fixed | Remote media downloads are cached by `(origin_server, media_id)` with a configurable TTL and LRU eviction. ADR-0114. |
+
+### Outstanding — medium
+
+| ID | State | What remains |
+|----|-------|--------------|
+| AUTH-3 | Partial | Ordinary registration of a sender user is refused. The startup loop that creates sender users (`src/homeserver/runtime.cpp`) iterates `runtime.appservices` before `loaded.registry` is moved into it, so it never creates anyone. |
+| FED-6 | Partial | `send_join`, `send_leave` and `send_knock` validate the event against the endpoint. `handle_make_membership` still does not require `{userId}` to be on the requesting server. |
+| MED-5 | Partial | `allow_remote=false` is honoured. Server names are still compared exactly, with no lowercase or default-port canonicalisation and no check for discovery resolving to this server. |
+| DB-5 | Partial | Media moderation writes are atomic and checked. Token revocation on password change, logout, refresh rotation and device deletion, and upload persistence, still discard write failures with `std::ignore`. |
+| CSAZ-10 | Partial | To-device messages to unknown users and devices are dropped. There is still no per-recipient queue cap or TTL, and no cap on one-time keys, fallback keys or key-signature uploads. |
+| DB-2 | Partial | Fixed for PostgreSQL. The SQLite room snapshot still binds one parameter per event. |
+
+### Outstanding — low
+
+| ID | State | What remains |
+|----|-------|--------------|
+| EVT-12 | Partial | (b) the creator-without-member-event fallback is removed. (a) there is still no v3–v5 `m.room.aliases` rule, and (c) rejected events are still accepted as auth events. |
+| OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
+
+Open, with no code, test or documentation change found: AUTH-2, AUTH-5, AUTH-7, AUTH-8,
+AUTH-10, AUTH-12, CSAZ-6, CSAZ-9, CSAZ-11, CSAZ-12 (all four endpoints), HTTP-7, FED-9,
+FED-10, FED-12, EVT-10, EVT-11, OUT-6, OUT-8, CRY-3, CRY-4, CRY-5, CRY-6, ISO-4, ISO-5,
+ISO-6, ISO-7, ISO-8, MED-4, MED-7, MED-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2,
+OPS-3, OPS-4, OPS-5, OPS-6.
+
+The documentation corrections listed under "Documentation found to be wrong about the
+code" for AUTH-2, CRY-6, ISO-4, OPS-2, OUT-8 (`deny_ip_ranges`) and CSAZ-11 have not
+been made.
+
 ---
 
 ## Area 1 — Authentication, sessions, application-service authentication

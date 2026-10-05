@@ -23,6 +23,11 @@
 - **FIXED: `merovingian-http` declares its link to `merovingian-core`.** `outbound_client.cpp` now uses `core::SocketHandle`, so targets linking `http_lib` without `core_lib` (the `fuzz-srv-record` fuzz target) failed to link.
 - **TESTS:** the `%2e%2e` path-preservation check in `test_security_audit_outbound_flow.cpp` compares the request line case-insensitively. libcurl 8.20 and later send percent-encodings with upper-case hex digits (equivalent under RFC 3986), which failed the exact-byte comparison on openSUSE, NetBSD and the coverage job's bundled curl; the dot segment is still required to reach the peer unresolved.
 
+- **FIXED: IPC dispatch queue is bounded (CRY-2).** `IpcChannel::dispatch_queue_` previously grew without limit on a fast producer, allowing memory exhaustion. The queue now drops the oldest stale frame once a configurable cap is reached and counts the drops. ADR-0111.
+- **FIXED: federation worker syscall profile is tighter (ISO-2).** The worker seccomp allow-list no longer permits `kill`, `tkill`, `setrlimit`, or `prlimit64`; `tgkill` remains allowed only when its thread-group argument matches the worker's own TGID. Landlock rulesets now request ABI-6 signal scoping on capable kernels. ADR-0112.
+- **FIXED: media quotas default to operational bounds and blobs are held once in memory (MED-6).** `security.media.max_total_size`, `max_size_per_user`, and `max_records` now default to `1GiB`, `10MiB`, and `100000` instead of zero. After hydrating the runtime repository from `PersistentStore`, the persistent copy of blob bytes is cleared so only one in-memory copy is held. ADR-0113.
+- **FIXED: remote media downloads are cached by origin and media ID (OUT-4).** Fetched remote media is keyed by `(origin_server, media_id)` with a configurable TTL and LRU eviction, so repeated requests serve the already-stored local record instead of re-fetching and re-storing. ADR-0114.
+
 ## 0.12.17
 
 - **Pages integration and release version.** Preserve the merged 0.12.16

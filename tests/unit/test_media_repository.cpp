@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -259,6 +260,170 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
                 REQUIRE_FALSE(unsafe_decoder.ok);
                 REQUIRE(unsafe_decoder.reason == "decoder is not allowed");
                 REQUIRE(repository.metrics.processing_rejections == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media fetch caches accepted downloads by origin server and media ID",
+         "[media][repository][remote][security][out-4]")
+{
+    GIVEN("remote media fetching enabled with a long cache TTL")
+    {
+        auto repository = test_repository();
+        repository.config.remote_fetch_enabled = true;
+        repository.config.remote_fetch_media_policy = merovingian::media::MediaAcceptancePolicy::allow_after_scan;
+        repository.config.remote_media_cache_ttl_seconds = 3600U;
+        repository.config.remote_media_cache_max_entries = 1024U;
+
+        auto const png_bytes = std::string{"\x89PNG\r\n\x1a\n", 8U};
+        auto const request = merovingian::media::RemoteMediaDownloadRequest{"remote.example.org",
+                                                                            "media123",
+                                                                            "remote.example.org",
+                                                                            {"203.0.113.20"},
+                                                                            "image/png",
+                                                                            png_bytes,
+                                                                            true,
+                                                                            16U,
+                                                                            64U,
+                                                                            1U,
+                                                                            true};
+
+        WHEN("the same remote mxc:// URI is fetched twice")
+        {
+            auto const first = merovingian::media::fetch_remote_media(repository, request);
+            auto const second = merovingian::media::fetch_remote_media(repository, request);
+
+            THEN("both requests succeed and only one local record is created")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+                REQUIRE(repository.records.size() == 1U);
+                REQUIRE(repository.blobs.size() == 1U);
+                REQUIRE(repository.metrics.remote_fetches_accepted == 1U);
+                REQUIRE(second.local_media_id == first.local_media_id);
+                REQUIRE(second.bytes == png_bytes);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media cache entries expire after their TTL", "[media][repository][remote][security][out-4]")
+{
+    GIVEN("remote media fetching enabled with a zero-second cache TTL")
+    {
+        auto repository = test_repository();
+        repository.config.remote_fetch_enabled = true;
+        repository.config.remote_fetch_media_policy = merovingian::media::MediaAcceptancePolicy::allow_after_scan;
+        repository.config.remote_media_cache_ttl_seconds = 0U;
+
+        auto const png_bytes = std::string{"\x89PNG\r\n\x1a\n", 8U};
+        auto const request = merovingian::media::RemoteMediaDownloadRequest{"remote.example.org",
+                                                                            "media123",
+                                                                            "remote.example.org",
+                                                                            {"203.0.113.20"},
+                                                                            "image/png",
+                                                                            png_bytes,
+                                                                            true,
+                                                                            16U,
+                                                                            64U,
+                                                                            1U,
+                                                                            true};
+
+        WHEN("the same remote media is fetched twice")
+        {
+            auto const first = merovingian::media::fetch_remote_media(repository, request);
+            auto const second = merovingian::media::fetch_remote_media(repository, request);
+
+            THEN("the stale cache is ignored and the media is admitted a second time")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+                REQUIRE(repository.records.size() == 2U);
+                REQUIRE(repository.metrics.remote_fetches_accepted == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media cache evicts the least-recently-used entry when it reaches its cap",
+         "[media][repository][remote][security][out-4]")
+{
+    GIVEN("remote media fetching enabled with a cache that holds at most two entries")
+    {
+        auto repository = test_repository();
+        repository.config.remote_fetch_enabled = true;
+        repository.config.remote_fetch_media_policy = merovingian::media::MediaAcceptancePolicy::allow_after_scan;
+        repository.config.remote_media_cache_ttl_seconds = 3600U;
+        repository.config.remote_media_cache_max_entries = 2U;
+
+        auto const png_bytes = std::string{"\x89PNG\r\n\x1a\n", 8U};
+
+        WHEN("three distinct remote media URIs are fetched and the first is re-requested before the third")
+        {
+            auto const a = merovingian::media::fetch_remote_media(
+                repository, merovingian::media::RemoteMediaDownloadRequest{"remote.example.org",
+                                                                           "mediaA",
+                                                                           "remote.example.org",
+                                                                           {"203.0.113.20"},
+                                                                           "image/png",
+                                                                           png_bytes,
+                                                                           true,
+                                                                           16U,
+                                                                           64U,
+                                                                           1U,
+                                                                           true});
+            auto const b = merovingian::media::fetch_remote_media(
+                repository, merovingian::media::RemoteMediaDownloadRequest{"remote.example.org",
+                                                                           "mediaB",
+                                                                           "remote.example.org",
+                                                                           {"203.0.113.20"},
+                                                                           "image/png",
+                                                                           png_bytes,
+                                                                           true,
+                                                                           16U,
+                                                                           64U,
+                                                                           1U,
+                                                                           true});
+            // Re-touch A so B becomes the LRU entry before C is admitted.
+            auto const a_again = merovingian::media::fetch_remote_media(
+                repository, merovingian::media::RemoteMediaDownloadRequest{"remote.example.org",
+                                                                           "mediaA",
+                                                                           "remote.example.org",
+                                                                           {"203.0.113.20"},
+                                                                           "image/png",
+                                                                           png_bytes,
+                                                                           true,
+                                                                           16U,
+                                                                           64U,
+                                                                           1U,
+                                                                           true});
+            auto const c = merovingian::media::fetch_remote_media(
+                repository, merovingian::media::RemoteMediaDownloadRequest{"remote.example.org",
+                                                                           "mediaC",
+                                                                           "remote.example.org",
+                                                                           {"203.0.113.20"},
+                                                                           "image/png",
+                                                                           png_bytes,
+                                                                           true,
+                                                                           16U,
+                                                                           64U,
+                                                                           1U,
+                                                                           true});
+
+            THEN("the cache stays within its cap and the least-recently-used entry is evicted")
+            {
+                REQUIRE(a.ok);
+                REQUIRE(b.ok);
+                REQUIRE(a_again.ok);
+                REQUIRE(c.ok);
+                REQUIRE(repository.remote_media_cache.size() == 2U);
+
+                auto const cached_ids = std::vector<std::string>{repository.remote_media_cache[0].media_id,
+                                                                 repository.remote_media_cache[1].media_id};
+                REQUIRE(std::find(cached_ids.begin(), cached_ids.end(), "mediaA") != cached_ids.end());
+                REQUIRE(std::find(cached_ids.begin(), cached_ids.end(), "mediaC") != cached_ids.end());
+                REQUIRE(std::find(cached_ids.begin(), cached_ids.end(), "mediaB") == cached_ids.end());
             }
         }
     }
@@ -572,14 +737,32 @@ SCENARIO("Deduplicated uploads do not consume repository capacity twice", "[medi
     }
 }
 
-SCENARIO("An uncapped media repository keeps its previous unbounded behaviour", "[media][repository][security]")
+SCENARIO("Default media repository capacity limits are non-zero", "[media][repository][security][med-6]")
 {
-    GIVEN("a repository with every capacity limit left at its disabled default")
+    GIVEN("a runtime media config built from the default configuration")
+    {
+        auto const config = merovingian::media::make_runtime_media_config(merovingian::config::Config{});
+
+        WHEN("the default capacity limits are inspected")
+        {
+            THEN("every cap has a non-zero operational default")
+            {
+                REQUIRE(config.max_records > 0U);
+                REQUIRE(config.max_total_bytes > 0U);
+                REQUIRE(config.max_bytes_per_user > 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("An explicitly uncapped media repository keeps unbounded behaviour", "[media][repository][security]")
+{
+    GIVEN("a repository with every capacity limit explicitly set to zero")
     {
         auto repository = test_repository();
-        REQUIRE(repository.config.max_records == 0U);
-        REQUIRE(repository.config.max_total_bytes == 0U);
-        REQUIRE(repository.config.max_bytes_per_user == 0U);
+        repository.config.max_records = 0U;
+        repository.config.max_total_bytes = 0U;
+        repository.config.max_bytes_per_user = 0U;
 
         WHEN("several distinct uploads are made")
         {

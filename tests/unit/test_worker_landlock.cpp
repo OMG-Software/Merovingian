@@ -53,7 +53,7 @@ using merovingian::platform::LandlockPathRule;
     // Never reached when the ABI query itself reports unavailable, but wired
     // to fail loudly if apply_worker_landlock's control flow regresses and
     // calls it anyway.
-    ops.create_ruleset = [](std::uint64_t) -> int {
+    ops.create_ruleset = [](std::uint64_t, int) -> int {
         return -1;
     };
     ops.add_rule = [](int, std::string const&, std::uint64_t) -> LandlockAddRuleOutcome {
@@ -95,8 +95,9 @@ struct RecordingOps final
         ops.query_abi_version = [this]() -> int {
             return abi;
         };
-        ops.create_ruleset = [this](std::uint64_t handled_access_fs) -> int {
+        ops.create_ruleset = [this](std::uint64_t handled_access_fs, int ruleset_abi) -> int {
             handled_access_fs_requested = handled_access_fs;
+            std::ignore = ruleset_abi;
             return create_ruleset_fails ? -1 : 42;
         };
         ops.add_rule = [this](int, std::string const& path, std::uint64_t allowed_access) -> LandlockAddRuleOutcome {
@@ -780,7 +781,7 @@ SCENARIO("A Landlock rule for a regular file is accepted by the running kernel",
             SKIP("kernel has no Landlock support (ABI " << abi << ")");
         }
         auto const ruleset_fd = merovingian::core::FileDescriptor{
-            ops.create_ruleset(merovingian::platform::landlock_handled_access_fs(abi))};
+            ops.create_ruleset(merovingian::platform::landlock_handled_access_fs(abi), abi)};
         REQUIRE(ruleset_fd.valid());
 
         auto const dir = merovingian::tests::temporary_directory() /
@@ -851,6 +852,31 @@ SCENARIO("A failure to set no_new_privs is fatal even with the Landlock opt-out"
                 REQUIRE_FALSE(result.applied);
                 REQUIRE_FALSE(recording.restrict_self_called);
                 REQUIRE(result.reason.find("NO_NEW_PRIVS") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Landlock ABI 6 signal scope is requested when the kernel supports it",
+         "[platform][security][worker_landlock][linux]")
+{
+    GIVEN("a Landlock ABI of 6 or newer")
+    {
+        auto const ops = merovingian::platform::LandlockHardeningOps{};
+        auto const abi = ops.query_abi_version();
+        if (abi < 6)
+        {
+            SKIP("kernel Landlock ABI " << abi << " is older than ABI 6");
+        }
+
+        WHEN("a ruleset is created for the worker")
+        {
+            auto const ruleset_fd = merovingian::core::FileDescriptor{
+                ops.create_ruleset(merovingian::platform::landlock_handled_access_fs(abi), abi)};
+
+            THEN("the ruleset is created successfully with signal scoping enabled")
+            {
+                REQUIRE(ruleset_fd.valid());
             }
         }
     }

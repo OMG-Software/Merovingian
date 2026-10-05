@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -102,6 +103,24 @@ auto frame_bytes_for_transport_caps(std::uint64_t max_response_body_bytes, std::
     return static_cast<std::uint32_t>(std::min(needed, kMaxPlaintextFrameBytes));
 }
 
+namespace
+{
+
+    [[nodiscard]] auto set_socket_send_timeout(int fd, std::chrono::seconds timeout) noexcept -> bool
+    {
+        if (fd < 0 || timeout.count() <= 0)
+        {
+            return true;
+        }
+        auto const tv = ::timeval{
+            .tv_sec = timeout.count(),
+            .tv_usec = 0,
+        };
+        return ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
+    }
+
+} // namespace
+
 IpcChannel::IpcChannel(core::FileDescriptor fd, Role role, crypto::IpcAuthKey auth_key, std::uint32_t max_frame_bytes)
     : fd_{std::move(fd)}
     , max_frame_bytes_{max_frame_bytes == 0U ? kIpcMaxFrameBytes : max_frame_bytes}
@@ -115,6 +134,10 @@ IpcChannel::IpcChannel(core::FileDescriptor fd, Role role, crypto::IpcAuthKey au
               return raw_recv_exact(buf, n);
           })}
 {
+    // CRY-2: a peer that stops reading must not pin a writer forever. Use a
+    // bounded send timeout so every send path (request, response, notification)
+    // returns instead of blocking indefinitely on a flooded or dead peer.
+    std::ignore = set_socket_send_timeout(fd_.get(), std::chrono::seconds{30});
 }
 
 IpcChannel::~IpcChannel()
@@ -411,6 +434,12 @@ auto IpcChannel::set_max_in_flight(std::size_t const cap) noexcept -> void
     max_in_flight_ = cap;
 }
 
+auto IpcChannel::set_dispatch_queue_limits(std::size_t const max_count, std::uint64_t const max_bytes) noexcept -> void
+{
+    dispatch_queue_max_count_ = max_count;
+    dispatch_queue_max_bytes_ = max_bytes;
+}
+
 auto IpcChannel::try_acquire_in_flight() noexcept -> bool
 {
     auto current = in_flight_.load(std::memory_order_relaxed);
@@ -488,6 +517,18 @@ auto IpcChannel::reader_loop() -> void
             // this loop from routing the responses queued behind it.
             {
                 auto const lk = std::lock_guard{dispatch_mu_};
+                auto const frame_bytes = static_cast<std::uint64_t>(frame->size());
+                auto const would_count = dispatch_queue_.size() + 1U;
+                auto const would_bytes = saturating_add(dispatch_queue_bytes_, frame_bytes);
+                if ((dispatch_queue_max_count_ > 0U && would_count > dispatch_queue_max_count_) ||
+                    (dispatch_queue_max_bytes_ > 0U && would_bytes > dispatch_queue_max_bytes_))
+                {
+                    healthy_.store(false);
+                    LOG_WARNING("ipc: dispatch queue flooded (" + std::to_string(would_count) + " frames, " +
+                                std::to_string(would_bytes) + " bytes); marking channel unhealthy");
+                    break;
+                }
+                dispatch_queue_bytes_ = would_bytes;
                 dispatch_queue_.emplace_back(id, std::move(*frame));
             }
             dispatch_cv_.notify_one();
@@ -520,6 +561,7 @@ auto IpcChannel::dispatcher_loop() -> void
             }
             item = std::move(dispatch_queue_.front());
             dispatch_queue_.pop_front();
+            dispatch_queue_bytes_ -= static_cast<std::uint64_t>(item.second.size());
         }
         // Invoked outside dispatch_mu_ so a long-running handler never blocks
         // the reader thread from queuing further request frames.

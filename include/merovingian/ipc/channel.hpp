@@ -157,6 +157,14 @@ public:
     // changing it after start() is racy and is not supported.
     auto set_max_in_flight(std::size_t cap) noexcept -> void;
 
+    // Set the maximum number of request frames and queued bytes the reader thread
+    // will hold in dispatch_queue_ before treating the channel as flooded.
+    // 0 means unbounded (legacy default). Must be called before start(); changing
+    // it after start() is racy and is not supported. Bounds both count and bytes
+    // so a compromised peer cannot OOM the process with a flood of large frames
+    // that have not yet reached the in-flight handler cap (CRY-2).
+    auto set_dispatch_queue_limits(std::size_t max_count, std::uint64_t max_bytes) noexcept -> void;
+
     // Try to acquire an in-flight slot. Returns false if the channel is already
     // at max_in_flight. Must be paired with release_in_flight() on every path.
     [[nodiscard]] auto try_acquire_in_flight() noexcept -> bool;
@@ -220,6 +228,13 @@ private:
     std::condition_variable dispatch_cv_{};
     std::deque<std::pair<std::uint64_t, std::string>> dispatch_queue_{};
     std::thread dispatch_thread_{};
+
+    // Per-channel cap on the reader-side dispatch queue. When either cap would
+    // be exceeded the channel is marked unhealthy so the peer sees retries
+    // rather than an unbounded memory sink.
+    std::size_t dispatch_queue_max_count_{0U};
+    std::uint64_t dispatch_queue_max_bytes_{0U};
+    std::uint64_t dispatch_queue_bytes_{0U};
 
     // Per-channel cap on requests that have been received but not yet replied
     // to. Enforced by the request handler (main-side WorkerPool), not by the

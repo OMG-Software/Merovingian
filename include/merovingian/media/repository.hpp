@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::media
@@ -86,6 +87,15 @@ struct MediaRepositoryMetrics final
     std::uint64_t stored_bytes{0U};
 };
 
+struct RemoteMediaCacheEntry final
+{
+    std::string origin_server{};
+    std::string media_id{};
+    std::string local_media_id{};
+    std::uint64_t expires_at_ms{0U};
+    std::uint64_t last_access_ms{0U};
+};
+
 struct LocalMediaRepository final
 {
     RuntimeMediaConfig config{};
@@ -93,6 +103,14 @@ struct LocalMediaRepository final
     std::vector<LocalMediaBlob> blobs{};
     std::vector<LocalMediaThumbnail> thumbnails{};
     MediaRepositoryMetrics metrics{};
+    // Indices rebuilt lazily by find_local_media_record/blob. They keep
+    // O(1) lookup even when the repository holds the default-capped number
+    // of records (MED-6).
+    std::unordered_map<std::string, std::size_t> record_index{};
+    std::unordered_map<std::string, std::size_t> blob_index{};
+    // Remote media cache keyed by (origin_server, media_id) with TTL/LRU
+    // eviction (OUT-4).
+    std::vector<RemoteMediaCacheEntry> remote_media_cache{};
 };
 
 struct LocalMediaUploadRequest final
@@ -171,6 +189,7 @@ struct RemoteMediaDownloadResult final
     std::string hash_algorithm{};
     std::string digest{};
     std::string storage_id{};
+    std::string local_media_id{};
     bool quarantined{false};
 };
 
@@ -181,10 +200,10 @@ struct RemoteMediaDownloadResult final
 [[nodiscard]] auto media_repository_summary(LocalMediaRepository const& repository) -> std::string;
 [[nodiscard]] auto media_repository_metrics(LocalMediaRepository const& repository)
     -> std::vector<observability::MetricSample>;
-[[nodiscard]] auto find_local_media_record(LocalMediaRepository const& repository,
-                                           std::string_view media_id) noexcept -> LocalMediaRecord const*;
-[[nodiscard]] auto find_local_media_blob(LocalMediaRepository const& repository,
-                                         std::string_view storage_id) noexcept -> LocalMediaBlob const*;
+[[nodiscard]] auto find_local_media_record(LocalMediaRepository& repository, std::string_view media_id) noexcept
+    -> LocalMediaRecord const*;
+[[nodiscard]] auto find_local_media_blob(LocalMediaRepository& repository, std::string_view storage_id) noexcept
+    -> LocalMediaBlob const*;
 [[nodiscard]] auto find_local_media_thumbnail(LocalMediaRepository const& repository,
                                               std::string_view media_id) noexcept -> LocalMediaThumbnail const*;
 auto restore_local_media_repository(LocalMediaRepository& repository, std::vector<LocalMediaRecord> records,
@@ -192,24 +211,24 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 [[nodiscard]] auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,
                                       LocalMediaUploadRequest const& request) -> LocalMediaUploadResult;
 [[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
-                                        std::string_view media_id,
-                                        bool legacy_endpoint = false) -> LocalMediaDownloadResult;
+                                        std::string_view media_id, bool legacy_endpoint = false)
+    -> LocalMediaDownloadResult;
 // Performs the same input and current-record checks as the moderation actions
 // without changing repository state, counters, or logs. Call before durable
 // moderation writes so persistence failure cannot leave a partial mutation.
 [[nodiscard]] auto validate_local_media_admin_action(LocalMediaRepository const& repository, std::string_view media_id,
-                                                     LocalMediaAdminAction action,
-                                                     std::string_view reason = {}) -> LocalMediaAdminResult;
+                                                     LocalMediaAdminAction action, std::string_view reason = {})
+    -> LocalMediaAdminResult;
 [[nodiscard]] auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                           std::string_view reason) -> LocalMediaAdminResult;
-[[nodiscard]] auto release_local_media(LocalMediaRepository& repository,
-                                       std::string_view media_id) -> LocalMediaAdminResult;
+[[nodiscard]] auto release_local_media(LocalMediaRepository& repository, std::string_view media_id)
+    -> LocalMediaAdminResult;
 [[nodiscard]] auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                       std::string_view reason) -> LocalMediaAdminResult;
 [[nodiscard]] auto fetch_remote_media_disabled(LocalMediaRepository& repository,
                                                RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
-[[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository,
-                                      RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
+[[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
+    -> RemoteMediaDownloadResult;
 
 // Body and outer Content-Type for a v1.19 federation media download response.
 // The body is a multipart/mixed envelope with an empty JSON metadata part and
@@ -222,7 +241,7 @@ struct FederationMediaDownloadBody final
 
 // Builds a Matrix v1.19 federation media download response body. Returns an
 // empty result if the multipart envelope could not be assembled.
-[[nodiscard]] auto build_federation_media_download_body(std::string_view media_content_type,
-                                                        std::string_view bytes) -> FederationMediaDownloadBody;
+[[nodiscard]] auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
+    -> FederationMediaDownloadBody;
 
 } // namespace merovingian::media

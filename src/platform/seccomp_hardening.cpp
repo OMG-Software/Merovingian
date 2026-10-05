@@ -605,14 +605,16 @@ namespace
         436,
 #endif
         // ── Signals ────────────────────────────────────────────────────────
+        // ISO-2: kill() and tkill() are denied; tgkill() is allowed only when
+        // its first argument (tgid) equals the worker's own thread-group id,
+        // so a compromised worker cannot signal arbitrary processes. The
+        // argument filter is emitted by build_seccomp_program().
         __NR_rt_sigaction,
         __NR_rt_sigprocmask,
         __NR_rt_sigreturn,
         __NR_rt_sigsuspend,
         __NR_sigaltstack,
-        __NR_kill,
         __NR_tgkill,
-        __NR_tkill,
         // ── Security and privilege ─────────────────────────────────────────
         __NR_prctl,
         __NR_arch_prctl,
@@ -639,9 +641,9 @@ namespace
         __NR_getegid,
         __NR_getgroups,
         // ── Resource limits and scheduling ─────────────────────────────────
+        // ISO-2: setrlimit() and prlimit64() are denied. getrlimit() remains so
+        // the worker can read its own limits; changing them is not required.
         __NR_getrlimit,
-        __NR_setrlimit,
-        __NR_prlimit64,
         __NR_sched_getaffinity,
         __NR_getrusage,
         // ── Time ───────────────────────────────────────────────────────────
@@ -784,10 +786,25 @@ namespace
         return filt;
 #endif
         filt.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, static_cast<uint32_t>(offsetof(struct ::seccomp_data, nr))));
+        auto const own_tgid = static_cast<std::uint32_t>(::getpid());
         for (auto const nr : allowed)
         {
-            filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1));
-            filt.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+            if (nr == __NR_tgkill)
+            {
+                // ISO-2: allow tgkill only when its tgid argument matches this
+                // process. If the syscall number matches but the tgid does not,
+                // fall through to the next syscall test.
+                filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 4));
+                filt.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                        static_cast<uint32_t>(offsetof(struct ::seccomp_data, args[0]))));
+                filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, own_tgid, 0, 1));
+                filt.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+            }
+            else
+            {
+                filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1));
+                filt.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+            }
         }
         filt.push_back(BPF_STMT(BPF_RET | BPF_K, default_action));
         return filt;
