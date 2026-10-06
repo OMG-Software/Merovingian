@@ -2429,15 +2429,43 @@ namespace
     {
         return false;
     }
-    if (!record_and_persist(store,
-                            record_statement("upsert_fallback_key",
-                                             "INSERT INTO fallback_keys VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, "
-                                             "device_id, key_id) DO UPDATE SET json = $4",
-                                             {public_value(key.user_id), public_value(key.device_id),
-                                              public_value(key.key_id), sensitive_value(key.json)})))
+    // Spec v1.19 (POST /keys/upload, `fallback_keys`): "There can only be at
+    // most one key per algorithm uploaded, and the server will only persist
+    // one key per algorithm." A fallback key of algorithm A therefore replaces
+    // every other fallback key of A held for the same user and device (the
+    // algorithm is the key id up to and including its first ':'). The deletes
+    // and the insert commit as one transaction so a failure leaves the
+    // previous key in place, and the in-memory mirror changes only afterwards.
+    auto const colon = key.key_id.find(':');
+    auto const algorithm_prefix = colon == std::string::npos ? key.key_id : key.key_id.substr(0U, colon + 1U);
+    auto const same_algorithm = [&key, &algorithm_prefix](PersistentFallbackKey const& current) {
+        return current.user_id == key.user_id && current.device_id == key.device_id &&
+               current.key_id.starts_with(algorithm_prefix);
+    };
+    auto statements = std::vector<PreparedStatement>{};
+    for (auto const& current : store.fallback_keys)
+    {
+        if (same_algorithm(current) && current.key_id != key.key_id)
+        {
+            statements.push_back(record_statement(
+                "delete_superseded_fallback_key",
+                "DELETE FROM fallback_keys WHERE user_id = $1 AND device_id = $2 "
+                "AND key_id = $3",
+                {public_value(current.user_id), public_value(current.device_id), public_value(current.key_id)}));
+        }
+    }
+    statements.push_back(record_statement(
+        "upsert_fallback_key",
+        "INSERT INTO fallback_keys VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, "
+        "device_id, key_id) DO UPDATE SET json = $4",
+        {public_value(key.user_id), public_value(key.device_id), public_value(key.key_id), sensitive_value(key.json)}));
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
+    std::erase_if(store.fallback_keys, [&](PersistentFallbackKey const& current) {
+        return same_algorithm(current) && current.key_id != key.key_id;
+    });
     auto const existing = std::ranges::find_if(store.fallback_keys, [&key](PersistentFallbackKey const& current) {
         return current.user_id == key.user_id && current.device_id == key.device_id && current.key_id == key.key_id;
     });
