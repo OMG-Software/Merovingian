@@ -225,6 +225,16 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
     -> LocalMediaAdminResult;
 [[nodiscard]] auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                       std::string_view reason) -> LocalMediaAdminResult;
+// OUT-4: the local record admitted for remote media (origin_server, media_id),
+// or nullptr. Callers consult this before discovery and the network, so a hit
+// costs no outbound request. An expired entry, or one whose record is no longer
+// available (quarantined or removed), is erased and reported as a miss; a hit
+// becomes the most recently used entry. `now_ms` is on the steady clock that
+// fetch_remote_media() stamps entries with.
+[[nodiscard]] auto find_cached_remote_media(LocalMediaRepository& repository, std::string_view origin_server,
+                                            std::string_view media_id, std::uint64_t now_ms) -> LocalMediaRecord const*;
+// The steady-clock time, in milliseconds, used for remote media cache entries.
+[[nodiscard]] auto remote_media_cache_now_ms() noexcept -> std::uint64_t;
 [[nodiscard]] auto fetch_remote_media_disabled(LocalMediaRepository& repository,
                                                RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
 [[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)

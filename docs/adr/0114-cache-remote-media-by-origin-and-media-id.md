@@ -2,7 +2,7 @@
 
 * Status: accepted
 * Deciders: James Chapman
-* Date: 2026-09-29
+* Date: 2026-10-05
 
 ## Context and Problem Statement
 
@@ -48,6 +48,22 @@ saves both network and admission work while keeping memory bounded.
 * The cache size is capped and old/least-used entries are evicted.
 * Cache entries are invalidated when the underlying local record is no longer
   available (quarantined or removed).
+
+### Where the lookup sits
+
+The media service consults the cache (`media::find_cached_remote_media`) in
+`fetch_remote_media_live`, after the `remote_fetch_enabled`/`allow_remote`
+refusal and before the client-outbound budget slot, discovery and the outbound
+request. A lookup placed after the fetch, inside `media::fetch_remote_media`,
+stops duplicate storage but still sends one outbound request per client request,
+which is the amplification this decision exists to remove; that was the first
+implementation, and it was wrong. The post-fetch lookup remains only so two
+requests that both missed the cache do not admit the same media twice.
+
+An entry for a key replaces any older entry for it, an expired entry or one whose
+record is no longer `available` is erased on lookup, and
+`remote_media_cache_max_entries = 0` disables the cache rather than removing its
+bound.
 
 ### Negative Consequences
 

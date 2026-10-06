@@ -975,93 +975,98 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     return {true, 200U, record->media_id, record->state, "removed"};
 }
 
-[[nodiscard]] auto remote_media_cache_key(std::string_view origin_server, std::string_view media_id) noexcept
-    -> std::string
+namespace
 {
-    return std::string{origin_server} + '\0' + std::string{media_id};
+
+    [[nodiscard]] auto remote_media_cache_entry_matches(RemoteMediaCacheEntry const& entry,
+                                                        std::string_view origin_server,
+                                                        std::string_view media_id) noexcept -> bool
+    {
+        return entry.origin_server == origin_server && entry.media_id == media_id;
+    }
+
+    // Records that remote media (origin_server, media_id) was admitted as
+    // `local_media_id`. A cap of 0 disables the cache. Any existing entry for
+    // the same key is replaced rather than kept alongside the new one, so a
+    // stale entry can never shadow a fresh one. The cache is kept in recency
+    // order, so at the cap the entry at the front is the least recently used.
+    auto cache_remote_media(LocalMediaRepository& repository, std::string_view origin_server, std::string_view media_id,
+                            std::string_view local_media_id, std::uint64_t now) -> void
+    {
+        auto const max_entries = repository.config.remote_media_cache_max_entries;
+        if (max_entries == 0U)
+        {
+            return;
+        }
+        std::erase_if(repository.remote_media_cache, [origin_server, media_id](RemoteMediaCacheEntry const& entry) {
+            return remote_media_cache_entry_matches(entry, origin_server, media_id);
+        });
+        while (repository.remote_media_cache.size() >= max_entries)
+        {
+            repository.remote_media_cache.erase(repository.remote_media_cache.begin());
+        }
+        auto const ttl_ms = static_cast<std::uint64_t>(repository.config.remote_media_cache_ttl_seconds) * 1000U;
+        repository.remote_media_cache.push_back(
+            {std::string{origin_server}, std::string{media_id}, std::string{local_media_id}, now + ttl_ms, now});
+    }
+
+    [[nodiscard]] auto cached_remote_media_result(LocalMediaRepository& repository, LocalMediaRecord const& record)
+        -> RemoteMediaDownloadResult
+    {
+        auto const* blob = find_local_media_blob(repository, record.storage_id);
+        if (blob == nullptr)
+        {
+            return {false, 404U, "cached remote media blob is missing"};
+        }
+        ++repository.metrics.downloads_served;
+        return {true,
+                200U,
+                {},
+                record.content_type,
+                blob->bytes,
+                record.size_bytes,
+                record.hash_algorithm,
+                record.digest,
+                record.storage_id,
+                record.media_id,
+                false};
+    }
+
+} // namespace
+
+auto remote_media_cache_now_ms() noexcept -> std::uint64_t
+{
+    return now_ms();
 }
 
-[[nodiscard]] auto find_remote_media_cache_entry(LocalMediaRepository& repository, std::string_view origin_server,
-                                                 std::string_view media_id, std::uint64_t now_ms)
-    -> RemoteMediaCacheEntry*
+auto find_cached_remote_media(LocalMediaRepository& repository, std::string_view origin_server,
+                              std::string_view media_id, std::uint64_t now) -> LocalMediaRecord const*
 {
-    auto const key = remote_media_cache_key(origin_server, media_id);
-    auto const it = std::find_if(repository.remote_media_cache.begin(), repository.remote_media_cache.end(),
-                                 [&key](auto const& entry) {
-                                     return remote_media_cache_key(entry.origin_server, entry.media_id) == key;
-                                 });
-    if (it == repository.remote_media_cache.end())
+    auto const entry =
+        std::ranges::find_if(repository.remote_media_cache, [origin_server, media_id](RemoteMediaCacheEntry const& e) {
+            return remote_media_cache_entry_matches(e, origin_server, media_id);
+        });
+    if (entry == repository.remote_media_cache.end())
     {
         return nullptr;
     }
-    if (it->expires_at_ms <= now_ms)
+    // A record that is quarantined or removed after it was cached must never be
+    // served from here, and its entry is no longer worth keeping.
+    auto const* record = find_local_media_record(repository, entry->local_media_id);
+    auto const usable = entry->expires_at_ms > now && record != nullptr &&
+                        record->state == LocalMediaState::available &&
+                        find_local_media_blob(repository, record->storage_id) != nullptr;
+    if (!usable)
     {
-        // TTL expired: the cached mapping must not outlive the configured window.
+        repository.remote_media_cache.erase(entry);
         return nullptr;
     }
-    auto const* record = find_local_media_record(repository, it->local_media_id);
-    if (record == nullptr || record->state != LocalMediaState::available)
-    {
-        return nullptr;
-    }
-    it->last_access_ms = now_ms;
-    auto hit = std::move(*it);
-    repository.remote_media_cache.erase(it);
+    auto hit = std::move(*entry);
+    hit.last_access_ms = now;
+    repository.remote_media_cache.erase(entry);
     repository.remote_media_cache.push_back(std::move(hit));
-    return &repository.remote_media_cache.back();
+    return record;
 }
-
-auto evict_oldest_remote_media_cache_entry(LocalMediaRepository& repository) -> void
-{
-    if (repository.remote_media_cache.empty())
-    {
-        return;
-    }
-    // The cache is kept in recency order by find_remote_media_cache_entry,
-    // which moves a hit to the back. The front is therefore the LRU entry.
-    repository.remote_media_cache.erase(repository.remote_media_cache.begin());
-}
-
-auto cache_remote_media(LocalMediaRepository& repository, std::string_view origin_server, std::string_view media_id,
-                        std::string_view local_media_id, std::uint64_t now_ms) -> void
-{
-    auto const ttl_ms = static_cast<std::uint64_t>(repository.config.remote_media_cache_ttl_seconds) * 1000U;
-    if (repository.config.remote_media_cache_max_entries != 0U &&
-        repository.remote_media_cache.size() >= repository.config.remote_media_cache_max_entries)
-    {
-        evict_oldest_remote_media_cache_entry(repository);
-    }
-    repository.remote_media_cache.push_back(
-        {std::string{origin_server}, std::string{media_id}, std::string{local_media_id}, now_ms + ttl_ms, now_ms});
-}
-
-[[nodiscard]] auto serve_cached_remote_media(LocalMediaRepository& repository, RemoteMediaCacheEntry const& entry)
-    -> RemoteMediaDownloadResult
-{
-    auto const* record = find_local_media_record(repository, entry.local_media_id);
-    if (record == nullptr || record->state != LocalMediaState::available)
-    {
-        return {false, 404U, "cached remote media is no longer available"};
-    }
-    auto const* blob = find_local_media_blob(repository, record->storage_id);
-    if (blob == nullptr)
-    {
-        return {false, 404U, "cached remote media blob is missing"};
-    }
-    ++repository.metrics.downloads_served;
-    return {true,
-            200U,
-            {},
-            record->content_type,
-            blob->bytes,
-            record->size_bytes,
-            record->hash_algorithm,
-            record->digest,
-            record->storage_id,
-            record->media_id,
-            false};
-}
-
 auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
     -> RemoteMediaDownloadResult
 {
@@ -1104,14 +1109,14 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
         return {false, 502U, "remote media response body is empty"};
     }
 
-    // OUT-4: cache remote media downloads keyed by (origin_server, media_id) with
-    // a configurable TTL and LRU eviction, so repeated requests for the same
-    // remote mxc:// URI do not hit the network or re-admit the bytes.
+    // OUT-4: the media service looks the cache up before the network
+    // (find_cached_remote_media). Checking again here only stops two requests
+    // that both missed the cache from admitting the same remote media twice.
     auto const now = now_ms();
-    if (auto* cached = find_remote_media_cache_entry(repository, request.origin_server, request.media_id, now);
+    if (auto const* cached = find_cached_remote_media(repository, request.origin_server, request.media_id, now);
         cached != nullptr)
     {
-        return serve_cached_remote_media(repository, *cached);
+        return cached_remote_media_result(repository, *cached);
     }
 
     auto upload = LocalMediaUploadRequest{};

@@ -15,6 +15,19 @@
   and `execve`, was therefore allowed. A mismatched tgid also fell through with the
   accumulator holding `args[0]`. The block now jumps over exactly its own instructions
   and returns the default action on a mismatched tgid.
+- **FIXED (OUT-4): the remote media cache is consulted before the network.** The cache was
+  looked up only inside `media::fetch_remote_media`, which runs after discovery and the
+  outbound request, so every client request for a remote `mxc://` URI still reached the
+  origin. `fetch_remote_media_live` now serves a cached record before taking an outbound
+  budget slot. Also fixed: an expired entry was never removed and, being found first,
+  made every later lookup for that key miss; `remote_media_cache_max_entries = 0`, documented
+  as disabling the cache, removed its bound instead; a removed or quarantined record's entry
+  is now erased on lookup. New `media::find_cached_remote_media`. ADR-0114 records where
+  the lookup must sit.
+- **TESTS:** `[out-4]` integration scenario counts the requests a real HTTPS origin receives
+  for two downloads of the same remote image (one, not two); the `[out-4]` unit scenarios
+  now drive the pre-network lookup (hit, miss by key, expiry and re-admission, zero cap,
+  removed record, LRU eviction) instead of the post-fetch admission step.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

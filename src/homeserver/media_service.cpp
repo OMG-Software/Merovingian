@@ -727,6 +727,24 @@ namespace
         {
             return std::move(*refusal);
         }
+        // OUT-4 (ADR-0114): remote media admitted within the cache TTL is served
+        // from the local record. This must come before the outbound budget slot,
+        // discovery and the request below; checking after them saves storage
+        // but still sends one outbound fetch per client request.
+        if (auto const* cached = media::find_cached_remote_media(runtime.media_repository, origin_server, media_id,
+                                                                 media::remote_media_cache_now_ms());
+            cached != nullptr)
+        {
+            if (auto const* blob = media::find_local_media_blob(runtime.media_repository, cached->storage_id);
+                blob != nullptr)
+            {
+                log_diagnostic("remote_fetch.cache_hit", {
+                                                             {"origin_server", std::string{origin_server}, false},
+                                                             {"media_id",      std::string{media_id},      false}
+                });
+                return make_operation_result(true, cached->content_type + "|" + blob->bytes, {}, 200U);
+            }
+        }
         auto* const outbound_client = runtime.outbound_client.get();
         auto* const discovery_network = runtime.discovery_network.get();
         if (outbound_client == nullptr || discovery_network == nullptr)
