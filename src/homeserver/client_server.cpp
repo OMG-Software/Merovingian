@@ -8511,6 +8511,51 @@ namespace
         return json_serialize(json_obj({json_member("policy_rules", json_arr(std::move(rules)))}));
     }
 
+    // CSAZ-10: true when storing the signatures in a /keys/signatures/upload
+    // body would leave `signer` holding more than `max_key_signatures_per_user`
+    // distinct (target user, target key) signatures. A pair the signer already
+    // has is replaced in place, so re-signing is not counted twice. A body that
+    // does not parse is left for the store step to reject.
+    [[nodiscard]] auto signature_upload_exceeds_cap(ClientServerRuntime const& rt, std::string_view signer,
+                                                    std::string_view body) -> bool
+    {
+        auto const parsed = parsed_json_object(body);
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+        using TargetKey = std::pair<std::string_view, std::string_view>;
+        auto held = std::set<TargetKey>{};
+        for (auto const& row : rt.homeserver.database.persistent_store.key_signatures)
+        {
+            if (row.signer_user_id == signer)
+            {
+                held.emplace(row.target_user_id, row.target_device_id);
+            }
+        }
+        auto added = std::set<TargetKey>{};
+        for (auto const& user_member : *parsed)
+        {
+            if (user_member.value == nullptr)
+            {
+                continue;
+            }
+            auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (signed_keys == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_member : *signed_keys)
+            {
+                if (!held.contains(TargetKey{user_member.key, key_member.key}))
+                {
+                    added.emplace(user_member.key, key_member.key);
+                }
+            }
+        }
+        return held.size() + added.size() > rt.limits.max_key_signatures_per_user;
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req, std::string_view version) -> bool
@@ -8954,6 +8999,12 @@ namespace
             return resp(200U, key_api_success_body(route.endpoint));
         }
         case auth::KeyApiEndpoint::upload_signatures:
+            if (signature_upload_exceeds_cap(rt, user, req.body))
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "signature upload would exceed the per-user limit of " +
+                               std::to_string(rt.limits.max_key_signatures_per_user));
+            }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
