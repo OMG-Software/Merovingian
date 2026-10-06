@@ -108,6 +108,10 @@
   shared uid, MED-5 no discovery-to-self check); its earlier claim of such a check is
   removed. `docs/todos/capability-gaps.md` closes the medium remediation section, whose
   table had marked AUTH-3 complete.
+- **TESTS:** `[session_restart]` waits until the wall clock, which token expiry is measured
+  against, is past the token's expiry instead of sleeping a fixed 1.5 s. WSL2 can step the
+  wall clock back by over a second; a full-suite run and 1 in 20 isolated runs failed
+  because the sleep ended before the expiry. The assertion is unchanged.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

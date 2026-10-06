@@ -359,18 +359,32 @@ SCENARIO("SQLite-backed runtime still expires access tokens after a restart",
         WHEN("a token is issued, the runtime restarts, and the token's lifetime passes")
         {
             auto access_token = std::string{};
+            auto issued_by = std::chrono::system_clock::time_point{};
             {
                 auto started = merovingian::homeserver::start_client_server(config);
                 REQUIRE(started.started);
                 access_token =
                     json_string_field(register_and_login_with_refresh(started.runtime, "expiring"), "access_token");
+                // The token was issued before this point, so it expires no later
+                // than one lifetime after it.
+                issued_by = std::chrono::system_clock::now();
                 REQUIRE(merovingian::homeserver::handle_client_server_request(
                             started.runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}})
                             .response.status == 200U);
             }
             auto restarted = merovingian::homeserver::start_client_server(config);
             REQUIRE(restarted.started);
-            std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+            // Expiry is an absolute wall-clock time, so wait until the wall
+            // clock, not a fixed sleep, is past it. WSL2 can step the wall
+            // clock back by more than a second, which made a fixed 1.5 s sleep
+            // occasionally end before the token's expiry.
+            auto const expired_at = issued_by + std::chrono::milliseconds{1000} + std::chrono::milliseconds{100};
+            auto const give_up = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+            while (std::chrono::system_clock::now() < expired_at && std::chrono::steady_clock::now() < give_up)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+            REQUIRE(std::chrono::system_clock::now() >= expired_at);
             auto const whoami = merovingian::homeserver::handle_client_server_request(
                 restarted.runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}});
 
