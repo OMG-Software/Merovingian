@@ -33,6 +33,19 @@
   request for `example.org:8449` (a different server name) was served this server's
   media. It now lowercases and drops a trailing `:8448` only. ADR-0115 corrected: it
   claimed both behaviours, and claimed a discovery-to-self check the code does not have.
+- **CHANGED (MED-6): media quota defaults sized to memory.** The defaults introduced
+  earlier on this branch (`10MiB` per user) refused a single upload at the `50MiB`
+  `max_upload_size`, and charged all remote media from an origin to one
+  `@remote-media:<origin>` owner, cutting the origin off after 10 MiB. Defaults are now
+  `max_total_size=2GiB`, `max_size_per_user=256MiB`, `max_records=100000`. All media is
+  held in memory, so the total is a memory budget. Remote media is exempt from the
+  per-user quota and still counts toward the total and record caps. ADR-0113 updated;
+  `docs/user-manual.md` documents the defaults and the two remote-media cache keys, and
+  its media table, which a paragraph had split in two, renders as one table again.
+- **TESTS:** `[med-6]` scenarios pin the defaults and their relationship
+  (`max_size_per_user >= max_upload_size`, total ≥ per user), check that a user past the
+  default quota gets 507 while another user is unaffected, and that remote media is
+  exempt from the per-user quota but not from the server total.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

@@ -1055,17 +1055,9 @@ Service API".
 | Key | Default | When to change |
 |---|---|---|
 | `security.media.max_upload_size` | `50MiB` | Maximum local upload size. Match your reverse-proxy body-size limit. |
-| `security.media.max_total_size` | (empty) | Cap on total stored media bytes. Empty means no limit. |
-| `security.media.max_size_per_user` | (empty) | Per-user media quota in bytes. Empty means no limit. |
-| `security.media.max_records` | `0` | Cap on stored media records. `0` means no limit. |
-
-The three capacity limits bound the in-memory media index, which is otherwise
-unbounded: upload spam, or a large cache of remote media, grows it until the
-process runs out of memory. An upload that would cross any limit is refused with
-`507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
-for what is already stored and eviction would break those links rather than shed
-load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
-record but no additional bytes.
+| `security.media.max_total_size` | `2GiB` | Cap on total stored media bytes. All media is held in memory, so this is a memory budget: raise it only as far as the host's RAM allows. Empty means no limit. |
+| `security.media.max_size_per_user` | `256MiB` | Per-user media quota in bytes. Keep it at or above `max_upload_size`. Remote media is exempt (see below). Empty means no limit. |
+| `security.media.max_records` | `100000` | Cap on stored media records. `0` means no limit. |
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |
@@ -1075,6 +1067,22 @@ record but no additional bytes.
 | `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |
 | `security.media.remote_fetch_media_policy` | `quarantine` | Same values; defaults to `quarantine` because federated origins are unaccountable. |
+| `security.media.remote_media_cache_ttl_seconds` | `86400` | How long admitted remote media is served from the local copy before it is fetched again. |
+| `security.media.remote_media_cache_max_entries` | `1024` | Maximum remote-media cache entries; the least recently used is evicted when full. `0` disables the cache, so every request for remote media goes to the origin. |
+
+The three capacity limits bound the in-memory media index, which would otherwise be
+unbounded: upload spam, or a large cache of remote media, grows it until the
+process runs out of memory. An upload that would cross any limit is refused with
+`507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
+for what is already stored and eviction would break those links rather than shed
+load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
+record but no additional bytes.
+
+Remote media is stored under one `@remote-media:<origin>` owner per origin, so it
+is not charged to `max_size_per_user`; it counts toward `max_total_size` and
+`max_records` like everything else. Repeated requests for the same remote media
+within `remote_media_cache_ttl_seconds` are served from the stored copy without
+contacting the origin.
 
 > **Encrypted-room media can never be scanned, under any configuration, by
 > design.** Matrix E2EE attachments are encrypted client-side before upload;

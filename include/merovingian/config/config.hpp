@@ -506,8 +506,13 @@ struct MediaSecurityConfig final
     // evicting an older blob: clients hold mxc:// URIs for what is already
     // stored, and eviction would break them. Empty explicitly means no limit;
     // the defaults below are non-zero so an unconfigured server is bounded.
-    std::string max_total_size{"1GiB"};
-    std::string max_size_per_user{"10MiB"};
+    // Every blob is held in memory, so max_total_size is a memory budget and
+    // the default suits a small host (ADR-0113). max_size_per_user must stay at
+    // or above max_upload_size, or one legitimate upload is refused. Remote
+    // media is stored under one owner per origin and is exempt from the
+    // per-user quota, but counts toward max_total_size and max_records.
+    std::string max_total_size{"2GiB"};
+    std::string max_size_per_user{"256MiB"};
     std::uint64_t max_records{100000U};
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};

@@ -798,7 +798,12 @@ SCENARIO("Deduplicated uploads do not consume repository capacity twice", "[medi
     }
 }
 
-SCENARIO("Default media repository capacity limits are non-zero", "[media][repository][security][med-6]")
+// MED-6 (security-audit-report-2026-09-29.md): media quotas defaulted to
+// unlimited. Every blob is held in memory, so the server-wide cap is a memory
+// budget and the defaults are sized for a small host (ADR-0113).
+SCENARIO("Default media repository capacity limits bound memory without "
+         "refusing a normal upload",
+         "[media][repository][security][med-6]")
 {
     GIVEN("a runtime media config built from the default configuration")
     {
@@ -806,11 +811,117 @@ SCENARIO("Default media repository capacity limits are non-zero", "[media][repos
 
         WHEN("the default capacity limits are inspected")
         {
-            THEN("every cap has a non-zero operational default")
+            constexpr auto mib = std::uint64_t{1024U} * 1024U;
+
+            THEN("the server holds at most 2 GiB in 100000 records, and one user at "
+                 "most 256 MiB")
             {
-                REQUIRE(config.max_records > 0U);
-                REQUIRE(config.max_total_bytes > 0U);
-                REQUIRE(config.max_bytes_per_user > 0U);
+                REQUIRE(config.max_total_bytes == 2048U * mib);
+                REQUIRE(config.max_bytes_per_user == 256U * mib);
+                REQUIRE(config.max_records == 100000U);
+            }
+
+            THEN("one upload of the maximum size fits within a user's quota, and a "
+                 "user's quota within the total")
+            {
+                REQUIRE(config.max_upload_bytes > 0U);
+                REQUIRE(config.max_bytes_per_user >= config.max_upload_bytes);
+                REQUIRE(config.max_total_bytes >= config.max_bytes_per_user);
+            }
+        }
+    }
+}
+
+SCENARIO("A user past the default per-user media quota is refused with 507", "[media][repository][security][med-6]")
+{
+    GIVEN("a repository with the default limits and a user holding all but four "
+          "bytes of the default quota")
+    {
+        auto repository = merovingian::media::LocalMediaRepository{};
+        repository.config = merovingian::media::make_runtime_media_config(merovingian::config::Config{});
+        repository.records.push_back(
+            merovingian::media::LocalMediaRecord{"held",
+                                                 "@alice:example.org",
+                                                 "application/octet-stream",
+                                                 repository.config.max_bytes_per_user - 4U,
+                                                 "sha256",
+                                                 "held-digest",
+                                                 "held-storage",
+                                                 merovingian::media::LocalMediaState::available,
+                                                 {},
+                                                 false});
+
+        WHEN("that user uploads five more bytes and another user uploads the same "
+             "amount")
+        {
+            auto const alice = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "12345", true});
+            auto const bob = merovingian::media::upload_local_media(
+                repository, "example.org", {"@bob:example.org", "text/plain", "text/plain", "67890", true});
+
+            THEN("only the user past the quota is refused")
+            {
+                REQUIRE_FALSE(alice.ok);
+                REQUIRE(alice.status == 507U);
+                REQUIRE(bob.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media is not charged to a per-user quota, but still counts "
+         "toward the server total",
+         "[media][repository][remote][security][med-6]")
+{
+    GIVEN("remote fetching enabled with a per-user quota of eight bytes")
+    {
+        auto repository = test_repository();
+        repository.config.remote_fetch_enabled = true;
+        repository.config.remote_fetch_media_policy = merovingian::media::MediaAcceptancePolicy::allow_after_scan;
+        repository.config.max_bytes_per_user = 8U;
+        auto const fetch = [&repository](std::string media_id, std::string bytes) {
+            return merovingian::media::fetch_remote_media(repository, {"remote.example.org",
+                                                                       std::move(media_id),
+                                                                       "remote.example.org",
+                                                                       {"203.0.113.20"},
+                                                                       "image/png",
+                                                                       std::move(bytes),
+                                                                       true,
+                                                                       16U,
+                                                                       64U,
+                                                                       1U,
+                                                                       true});
+        };
+
+        WHEN("one origin serves more than eight bytes of distinct media")
+        {
+            auto const first = fetch("first", std::string{"\x89PNG\r\n\x1a\n", 8U});
+            auto const second = fetch("second", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
+
+            THEN("both are admitted: every remote file shares one owner per origin, "
+                 "so a per-user quota "
+                 "would cut that origin off after its first files")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+            }
+        }
+
+        AND_GIVEN("a server-wide cap of twelve bytes")
+        {
+            repository.config.max_total_bytes = 12U;
+
+            WHEN("remote media would cross it")
+            {
+                auto const first = fetch("first", std::string{"\x89PNG\r\n\x1a\n", 8U});
+                auto const second = fetch("second", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
+
+                THEN("the media that crosses the server total is refused with 507")
+                {
+                    REQUIRE(first.ok);
+                    REQUIRE_FALSE(second.ok);
+                    REQUIRE(second.status == 507U);
+                }
             }
         }
     }

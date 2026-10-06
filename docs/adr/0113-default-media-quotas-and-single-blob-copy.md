@@ -2,7 +2,7 @@
 
 * Status: accepted
 * Deciders: James Chapman
-* Date: 2026-09-29
+* Date: 2026-10-06
 
 ## Context and Problem Statement
 
@@ -35,11 +35,24 @@ MED-6).
 
 ## Decision Outcome
 
-Chosen option: "non-zero defaults (`1GiB` total, `10MiB` per user, `100000`
-records), and move blob bytes from `PersistentStore` into the runtime repository
-during hydration, then clear the persistent copy", because it bounds the default
-memory footprint and removes the duplicate in-memory copy without introducing
-shared ownership.
+Chosen option: "non-zero defaults (`2GiB` total, `256MiB` per user, `100000`
+records), remote media exempt from the per-user quota, and blob bytes held only
+by the runtime repository", because it bounds the default memory footprint and
+removes the duplicate in-memory copy without introducing shared ownership.
+
+The numbers follow from where media lives. Every blob is held in memory and is
+loaded from the database at startup, so `max_total_size` is a memory budget, not
+a disk quota; the default suits a small host, and operators with more memory
+raise it. `max_size_per_user` must stay at or above `max_upload_size`
+(`50MiB`), or a single legitimate upload is refused: the first implementation
+shipped `10MiB` per user and failed that. Remote media is stored under one
+`@remote-media:<origin>` owner per origin, so charging it to the per-user quota
+would refuse every further file from a busy origin after its first few; it is
+bounded by `max_total_size` and `max_records` instead.
+
+The persistent store keeps only blob metadata: hydration moves the bytes into the
+runtime repository, and `store_media_blob` stores a metadata-only row once the
+bytes have been written to the database.
 
 ### Positive Consequences
 
@@ -52,8 +65,12 @@ shared ownership.
 ### Negative Consequences
 
 * Servers that previously relied on unlimited defaults now enforce caps and may
-  refuse uploads once they exceed them. This is the intended fail-closed
-  behaviour and is documented in the default config.
+  refuse uploads once they exceed them (`507 M_LIMIT_EXCEEDED`). This is the
+  intended fail-closed behaviour; the defaults and their memory meaning are in
+  `docs/user-manual.md` and `config/merovingian.conf.example`.
+* The defaults were chosen by the project owner on 2026-10-06 over larger caps,
+  accepting earlier 507s on busy servers in exchange for a safe footprint on
+  small hosts.
 
 ## Links
 

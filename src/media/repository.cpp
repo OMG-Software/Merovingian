@@ -390,7 +390,10 @@ namespace
         {
             return "media repository storage limit reached";
         }
-        if (stores_new_blob && limits.max_bytes_per_user != 0U &&
+        // Remote media is owned by one system user per origin, so a per-user
+        // quota would cut off an origin after its first few files (MED-6). It
+        // is still bounded by the record and total-byte caps above.
+        if (stores_new_blob && !request.from_remote_fetch && limits.max_bytes_per_user != 0U &&
             live_bytes_for_owner(repository, request.owner_user_id) + size_bytes > limits.max_bytes_per_user)
         {
             return "media quota for this user is exhausted";
