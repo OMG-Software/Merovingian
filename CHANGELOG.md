@@ -86,6 +86,23 @@
   `getrlimit()` are allowed while setting a limit or reading the parent's is denied. The
   `[iso-2]` list test expects `prlimit64` in the worker list, as it already did for `tgkill`,
   since both are argument-checked. `[federation-worker][seccomp]` passes again.
+- **FIXED (CSAZ-10): per-user caps on E2EE key and filter uploads.** New
+  `server.client_api.max_one_time_keys_per_device` (1000), `max_key_signatures_per_user`
+  (10000) and `max_filters_per_user` (1000). An upload that would cross one is refused with
+  `400 M_TOO_LARGE` and stores nothing. An identical filter (canonical JSON) returns the
+  existing `filter_id` instead of a new one, and new filters are stored canonically.
+  ADR-0118.
+- **FIXED (CSAZ-10): one fallback key per algorithm per device.** The spec says the server
+  "will only persist one key per algorithm"; each fallback-key upload with a new key ID
+  added a row. A new fallback key now replaces the previous one of its algorithm in one
+  transaction.
+- **CHANGED (CSAZ-10): `/keys/query` reads key signatures through an index by target
+  user** (`database::key_signatures_for_target`) instead of scanning every signature
+  upload; a stale index falls back to a scan.
+- **TESTS:** new `[csaz-10]` unit files `test_fallback_key_single.cpp`, `test_otk_cap.cpp`,
+  `test_key_signature_cap.cpp`, `test_filter_cap.cpp`, `test_key_signature_index.cpp`,
+  shared fixture `tests/support/e2ee_caps_support.hpp`, and config scenarios in
+  `test_config_operational_limits.cpp`.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

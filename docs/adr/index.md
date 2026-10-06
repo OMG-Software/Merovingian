@@ -118,6 +118,7 @@
 * [0115 - Canonicalise media server-name comparisons](0115-canonicalise-media-server-name-comparisons.md)
 * [0116 - Verify token revocation state in the auth service](0116-verify-token-revocation-state-in-auth-service.md)
 * [0117 - Bound to-device queues by recipient count and age](0117-bound-to-device-queues-by-recipient-count-and-age.md)
+* [0118 - Refuse E2EE key and filter uploads at per-user caps; store filters canonically](0118-refuse-e2ee-and-filter-uploads-at-per-user-caps.md)
 
 ## Rejected Records
 
