@@ -1398,6 +1398,53 @@ namespace
         return serialized.output;
     }
 
+    // Canonical JSON text of `json`, or nullopt when it is not parseable JSON.
+    // Two filter bodies that differ only in key order or whitespace share one
+    // canonical form (CSAZ-10 filter de-duplication).
+    [[nodiscard]] auto canonical_json_text(std::string_view json) -> std::optional<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        return serialized_value(parsed.value);
+    }
+
+    // CSAZ-10: what the user already stores that bears on a new filter upload.
+    struct StoredFilterSummary final
+    {
+        std::size_t count{0U};
+        // filter_id of a stored filter identical to the upload after JSON
+        // canonicalisation, when there is one.
+        std::optional<std::string> identical_filter_id{};
+    };
+
+    [[nodiscard]] auto summarise_stored_filters(database::PersistentStore const& store, std::string_view user_id,
+                                                std::string_view uploaded_json) -> StoredFilterSummary
+    {
+        auto summary = StoredFilterSummary{};
+        auto const uploaded_canonical = canonical_json_text(uploaded_json);
+        for (auto const& filter : store.filters)
+        {
+            if (filter.user_id != user_id)
+            {
+                continue;
+            }
+            ++summary.count;
+            if (summary.identical_filter_id.has_value())
+            {
+                continue;
+            }
+            if (filter.json == uploaded_json ||
+                (uploaded_canonical.has_value() && canonical_json_text(filter.json) == uploaded_canonical))
+            {
+                summary.identical_filter_id = filter.filter_id;
+            }
+        }
+        return summary;
+    }
+
     struct MembershipActionBody final
     {
         std::string user_id{};
@@ -14892,6 +14939,33 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (req.body.empty())
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter body must not be empty");
+            }
+            // CSAZ-10: an identical definition returns the filter the user already
+            // has instead of storing a duplicate; a distinct one is refused once
+            // the user holds max_filters_per_user. Nothing is evicted.
+            auto const stored_filters =
+                summarise_stored_filters(rt.homeserver.database.persistent_store, path_user, req.body);
+            if (stored_filters.identical_filter_id.has_value())
+            {
+                log_diagnostic("filter.deduplicated",
+                               {
+                                   {"actor",     *user,                               false},
+                                   {"filter_id", *stored_filters.identical_filter_id, false}
+                });
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj(
+                                         {json_member("filter_id", json_str(*stored_filters.identical_filter_id))})));
+            }
+            if (stored_filters.count >= rt.limits.max_filters_per_user)
+            {
+                log_diagnostic("filter.rejected",
+                               {
+                                   {"actor",  *user,                   false},
+                                   {"reason", "per-user filter limit", false}
+                });
+                return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                    "filter limit of " + std::to_string(rt.limits.max_filters_per_user) +
+                                        " per user reached");
             }
             auto const filter_id = generate_filter_id();
             if (!database::store_filter(rt.homeserver.database.persistent_store, {path_user, filter_id, req.body}))
