@@ -1115,6 +1115,7 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     }
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);

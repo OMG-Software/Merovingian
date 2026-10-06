@@ -2519,6 +2519,54 @@ namespace
     return true;
 }
 
+auto rebuild_key_signature_index(PersistentStore& store) -> void
+{
+    store.key_signature_target_index.clear();
+    for (auto position = std::size_t{0U}; position < store.key_signatures.size(); ++position)
+    {
+        store.key_signature_target_index[store.key_signatures[position].target_user_id].push_back(position);
+    }
+    store.key_signature_indexed_rows = store.key_signatures.size();
+}
+
+[[nodiscard]] auto key_signatures_for_target(PersistentStore const& store, std::string_view target_user_id)
+    -> std::vector<std::reference_wrapper<PersistentKeySignature const>>
+{
+    auto matches = std::vector<std::reference_wrapper<PersistentKeySignature const>>{};
+    if (store.key_signature_indexed_rows == store.key_signatures.size())
+    {
+        auto const entry = store.key_signature_target_index.find(std::string{target_user_id});
+        if (entry == store.key_signature_target_index.end())
+        {
+            return matches;
+        }
+        auto consistent = true;
+        for (auto const position : entry->second)
+        {
+            if (position >= store.key_signatures.size() ||
+                store.key_signatures[position].target_user_id != target_user_id)
+            {
+                consistent = false;
+                break;
+            }
+            matches.emplace_back(store.key_signatures[position]);
+        }
+        if (consistent)
+        {
+            return matches;
+        }
+        matches.clear();
+    }
+    for (auto const& row : store.key_signatures)
+    {
+        if (row.target_user_id == target_user_id)
+        {
+            matches.emplace_back(row);
+        }
+    }
+    return matches;
+}
+
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool
 {
     if (!key_payload_is_valid(signature.json) || signature.target_device_id.empty())
@@ -2534,6 +2582,9 @@ namespace
     {
         return false;
     }
+    // Rows pushed directly (tests) leave the index behind the vector; a stale
+    // index is rebuilt below rather than patched.
+    auto const index_was_current = store.key_signature_indexed_rows == store.key_signatures.size();
     auto const existing =
         std::ranges::find_if(store.key_signatures, [&signature](PersistentKeySignature const& current) {
             return current.signer_user_id == signature.signer_user_id &&
@@ -2542,10 +2593,25 @@ namespace
         });
     if (existing != store.key_signatures.end())
     {
+        // Updated in place: the row keeps its position, so the index stays valid.
         existing->json = std::move(signature.json);
+        if (!index_was_current)
+        {
+            rebuild_key_signature_index(store);
+        }
         return true;
     }
+    auto const target_user_id = signature.target_user_id;
     store.key_signatures.push_back(std::move(signature));
+    if (index_was_current)
+    {
+        store.key_signature_target_index[target_user_id].push_back(store.key_signatures.size() - 1U);
+        store.key_signature_indexed_rows = store.key_signatures.size();
+    }
+    else
+    {
+        rebuild_key_signature_index(store);
+    }
     return true;
 }
 

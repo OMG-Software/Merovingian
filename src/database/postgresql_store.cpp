@@ -1974,6 +1974,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     }
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);

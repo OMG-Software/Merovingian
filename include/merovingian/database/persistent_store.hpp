@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -791,6 +792,8 @@ struct PersistentStore final
         , fallback_keys{other.fallback_keys}
         , cross_signing_keys{other.cross_signing_keys}
         , key_signatures{other.key_signatures}
+        , key_signature_target_index{other.key_signature_target_index}
+        , key_signature_indexed_rows{other.key_signature_indexed_rows}
         , key_backup_versions{other.key_backup_versions}
         , key_backup_sessions{other.key_backup_sessions}
         , local_media{other.local_media}
@@ -862,6 +865,8 @@ struct PersistentStore final
         fallback_keys = other.fallback_keys;
         cross_signing_keys = other.cross_signing_keys;
         key_signatures = other.key_signatures;
+        key_signature_target_index = other.key_signature_target_index;
+        key_signature_indexed_rows = other.key_signature_indexed_rows;
         key_backup_versions = other.key_backup_versions;
         key_backup_sessions = other.key_backup_sessions;
         local_media = other.local_media;
@@ -940,6 +945,14 @@ struct PersistentStore final
     std::vector<PersistentFallbackKey> fallback_keys{};
     std::vector<PersistentCrossSigningKey> cross_signing_keys{};
     std::vector<PersistentKeySignature> key_signatures{};
+    // CSAZ-10: positions in `key_signatures` grouped by target_user_id, so
+    // /keys/query merges one target's signatures without scanning every row.
+    // Maintained by store_key_signature and rebuilt after hydration. It is only
+    // trusted while `key_signature_indexed_rows == key_signatures.size()`; a
+    // caller that pushes rows directly leaves the counts unequal and lookups
+    // fall back to a scan until the next rebuild (key_signatures_for_target).
+    std::unordered_map<std::string, std::vector<std::size_t>> key_signature_target_index{};
+    std::size_t key_signature_indexed_rows{0U};
     std::vector<PersistentKeyBackupVersion> key_backup_versions{};
     std::vector<PersistentKeyBackupSession> key_backup_sessions{};
     std::vector<PersistentLocalMedia> local_media{};
@@ -1292,6 +1305,15 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
                                      std::string_view algorithm = {}) -> std::optional<PersistentFallbackKey>;
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
+// Every uploaded signature whose target is `target_user_id`, in storage order.
+// Backed by the target index (CSAZ-10); falls back to a scan only when the
+// index is out of step with the rows. References are valid until the next
+// mutation of `store.key_signatures`.
+[[nodiscard]] auto key_signatures_for_target(PersistentStore const& store, std::string_view target_user_id)
+    -> std::vector<std::reference_wrapper<PersistentKeySignature const>>;
+// Rebuilds the target index from `key_signatures`. Called after SQLite and
+// PostgreSQL hydration and after any direct fill of the vector.
+auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool;
 [[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
     -> bool;
