@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.19
+Version:        0.12.20
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Oct 07 2026 James Chapman <claude@ping.me.uk> - 0.12.20-1
+- Read media bytes from the database on demand instead of holding every
+  stored media file in memory.
+
 * Tue Oct 06 2026 James Chapman <claude@ping.me.uk> - 0.12.19-1
 - Close the remaining six 2026-09-29 security audit medium findings (AUTH-3,
   FED-6, MED-5, DB-5, CSAZ-10, DB-2).

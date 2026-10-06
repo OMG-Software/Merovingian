@@ -1,3 +1,7 @@
+## 0.12.20
+
+- Version bumped to 0.12.20 for the media-on-demand branch (stacked on 0.12.19).
+
 ## 0.12.19
 
 - **FIXED: SQLite room snapshot no longer binds one parameter per event (DB-2).** Federation
