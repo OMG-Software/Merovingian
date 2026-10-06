@@ -107,6 +107,17 @@ platforms with no in-process equivalent this fails closed — the worker refuses
 than run unsandboxed (ADR-0041). ASan builds disable exit-time LeakSanitizer in the worker because
 the seccomp profile denies the `ptrace` it needs.
 
+The worker filter also denies `kill`, `tkill` and `setrlimit`, allows `tgkill` only on the worker's
+own thread group and `prlimit64` only to read its own limits (ISO-2,
+[ADR-0112](../../docs/adr/0112-restrict-worker-signals-and-resource-limits.md)). Anything the worker
+runs after `apply_worker_hardening()` must therefore not set an rlimit. In particular
+`WorkerEventLoop::run()` passes `RuntimeStartOptions::process_hardening_applied_by_caller` (from
+`federation.worker.apply_hardening`) so `start_runtime()` does not re-apply the main-process
+hardening profile, whose `setrlimit(RLIMIT_CORE)` would kill the worker with `SIGSYS`. The test
+suite sets `MEROVINGIAN_TEST_DISABLE_HARDENING`, which hides such a call from most tests;
+`[federation-worker][seccomp]` in `tests/integration/test_federation_worker_flow.cpp` starts a real
+worker under the filter and is the regression test for it.
+
 ## Testing
 
 - `tests/unit/test_federation_worker_args.cpp` — argv parsing, including `--ipc-key-fd` and `--db-uri-fd` validation

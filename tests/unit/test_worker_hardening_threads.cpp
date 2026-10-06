@@ -380,6 +380,13 @@ SCENARIO("The worker seccomp filter denies signals and resource limits aimed at 
                 text += syscall_outcome("prlimit_parent",
                                         ::syscall(__NR_prlimit64, parent, RLIMIT_NOFILE, nullptr, &limit));
                 text += syscall_outcome("prlimit_self", ::syscall(__NR_prlimit64, 0, RLIMIT_NOFILE, &limit, nullptr));
+                // Read-only, on itself: how glibc implements getrlimit(), which
+                // thread creation needs. Must stay allowed.
+                text +=
+                    syscall_outcome("prlimit_self_read", ::syscall(__NR_prlimit64, 0, RLIMIT_NOFILE, nullptr, &limit));
+                text += syscall_outcome("prlimit_own_pid_read",
+                                        ::syscall(__NR_prlimit64, self, RLIMIT_NOFILE, nullptr, &limit));
+                text += syscall_outcome("getrlimit", ::getrlimit(RLIMIT_STACK, &limit));
                 text += syscall_outcome("tgkill_self", ::syscall(__NR_tgkill, self, thread, 0));
                 // Listed after tgkill in the worker allow list: the argument
                 // check on tgkill must not change how later entries match.
@@ -419,10 +426,17 @@ SCENARIO("The worker seccomp filter denies signals and resource limits aimed at 
                 REQUIRE(denied("tgkill_parent"));
             }
 
-            THEN("prlimit64 is denied, for the parent and for itself")
+            THEN("prlimit64 is denied when it reads another process's limits or sets any limit")
             {
                 REQUIRE(denied("prlimit_parent"));
                 REQUIRE(denied("prlimit_self"));
+            }
+
+            THEN("prlimit64 reading its own limits is allowed, so getrlimit() still works")
+            {
+                REQUIRE(allowed("prlimit_self_read"));
+                REQUIRE(allowed("prlimit_own_pid_read"));
+                REQUIRE(allowed("getrlimit"));
             }
 
             THEN("tgkill aimed at its own thread group is allowed")

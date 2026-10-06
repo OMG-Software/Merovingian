@@ -470,7 +470,7 @@ SCENARIO("worker seccomp filter restricts process-control syscalls",
     {
         WHEN("signal and resource-limit syscalls are checked")
         {
-            THEN("kill, tkill, setrlimit, and prlimit64 are denied")
+            THEN("kill, tkill and setrlimit are denied")
             {
                 // ISO-2: the worker never needs to send signals to arbitrary
                 // processes or change its own resource limits. Allowing these
@@ -483,17 +483,20 @@ SCENARIO("worker seccomp filter restricts process-control syscalls",
 #ifdef __NR_setrlimit
                 REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_setrlimit));
 #endif
-#ifdef __NR_prlimit64
-                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_prlimit64));
-#endif
             }
 
-            AND_THEN("tgkill remains in the allowlist so the worker can target its own thread group")
+            AND_THEN("tgkill and prlimit64 are listed, for the argument-checked uses the worker needs")
             {
-                // The static predicate checks the syscall number only; the
-                // installed BPF filter additionally constrains tgkill's tgid
-                // argument to the worker's own thread group.
+                // The static predicate checks the syscall number only. The
+                // installed BPF filter allows tgkill only on the worker's own
+                // thread group, and prlimit64 only to read the worker's own
+                // limits (glibc's getrlimit(); thread creation needs it). Those
+                // argument checks are tested against the real kernel in [iso2],
+                // tests/unit/test_worker_hardening_threads.cpp.
                 REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_tgkill));
+#ifdef __NR_prlimit64
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_prlimit64));
+#endif
             }
         }
     }

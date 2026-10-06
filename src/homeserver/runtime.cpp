@@ -903,6 +903,13 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // test. The build scripts set MEROVINGIAN_TEST_DISABLE_HARDENING=1 when they
     // invoke the test suite; production binaries never see it.
     auto const hardening_controls = [&]() {
+        if (opts.process_hardening_applied_by_caller)
+        {
+            // The federation worker hardened itself before calling us; its
+            // seccomp filter denies setrlimit, which the main profile below
+            // would call (ISO-2, ADR-0112).
+            return platform::HardeningPlanDecision{true, false, "applied by the caller before start_runtime"};
+        }
         if (std::getenv("MEROVINGIAN_TEST_DISABLE_HARDENING") != nullptr)
         {
             log_diagnostic(

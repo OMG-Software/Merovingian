@@ -71,6 +71,21 @@
   how an argument-checked entry must be laid out in the generated BPF program and that it
   needs a real-kernel test; ADR-0065 points to ADR-0111; ADR-0111 and ADR-0112 dates
   corrected.
+- **FIXED (ISO-2 regression): a hardened federation worker was killed at startup.** The ISO-2
+  change removed `setrlimit` and `prlimit64` from the worker filter, but the worker's event
+  loop calls `start_runtime()`, which re-applied the main-process hardening profile and its
+  `setrlimit(RLIMIT_CORE)` after the worker filter was installed: `SIGSYS`, and the supervisor
+  restarted the worker in a loop, taking federation down. The allow-all bug above hid this.
+  New `RuntimeStartOptions::process_hardening_applied_by_caller`, set by the worker when
+  `federation.worker.apply_hardening` is on, skips the main profile. `prlimit64` is allowed
+  again only to read the worker's own limits (pid 0 or its own pid, NULL new limit): glibc's
+  `getrlimit()` is `prlimit64`, and thread creation uses it. The BPF builder now derives each
+  argument-checked entry's skip distance from the block's size instead of a hand-counted
+  constant. `src/federation_worker/AGENTS.md` records the constraint.
+- **TESTS:** `[iso2]` also checks that `prlimit64` reading the process's own limits and
+  `getrlimit()` are allowed while setting a limit or reading the parent's is denied. The
+  `[iso-2]` list test expects `prlimit64` in the worker list, as it already did for `tgkill`,
+  since both are argument-checked. `[federation-worker][seccomp]` passes again.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

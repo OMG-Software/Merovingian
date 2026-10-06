@@ -633,6 +633,11 @@ auto WorkerEventLoop::run() -> void
         // docs/database-persistence.md, "Federation worker least-privilege
         // role".
         .database_load_profile = database::TableLoadProfile::federation_worker,
+        // main.cpp has already applied the worker hardening (core-dump limit,
+        // no_new_privs, capability drop, worker seccomp filter) when this is
+        // on. Re-applying the main-process profile would call setrlimit,
+        // which the worker filter denies (ISO-2, ADR-0112).
+        .process_hardening_applied_by_caller = config_.federation_worker().apply_hardening,
     });
     if (!started.started)
     {
