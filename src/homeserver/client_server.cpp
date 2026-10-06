@@ -1415,16 +1415,19 @@ namespace
     struct StoredFilterSummary final
     {
         std::size_t count{0U};
-        // filter_id of a stored filter identical to the upload after JSON
-        // canonicalisation, when there is one.
+        // filter_id of a stored filter whose text equals the upload's canonical
+        // text, when there is one.
         std::optional<std::string> identical_filter_id{};
     };
 
+    // Filters are stored in canonical form (see the filter handler), so an
+    // identical definition is a byte-for-byte match and no stored row has to be
+    // re-parsed: a request cannot make the server parse up to
+    // max_filters_per_user bodies of up to max_body_size each.
     [[nodiscard]] auto summarise_stored_filters(database::PersistentStore const& store, std::string_view user_id,
-                                                std::string_view uploaded_json) -> StoredFilterSummary
+                                                std::string_view canonical_json) -> StoredFilterSummary
     {
         auto summary = StoredFilterSummary{};
-        auto const uploaded_canonical = canonical_json_text(uploaded_json);
         for (auto const& filter : store.filters)
         {
             if (filter.user_id != user_id)
@@ -1436,8 +1439,7 @@ namespace
             {
                 continue;
             }
-            if (filter.json == uploaded_json ||
-                (uploaded_canonical.has_value() && canonical_json_text(filter.json) == uploaded_canonical))
+            if (filter.json == canonical_json)
             {
                 summary.identical_filter_id = filter.filter_id;
             }
@@ -14943,8 +14945,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // CSAZ-10: an identical definition returns the filter the user already
             // has instead of storing a duplicate; a distinct one is refused once
             // the user holds max_filters_per_user. Nothing is evicted.
+            // The definition is stored in canonical form (the text as sent when it
+            // is not parseable JSON) so that identical definitions compare equal.
+            auto const filter_json = canonical_json_text(req.body).value_or(req.body);
             auto const stored_filters =
-                summarise_stored_filters(rt.homeserver.database.persistent_store, path_user, req.body);
+                summarise_stored_filters(rt.homeserver.database.persistent_store, path_user, filter_json);
             if (stored_filters.identical_filter_id.has_value())
             {
                 log_diagnostic("filter.deduplicated",
@@ -14968,7 +14973,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                         " per user reached");
             }
             auto const filter_id = generate_filter_id();
-            if (!database::store_filter(rt.homeserver.database.persistent_store, {path_user, filter_id, req.body}))
+            if (!database::store_filter(rt.homeserver.database.persistent_store, {path_user, filter_id, filter_json}))
             {
                 log_diagnostic("filter.rejected", {
                                                       {"actor",     *user,                      false},

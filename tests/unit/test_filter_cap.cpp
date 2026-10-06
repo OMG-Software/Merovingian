@@ -61,6 +61,22 @@ SCENARIO("the filter API returns an identical definition's id and refuses filter
             }
         }
 
+        WHEN("a filter with extra whitespace is stored and then fetched")
+        {
+            auto const stored = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", filter_url, token, R"({ "room" : { "timeline" : { "limit" : 5 } } })"});
+            REQUIRE(stored.response.status == 200U);
+            auto const fetched = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", std::string{filter_url} + "/" + string_field(stored.response.body, "filter_id"), token, {}});
+
+            THEN("the definition is returned unchanged in meaning, in canonical form")
+            {
+                REQUIRE(fetched.response.status == 200U);
+                REQUIRE(fetched.response.body == R"({"room":{"timeline":{"limit":5}}})");
+            }
+        }
+
         WHEN("an identical definition is posted while the user is at the cap")
         {
             auto const first = merovingian::homeserver::handle_client_server_request(
