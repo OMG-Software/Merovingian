@@ -45,6 +45,8 @@
 #include <fcntl.h>
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -220,17 +222,6 @@ SCENARIO("Worker seccomp hardening confines a thread that existed before it was 
             skip_if_reported(outcome.report);
             INFO("child report: " << outcome.report);
 
-            // Some kernels (observed on WSL2) synchronise seccomp to every thread
-            // but do not kill a thread that was already blocked in a syscall when
-            // the filter was installed. When the child reports a fully confined
-            // process yet exits normally, the safety property cannot be verified
-            // here; skip rather than report a false failure.
-            if (outcome.report.starts_with("OK tasks=") && WIFEXITED(outcome.status) &&
-                WEXITSTATUS(outcome.status) == 0)
-            {
-                SKIP("kernel does not retroactively kill pre-existing threads under seccomp TSYNC");
-            }
-
             THEN("every task reports Seccomp: 2 and NoNewPrivs: 1")
             {
                 REQUIRE(outcome.report.starts_with("OK tasks="));
@@ -339,6 +330,110 @@ SCENARIO("Logging before hardening starts no thread, so Landlock and seccomp cov
                 REQUIRE(outcome.report.starts_with("OK tasks=3 unconfined=0 "));
                 REQUIRE(outcome.report.find("main_open=" + std::to_string(EACCES)) != std::string::npos);
                 REQUIRE(outcome.report.find("thread_open=" + std::to_string(EACCES)) != std::string::npos);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// "name=<rc>:<errno>" for one raw syscall made under the installed filter. The
+// errno is reported as 0 when the call succeeded, so the parent can tell an
+// allowed call from a denied one without depending on the call's own result.
+[[nodiscard]] auto syscall_outcome(std::string_view name, long rc) -> std::string
+{
+    return std::string{name} + "=" + std::to_string(rc) + ":" + std::to_string(rc == -1 ? errno : 0) + " ";
+}
+
+} // namespace
+
+// ISO-2 (security-audit-report-2026-09-29.md): a compromised worker could stop
+// or starve the main process with kill(getppid(), SIGSTOP) or
+// prlimit64(getppid(), ...). This installs the real worker filter in a forked
+// child, so the BPF program the kernel runs is what is tested, not the allow
+// list it was generated from. The filter's default action is replaced with
+// SECCOMP_RET_ERRNO(EPERM) so a denied call returns instead of killing the
+// child, which lets every case be reported in one run.
+SCENARIO("The worker seccomp filter denies signals and resource limits aimed at another process",
+         "[platform][seccomp][iso2][worker_hardening][linux]")
+{
+    GIVEN("a child process confined by the worker seccomp filter")
+    {
+        WHEN("it signals and re-limits its parent, and signals itself")
+        {
+            auto const outcome = run_in_child([](int report_fd) {
+                auto const parent = ::getppid();
+                auto const self = ::getpid();
+                auto const thread = static_cast<pid_t>(::syscall(__NR_gettid));
+                if (!merovingian::platform::apply_worker_seccomp_filter_with_default(SECCOMP_RET_ERRNO |
+                                                                                     (EPERM & SECCOMP_RET_DATA)))
+                {
+                    report(report_fd, kernel_has_seccomp() ? "FAIL:filter not installed"
+                                                           : "SKIP:the kernel has no seccomp support");
+                    return;
+                }
+                auto limit = ::rlimit{};
+                auto text = std::string{"OK "};
+                text += syscall_outcome("kill_parent", ::syscall(__NR_kill, parent, 0));
+                text += syscall_outcome("tgkill_parent", ::syscall(__NR_tgkill, parent, parent, 0));
+                text += syscall_outcome("prlimit_parent",
+                                        ::syscall(__NR_prlimit64, parent, RLIMIT_NOFILE, nullptr, &limit));
+                text += syscall_outcome("prlimit_self", ::syscall(__NR_prlimit64, 0, RLIMIT_NOFILE, &limit, nullptr));
+                text += syscall_outcome("tgkill_self", ::syscall(__NR_tgkill, self, thread, 0));
+                // Listed after tgkill in the worker allow list: the argument
+                // check on tgkill must not change how later entries match.
+                text += syscall_outcome("getppid", ::syscall(__NR_getppid));
+                report(report_fd, text);
+                // Not in the worker allow list at all. Reported separately and
+                // last: if the filter wrongly allowed it, the process is replaced
+                // and the entry is simply missing, which fails the check below.
+                report(report_fd, syscall_outcome("execve", ::syscall(__NR_execve, "/bin/true", nullptr, nullptr)));
+            });
+            skip_if_reported(outcome.report);
+            INFO("child report: " << outcome.report);
+            REQUIRE(outcome.report.starts_with("OK "));
+
+            // The "<rc>:<errno>" reported for `name`, or "" when it is missing.
+            auto const result_of = [&outcome](std::string_view name) -> std::string {
+                auto const key = " " + std::string{name} + "=";
+                auto const start = outcome.report.find(key);
+                if (start == std::string::npos)
+                {
+                    return {};
+                }
+                auto const value = start + key.size();
+                return outcome.report.substr(value, outcome.report.find(' ', value) - value);
+            };
+            auto const denied = [&result_of](std::string_view name) {
+                return result_of(name) == "-1:" + std::to_string(EPERM);
+            };
+            auto const allowed = [&result_of](std::string_view name) {
+                auto const result = result_of(name);
+                return !result.empty() && !result.starts_with("-1:") && result.ends_with(":0");
+            };
+
+            THEN("kill and tgkill aimed at the parent are denied")
+            {
+                REQUIRE(denied("kill_parent"));
+                REQUIRE(denied("tgkill_parent"));
+            }
+
+            THEN("prlimit64 is denied, for the parent and for itself")
+            {
+                REQUIRE(denied("prlimit_parent"));
+                REQUIRE(denied("prlimit_self"));
+            }
+
+            THEN("tgkill aimed at its own thread group is allowed")
+            {
+                REQUIRE(allowed("tgkill_self"));
+            }
+
+            THEN("a syscall listed after tgkill is still allowed and an unlisted one is still denied")
+            {
+                REQUIRE(allowed("getppid"));
+                REQUIRE(denied("execve"));
             }
         }
     }

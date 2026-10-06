@@ -791,14 +791,23 @@ namespace
         {
             if (nr == __NR_tgkill)
             {
-                // ISO-2: allow tgkill only when its tgid argument matches this
-                // process. If the syscall number matches but the tgid does not,
-                // fall through to the next syscall test.
+                // ISO-2: allow tgkill only when its tgid argument is this
+                // process. The block is five instructions, and the jump
+                // offsets below count them exactly:
+                //   [0] nr == tgkill ?  next : skip [1]-[4] to the next entry
+                //   [1] A = low 32 bits of args[0] (tgid; the kernel reads an int)
+                //   [2] A == own tgid ? [3] : [4]
+                //   [3] allow
+                //   [4] default action
+                // A mismatched tgid must return here: falling through would
+                // compare the later entries against args[0] instead of the
+                // syscall number, since [1] overwrote the accumulator.
                 filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 4));
                 filt.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                                         static_cast<uint32_t>(offsetof(struct ::seccomp_data, args[0]))));
                 filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, own_tgid, 0, 1));
                 filt.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+                filt.push_back(BPF_STMT(BPF_RET | BPF_K, default_action));
             }
             else
             {

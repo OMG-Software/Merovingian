@@ -7,6 +7,20 @@
   MED-5, DB-5, CSAZ-10 and DB-2). `docs/security-audit-report-2026-09-29.md` is updated
   to list them as fixed.
 - Update migration-count and last-migration assertions in unit and integration tests for migration 019 (`to_device_queue_age_bound`).
+- **TESTS:** isolate the persistent-homeserver integration scenarios on per-test SQLite files instead of the shared in-memory backend, removing an ordering dependency that surfaced after migration 019.
+- **FIXED (ISO-2 regression): the federation worker's seccomp filter allowed every syscall after `tgkill`.**
+  The `tgkill` argument check added for ISO-2 skipped one instruction too many when the
+  syscall was not `tgkill`, landing on the next entry's `RET ALLOW`. Every syscall the
+  allow list had not matched before `tgkill`, including `kill`, `prlimit64`, `setrlimit`
+  and `execve`, was therefore allowed. A mismatched tgid also fell through with the
+  accumulator holding `args[0]`. The block now jumps over exactly its own instructions
+  and returns the default action on a mismatched tgid.
+- **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
+  regression above masked it: the pre-existing thread's `execve` succeeded because the
+  filter allowed it, not because of a kernel quirk. New real-kernel scenario
+  `[iso2]` installs the worker filter in a forked child and checks that `kill` and
+  `tgkill` aimed at the parent and `prlimit64` are denied, `tgkill` on its own thread group
+  is allowed, and syscalls listed after `tgkill` are still matched correctly.
 
 ## 0.12.18
 
