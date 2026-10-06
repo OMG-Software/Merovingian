@@ -126,3 +126,44 @@ SCENARIO("the per-recipient to-device cap is isolated by user and device", "[dat
         }
     }
 }
+
+// CSAZ-10: rows written before migration 019 have created_at_ms = 0 (unknown
+// age). Enqueue and drain must agree on what that means; enqueue used to treat
+// it as expired and drain as fresh, so a legacy message was dropped as soon as
+// another message for the same device arrived.
+SCENARIO("a to-device row with no recorded age is neither expired on enqueue nor on drain",
+         "[database][sync][security][csaz-10]")
+{
+    GIVEN("a store with a TTL and a legacy row for a device, recorded before ages were stored")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.max_to_device_messages_per_user_device = 10U;
+        store.to_device_message_ttl_seconds = 1U;
+        auto legacy = make_message(1U, "@bob:example.org", "BOB_DEVICE");
+        legacy.stream_id = merovingian::database::allocate_sync_stream_id(store);
+        REQUIRE(legacy.created_at_ms == 0U);
+        store.to_device_messages.push_back(legacy);
+
+        WHEN("another message is enqueued for the same device")
+        {
+            REQUIRE(merovingian::database::enqueue_to_device_message(
+                store, make_message(2U, "@bob:example.org", "BOB_DEVICE")));
+
+            THEN("the legacy row is kept")
+            {
+                REQUIRE(store.to_device_messages.size() == 2U);
+            }
+
+            AND_WHEN("the device drains its queue")
+            {
+                auto const drained = merovingian::database::drain_to_device_messages(
+                    store, "@bob:example.org", "BOB_DEVICE", 0U, store.next_sync_stream_id);
+
+                THEN("both messages are delivered")
+                {
+                    REQUIRE(drained.size() == 2U);
+                }
+            }
+        }
+    }
+}

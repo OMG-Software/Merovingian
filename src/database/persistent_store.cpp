@@ -3128,8 +3128,11 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
 
         for (auto const* candidate : matching)
         {
-            auto const expired =
-                ttl_ms > 0U && (now_ms > candidate->created_at_ms) && (now_ms - candidate->created_at_ms >= ttl_ms);
+            // created_at_ms == 0 is a row written before migration 019: its age
+            // is unknown, so it is not expired here, as in the drain below. The
+            // count cap still bounds it.
+            auto const expired = ttl_ms > 0U && candidate->created_at_ms > 0U && now_ms > candidate->created_at_ms &&
+                                 now_ms - candidate->created_at_ms >= ttl_ms;
             if (expired)
             {
                 to_delete.push_back(*candidate);

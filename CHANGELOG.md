@@ -59,6 +59,11 @@
   write of a deduplicated one through the memory backend's statement-failure injection,
   and checks the response, memory and store, a successful retry, and that the earlier
   upload is still served.
+- **FIXED (CSAZ-10): to-device rows from before migration 019 were dropped on the next
+  enqueue.** Migration 019 gives existing rows `created_at_ms = 0`. The enqueue path treated
+  that as expired and deleted the row as soon as another message for the same device
+  arrived, while the drain path treated it as fresh. Both now treat an unknown age as not
+  expired; the per-device count cap still bounds such rows.
 - **DOCS (CRY-2, ISO-2):** `federation.worker.ipc_max_dispatch_queue_count` and
   `ipc_max_dispatch_queue_bytes` are documented in `docs/user-manual.md` and the example
   config; `docs/hardening.md` and `docs/threat-model.md` describe the dispatch-queue bound
