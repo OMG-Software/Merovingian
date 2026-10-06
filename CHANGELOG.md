@@ -103,6 +103,11 @@
   `test_key_signature_cap.cpp`, `test_filter_cap.cpp`, `test_key_signature_index.cpp`,
   shared fixture `tests/support/e2ee_caps_support.hpp`, and config scenarios in
   `test_config_operational_limits.cpp`.
+- **DOCS:** the audit report's "Remediation status" records all 31 medium findings as
+  fixed, with what was corrected in the first-round fixes and the residual notes (ISO-2
+  shared uid, MED-5 no discovery-to-self check); its earlier claim of such a check is
+  removed. `docs/todos/capability-gaps.md` closes the medium remediation section, whose
+  table had marked AUTH-3 complete.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

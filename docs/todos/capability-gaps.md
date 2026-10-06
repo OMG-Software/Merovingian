@@ -334,52 +334,19 @@ returns `missing_prev_state` and is not applied. See `docs/event-engine.md`
 (`send_join`/`send_leave`/`send_knock`) does not yet backfill missing
 references.
 
-## OPEN (0.12.16): medium security-audit remediation
+## CLOSED (0.12.19): medium security-audit remediation
 
-The [2026-09-29 audit](../security-audit-report-2026-09-29.md) contains
-**31 distinct findings explicitly labelled medium**, not the previously
-reported 20. Per-finding severity defines this inventory; overview counts
-and reused changelog identifiers are not closure evidence. The original
-audit remains unchanged.
+All 31 medium findings of the [2026-09-29 audit](../security-audit-report-2026-09-29.md)
+are fixed on the 0.12.19 branch. The per-finding resolution, including the six first-round
+fixes that were wrong or incomplete and how each was corrected, is in the report's
+"Remediation status" section, which supersedes the table this section used to hold. That
+table had marked AUTH-3 complete while its startup creation loop never ran.
 
-Status below records the gaps still requiring independent verification.
-An unverified finding is not necessarily unfixed. No item is fully closed
-until its acceptance criteria, executed regressions and combined-suite
-verification have been checked; a timeout or abort is a failure.
+Still open from that audit: 41 low findings and the partial EVT-12 and OUT-3, listed in
+the report under "Outstanding — low".
 
-| Finding | Remaining work / evidence |
-| --- | --- |
-| AUTH-3 | Sender reservation/creation inspected; exact focused regression and fresh combined suite pass. |
-| AUTH-4 | Completed: bounded Argon2id admission (`auth::Argon2idAdmission`) caps concurrent password and registration-token verification; saturated `/login`, `/register`, and `/register/m.login.registration_token/validity` return 429 / `M_LIMIT_EXCEEDED` before any work runs, and shed requests do not count toward the failed-login lockout. Verification still runs outside the global runtime mutex. Regression coverage in `tests/unit/test_security_audit_auth_4.cpp`. |
-| AUTH-6 | Local-server namespace check inspected; exact focused regression and fresh combined suite pass. |
-| CSAZ-5 | Schema 18 persists publication independently of join rules; defaults unrecorded legacy publication private. POST requires authentication before local/remote lookup. Parent SQLite restart, failed-write, populated migration and published invite-only room regressions pass; pre-Pages full suite passes. |
-| CSAZ-7 | Disclosure filtering inspected; independent combined-tree focus passed 1,286 assertions in 17 cases. Fresh full suite passes. |
-| CSAZ-8 | Presence sync is limited to current joined peers. Invalid states, non-string status and more than 1024 UTF-8 bytes are refused before mutation or stream allocation. Parent real-SQLite regressions and pre-Pages full suite pass. |
-| CSAZ-10 | Non-existent to-device recipient retention: not independently closed. |
-| HTTP-3 | Finite route templates, original-prefix policy selection and O(1) bounded LRU eviction implemented; bypass regressions passed in the parent unit batch. Fresh combined suite passes. |
-| HTTP-4 | Shared account/device/global RAII admission implemented for v3/sliding sync, with 429 on saturation or refused submission. Parent focus passed 224 assertions; timeout-overflow regression passed. Fresh combined suite passes. |
-| HTTP-8 | Exact connection lifetime/request-bound checks pass 22 assertions in 2 cases; fresh combined suite passes. |
-| FED-6 | Endpoint/content validation implemented at handler and mutation sink; focused parent verification passed. Fresh combined suite passes. |
-| FED-8 | Receipt EDUs now require both per-room ACL allowance and a joined receipt subject. New regression test passes; full-suite verification green. |
-| FED-11 | Common admission and bounded RAII join buffering inspected and independently focused-verified, including failure cleanup and requested backfill. Fresh full suite passes. |
-| EVT-5 | Complete mainline ancestry now uses the event source and fails closed on missing/cyclic references. Corrected counterfactual baseline fails; parent conformance checks pass. Fresh full suite passes. |
-| EVT-7 | Version-gated creator identity and authoritative first-join predecessor implemented; parent inspected the source and completed conformance logs (108 assertions in 9 cases, related auth 467 in 97). Fresh combined suite passes. |
-| EVT-8 | Focused RED/GREEN verified; fresh combined suite passes. |
-| EVT-9 | Distinct-event graph budget and linear shared-DAG traversal implemented. Corrected legal shared-DAG regression fails against the old implementation and passes currently. Fresh full suite passes. |
-| OUT-1 | Strict Matrix authority validation and shared curl URL parsing implemented. Actual socket IP/port checked against numeric pins; parent real-TLS checks cover multiple pins and IPv6. Fresh full suite passes. |
-| OUT-2 | Media redirects use the transport URL parser and canonical URL; fragments/userinfo/encoded authorities rejected before resolution. Socket peer guard applies to redirect requests. Parent unit/integration checks pass; fresh full suite passes. |
-| OUT-4 | Remote-media cache/retention: not independently closed. |
-| CRY-2 | IPC dispatch-queue bound: not independently closed. Prior changelog uses this ID for a different outbound-signing issue. |
-| ISO-2 | Historical seccomp work is stashed, not an accepted fix. |
-| ISO-3 | Retry after spawn failure, owned-PID waits, sustained-health backoff and interruptible shutdown implemented. Parent real-child regression passed; fresh combined suite passes. |
-| MED-1 | Hydration retains persisted legacy visibility and defaults new records private. Parent SQLite restart regression passed; fresh combined suite passes. |
-| MED-2 | Quarantine returns 451 without payload and cannot enter thumbnail processing; successful storage is not successful delivery. Parent repository and real-HTTPS regressions pass after a genuine failing baseline. Fresh full suite passes. |
-| MED-3 | Re-upload revives one storage identity, serving ignores dead blobs and final removal clears durable bytes. Parent unit and SQLite restart/removal regressions passed; fresh combined suite passes. |
-| MED-5 | allow_remote and self-fetch checks: not independently closed. |
-| MED-6 | Media quotas and duplicate memory retention: not independently closed. |
-| DB-2 | Partial: room-scoped relation joins use one parameter; real two-handle PostgreSQL reload beyond 200 events preserves relations and latest denying ACL. Failed worker reload still retains a stale snapshot; protocol recovery remains open. |
-| DB-3 | PostgreSQL missing/empty URI startup now refuses; tests explicitly select a programmatic-only memory backend. Parent startup and exact config-parser regressions passed; current fresh full suite passes. |
-| DB-5 | Partial: media quarantine/release/removal commit flags, blob reference changes and required audit rows together before memory changes. Real SQLite late-statement failures and PostgreSQL shared/final blob removal pass. Upload and authentication write failures remain open. |
+The verification log below is the history of the earlier medium batches and is kept as
+evidence; it is not a list of open work.
 
 Completed parent verification on 2026-10-02:
 

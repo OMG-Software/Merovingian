@@ -61,22 +61,37 @@ Nothing was built or run for that check. CHANGELOG, ADR and
 `docs/todos/capability-gaps.md` claims were treated as claims, not evidence. The findings
 below are otherwise unchanged.
 
-**Update:** 6 October 2026 — the six remaining medium findings (AUTH-3, FED-6, MED-5,
-DB-5, CSAZ-10, DB-2) were fixed on the audit remediation branch and are now listed as
-fixed.
+**Update:** 6 October 2026 — every medium finding is now fixed on branch
+`docs/audit-2026-09-29-status` (0.12.19). The first fixes for the ten that were still
+open on 5 October were reviewed before being accepted, and six were wrong or incomplete.
+Each correction has a regression test that failed against the first fix:
 
-**Summary:** the critical finding and all 23 high findings are fixed. Of the 31 medium
-findings, 27 are fixed and 4 are open. Of the 46 low findings, 3 are
-fixed, 2 are partly fixed and 41 are open.
+- **ISO-2:** the generated BPF entry for `tgkill` skipped one instruction too many, so
+  every syscall not matched earlier in the worker allow list, including `kill`,
+  `prlimit64` and `execve`, was allowed. The test that caught it had been changed to
+  skip. Fixing that then showed that the worker's `start_runtime()` re-applied the main
+  process's `setrlimit`, which the corrected filter denies, so a hardened worker would
+  have crash-looped in production.
+- **OUT-4:** the cache was consulted after the network fetch, so every request still
+  went to the origin.
+- **MED-5:** every port was stripped, so `example.org:8449` counted as this server.
+- **MED-6:** the 10 MiB per-user default refused one upload at the 50 MiB upload limit
+  and cut off each remote origin after 10 MiB.
+- **DB-5:** media upload writes were still discarded.
+- **CSAZ-10:** the caps on one-time keys, signatures and filters, and the signature
+  index, were missing.
+
+**Summary:** the critical finding, all 23 high findings and all 31 medium findings are
+fixed. Of the 46 low findings, 3 are fixed, 2 are partly fixed and 41 are open.
 
 ### Fixed
 
 - **Critical:** FED-1.
 - **High:** AUTH-1, AUTH-11, CSAZ-1, CSAZ-2, CSAZ-3, CSAZ-4, HTTP-1, HTTP-2, HTTP-5, FED-2,
   FED-3, FED-4, FED-5, FED-7, EVT-1, EVT-2, EVT-3, EVT-4, EVT-6, OUT-7, CRY-1, ISO-1, DB-1.
-- **Medium:** AUTH-3, AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, CSAZ-10, HTTP-3, HTTP-4,
-  HTTP-8, FED-6, FED-8, FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, ISO-3, MED-1,
-  MED-2, MED-3, MED-5, DB-2, DB-3, DB-5.
+- **Medium:** all 31 — AUTH-3, AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, CSAZ-10, HTTP-3,
+  HTTP-4, HTTP-8, FED-6, FED-8, FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, OUT-4,
+  CRY-2, ISO-2, ISO-3, MED-1, MED-2, MED-3, MED-5, MED-6, DB-2, DB-3, DB-5.
 - **Low:** AUTH-9, HTTP-6, OUT-5. AUTH-9: the control-character escaping is done; the
   field-length cap from its fix is not. OUT-5: `CURLOPT_PROXY` is set to `""` on the
   only curl handle, but there is no regression test with `https_proxy` set.
@@ -94,29 +109,33 @@ Residual notes on fixed findings:
 - **AUTH-4:** Argon2id hashing in ordinary `/register` (`make_user`) and password
   verification in user-interactive auth still run under the runtime mutex with no
   admission limit.
-- **DB-1, DB-2:** both are fixed. The PostgreSQL integration tests still skip unless
+- **ISO-2:** the worker still runs under main's uid, which the audit preferred; the
+  seccomp argument checks and, on Landlock ABI 6 kernels, signal scoping are what stop it
+  signalling main.
+- **MED-5:** discovery results that resolve to this server are not rejected. A self-fetch
+  cannot loop (the federation media endpoint serves local media only, and the legacy
+  fallback carries `allow_remote=false`), but it costs one outbound request.
+- **DB-1, DB-2:** the PostgreSQL integration tests skip unless
   `MEROVINGIAN_TEST_POSTGRESQL_URI` is set.
 
-### Fixed — medium
+### Fixed — medium, 6 October 2026
 
-| ID | State | Resolution |
-|----|-------|------------|
-| AUTH-3 | Fixed | Application-service `sender_localpart` users are created at startup and ordinary `/register` rejects them with `M_EXCLUSIVE`. |
-| CRY-2 | Fixed | `src/ipc/channel.cpp` now bounds `dispatch_queue_` and counts drops once the cap is reached. ADR-0111. |
-| CSAZ-10 | Fixed | Per-recipient to-device queue is capped by count and age, with a TTL column added by migration 019. ADR-0117. |
-| DB-2 | Fixed | SQLite room snapshot loads event relations with a room-scoped JOIN instead of binding one parameter per event. |
-| DB-5 | Fixed | Auth-service revocation paths verify the persistent store state after each write; failures return 500. ADR-0116. |
-| FED-6 | Fixed | `handle_make_membership` rejects a `{userId}` that is not on the origin server. |
-| ISO-2 | Fixed | The worker seccomp allow-list no longer permits `kill`, `tkill`, `setrlimit`, or `prlimit64`; `tgkill` is argument-filtered to the worker's own TGID; Landlock rulesets request ABI-6 signal scoping. ADR-0112. |
-| MED-5 | Fixed | Media `serverName` comparisons are canonicalised (lowercase, default port) and discovery results that resolve to this server are rejected. |
-| MED-6 | Fixed | Media quota defaults are now `1GiB` total, `10MiB` per user, and `100000` records; after hydration, blob bytes live only in the runtime repository. ADR-0113. |
-| OUT-4 | Fixed | Remote media downloads are cached by `(origin_server, media_id)` with a configurable TTL and LRU eviction. ADR-0114. |
+| ID | Resolution |
+|----|------------|
+| AUTH-3 | Application-service `sender_localpart` users are created at startup from the loaded registry (the loop read the runtime registry before it was populated) and ordinary `/register` rejects them with `M_EXCLUSIVE`. |
+| CRY-2 | The reader-side dispatch queue is capped by frames (1024) and bytes (128 MiB); a worker past either has its channel marked unhealthy and is replaced. IPC sockets have a 30 s send timeout. ADR-0111. |
+| CSAZ-10 | To-device queues are capped per device by count and age (migration 019, ADR-0117); rows written before migration 019 are no longer dropped on the next enqueue. One-time keys (1000 per device), key signatures (10000 per user) and filters (1000 per user) are capped, refusing with `400 M_TOO_LARGE`; identical filters are deduplicated; one fallback key per algorithm per device, as the spec requires; key signatures are indexed by target. ADR-0118. |
+| DB-2 | The SQLite room snapshot loads event relations with a room-scoped JOIN instead of one parameter per event. |
+| DB-5 | Token revocations (logout, logout-all, refresh rotation and reuse, device deletion, password change) are checked against the store and answer 500 when not durable (ADR-0116). A media upload's record and blob commit in one transaction; on failure the upload answers 500 and is rolled back in memory. |
+| FED-6 | `handle_make_membership` rejects a `{userId}` that is not on the requesting server. |
+| ISO-2 | The worker filter denies `kill`, `tkill` and `setrlimit`, allows `tgkill` only on the worker's own thread group and `prlimit64` only to read its own limits; Landlock ABI 6 kernels also scope signals. The worker's `start_runtime()` no longer re-applies the main-process profile. Tested by installing the real filter in a forked child (`[iso2]`) and by starting a real hardened worker (`[federation-worker][seccomp]`). ADR-0112. |
+| MED-5 | Media `serverName` comparisons lowercase the name and drop only a trailing `:8448`. ADR-0115. |
+| MED-6 | Quota defaults are `2GiB` total, `256MiB` per user and `100000` records (all media is held in memory, so the total is a memory budget); remote media is exempt from the per-user quota only. Blob bytes are held once in memory. ADR-0113. |
+| OUT-4 | Remote media admitted within the TTL is served from the stored copy before any outbound slot, discovery or request; expired and stale entries are erased and a zero entry cap disables the cache. ADR-0114. |
 
 ### Outstanding — medium
 
-| ID | State | What remains |
-|----|-------|--------------|
-| *(none)* | — | All confirmed medium findings from this audit are now fixed. |
+None.
 
 ### Outstanding — low
 
