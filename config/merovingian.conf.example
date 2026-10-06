@@ -606,6 +606,8 @@ server.client_api.max_public_rooms_page_size=1000
 server.client_api.max_hierarchy_rooms=1000
 server.client_api.max_threads_page_size=500
 server.client_api.max_notifications_retained_per_user=1000
+server.client_api.max_to_device_messages_per_user_device=10000
+server.client_api.to_device_message_ttl_seconds=604800
 server.client_api.max_body_size=1MiB
 
 # server.http

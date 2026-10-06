@@ -228,6 +228,13 @@ struct ClientApiConfig final
     std::uint32_t max_notifications_retained_per_user{1000U};
     std::uint32_t max_relations_page_size{500U};
     std::uint32_t max_threads_page_size{500U};
+    // CSAZ-10: bound the per-recipient to-device queue so undelivered rows
+    // (for example to a non-existent device) cannot grow without limit.  The
+    // cap is per (user, device); the TTL drops any row older than the limit
+    // regardless of acknowledgement.  Both are enforced at enqueue and drain
+    // time, so the queue stays bounded even for recipients that never sync.
+    std::uint32_t max_to_device_messages_per_user_device{10000U};
+    std::uint32_t to_device_message_ttl_seconds{604800U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
 };

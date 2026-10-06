@@ -7,6 +7,7 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -602,9 +603,11 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
 
 SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[database][homeserver][integration]")
 {
-    GIVEN("registration-enabled config and no existing schema")
+    GIVEN("registration-enabled config and no existing SQLite schema")
     {
-        auto const config = registration_enabled_config();
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_registration_enabled_config(sqlite_path);
 
         WHEN("the runtime starts")
         {
@@ -623,13 +626,13 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 18U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 19U);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
                         merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
                         "initial_schema");
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "room_directory_visibility");
+                        "to_device_queue_age_bound");
             }
         }
     }
@@ -638,9 +641,11 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
 SCENARIO("Persistent homeserver startup is idempotent for an already migrated schema",
          "[database][homeserver][integration]")
 {
-    GIVEN("an already migrated schema state")
+    GIVEN("an already migrated SQLite schema state")
     {
-        auto const first = merovingian::database::open_persistent_store();
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const first = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
         REQUIRE(first.ok);
 
         WHEN("the runtime starts with that state")
@@ -653,7 +658,7 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 18U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 19U);
             }
         }
     }

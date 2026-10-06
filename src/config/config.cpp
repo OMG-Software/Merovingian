@@ -711,6 +711,10 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                    config.server().client_api.max_notifications_retained_per_user, 100000U);
     validate_count("server.client_api.max_notifications_page_size",
                    config.server().client_api.max_notifications_page_size, 10000U);
+    validate_count("server.client_api.max_to_device_messages_per_user_device",
+                   config.server().client_api.max_to_device_messages_per_user_device, 1000000U);
+    validate_count("server.client_api.to_device_message_ttl_seconds",
+                   config.server().client_api.to_device_message_ttl_seconds, 31536000U);
     validate_count("server.client_api.max_threads_page_size", config.server().client_api.max_threads_page_size, 1000U);
     validate_count("server.client_api.max_relations_page_size", config.server().client_api.max_relations_page_size,
                    1000U);

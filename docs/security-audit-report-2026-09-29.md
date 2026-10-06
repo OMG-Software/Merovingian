@@ -53,15 +53,20 @@ must start with that test.
 | 10 | Database, persistence and migrations | done: 1 high, 3 medium, 6 low |
 | 11 | Configuration, observability, logging and packaging | done: 5 low |
 
-## Remediation status (re-verified 5 October 2026)
+## Remediation status
 
-**Checked against:** `07317921` (0.12.18). Each finding was re-checked by reading the
-current code and looking for a test that implements its acceptance criterion. Nothing was
-built or run for this check. CHANGELOG, ADR and `docs/todos/capability-gaps.md` claims
-were treated as claims, not evidence. The findings below are otherwise unchanged.
+**Re-verified:** 5 October 2026 against `07317921` (0.12.18). Each finding was re-checked by
+reading the current code and looking for a test that implements its acceptance criterion.
+Nothing was built or run for that check. CHANGELOG, ADR and
+`docs/todos/capability-gaps.md` claims were treated as claims, not evidence. The findings
+below are otherwise unchanged.
+
+**Update:** 6 October 2026 — the six remaining medium findings (AUTH-3, FED-6, MED-5,
+DB-5, CSAZ-10, DB-2) were fixed on the audit remediation branch and are now listed as
+fixed.
 
 **Summary:** the critical finding and all 23 high findings are fixed. Of the 31 medium
-findings, 21 are fixed, 6 are partly fixed and 4 are open. Of the 46 low findings, 3 are
+findings, 27 are fixed and 4 are open. Of the 46 low findings, 3 are
 fixed, 2 are partly fixed and 41 are open.
 
 ### Fixed
@@ -69,8 +74,9 @@ fixed, 2 are partly fixed and 41 are open.
 - **Critical:** FED-1.
 - **High:** AUTH-1, AUTH-11, CSAZ-1, CSAZ-2, CSAZ-3, CSAZ-4, HTTP-1, HTTP-2, HTTP-5, FED-2,
   FED-3, FED-4, FED-5, FED-7, EVT-1, EVT-2, EVT-3, EVT-4, EVT-6, OUT-7, CRY-1, ISO-1, DB-1.
-- **Medium:** AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, HTTP-3, HTTP-4, HTTP-8, FED-8,
-  FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, ISO-3, MED-1, MED-2, MED-3, DB-3.
+- **Medium:** AUTH-3, AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, CSAZ-10, HTTP-3, HTTP-4,
+  HTTP-8, FED-6, FED-8, FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, ISO-3, MED-1,
+  MED-2, MED-3, MED-5, DB-2, DB-3, DB-5.
 - **Low:** AUTH-9, HTTP-6, OUT-5. AUTH-9: the control-character escaping is done; the
   field-length cap from its fix is not. OUT-5: `CURLOPT_PROXY` is set to `""` on the
   only curl handle, but there is no regression test with `https_proxy` set.
@@ -88,15 +94,21 @@ Residual notes on fixed findings:
 - **AUTH-4:** Argon2id hashing in ordinary `/register` (`make_user`) and password
   verification in user-interactive auth still run under the runtime mutex with no
   admission limit.
-- **DB-1, DB-2:** the PostgreSQL integration tests skip unless
+- **DB-1, DB-2:** both are fixed. The PostgreSQL integration tests still skip unless
   `MEROVINGIAN_TEST_POSTGRESQL_URI` is set.
 
 ### Fixed — medium
 
 | ID | State | Resolution |
 |----|-------|------------|
+| AUTH-3 | Fixed | Application-service `sender_localpart` users are created at startup and ordinary `/register` rejects them with `M_EXCLUSIVE`. |
 | CRY-2 | Fixed | `src/ipc/channel.cpp` now bounds `dispatch_queue_` and counts drops once the cap is reached. ADR-0111. |
+| CSAZ-10 | Fixed | Per-recipient to-device queue is capped by count and age, with a TTL column added by migration 019. ADR-0117. |
+| DB-2 | Fixed | SQLite room snapshot loads event relations with a room-scoped JOIN instead of binding one parameter per event. |
+| DB-5 | Fixed | Auth-service revocation paths verify the persistent store state after each write; failures return 500. ADR-0116. |
+| FED-6 | Fixed | `handle_make_membership` rejects a `{userId}` that is not on the origin server. |
 | ISO-2 | Fixed | The worker seccomp allow-list no longer permits `kill`, `tkill`, `setrlimit`, or `prlimit64`; `tgkill` is argument-filtered to the worker's own TGID; Landlock rulesets request ABI-6 signal scoping. ADR-0112. |
+| MED-5 | Fixed | Media `serverName` comparisons are canonicalised (lowercase, default port) and discovery results that resolve to this server are rejected. |
 | MED-6 | Fixed | Media quota defaults are now `1GiB` total, `10MiB` per user, and `100000` records; after hydration, blob bytes live only in the runtime repository. ADR-0113. |
 | OUT-4 | Fixed | Remote media downloads are cached by `(origin_server, media_id)` with a configurable TTL and LRU eviction. ADR-0114. |
 
@@ -104,12 +116,7 @@ Residual notes on fixed findings:
 
 | ID | State | What remains |
 |----|-------|--------------|
-| AUTH-3 | Partial | Ordinary registration of a sender user is refused. The startup loop that creates sender users (`src/homeserver/runtime.cpp`) iterates `runtime.appservices` before `loaded.registry` is moved into it, so it never creates anyone. |
-| FED-6 | Partial | `send_join`, `send_leave` and `send_knock` validate the event against the endpoint. `handle_make_membership` still does not require `{userId}` to be on the requesting server. |
-| MED-5 | Partial | `allow_remote=false` is honoured. Server names are still compared exactly, with no lowercase or default-port canonicalisation and no check for discovery resolving to this server. |
-| DB-5 | Partial | Media moderation writes are atomic and checked. Token revocation on password change, logout, refresh rotation and device deletion, and upload persistence, still discard write failures with `std::ignore`. |
-| CSAZ-10 | Partial | To-device messages to unknown users and devices are dropped. There is still no per-recipient queue cap or TTL, and no cap on one-time keys, fallback keys or key-signature uploads. |
-| DB-2 | Partial | Fixed for PostgreSQL. The SQLite room snapshot still binds one parameter per event. |
+| *(none)* | — | All confirmed medium findings from this audit are now fixed. |
 
 ### Outstanding — low
 
@@ -232,7 +239,7 @@ compared in constant time and revoked one way. The masquerade-token spoofing gua
 ### AUTH-3 — An application service's `sender_localpart` user is neither reserved nor created
 
 - **Severity:** medium · **Attacker:** A1 or A2 (only where registration is open or
-  token-gated) · **Verdict:** confirmed
+  token-gated) · **Verdict:** confirmed · **Status:** fixed in 0.12.19
 - **Location:**
   - `src/homeserver/client_server.cpp:9480-9487` (ordinary registration checks only
     `namespaces.users`)
@@ -628,7 +635,7 @@ compared in constant time and revoked one way. The masquerade-token spoofing gua
 ### CSAZ-10 — To-device messages to non-existent recipients are queued forever
 
 - **Severity:** medium · **Attacker:** A2 · **Verdict:** confirmed for to-device; the other
-  sub-claims are only partly verified
+  sub-claims are only partly verified · **Status:** fixed in 0.12.19
 - **Location:** `src/homeserver/client_server.cpp:5972-6083`;
   `src/database/persistent_store.cpp:2853-2934`; `src/federation/key_signatures.cpp:90-135`
 - **Detail:**
@@ -1182,7 +1189,7 @@ for FED-2 was corrected. One sub-claim of FED-6 was refuted.
 
 ### FED-6 — `send_join`, `send_leave` and `send_knock` skip the spec's event validation, and the membership recorded comes from the endpoint
 
-- **Severity:** medium · **Attacker:** A3 · **Verdict:** adjusted
+- **Severity:** medium · **Attacker:** A3 · **Verdict:** adjusted · **Status:** fixed in 0.12.19
 - **Refuted part:** "no auth check". `membership_acceptor` authorises the event before
   writing it (`local_http_router.cpp:1771-1857`, `:1866-1924`).
 - **Location:** `src/federation/inbound_request.cpp:948-1097`;
@@ -2272,7 +2279,8 @@ independently.
 ### MED-5 — `allow_remote` is ignored and server names are compared exactly, so the server can fetch from itself
 
 - **Severity:** medium · **Attacker:** A1 (reachable on the default configuration through
-  OUT-7) · **Verdict:** confirmed; whether the loop actually forms is rated likely
+  OUT-7) · **Verdict:** confirmed; whether the loop actually forms is rated likely ·
+  **Status:** fixed in 0.12.19
 - **Location:** `src/homeserver/media_service.cpp:770-783`, `:1017`, `:1055`;
   `src/homeserver/local_http_router.cpp:1109-1135`
 - **Spec:** "`allow_remote` … Indicates to the server that it should not attempt to fetch
@@ -2439,7 +2447,7 @@ cluster, driving `libpq` with the same `PQexecParams` call shape as the server.
 ### DB-2 — On PostgreSQL, the federation worker's room snapshot stops refreshing once a room passes 128 events
 
 - **Severity:** medium (upper end) · **Attacker:** none needed · **Verdict:** adjusted from
-  high (main remains authoritative for writes)
+  high (main remains authoritative for writes) · **Status:** fixed in 0.12.19
 - **Location:**
   - `src/database/postgresql_store.cpp:2024-2036`, `:2130-2140`, `:283-289`
   - `src/database/statement.cpp:121-123`
@@ -2484,7 +2492,8 @@ cluster, driving `libpq` with the same `PQexecParams` call shape as the server.
 ### DB-5 — Security-relevant database writes are discarded with `std::ignore`
 
 - **Severity:** medium (needs a database write fault) · **Attacker:** A2 holding a stale
-  credential; users served removed content · **Verdict:** confirmed
+  credential; users served removed content · **Verdict:** confirmed · **Status:** fixed in
+  0.12.19
 - **Location:**
   - `src/homeserver/media_service.cpp:975`, `:1120-1123`, `:1146`, `:1168-1172`
   - `src/homeserver/auth_service.cpp:1298-1299`, `:1371-1376`, `:1629`, `:1773-1774`,

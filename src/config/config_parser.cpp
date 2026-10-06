@@ -133,6 +133,20 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.client_api.max_to_device_messages_per_user_device")
+        {
+            if (!parse_u32_value(value, server.client_api.max_to_device_messages_per_user_device))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.to_device_message_ttl_seconds")
+        {
+            if (!parse_u32_value(value, server.client_api.to_device_message_ttl_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.client_api.max_threads_page_size")
         {
             if (!parse_u32_value(value, server.client_api.max_threads_page_size))

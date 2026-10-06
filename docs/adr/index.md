@@ -116,6 +116,8 @@
 * [0113 - Default media quotas and a single in-memory blob copy](0113-default-media-quotas-and-single-blob-copy.md)
 * [0114 - Cache remote media by origin server and media ID](0114-cache-remote-media-by-origin-and-media-id.md)
 * [0115 - Canonicalise media server-name comparisons](0115-canonicalise-media-server-name-comparisons.md)
+* [0116 - Verify token revocation state in the auth service](0116-verify-token-revocation-state-in-auth-service.md)
+* [0117 - Bound to-device queues by recipient count and age](0117-bound-to-device-queues-by-recipient-count-and-age.md)
 
 ## Rejected Records
 

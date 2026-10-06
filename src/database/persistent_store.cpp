@@ -46,6 +46,12 @@ namespace
         value.clear();
     }
 
+    [[nodiscard]] auto current_epoch_ms() -> std::uint64_t
+    {
+        using namespace std::chrono;
+        return static_cast<std::uint64_t>(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    }
+
 } // namespace
 
 PersistentServerSigningKey::PersistentServerSigningKey(std::string server_name_value, std::string key_id_value,
@@ -3054,17 +3060,82 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
         return false;
     }
     message.stream_id = allocate_sync_stream_id(store);
-    if (!record_and_persist(
-            store,
-            record_statement("insert_to_device_message",
-                             "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, "
-                             "target_device_id, message_type, content) VALUES ($1, $2, $3, $4, $5, $6)",
-                             {public_value(std::to_string(message.stream_id)), public_value(message.sender_user_id),
-                              public_value(message.target_user_id), public_value(message.target_device_id),
-                              public_value(message.message_type), sensitive_value(message.content_json)})))
+    message.created_at_ms = current_epoch_ms();
+
+    // CSAZ-10: keep the per-recipient queue bounded by age and count.  Evict
+    // expired rows first, then the oldest rows, until the new message fits.
+    auto const recipient_matches = [&message](PersistentToDeviceMessage const& candidate) {
+        return candidate.target_user_id == message.target_user_id &&
+               candidate.target_device_id == message.target_device_id;
+    };
+    auto const ttl_ms = static_cast<std::uint64_t>(store.to_device_message_ttl_seconds) * 1000ULL;
+    auto const now_ms = message.created_at_ms;
+
+    auto to_delete = std::vector<PersistentToDeviceMessage>{};
+    to_delete.reserve(store.to_device_messages.size());
+    if (ttl_ms > 0U || store.max_to_device_messages_per_user_device > 0U)
+    {
+        auto matching = std::vector<PersistentToDeviceMessage const*>{};
+        for (auto const& candidate : store.to_device_messages)
+        {
+            if (recipient_matches(candidate))
+            {
+                matching.push_back(&candidate);
+            }
+        }
+        std::ranges::sort(matching, {}, [](PersistentToDeviceMessage const* p) {
+            return p->stream_id;
+        });
+
+        for (auto const* candidate : matching)
+        {
+            auto const expired =
+                ttl_ms > 0U && (now_ms > candidate->created_at_ms) && (now_ms - candidate->created_at_ms >= ttl_ms);
+            if (expired)
+            {
+                to_delete.push_back(*candidate);
+                continue;
+            }
+            auto const kept_after_deletions = static_cast<std::uint64_t>(matching.size() - to_delete.size());
+            if (store.max_to_device_messages_per_user_device > 0U &&
+                kept_after_deletions >= store.max_to_device_messages_per_user_device)
+            {
+                to_delete.push_back(*candidate);
+            }
+        }
+    }
+
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(to_delete.size() + 1U);
+    for (auto const& victim : to_delete)
+    {
+        statements.push_back(record_statement(
+            "delete_to_device_message",
+            "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND target_device_id = $3",
+            {public_value(std::to_string(victim.stream_id)), public_value(victim.target_user_id),
+             public_value(victim.target_device_id)}));
+    }
+    statements.push_back(
+        record_statement("insert_to_device_message",
+                         "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, target_device_id, "
+                         "message_type, content, created_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                         {public_value(std::to_string(message.stream_id)), public_value(message.sender_user_id),
+                          public_value(message.target_user_id), public_value(message.target_device_id),
+                          public_value(message.message_type), sensitive_value(message.content_json),
+                          public_value(std::to_string(message.created_at_ms))}));
+
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
+    auto const [first, last] =
+        std::ranges::remove_if(store.to_device_messages, [&to_delete](PersistentToDeviceMessage const& candidate) {
+            return std::ranges::any_of(to_delete, [&candidate](PersistentToDeviceMessage const& victim) {
+                return victim.stream_id == candidate.stream_id && victim.target_user_id == candidate.target_user_id &&
+                       victim.target_device_id == candidate.target_device_id;
+            });
+        });
+    store.to_device_messages.erase(first, last);
     store.to_device_messages.push_back(std::move(message));
     return true;
 }
@@ -3089,7 +3160,9 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     // response snapshot: newer rows stay pending so next_batch cannot
     // acknowledge a room key that was never put in the /sync response.
     auto drained = std::vector<PersistentToDeviceMessage>{};
-    auto acknowledged = std::vector<PersistentToDeviceMessage>{};
+    auto to_purge = std::vector<PersistentToDeviceMessage>{};
+    auto const ttl_ms = static_cast<std::uint64_t>(store.to_device_message_ttl_seconds) * 1000ULL;
+    auto const now_ms = current_epoch_ms();
     for (auto const& message : store.to_device_messages)
     {
         if (!addressed_to_device(message))
@@ -3100,40 +3173,53 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
         {
             continue;
         }
-        if (message.stream_id > since_stream_id)
+        auto const expired = ttl_ms > 0U && message.created_at_ms > 0U && (now_ms > message.created_at_ms) &&
+                             (now_ms - message.created_at_ms >= ttl_ms);
+        auto const acknowledged = message.stream_id <= since_stream_id;
+        auto const targeted_device = !message.target_device_id.empty() && message.target_device_id != "*";
+        if (expired || (acknowledged && targeted_device))
+        {
+            // Expired rows are removed regardless of device scope; acknowledged,
+            // device-targeted rows are removed as normal. Broadcast rows are
+            // shared across this user's devices and are not acknowledged
+            // per-device here, so they persist until TTL or a new broadcast
+            // replaces them under the per-recipient cap.
+            to_purge.push_back(message);
+            continue;
+        }
+        if (!acknowledged)
         {
             drained.push_back(message);
         }
-        else
-        {
-            acknowledged.push_back(message);
-        }
     }
-    // Purge acknowledged, device-targeted rows from both the in-memory mirror and
-    // the backing store so the queue stays bounded. Broadcast (`*`/empty) rows are
-    // shared across this user's devices and are not acknowledged per-device here,
-    // so they are left in storage (filtered out of future syncs by the since
-    // token) rather than deleted on one device's acknowledgement. Deletion is
-    // scoped by stream_id so concurrent senders can't race a row in between.
-    for (auto const& message : acknowledged)
+    // CSAZ-10: purge TTL-expired and acknowledged rows together in one
+    // transaction, so a failed durable delete leaves the in-memory mirror
+    // unchanged rather than dropping rows the client has not yet acknowledged.
+    if (!to_purge.empty())
     {
-        auto const targeted_device = !message.target_device_id.empty() && message.target_device_id != "*";
-        if (!targeted_device)
+        auto statements = std::vector<PreparedStatement>{};
+        statements.reserve(to_purge.size());
+        for (auto const& message : to_purge)
         {
-            continue;
+            statements.push_back(
+                record_statement("delete_to_device_message",
+                                 "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
+                                 "target_device_id = $3",
+                                 {public_value(std::to_string(message.stream_id)), public_value(message.target_user_id),
+                                  public_value(message.target_device_id)}));
         }
-        std::ignore = record_and_persist(
-            store, record_statement("delete_to_device_message",
-                                    "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
-                                    "target_device_id = $3",
-                                    {public_value(std::to_string(message.stream_id)),
-                                     public_value(message.target_user_id), public_value(message.target_device_id)}));
-        auto const [first, last] =
-            std::ranges::remove_if(store.to_device_messages, [&message](PersistentToDeviceMessage const& candidate) {
-                return candidate.stream_id == message.stream_id && candidate.target_user_id == message.target_user_id &&
-                       candidate.target_device_id == message.target_device_id;
-            });
-        store.to_device_messages.erase(first, last);
+        if (commit_persistent_transaction(store, statements))
+        {
+            auto const [first, last] = std::ranges::remove_if(
+                store.to_device_messages, [&to_purge](PersistentToDeviceMessage const& candidate) {
+                    return std::ranges::any_of(to_purge, [&candidate](PersistentToDeviceMessage const& victim) {
+                        return victim.stream_id == candidate.stream_id &&
+                               victim.target_user_id == candidate.target_user_id &&
+                               victim.target_device_id == candidate.target_device_id;
+                    });
+                });
+            store.to_device_messages.erase(first, last);
+        }
     }
     return drained;
 }
@@ -3972,6 +4058,16 @@ auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> v
     {
         store.captured_statements.pop_front();
     }
+}
+
+auto force_next_persist_failures(PersistentStore& store, std::size_t count) -> void
+{
+    store.force_next_persist_failures = count;
+}
+
+auto force_persist_failure_for_statement(PersistentStore& store, std::string_view statement_name) -> void
+{
+    store.force_failure_statement_names.emplace(std::string{statement_name});
 }
 
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool

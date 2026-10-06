@@ -670,7 +670,7 @@ namespace
                          }) &&
                load_rows(connection,
                          "SELECT stream_id, sender_user_id, target_user_id, target_device_id, message_type, "
-                         "content FROM to_device_messages ORDER BY stream_id",
+                         "content, created_at_ms FROM to_device_messages ORDER BY stream_id",
                          [&store](sqlite3_stmt& row) {
                              auto entry = PersistentToDeviceMessage{};
                              entry.stream_id = parse_u64(column_text(row, 0));
@@ -679,6 +679,7 @@ namespace
                              entry.target_device_id = column_text(row, 3);
                              entry.message_type = column_text(row, 4);
                              entry.content_json = column_text(row, 5);
+                             entry.created_at_ms = parse_u64(column_text(row, 6));
                              store.to_device_messages.push_back(std::move(entry));
                          }) &&
                load_rows(connection,
@@ -881,26 +882,8 @@ namespace
         return step == SQLITE_DONE;
     }
 
-    // Builds a "?,?,...,?" placeholder list for an IN (...) clause with
-    // `count` entries. Only the placeholder count is interpolated — the
-    // actual values are always bound as parameters by the caller.
-    [[nodiscard]] auto in_clause_placeholders(std::size_t count) -> std::string
-    {
-        auto result = std::string{};
-        result.reserve(count * 2U);
-        for (auto i = std::size_t{0U}; i < count; ++i)
-        {
-            if (i != 0U)
-            {
-                result += ',';
-            }
-            result += '?';
-        }
-        return result;
-    }
-
-    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection,
-                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
@@ -958,34 +941,26 @@ namespace
             return snapshot;
         }
 
-        // Scope the relation-table reads to exactly this room's event ids
-        // rather than reading the (potentially much larger) full tables.
-        auto event_ids = std::vector<std::string>{};
-        event_ids.reserve(snapshot.events.size());
-        for (auto const& event : snapshot.events)
-        {
-            event_ids.push_back(event.event_id);
-        }
-        auto const placeholders = in_clause_placeholders(event_ids.size());
+        // DB-2: scope the relation-table reads to this room using a JOIN on
+        // events.room_id, not by binding one placeholder per loaded event.
         auto relations = PersistentStore{};
         relations.events = snapshot.events;
-        ok = ok &&
-             load_rows_bound(connection,
-                             "SELECT event_id, prev_event_id FROM event_edges WHERE event_id IN (" + placeholders + ")",
-                             event_ids, [&](sqlite3_stmt& row) {
-                                 relations.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
-                             });
-        ok = ok &&
-             load_rows_bound(connection,
-                             "SELECT event_id, auth_event_id FROM event_auth WHERE event_id IN (" + placeholders + ")",
-                             event_ids, [&](sqlite3_stmt& row) {
-                                 relations.event_auth.push_back({column_text(row, 0), column_text(row, 1)});
-                             });
         ok = ok && load_rows_bound(connection,
-                                   "SELECT event_id, server_name, key_id, signature FROM event_signatures WHERE "
-                                   "event_id IN (" +
-                                       placeholders + ")",
-                                   event_ids, [&](sqlite3_stmt& row) {
+                                   "SELECT e.event_id, e.prev_event_id FROM event_edges e "
+                                   "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                                   {room_id_str}, [&](sqlite3_stmt& row) {
+                                       relations.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
+                                   });
+        ok = ok && load_rows_bound(connection,
+                                   "SELECT e.event_id, e.auth_event_id FROM event_auth e "
+                                   "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                                   {room_id_str}, [&](sqlite3_stmt& row) {
+                                       relations.event_auth.push_back({column_text(row, 0), column_text(row, 1)});
+                                   });
+        ok = ok && load_rows_bound(connection,
+                                   "SELECT e.event_id, e.server_name, e.key_id, e.signature FROM event_signatures e "
+                                   "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                                   {room_id_str}, [&](sqlite3_stmt& row) {
                                        relations.event_signatures.push_back({column_text(row, 0), column_text(row, 1),
                                                                              column_text(row, 2), column_text(row, 3)});
                                    });
@@ -1040,8 +1015,8 @@ namespace
         return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
     }
 
-    [[nodiscard]] auto execute_transaction(sqlite3& connection,
-                                           std::vector<PreparedStatement> const& statements) -> bool
+    [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
+        -> bool
     {
         auto transaction = SqliteTransaction{connection};
         if (!transaction.active())
@@ -1161,16 +1136,29 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
 namespace detail
 {
 
-    auto persist_statement_to_backend(PersistentStore const& store, PreparedStatement const& statement) -> bool
+    auto persist_statement_to_backend(PersistentStore& store, PreparedStatement const& statement) -> bool
     {
         return persist_transaction_to_backend(store, {statement});
     }
 
-    auto persist_transaction_to_backend(PersistentStore const& store,
-                                        std::vector<PreparedStatement> const& statements) -> bool
+    auto persist_transaction_to_backend(PersistentStore& store, std::vector<PreparedStatement> const& statements)
+        -> bool
     {
         if (store.backend == PersistentStoreBackend::memory)
         {
+            // Test-only failure injection. Production never sets these fields.
+            for (auto const& statement : statements)
+            {
+                if (store.force_failure_statement_names.erase(statement.name) != 0U)
+                {
+                    return false;
+                }
+            }
+            if (store.force_next_persist_failures != 0U)
+            {
+                --store.force_next_persist_failures;
+                return false;
+            }
             return true;
         }
         if (store.backend == PersistentStoreBackend::postgresql)
@@ -1186,8 +1174,8 @@ namespace detail
                execute_transaction(**connection, statements);
     }
 
-    auto load_room_snapshot_from_backend(PersistentStore const& store,
-                                         std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         if (store.backend == PersistentStoreBackend::postgresql)
         {
@@ -1201,8 +1189,8 @@ namespace detail
         return load_room_snapshot_from_sqlite(store.sqlite_path, room_id);
     }
 
-    auto load_room_snapshot_from_sqlite(std::string const& path,
-                                        std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         if (path.empty())
         {
@@ -1216,8 +1204,8 @@ namespace detail
         return load_room_snapshot_impl(**connection, room_id);
     }
 
-    auto load_audit_events_from_sqlite(std::string const& path, std::string_view prefix,
-                                       std::size_t limit) -> std::optional<std::vector<PersistentAuditEvent>>
+    auto load_audit_events_from_sqlite(std::string const& path, std::string_view prefix, std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>
     {
         if (path.empty())
         {
@@ -1249,8 +1237,8 @@ namespace detail
         return rows;
     }
 
-    auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix,
-                                        std::size_t limit) -> std::optional<std::vector<PersistentAuditEvent>>
+    auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix, std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>
     {
         if (store.backend == PersistentStoreBackend::postgresql)
         {

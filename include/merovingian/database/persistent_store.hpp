@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace merovingian::database
@@ -502,6 +503,9 @@ struct PersistentToDeviceMessage final
     std::string target_device_id{};
     std::string message_type{};
     std::string content_json{};
+    // CSAZ-10: epoch milliseconds when the row was enqueued. Used to enforce the
+    // per-recipient TTL independently of sync acknowledgement.
+    std::uint64_t created_at_ms{0U};
 };
 
 // Device-list change observed by a syncing user. `change_type` is
@@ -816,10 +820,14 @@ struct PersistentStore final
         , forward_extremities{other.forward_extremities}
         , captured_statements{other.captured_statements}
         , statement_capture_capacity{other.statement_capture_capacity}
+        , force_next_persist_failures{other.force_next_persist_failures}
+        , force_failure_statement_names{other.force_failure_statement_names}
         , statement_capture_mutex{std::make_unique<std::mutex>()}
         , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
+        , max_to_device_messages_per_user_device{other.max_to_device_messages_per_user_device}
+        , to_device_message_ttl_seconds{other.to_device_message_ttl_seconds}
     {
     }
     PersistentStore(PersistentStore&& other) noexcept = default;
@@ -883,10 +891,14 @@ struct PersistentStore final
         forward_extremities = other.forward_extremities;
         captured_statements = other.captured_statements;
         statement_capture_capacity = other.statement_capture_capacity;
+        force_next_persist_failures = other.force_next_persist_failures;
+        force_failure_statement_names = other.force_failure_statement_names;
         statement_capture_mutex = std::make_unique<std::mutex>();
         server_signing_keys_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
+        max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
+        to_device_message_ttl_seconds = other.to_device_message_ttl_seconds;
         return *this;
     }
     auto operator=(PersistentStore&& other) noexcept -> PersistentStore& = default;
@@ -970,6 +982,16 @@ struct PersistentStore final
     // most recent statements; the oldest is dropped first.
     std::deque<PreparedStatement> captured_statements{};
     std::size_t statement_capture_capacity{0U};
+    // Test-only counter: when non-zero the memory backend decrements this and
+    // returns false from the next that many persist operations, simulating a
+    // durable-store failure without involving a real database. Production never
+    // touches this field.
+    std::size_t force_next_persist_failures{0U};
+    // Test-only set: persist operations whose statement name is in this set fail
+    // once (the name is removed as it fires). This lets tests fail a specific
+    // revocation statement without disturbing earlier password/device updates.
+    // Production never touches this field.
+    std::unordered_set<std::string> force_failure_statement_names{};
     // Guards captured_statements and statement_capture_capacity. Written by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
     // and read by sensitive_values_are_redacted. Kept separate from the room
@@ -996,6 +1018,12 @@ struct PersistentStore final
     // regresses it across restarts — which invalidates every pos/since token
     // clients persisted from the previous lifetime.
     std::uint64_t event_stream_watermark{0U};
+    // CSAZ-10: per-recipient to-device queue limits, copied from
+    // server.client_api at runtime startup so the database layer can enforce
+    // them without depending on the config module. A cap of zero disables the
+    // bound (not recommended); a TTL of zero disables age-based eviction.
+    std::uint32_t max_to_device_messages_per_user_device{10000U};
+    std::uint32_t to_device_message_ttl_seconds{604800U};
 };
 
 struct PersistentStoreOpenResult final
@@ -1457,6 +1485,14 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // capture and drops anything held. Intended for tests that assert on the SQL and
 // bound parameters a store operation produced; production never calls it.
 auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void;
+// Test-only: make the next `count` memory-backend persist operations fail. This
+// lets revocation paths prove they do not ignore a durable-store write failure.
+// Production never calls this.
+auto force_next_persist_failures(PersistentStore& store, std::size_t count) -> void;
+// Test-only: make the memory-backend persist operation for `statement_name` fail
+// once. This lets tests fail a specific revocation statement even when the
+// function performs other persists first. Production never calls this.
+auto force_persist_failure_for_statement(PersistentStore& store, std::string_view statement_name) -> void;
 // True when statement capture is enabled and no captured parameter that looks
 // like a token or secret was left unmarked as sensitive. Fails closed: with
 // capture disabled there is nothing to inspect, so it returns false rather than
@@ -1466,9 +1502,8 @@ auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> v
 namespace detail
 {
 
-    [[nodiscard]] auto persist_statement_to_backend(PersistentStore const& store, PreparedStatement const& statement)
-        -> bool;
-    [[nodiscard]] auto persist_transaction_to_backend(PersistentStore const& store,
+    [[nodiscard]] auto persist_statement_to_backend(PersistentStore& store, PreparedStatement const& statement) -> bool;
+    [[nodiscard]] auto persist_transaction_to_backend(PersistentStore& store,
                                                       std::vector<PreparedStatement> const& statements) -> bool;
     [[nodiscard]] auto persist_transaction_to_postgresql(PersistentStore const& store,
                                                          std::vector<PreparedStatement> const& statements) -> bool;

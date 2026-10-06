@@ -102,8 +102,8 @@ public:
         return delegate_->lookup_srv(service_name);
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view host,
-                                        std::uint16_t port) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         calls_->fetch_add(1U);
         return delegate_->lookup_addresses(host, port);
@@ -204,8 +204,8 @@ private:
     return *value;
 }
 
-[[nodiscard]] auto public_room_ids(merovingian::homeserver::ClientServerRuntime& runtime,
-                                   std::string_view token) -> std::vector<std::string>
+[[nodiscard]] auto public_room_ids(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view token)
+    -> std::vector<std::string>
 {
     auto const response = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/publicRooms", std::string{token}, {}});
@@ -226,8 +226,8 @@ private:
     return result;
 }
 
-[[nodiscard]] auto join_rule(merovingian::homeserver::ClientServerRuntime const& runtime,
-                             std::string_view room_id) -> std::string
+[[nodiscard]] auto join_rule(merovingian::homeserver::ClientServerRuntime const& runtime, std::string_view room_id)
+    -> std::string
 {
     auto const& store = runtime.homeserver.database.persistent_store;
     auto const state = std::ranges::find_if(store.state, [room_id](auto const& candidate) {
@@ -548,7 +548,7 @@ SCENARIO("schema version 17 rooms migrate to private directory visibility",
             THEN("the legacy room remains private and is absent from the public directory")
             {
                 REQUIRE(started.started);
-                REQUIRE(started.runtime.homeserver.database.schema_version == 18U);
+                REQUIRE(started.runtime.homeserver.database.schema_version == 19U);
                 auto const persisted_room = std::ranges::find_if(
                     started.runtime.homeserver.database.persistent_store.rooms, [&legacy_room_id](auto const& room) {
                         return room.room_id == legacy_room_id;

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.18
+Version:        0.12.19
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Oct 06 2026 James Chapman <claude@ping.me.uk> - 0.12.19-1
+- Close the remaining six 2026-09-29 security audit medium findings (AUTH-3,
+  FED-6, MED-5, DB-5, CSAZ-10, DB-2).
+
 * Mon Oct 05 2026 James Chapman <claude@ping.me.uk> - 0.12.18-1
 - Make operational budgets configurable and raise normal traffic defaults
 

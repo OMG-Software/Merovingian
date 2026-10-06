@@ -134,8 +134,8 @@ private:
     return body.substr(value_start, value_end - value_start);
 }
 
-[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id,
-                                  std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id, std::string const& key_seed)
+    -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -169,8 +169,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view,
-                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
     {
         {
             auto lock = std::scoped_lock<std::mutex>{mutex_};
@@ -186,8 +186,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view,
-                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         return {false, {}, "address lookup blocked for regression test"};
     }
@@ -1375,5 +1375,85 @@ SCENARIO("leave_room takes the federated make_leave/send_leave path for remote r
                 REQUIRE(result.reason.find("make_leave") != std::string::npos);
             }
         }
+    }
+}
+
+// DB-2 (2026-09-29 audit): the SQLite room-snapshot loader used `event_id IN`
+// with one placeholder per loaded event. SQLite's default parameter limit is
+// 999, but some builds and test fixtures failed at far smaller counts, and
+// the query plan degraded with room size. The relation-table reads must scope
+// by room_id through a JOIN instead.
+SCENARIO("SQLite room snapshot loads event relations with a room-scoped JOIN", "[database][sqlite][security][db-2]")
+{
+    GIVEN("a SQLite store holding a room with more than 128 events")
+    {
+        auto const sqlite_path = unique_sqlite_path("room_snapshot_join");
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        if (!opened.ok)
+        {
+            FAIL(std::string{"open_sqlite_persistent_store failed: "} + opened.reason);
+        }
+        auto& store = opened.store;
+
+        auto constexpr room_id = "!snapshot:example.org";
+        auto constexpr user_id = "@alice:example.org";
+        REQUIRE(merovingian::database::store_user(store,
+                                                  {std::string{user_id}, "password-hash:v1:1", false, false, false}));
+        REQUIRE(merovingian::database::store_room(store, {std::string{room_id}, std::string{user_id}, false}));
+
+        auto constexpr event_count = std::size_t{200U};
+        for (auto i = std::size_t{0U}; i < event_count; ++i)
+        {
+            auto event_id = std::string{"$event-"} + std::to_string(i) + ":example.org";
+            auto prev_event_id =
+                std::string{"$event-"} + std::to_string((i + event_count - 1U) % event_count) + ":example.org";
+            auto event = merovingian::database::PersistentEvent{
+                event_id, std::string{room_id},          std::string{user_id},
+                "{}",     static_cast<std::uint64_t>(i), static_cast<std::uint64_t>(i)};
+            event.status = "normal";
+            event.prev_event_ids = {prev_event_id};
+            event.auth_event_ids = {"$auth:example.org"};
+            event.signatures = {
+                {"example.org", "ed25519:test", "fake-signature"}
+            };
+            REQUIRE(merovingian::database::store_event(store, std::move(event)));
+        }
+
+        WHEN("the room snapshot is reloaded")
+        {
+            REQUIRE(merovingian::database::reload_room(store, room_id));
+
+            THEN("every event still has its prev edges, auth events and signatures reconstructed")
+            {
+                auto event_with_prev = std::size_t{0U};
+                auto event_with_auth = std::size_t{0U};
+                auto event_with_signature = std::size_t{0U};
+                for (auto const& event : store.events)
+                {
+                    if (event.room_id != room_id)
+                    {
+                        continue;
+                    }
+                    if (!event.prev_event_ids.empty())
+                    {
+                        ++event_with_prev;
+                    }
+                    if (!event.auth_event_ids.empty())
+                    {
+                        ++event_with_auth;
+                    }
+                    if (!event.signatures.empty())
+                    {
+                        ++event_with_signature;
+                    }
+                }
+                REQUIRE(event_with_prev == event_count);
+                REQUIRE(event_with_auth == event_count);
+                REQUIRE(event_with_signature == event_count);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
     }
 }

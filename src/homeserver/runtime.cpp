@@ -637,6 +637,9 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
 
     database.opened = true;
     database.persistent_store = std::move(opened.store);
+    database.persistent_store.max_to_device_messages_per_user_device =
+        config.server().client_api.max_to_device_messages_per_user_device;
+    database.persistent_store.to_device_message_ttl_seconds = config.server().client_api.to_device_message_ttl_seconds;
     database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;

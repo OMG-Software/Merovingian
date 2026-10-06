@@ -441,7 +441,7 @@ the per-IP rate limiter still applies to the forwarded client address.
 
 #### Operational budgets
 
-All settings below require a restart, including the federation workers. The runtime copies these policies at startup; SIGHUP does not reconstruct their consumers. Existing config files keep their explicit values after upgrade: update those values or remove the overrides to use the defaults in 0.12.18.
+All settings below require a restart, including the federation workers. The runtime copies these policies at startup; SIGHUP does not reconstruct their consumers. Existing config files keep their explicit values after upgrade: update those values or remove the overrides to use the defaults in 0.12.19.
 
 Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 requests per minute per source address. Login and registration retain 20/minute, administrative traffic retains 30/minute, key/device refinements allow 120/minute and thumbnails 240/minute. Explicit `client_rate_limits.per_ip`, `per_user` and `tier` overrides retain precedence. Several users behind one address share its bucket; prefer narrow prefix overrides when a particular route needs more capacity.
 

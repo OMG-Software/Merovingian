@@ -1,3 +1,13 @@
+## 0.12.19
+
+- **FIXED: SQLite room snapshot no longer binds one parameter per event (DB-2).** Federation
+  worker room-snapshot relation queries now scope reads by `room_id` via a JOIN instead
+  of building an `IN (...)` parameter list, so large rooms avoid the 128-parameter limit.
+- Close the remaining six 2026-09-29 security audit medium findings (AUTH-3, FED-6,
+  MED-5, DB-5, CSAZ-10 and DB-2). `docs/security-audit-report-2026-09-29.md` is updated
+  to list them as fixed.
+- Update migration-count and last-migration assertions in unit and integration tests for migration 019 (`to_device_queue_age_bound`).
+
 ## 0.12.18
 
 - Remove the retired September 2026 audit report and its documentation navigation entry; retain the later 29 September report and remediation ADRs.
@@ -12,6 +22,8 @@
 - **FIXED: application-service sender_localpart users are created from the loaded registry at startup (AUTH-3).** The startup loop that ensures each registered appservice has a real `sender_localpart` user was iterating `runtime.appservices` before the registry had been moved from the temporary `loaded.registry`, so no sender users were ever created. It now walks the loaded registry directly.
 - **FIXED: federation `make_join`/`make_leave`/`make_knock` reject a `{userId}` that is not on the origin server (FED-6).** `handle_make_membership` now compares the path parameter's domain with the verified requesting `origin`; a mismatch returns 400 `M_INVALID_PARAM`.
 - **FIXED: media downloads canonicalise the local server name before routing (MED-5).** Host case and the default federation port (`:8448`) are now normalised so variants such as `EXAMPLE.ORG:8448` are treated as local media rather than fetched remotely.
+- **FIXED: token revocation paths fail closed on persistence failures (DB-5).** `revoke_*` helpers return a row count, so zero is ambiguous between "no rows" and "the backend write failed". Every auth-service revocation path now verifies the persistent-store state after the write and returns 500 if any targeted token is still unrevoked. A test-only memory-backend seam lets unit tests force a named revocation statement to fail. ADR-0116.
+- **FIXED: per-recipient to-device queues are bounded by count and age (CSAZ-10).** `to_device_messages` gains a `created_at_ms` column, migration 019, and configurable `server.client_api.max_to_device_messages_per_user_device` / `to_device_message_ttl_seconds`. Enqueue evicts expired rows then the oldest rows until the new message fits; drain also purges TTL-expired rows. This prevents non-existent devices from accumulating unbounded queue state. ADR-0117.
 - **FIXED: federation worker room-scoped reads trust main's verified identity.** When main forwards an inbound request to the worker over authenticated IPC, the X-Matrix signature has already been verified and server/discovery/trust policy applied. The worker now synthesizes a minimal remote record from the verified `origin`/`key_id` instead of re-resolving the peer, allowing room-scoped reads to be served (and fallback-tested) without a redundant network resolution step. Direct, unverified requests keep the full fail-closed resolution path. ADR-0110.
 - **TEST-ONLY: `handle_local_http_request` supports `PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}[/{stateKey}]`.** This lets integration tests seed room state events (e.g., `m.room.server_acl` and `m.room.history_visibility`) through the local-router seam used by federation-worker tests.
 - **TESTS:** new `tests/integration/test_security_audit_worker_snapshot_flow.cpp` verifies that a failed worker room reload falls back to main's authoritative state, so a stale allow-ACL cannot outlive a fresh deny-ACL. `tests/integration/test_security_audit_federated_to_device_flow.cpp` is now registered and passing.
