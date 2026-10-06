@@ -778,6 +778,15 @@ The boundary provides these guarantees:
 - Existing SQLite database files apply pending project-owned migrations before
   runtime state is hydrated.
 - Auth and room mutations fail the request when required persistent writes fail.
+  Token revocations (logout, logout-all, refresh rotation and reuse, device
+  deletion, password change) are checked against the store after the write, and
+  a revocation that did not persist answers 500 (DB-5, ADR-0116).
+- A media upload is answered with an `mxc://` URI only after its media row and
+  blob are committed together (`commit_local_media_upload`, one transaction). A
+  failed commit answers 500 and `media::rollback_local_media_upload` removes the
+  record and releases the blob reference in memory, so a restart cannot lose
+  media a client was told was stored (DB-5). Media moderation commits flags,
+  blob references and its audit row together (`commit_local_media_moderation`).
 - Device/token, refresh-token, room/membership, and event/current-state
   mutations are committed before in-memory runtime state is updated.
 - Signed event DAG rows are committed before the runtime room timeline is

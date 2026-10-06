@@ -749,6 +749,50 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     };
 }
 
+auto rollback_local_media_upload(LocalMediaRepository& repository, std::string_view media_id) -> bool
+{
+    auto const record = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& candidate) {
+        return candidate.media_id == media_id;
+    });
+    if (record == repository.records.end())
+    {
+        return false;
+    }
+    auto const storage_id = record->storage_id;
+    auto const quarantined = record->state == LocalMediaState::quarantined;
+    repository.records.erase(record);
+    std::erase_if(repository.thumbnails, [media_id](LocalMediaThumbnail const& thumbnail) {
+        return thumbnail.media_id == media_id;
+    });
+    // Positions after the erased record moved, so the record index is rebuilt
+    // rather than patched.
+    rebuild_record_index(repository);
+    if (auto* blob = find_blob(repository, storage_id); blob != nullptr)
+    {
+        if (blob->ref_count > 1U && repository.metrics.deduplicated_uploads > 0U)
+        {
+            --repository.metrics.deduplicated_uploads;
+        }
+        if (--blob->ref_count == 0U)
+        {
+            remove_blob_index(repository, storage_id);
+            blob->bytes.clear();
+            blob->bytes.shrink_to_fit();
+        }
+    }
+    if (repository.metrics.uploads_accepted > 0U)
+    {
+        --repository.metrics.uploads_accepted;
+    }
+    if (quarantined && repository.metrics.uploads_quarantined > 0U)
+    {
+        --repository.metrics.uploads_quarantined;
+    }
+    ++repository.metrics.uploads_rejected;
+    refresh_storage_metrics(repository);
+    return true;
+}
+
 auto download_local_media(LocalMediaRepository& repository, std::string_view server_name, std::string_view media_id,
                           bool legacy_endpoint) -> LocalMediaDownloadResult
 {

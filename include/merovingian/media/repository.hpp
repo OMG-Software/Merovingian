@@ -210,6 +210,11 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
                                     std::vector<LocalMediaBlob> blobs) -> void;
 [[nodiscard]] auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,
                                       LocalMediaUploadRequest const& request) -> LocalMediaUploadResult;
+// DB-5: undoes the upload that created `media_id` when it could not be made
+// durable, so memory matches the database again: the record and its thumbnail
+// entry are removed and the blob reference it took is released. Returns false
+// when no record has that ID.
+[[nodiscard]] auto rollback_local_media_upload(LocalMediaRepository& repository, std::string_view media_id) -> bool;
 [[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
                                         std::string_view media_id, bool legacy_endpoint = false)
     -> LocalMediaDownloadResult;

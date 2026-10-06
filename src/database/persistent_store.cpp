@@ -2674,39 +2674,110 @@ namespace
     return true;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto insert_local_media_statement(PersistentLocalMedia const& media) -> PreparedStatement
+    {
+        return record_statement("insert_media",
+                                "INSERT INTO media (media_id, owner_user_id, content_type, size_bytes, "
+                                "hash_algorithm, digest, quarantined, removed, legacy_endpoint_visible) "
+                                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                                {
+                                    {media.media_id,                                   false},
+                                    {media.owner_user_id,                              false},
+                                    {media.content_type,                               false},
+                                    {std::to_string(media.size_bytes),                 false},
+                                    {media.hash_algorithm,                             false},
+                                    {media.digest,                                     false},
+                                    {media.quarantined ? "true" : "false",             false},
+                                    {media.removed ? "true" : "false",                 false},
+                                    {media.legacy_endpoint_visible ? "true" : "false", false}
+        });
+    }
+
+    [[nodiscard]] auto upsert_media_blob_statement(PersistentMediaBlob const& blob) -> PreparedStatement
+    {
+        return record_statement("upsert_media_blob",
+                                "INSERT INTO media_blobs VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT "
+                                "(storage_id) DO "
+                                "UPDATE SET hash_algorithm = $2, digest = $3, size_bytes = $4, bytes = "
+                                "$5, ref_count = $6",
+                                {
+                                    {blob.storage_id, false},
+                                    {blob.hash_algorithm, false},
+                                    {blob.digest, false},
+                                    {std::to_string(blob.size_bytes), false},
+                                    // Raw binary payload (BLOB column): marked `binary` so
+                                    // PostgreSQL binds it byte-exactly, and `sensitive` so
+                                    // the content never reaches a query trace or log.
+                                    {blob.bytes, true, true},
+                                    {std::to_string(blob.ref_count), false}
+        });
+    }
+
+    [[nodiscard]] auto local_media_row_is_valid(PersistentStore const& store, PersistentLocalMedia const& media) -> bool
+    {
+        if (!media_hash_is_valid(media.hash_algorithm, media.digest) || media.size_bytes == 0U)
+        {
+            return false;
+        }
+        return std::ranges::none_of(store.local_media, [&media](PersistentLocalMedia const& existing) {
+            return existing.media_id == media.media_id;
+        });
+    }
+
+    [[nodiscard]] auto media_blob_row_is_valid(PersistentMediaBlob const& blob) noexcept -> bool
+    {
+        return !blob.storage_id.empty() && !blob.hash_algorithm.empty() && !blob.digest.empty();
+    }
+
+    // MED-6: the runtime repository is the single in-memory copy of the blob
+    // bytes. Once the row is durable the store keeps only its metadata.
+    auto remember_media_blob_metadata(PersistentStore& store, PersistentMediaBlob const& blob) -> void
+    {
+        auto metadata_only =
+            PersistentMediaBlob{blob.storage_id, blob.hash_algorithm, blob.digest, blob.size_bytes, {}, blob.ref_count};
+        auto existing = std::ranges::find_if(store.media_blobs, [&blob](PersistentMediaBlob const& current) {
+            return current.storage_id == blob.storage_id;
+        });
+        if (existing != store.media_blobs.end())
+        {
+            *existing = std::move(metadata_only);
+            return;
+        }
+        store.media_blobs.push_back(std::move(metadata_only));
+    }
+
+} // namespace
+
 [[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool
 {
-    if (!media_hash_is_valid(media.hash_algorithm, media.digest) || media.size_bytes == 0U)
-    {
-        return false;
-    }
-    auto const duplicate = std::ranges::any_of(store.local_media, [&media](PersistentLocalMedia const& existing) {
-        return existing.media_id == media.media_id;
-    });
-    if (duplicate)
-    {
-        return false;
-    }
-    if (!record_and_persist(store,
-                            record_statement("insert_media",
-                                             "INSERT INTO media (media_id, owner_user_id, content_type, size_bytes, "
-                                             "hash_algorithm, digest, quarantined, removed, legacy_endpoint_visible) "
-                                             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                                             {
-                                                 {media.media_id,                                   false},
-                                                 {media.owner_user_id,                              false},
-                                                 {media.content_type,                               false},
-                                                 {std::to_string(media.size_bytes),                 false},
-                                                 {media.hash_algorithm,                             false},
-                                                 {media.digest,                                     false},
-                                                 {media.quarantined ? "true" : "false",             false},
-                                                 {media.removed ? "true" : "false",                 false},
-                                                 {media.legacy_endpoint_visible ? "true" : "false", false}
-    })))
+    if (!local_media_row_is_valid(store, media) || !record_and_persist(store, insert_local_media_statement(media)))
     {
         return false;
     }
     store.local_media.push_back(std::move(media));
+    return true;
+}
+
+[[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
+                                             PersistentMediaBlob const& blob) -> bool
+{
+    if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.storage_id.empty() ||
+        blob.ref_count == 0U)
+    {
+        return false;
+    }
+    // DB-5: the record and the blob it points at are durable together or not at
+    // all. A record without its blob would survive a restart as unservable
+    // media, and a blob without its record as an orphaned reference count.
+    if (!commit_persistent_transaction(store, {insert_local_media_statement(media), upsert_media_blob_statement(blob)}))
+    {
+        return false;
+    }
+    store.local_media.push_back(std::move(media));
+    remember_media_blob_metadata(store, blob);
     return true;
 }
 
@@ -2832,43 +2903,11 @@ namespace
 
 [[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob const& blob) -> bool
 {
-    if (blob.storage_id.empty() || blob.hash_algorithm.empty() || blob.digest.empty())
+    if (!media_blob_row_is_valid(blob) || !record_and_persist(store, upsert_media_blob_statement(blob)))
     {
         return false;
     }
-    if (!record_and_persist(
-            store,
-            record_statement("upsert_media_blob",
-                             "INSERT INTO media_blobs VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (storage_id) DO "
-                             "UPDATE SET hash_algorithm = $2, digest = $3, size_bytes = $4, bytes = $5, ref_count = $6",
-                             {
-                                 {blob.storage_id, false},
-                                 {blob.hash_algorithm, false},
-                                 {blob.digest, false},
-                                 {std::to_string(blob.size_bytes), false},
-                                 // Raw binary payload (BLOB column): marked `binary` so
-                                 // PostgreSQL binds it byte-exactly, and `sensitive` so
-                                 // the content never reaches a query trace or log.
-                                 {blob.bytes, true, true},
-                                 {std::to_string(blob.ref_count), false}
-    })))
-    {
-        return false;
-    }
-    // MED-6: the runtime repository is the single in-memory copy of the blob
-    // bytes. The persistent store row is only metadata; the payload is durable
-    // in the database, so drop the in-memory duplicate immediately.
-    auto metadata_only =
-        PersistentMediaBlob{blob.storage_id, blob.hash_algorithm, blob.digest, blob.size_bytes, {}, blob.ref_count};
-    auto existing = std::ranges::find_if(store.media_blobs, [&blob](PersistentMediaBlob const& current) {
-        return current.storage_id == blob.storage_id;
-    });
-    if (existing != store.media_blobs.end())
-    {
-        *existing = std::move(metadata_only);
-        return true;
-    }
-    store.media_blobs.push_back(std::move(metadata_only));
+    remember_media_blob_metadata(store, blob);
     return true;
 }
 

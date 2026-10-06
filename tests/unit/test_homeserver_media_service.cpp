@@ -5,6 +5,7 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/media/repository.hpp"
@@ -680,6 +681,117 @@ SCENARIO("media download canonicalises the local server name before routing", "[
                 // No thumbnail worker is wired in this test, but the request must
                 // have reached the local path, not the remote refusal path.
                 REQUIRE(runtime.media_repository.metrics.remote_fetch_rejections == rejections_before);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The access token of a freshly registered, logged-in local user.
+[[nodiscard]] auto media_uploader_token(merovingian::homeserver::HomeserverRuntime& runtime) -> std::string
+{
+    auto const user = merovingian::homeserver::register_local_user(runtime, "uploader", "CorrectHorse7!",
+                                                                   merovingian::tests::registration_token);
+    REQUIRE(user.ok);
+    auto const login = merovingian::homeserver::login_local_user_by_id(runtime, user.value, "UPLOADER");
+    REQUIRE(login.ok);
+    return login.value;
+}
+
+[[nodiscard]] auto live_blob_references(merovingian::homeserver::HomeserverRuntime const& runtime) -> std::uint64_t
+{
+    auto total = std::uint64_t{0U};
+    for (auto const& blob : runtime.media_repository.blobs)
+    {
+        total += blob.ref_count;
+    }
+    return total;
+}
+
+} // namespace
+
+// DB-5 (security-audit-report-2026-09-29.md): an upload whose database write
+// failed was still answered 200 with an mxc:// URI, and the media vanished at
+// the next restart. The record and its blob are now written in one
+// transaction, and a failed write leaves memory as it was before the upload.
+SCENARIO("A media upload whose database write fails is refused and leaves no trace",
+         "[homeserver][media][security][db-5]")
+{
+    GIVEN("a runtime with a logged-in user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(media_runtime_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = media_uploader_token(runtime);
+        auto& store = runtime.database.persistent_store;
+
+        WHEN("the blob write of a new upload fails")
+        {
+            merovingian::database::force_persist_failure_for_statement(store, "upsert_media_blob");
+            auto const failed =
+                merovingian::homeserver::upload_local_media(runtime, token, "text/plain", "text/plain", true, "hello");
+
+            THEN("the upload is refused with 500 and no media ID")
+            {
+                REQUIRE_FALSE(failed.ok);
+                REQUIRE(failed.status == 500U);
+                REQUIRE(failed.value.find("mxc://") == std::string::npos);
+            }
+
+            THEN("neither the record nor the blob was kept, in memory or in the store")
+            {
+                REQUIRE(runtime.media_repository.records.empty());
+                REQUIRE(live_blob_references(runtime) == 0U);
+                REQUIRE(store.local_media.empty());
+                REQUIRE(store.media_blobs.empty());
+            }
+
+            AND_WHEN("the same bytes are uploaded again with a working store")
+            {
+                auto const retried = merovingian::homeserver::upload_local_media(runtime, token, "text/plain",
+                                                                                 "text/plain", true, "hello");
+
+                THEN("it is stored once, with one blob reference, in memory and in the store")
+                {
+                    REQUIRE(retried.ok);
+                    REQUIRE(runtime.media_repository.records.size() == 1U);
+                    REQUIRE(live_blob_references(runtime) == 1U);
+                    REQUIRE(store.local_media.size() == 1U);
+                    REQUIRE(store.media_blobs.size() == 1U);
+                    REQUIRE(store.media_blobs.front().ref_count == 1U);
+                }
+            }
+        }
+
+        WHEN("a deduplicated upload of stored bytes fails to be written")
+        {
+            auto const first =
+                merovingian::homeserver::upload_local_media(runtime, token, "text/plain", "text/plain", true, "hello");
+            REQUIRE(first.ok);
+            merovingian::database::force_persist_failure_for_statement(store, "insert_media");
+            auto const failed =
+                merovingian::homeserver::upload_local_media(runtime, token, "text/plain", "text/plain", true, "hello");
+
+            THEN("it is refused, and the shared blob keeps the one reference it had")
+            {
+                REQUIRE_FALSE(failed.ok);
+                REQUIRE(failed.status == 500U);
+                REQUIRE(runtime.media_repository.records.size() == 1U);
+                REQUIRE(live_blob_references(runtime) == 1U);
+                REQUIRE(store.local_media.size() == 1U);
+                REQUIRE(store.media_blobs.front().ref_count == 1U);
+            }
+
+            THEN("the media uploaded first is still served")
+            {
+                // first.value is "mxc://example.org/<media_id>|<content type>|...".
+                auto const prefix = std::string{"mxc://example.org/"};
+                REQUIRE(first.value.starts_with(prefix));
+                auto const media_id = first.value.substr(prefix.size(), first.value.find('|') - prefix.size());
+                REQUIRE(merovingian::homeserver::download_local_media(runtime, "example.org", media_id).ok);
             }
         }
     }

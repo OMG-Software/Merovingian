@@ -75,27 +75,6 @@ namespace
                                      result.reason, result.status);
     }
 
-    auto persist_blob_for_media(HomeserverRuntime& runtime, std::string_view media_id) -> void
-    {
-        auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
-        if (record == nullptr)
-        {
-            return;
-        }
-        // Persistence also writes removal tombstones: its lookup must include
-        // the zero-reference row whose cleared bytes need to reach the database.
-        auto const blob = std::ranges::find_if(runtime.media_repository.blobs, [&record](auto const& candidate) {
-            return candidate.storage_id == record->storage_id;
-        });
-        if (blob == runtime.media_repository.blobs.end())
-        {
-            return;
-        }
-        std::ignore = database::store_media_blob(
-            runtime.database.persistent_store,
-            {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
-    }
-
     [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime, std::string_view media_id)
         -> trust_safety::PolicyDecision
     {
@@ -1046,18 +1025,30 @@ namespace
         return make_operation_result(false, {}, result.reason, result.status);
     }
 
-    std::ignore = database::store_local_media(runtime.database.persistent_store, {
-                                                                                     result.media_id,
-                                                                                     *user_id,
-                                                                                     result.content_type,
-                                                                                     result.size_bytes,
-                                                                                     result.hash_algorithm,
-                                                                                     result.digest,
-                                                                                     result.quarantined,
-                                                                                     false,
-                                                                                     false,
-                                                                                 });
-    persist_blob_for_media(runtime, result.media_id);
+    // DB-5: the client is given an mxc:// URI only once the media and its blob
+    // are durable. Otherwise the upload is undone in memory too, so a restart
+    // cannot make a URI the client was given disappear.
+    auto const* record = media::find_local_media_record(runtime.media_repository, result.media_id);
+    auto const* blob =
+        record == nullptr ? nullptr : media::find_local_media_blob(runtime.media_repository, record->storage_id);
+    auto const persisted =
+        blob != nullptr &&
+        database::commit_local_media_upload(
+            runtime.database.persistent_store,
+            {result.media_id, *user_id, result.content_type, result.size_bytes, result.hash_algorithm, result.digest,
+             result.quarantined, false, false},
+            {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
+    if (!persisted)
+    {
+        std::ignore = media::rollback_local_media_upload(runtime.media_repository, result.media_id);
+        log_diagnostic("upload.persist_failed",
+                       {
+                           {"actor",    *user_id,        false},
+                           {"media_id", result.media_id, false}
+        },
+                       observability::LogEventSeverity::error);
+        return make_operation_result(false, {}, "media could not be stored", 500U);
+    }
     log_diagnostic(result.quarantined ? "upload.quarantined" : "upload.accepted",
                    {
                        {"actor",        *user_id,                                            false},

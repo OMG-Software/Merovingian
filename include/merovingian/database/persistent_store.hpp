@@ -1303,6 +1303,11 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id,
                                                   std::string_view version) -> bool;
 [[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool;
+// DB-5: writes a new upload's media row and its blob (inserted, or updated with the
+// new reference count when deduplicated) in one transaction. The in-memory mirror
+// changes only after the commit succeeds; on failure nothing is written.
+[[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
+                                             PersistentMediaBlob const& blob) -> bool;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
 // Commit moderation metadata, optional blob removal and both audit records

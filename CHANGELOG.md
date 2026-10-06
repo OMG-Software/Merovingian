@@ -46,6 +46,19 @@
   (`max_size_per_user >= max_upload_size`, total ≥ per user), check that a user past the
   default quota gets 507 while another user is unaffected, and that remote media is
   exempt from the per-user quota but not from the server total.
+- **FIXED (DB-5): a media upload that could not be stored is refused instead of answered
+  with an `mxc://` URI.** `upload_local_media` discarded the results of the media-row and
+  blob writes, so a database failure left the client holding a URI whose media vanished at
+  the next restart, and the two rows were written in separate transactions. New
+  `database::commit_local_media_upload` writes both in one transaction; on failure the
+  upload answers 500 and new `media::rollback_local_media_upload` removes the record and
+  releases its blob reference in memory, including for a deduplicated upload. The unused
+  `persist_blob_for_media` helper is removed. `docs/database-persistence.md` lists the
+  revocation and upload write rules.
+- **TESTS:** `[db-5]` media scenario fails the blob write of a new upload and the record
+  write of a deduplicated one through the memory backend's statement-failure injection,
+  and checks the response, memory and store, a successful retry, and that the earlier
+  upload is still served.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario
