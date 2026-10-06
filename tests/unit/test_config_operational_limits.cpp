@@ -131,3 +131,84 @@ SCENARIO("Federation rate changes report their actual startup lifecycle", "[conf
         }
     }
 }
+
+// CSAZ-10: caps on per-user end-to-end key material and filters. Owner policy
+// is to refuse over-cap uploads, so the caps are operator-tunable and a cap of
+// zero (which would refuse every upload) is invalid.
+SCENARIO("E2EE key and filter caps default to bounded values and can be tuned",
+         "[config][operational-limits][csaz-10]")
+{
+    GIVEN("a configuration that does not mention the caps")
+    {
+        auto const parsed = merovingian::config::parse_key_value_config("");
+
+        THEN("the defaults are bounded and valid")
+        {
+            REQUIRE(parsed.config.server().client_api.max_one_time_keys_per_device == 1000U);
+            REQUIRE(parsed.config.server().client_api.max_key_signatures_per_user == 10000U);
+            REQUIRE(parsed.config.server().client_api.max_filters_per_user == 1000U);
+            REQUIRE(merovingian::config::validate(parsed.config).empty());
+        }
+    }
+
+    GIVEN("a configuration that overrides all three caps")
+    {
+        auto const parsed =
+            merovingian::config::parse_key_value_config("server.client_api.max_one_time_keys_per_device=250\n"
+                                                        "server.client_api.max_key_signatures_per_user=500\n"
+                                                        "server.client_api.max_filters_per_user=40\n");
+
+        WHEN("it is parsed and validated")
+        {
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the overrides are applied without findings")
+            {
+                REQUIRE(parsed.findings.empty());
+                REQUIRE(findings.empty());
+                REQUIRE(parsed.config.server().client_api.max_one_time_keys_per_device == 250U);
+                REQUIRE(parsed.config.server().client_api.max_key_signatures_per_user == 500U);
+                REQUIRE(parsed.config.server().client_api.max_filters_per_user == 40U);
+            }
+        }
+
+        WHEN("a reload plan is built against the defaults")
+        {
+            auto const plan = merovingian::config::build_reload_plan(merovingian::config::Config{}, parsed.config);
+
+            THEN("each cap is a restart-required change")
+            {
+                REQUIRE(plan.changes().size() == 3U);
+                REQUIRE(plan.reloadable_change_count() == 0U);
+                REQUIRE(plan.restart_required_change_count() == 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("E2EE key and filter caps reject zero, malformed and excessive values",
+         "[config][operational-limits][csaz-10][boundary]")
+{
+    GIVEN("an invalid cap override")
+    {
+        auto const input = GENERATE("server.client_api.max_one_time_keys_per_device=0\n",
+                                    "server.client_api.max_one_time_keys_per_device=100001\n",
+                                    "server.client_api.max_one_time_keys_per_device=many\n",
+                                    "server.client_api.max_key_signatures_per_user=0\n",
+                                    "server.client_api.max_key_signatures_per_user=1000001\n",
+                                    "server.client_api.max_key_signatures_per_user=-1\n",
+                                    "server.client_api.max_filters_per_user=0\n",
+                                    "server.client_api.max_filters_per_user=100001\n");
+
+        WHEN("the configuration is parsed and validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(input);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the operator gets an error instead of an unusable or unbounded cap")
+            {
+                REQUIRE((!parsed.findings.empty() || !findings.empty()));
+            }
+        }
+    }
+}

@@ -235,6 +235,17 @@ struct ClientApiConfig final
     // time, so the queue stays bounded even for recipients that never sync.
     std::uint32_t max_to_device_messages_per_user_device{10000U};
     std::uint32_t to_device_message_ttl_seconds{604800U};
+    // CSAZ-10: bound the end-to-end key material and filters one user can
+    // store.  An upload that would take the user over a cap is refused with
+    // M_TOO_LARGE and stores nothing; stored rows are never evicted to make
+    // room.  Re-uploading an id the user already holds does not count twice.
+    //   - max_one_time_keys_per_device: one-time keys held per (user, device).
+    //   - max_key_signatures_per_user: cross-signing signatures a user has
+    //     uploaded, counted per (target user, target key).
+    //   - max_filters_per_user: stored sync filters per user.
+    std::uint32_t max_one_time_keys_per_device{1000U};
+    std::uint32_t max_key_signatures_per_user{10000U};
+    std::uint32_t max_filters_per_user{1000U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
 };

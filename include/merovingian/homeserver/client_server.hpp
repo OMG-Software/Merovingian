@@ -88,6 +88,11 @@ struct ClientApiLimits final
     std::uint32_t max_relations_page_size{500U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
+    // CSAZ-10: per-user caps on stored end-to-end key material and filters.
+    // An upload over a cap is refused with M_TOO_LARGE; nothing is evicted.
+    std::uint32_t max_one_time_keys_per_device{1000U};
+    std::uint32_t max_key_signatures_per_user{10000U};
+    std::uint32_t max_filters_per_user{1000U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

@@ -449,6 +449,8 @@ Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 r
 
 Notification history retains the newest `max_notifications_retained_per_user` rows per user (default 1,000), including when push delivery is disabled. Raising retention preserves future rows; it cannot restore entries already pruned.
 
+Three per-user caps bound end-to-end key material and filters. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (after JSON canonicalisation) returns the existing `filter_id` instead of storing a duplicate, even at the cap. Each device keeps one fallback key per algorithm, as the Matrix specification requires; a new fallback key replaces the previous one.
+
 The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. Sync admission is clamped to the configured sync worker count; the per-device and per-user caps cannot exceed global admission.
 
 `security.federation.backfill.max_state_ids` and `max_auth_chain_ids` bound advertised lists, including events already in local storage. `max_snapshot_events` bounds their unique union. `max_outbound_calls` bounds general recovery calls, `max_snapshot_outbound_calls` bounds event/auth-chain materialisation, and `max_total_outbound_calls` plus `timeout` are shared across the entire incoming PDU recovery. The deadline prevents new work and shortens HTTP timeouts; synchronous discovery, verification or database work already in progress is not preempted. Failed requests consume calls too; remote timeouts are shortened to the remaining deadline. None of these controls bypass signature, hash, authorization or server-ACL checks.
@@ -485,6 +487,11 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_hierarchy_rooms` | `1000` | 1..10,000 |
 | `max_threads_page_size` | `500` | 1..1,000 |
 | `max_notifications_retained_per_user` | `1000` | 1..100,000 |
+| `max_to_device_messages_per_user_device` | `10000` | 1..1,000,000 |
+| `to_device_message_ttl_seconds` | `604800` | 1..31,536,000 |
+| `max_one_time_keys_per_device` | `1000` | 1..100,000 |
+| `max_key_signatures_per_user` | `10000` | 1..1,000,000 |
+| `max_filters_per_user` | `1000` | 1..100,000 |
 | `max_body_size` | `1MiB` | 1 byte..64MiB |
 
 `server.http.*`:

@@ -9400,6 +9400,9 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_relations_page_size = client_api.max_relations_page_size;
     rt.limits.max_public_rooms_page_size = client_api.max_public_rooms_page_size;
     rt.limits.max_hierarchy_rooms = client_api.max_hierarchy_rooms;
+    rt.limits.max_one_time_keys_per_device = client_api.max_one_time_keys_per_device;
+    rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
+    rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
