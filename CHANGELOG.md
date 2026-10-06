@@ -28,6 +28,11 @@
   for two downloads of the same remote image (one, not two); the `[out-4]` unit scenarios
   now drive the pre-network lookup (hit, miss by key, expiry and re-admission, zero cap,
   removed record, LRU eviction) instead of the post-fetch admission step.
+- **FIXED (MED-5): only the default port is dropped when deciding whether media is local.**
+  The canonicalisation used `federation::strip_server_port`, which drops any port, so a
+  request for `example.org:8449` (a different server name) was served this server's
+  media. It now lowercases and drops a trailing `:8448` only. ADR-0115 corrected: it
+  claimed both behaviours, and claimed a discovery-to-self check the code does not have.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

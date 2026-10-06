@@ -644,6 +644,20 @@ SCENARIO("media download canonicalises the local server name before routing", "[
             }
         }
 
+        WHEN("download is requested with the local host name and a port other than the default")
+        {
+            // example.org:8449 is a different Matrix server name from
+            // example.org; only the default federation port may be dropped.
+            auto const result = merovingian::homeserver::download_local_media(runtime, "Example.Org:8449", media_id);
+
+            THEN("it is treated as remote media and the local bytes are not served")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 404U);
+                REQUIRE(result.value.find("local-bytes-here") == std::string::npos);
+            }
+        }
+
         WHEN("download is requested with a truly remote server name")
         {
             auto const result = merovingian::homeserver::download_local_media(runtime, "remote.example.org", media_id);

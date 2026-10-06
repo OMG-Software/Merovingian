@@ -8,7 +8,6 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
-#include "merovingian/federation/server_acl.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
@@ -44,16 +43,24 @@ namespace
         observability::log_diagnostic("media_service", event, fields, severity);
     }
 
-    // MED-5: media requests identify a server by name. The same logical server
-    // can be written in many ways (case, default port) and must be recognised
-    // as local so it is not bounced through remote fetching.
+    // MED-5: media requests identify a server by name. The same server can be
+    // written with different case or with the default federation port, and must
+    // be recognised as local so it is not bounced through remote fetching
+    // (ADR-0115). Only the default port is dropped: example.org:8449 is a
+    // different server name from example.org, and treating it as local would
+    // serve this server's media under another server's mxc:// URI.
     [[nodiscard]] auto canonical_media_server_name(std::string_view server_name) -> std::string
     {
-        auto stripped = federation::strip_server_port(server_name);
-        std::ranges::transform(stripped, stripped.begin(), [](unsigned char c) {
+        auto canonical = std::string{server_name};
+        std::ranges::transform(canonical, canonical.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
-        return stripped;
+        constexpr auto default_port_suffix = std::string_view{":8448"};
+        if (canonical.size() > default_port_suffix.size() && canonical.ends_with(default_port_suffix))
+        {
+            canonical.resize(canonical.size() - default_port_suffix.size());
+        }
+        return canonical;
     }
 
     [[nodiscard]] auto is_local_media_server(HomeserverRuntime const& runtime, std::string_view server_name) -> bool
