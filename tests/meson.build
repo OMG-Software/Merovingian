@@ -238,6 +238,7 @@ shell = find_program('sh')
       'unit/test_sync_notifier.cpp',
       'unit/test_sync_pool_liveness.cpp',
       'unit/test_to_device_queue.cpp',
+      'unit/test_otk_cap.cpp',
       'unit/test_fallback_key_single.cpp',
       'unit/test_sync_receipt_visibility.cpp',
       'unit/test_sync_room_access.cpp',

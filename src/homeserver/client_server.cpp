@@ -78,6 +78,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -6029,6 +6030,34 @@ namespace
         return {};
     }
 
+    // CSAZ-10: true when storing the one-time keys named in `keys` would leave
+    // `device_id` holding more than `max_one_time_keys_per_device`. A key id the
+    // device already holds is replaced in place, so it is not counted twice and a
+    // device at its cap can still refresh the keys it has.
+    [[nodiscard]] auto one_time_upload_exceeds_cap(ClientServerRuntime const& rt, std::string_view user,
+                                                   std::string_view device_id, canonicaljson::Object const& keys)
+        -> bool
+    {
+        auto const& stored = rt.homeserver.database.persistent_store.one_time_keys;
+        auto held = std::set<std::string_view>{};
+        for (auto const& key : stored)
+        {
+            if (key.user_id == user && key.device_id == device_id)
+            {
+                held.insert(key.key_id);
+            }
+        }
+        auto added = std::set<std::string_view>{};
+        for (auto const& member : keys)
+        {
+            if (!held.contains(member.key))
+            {
+                added.insert(member.key);
+            }
+        }
+        return held.size() + added.size() > rt.limits.max_one_time_keys_per_device;
+    }
+
     [[nodiscard]] auto store_key_object_members(ClientServerRuntime& rt, std::string_view user,
                                                 std::string_view device_id, canonicaljson::Object const& object,
                                                 bool fallback) -> bool
@@ -6098,6 +6127,15 @@ namespace
             return err(400U, "M_BAD_JSON", "key upload body must be Matrix JSON");
         }
         auto& store = rt.homeserver.database.persistent_store;
+        // CSAZ-10: refuse before anything (device keys, one-time keys, fallback
+        // keys) is stored, so an over-cap request leaves no partial state.
+        if (auto const* one_time_keys = object_member_object(*object, "one_time_keys");
+            one_time_keys != nullptr && one_time_upload_exceeds_cap(rt, user, device_id, *one_time_keys))
+        {
+            return err(400U, "M_TOO_LARGE",
+                       "one-time key upload would exceed the per-device limit of " +
+                           std::to_string(rt.limits.max_one_time_keys_per_device));
+        }
         auto const* raw_device_keys = object_member(*object, "device_keys");
         auto const* device_keys_object = object_member_as_object(*object, "device_keys");
         if (raw_device_keys != nullptr && device_keys_object == nullptr)
