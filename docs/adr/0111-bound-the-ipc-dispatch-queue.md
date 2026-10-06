@@ -2,7 +2,7 @@
 
 * Status: accepted
 * Deciders: James Chapman
-* Date: 2026-09-29
+* Date: 2026-10-05
 
 ## Context and Problem Statement
 

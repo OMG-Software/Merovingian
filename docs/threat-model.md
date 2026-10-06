@@ -502,6 +502,22 @@ threat it closes; the controls above are the standing defences these reinforce.
   Residual: a thread that exists before hardening is confined by seccomp (TSYNC) but not by
   Landlock, which has no thread-sync flag on older kernels; the ordering rule is what
   prevents it.
+- **A compromised worker could stop or starve the main process (ISO-2,
+  security-audit-report-2026-09-29.md, closed):** the worker filter allowed `kill`,
+  `tkill`, `setrlimit` and `prlimit64` with no argument checks, and the worker runs
+  under main's uid, so `kill(getppid(), SIGSTOP)` froze main without a crash (no
+  `Restart=on-failure`) and `prlimit64` could lower main's limits. Those syscalls are
+  gone from the worker filter, `tgkill` is allowed only for the worker's own thread
+  group, and Landlock ABI 6 kernels also scope signals. Residual: the worker shares
+  main's uid, so the seccomp argument check is the only barrier on kernels before
+  Landlock ABI 6. See
+  [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md).
+- **A compromised worker could exhaust main's memory through IPC (CRY-2,
+  security-audit-report-2026-09-29.md, closed):** main's reader thread queued every
+  request frame for the dispatch thread without limit, ahead of the in-flight cap
+  of ADR-0065. The queue is now capped by frames and bytes; a worker past either
+  has its channel closed and is replaced. See
+  [ADR-0111](adr/0111-bound-the-ipc-dispatch-queue.md).
 - **SIGPIPE terminated the server (HTTP-5, closed):** OpenSSL's socket BIO writes without
   `MSG_NOSIGNAL`, so a TLS client that reset its connection after the handshake killed the
   process on the 408 write. Every executable now ignores SIGPIPE first thing in `main()`.

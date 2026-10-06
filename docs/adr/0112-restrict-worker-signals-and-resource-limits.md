@@ -2,7 +2,7 @@
 
 * Status: accepted
 * Deciders: James Chapman
-* Date: 2026-09-29
+* Date: 2026-10-05
 
 ## Context and Problem Statement
 
@@ -47,10 +47,34 @@ thread runtime the worker relies on.
 * Landlock signal scoping prevents the worker from signalling processes outside
   its sandbox on modern kernels.
 
+### Argument checks in the generated BPF program
+
+`build_seccomp_program` emits one `JEQ nr` / `RET ALLOW` pair per allowed
+syscall, with the syscall number in the accumulator throughout. An entry that
+checks an argument breaks both assumptions, so it must:
+
+* jump over exactly its own instructions when the syscall number does not match,
+  so the next entry starts at its own `JEQ`; and
+* end in its own `RET` of the default action when the argument does not match,
+  because loading the argument overwrote the accumulator and the entries after it
+  would otherwise compare that argument against syscall numbers.
+
+The first implementation of this ADR got the first rule wrong by one instruction:
+a non-`tgkill` syscall landed on the next entry's `RET ALLOW`, so every syscall
+not matched earlier in the list, `kill`, `prlimit64` and `execve` included,
+was allowed. Its tests only checked list membership, and the one real-kernel test
+that failed was skipped as a kernel quirk. A test of an argument-filtered entry
+must therefore install the real filter in a forked child and make the calls
+(`[iso2]` in `tests/unit/test_worker_hardening_threads.cpp`); a membership
+check cannot see a jump-offset error.
+
 ### Negative Consequences
 
 * Kernels older than Landlock ABI 6 do not get signal scoping; the seccomp
   restriction still applies on all supported Linux kernels.
+* The worker still runs under the same uid as the main process, which the audit
+  preferred. The seccomp argument check is what stops it signalling main, so it
+  must not be relaxed while that is true.
 
 ## Links
 

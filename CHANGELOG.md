@@ -59,6 +59,13 @@
   write of a deduplicated one through the memory backend's statement-failure injection,
   and checks the response, memory and store, a successful retry, and that the earlier
   upload is still served.
+- **DOCS (CRY-2, ISO-2):** `federation.worker.ipc_max_dispatch_queue_count` and
+  `ipc_max_dispatch_queue_bytes` are documented in `docs/user-manual.md` and the example
+  config; `docs/hardening.md` and `docs/threat-model.md` describe the dispatch-queue bound
+  and the worker signal/limit restriction, with the shared-uid residual; ADR-0112 records
+  how an argument-checked entry must be laid out in the generated BPF program and that it
+  needs a real-kernel test; ADR-0065 points to ADR-0111; ADR-0111 and ADR-0112 dates
+  corrected.
 - **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
   regression above masked it: the pre-existing thread's `execve` succeeded because the
   filter allowed it, not because of a kernel quirk. New real-kernel scenario

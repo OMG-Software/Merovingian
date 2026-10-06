@@ -1,6 +1,6 @@
 # Cap in-flight IPC requests per channel
 
-* Status: accepted
+* Status: accepted; the reader-side dispatch queue in front of this cap, left unbounded here, is bounded by [ADR-0111](0111-bound-the-ipc-dispatch-queue.md)
 * Date: 2026-09-24
 
 ## Context and Problem Statement

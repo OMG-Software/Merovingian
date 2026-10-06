@@ -304,6 +304,10 @@ federation.worker.threads=4
 federation.worker.relay_threads=32
 federation.worker.request_timeout_seconds=30
 federation.worker.ipc_max_in_flight_requests=256
+# Frames (and bytes) one worker may queue for main's dispatch thread before its
+# channel is closed and the worker restarted (CRY-2). 0 disables (not recommended).
+# federation.worker.ipc_max_dispatch_queue_count=1024
+# federation.worker.ipc_max_dispatch_queue_bytes=134217728
 federation.worker.shards=2
 federation.worker.apply_hardening=true
 # federation.worker.binary=
