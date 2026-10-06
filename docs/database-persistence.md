@@ -143,6 +143,15 @@ value. Test fixtures that do not exercise persistence select it through
 - Durable persistent-store helpers for device keys, one-time keys, fallback
   keys, cross-signing keys, key signatures, key backup versions, and key
   backup sessions.
+- One fallback key per algorithm per device: `store_fallback_key` deletes the
+  device's other fallback keys of the same algorithm and inserts the new one in a
+  single transaction (spec v1.19, `POST /keys/upload`, `fallback_keys`).
+- `key_signatures_for_target` reads key signatures through an in-memory index
+  keyed by target user (`PersistentStore::key_signature_target_index`). The index
+  is maintained by `store_key_signature`, rebuilt after SQLite and PostgreSQL
+  hydration, copied with the store, and ignored (lookup scans) while its row count
+  differs from `key_signatures`, so rows pushed directly never produce a missing
+  result. Read signatures through this function, not by scanning the vector.
 - Physical migration-file loading for SQL files with explicit metadata and
   statement names; the checked-in pre-production migration directory now
   contains the version-1 `initial_schema` create-table file and numbered
