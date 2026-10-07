@@ -834,6 +834,21 @@ threat it closes; the controls above are the standing defences these reinforce.
   outside `runtime.mutex` per the codebase convention, so a slow or hostile
   IS cannot block other runtime work.
 
+- **3PID ownership claimed without proof (AUTH-5):** before AUTH-5
+  `requestToken` without an identity server created a validation session that
+  was already marked validated and sent nothing, so any authenticated user could
+  bind an email address or phone number they did not own, and the real owner
+  was then refused `M_THREEPID_IN_USE`. Mitigation: ownership is proven only by
+  a trusted identity server. Sessions start unvalidated and `/account/3pid/add`,
+  `/bind` and `/account/3pid` ask the identity server (`getValidated3pid`)
+  whether the same medium and address were validated; without a trusted
+  identity server `requestToken` is refused `M_THREEPID_MEDIUM_NOT_SUPPORTED`.
+  Residual: the session keeps the caller's identity-server access token in
+  memory for at most the 15-minute session TTL (overwritten when the session
+  is dropped, never persisted or logged); a trusted identity server that lies
+  about validation can still vouch for an address, which is what trusting it
+  means.
+
 - **IS-delegated `bind`/`unbind`/`requestToken` and stored `client_secret`/`sid`
   (v0.11.10):** delegating `bind`, `unbind`, and `requestToken` to a remote IS
   extends the v0.11.9 outbound surface, and unbind auth mode 2 requires the HS

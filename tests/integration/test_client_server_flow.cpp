@@ -4,6 +4,7 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -219,6 +220,10 @@ SCENARIO("Integrated client-server flow covers account 3PID request add list and
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_3PID");
+        auto identity_server =
+            merovingian::tests::tls_mock::MockIdentityServer{merovingian::tests::tls_mock::MockIdentityServer::cooperative_responses(
+                {{"email", "user@example.org"}})};
+        identity_server.install(runtime);
 
         WHEN("an email address is requested and then associated with the account")
         {
@@ -226,7 +231,8 @@ SCENARIO("Integrated client-server flow covers account 3PID request add list and
                 runtime, {"POST",
                           "/_matrix/client/v3/account/3pid/email/requestToken",
                           {},
-                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+                          identity_server.with_identity_server(
+                              R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})")});
             REQUIRE(email_response.response.status == 200U);
             auto const email_body = parse_object(email_response.response.body);
             auto const* email_sid = string_member(email_body, "sid");
@@ -269,12 +275,17 @@ SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3P
         auto& runtime = started.runtime;
         auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_3PID_NEG");
         auto const bob = register_and_login(runtime, "bob", "CorrectHorse8!", "BOB_3PID_NEG");
+        auto identity_server =
+            merovingian::tests::tls_mock::MockIdentityServer{merovingian::tests::tls_mock::MockIdentityServer::cooperative_responses(
+                {{"email", "user@example.org"}})};
+        identity_server.install(runtime);
 
         auto const email_response = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
                       "/_matrix/client/v3/account/3pid/email/requestToken",
                       {},
-                      R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+                      identity_server.with_identity_server(
+                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})")});
         REQUIRE(email_response.response.status == 200U);
         auto const email_body = parse_object(email_response.response.body);
         auto const* email_sid = string_member(email_body, "sid");

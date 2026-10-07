@@ -60,6 +60,17 @@ struct LookupResponse final
     std::string mxid{};
 };
 
+// Parsed `GET /_matrix/identity/v2/3pid/getValidated3pid` response (200): the
+// identity server's statement that the session was validated, for which 3PID
+// and when. All three fields are mandatory in the spec; `validated_at_ms` is a
+// positive millisecond timestamp.
+struct ValidatedThreepid final
+{
+    std::string medium{};
+    std::string address{};
+    std::uint64_t validated_at_ms{0U};
+};
+
 // Parsed identity-server base URL. The IS is configured by absolute HTTPS URL
 // (e.g. "https://is.example.org" or "https://is.example.org:8448/path"); the
 // host and port drive SSRF-safe address resolution and the optional `path`
@@ -105,6 +116,17 @@ struct IdentityServerUrl final
 // Parses the `{sid}` body returned by a v2 validate/*/requestToken endpoint.
 // Returns nullopt on a malformed body or a body missing the mandatory `sid`.
 [[nodiscard]] auto parse_request_token_response(std::string_view body) -> std::optional<std::string>;
+
+// Parses the 200 body of getValidated3pid. Returns nullopt unless the body is a
+// JSON object with a non-empty string `medium`, a non-empty string `address`
+// and an integer `validated_at` greater than zero: a response that does not
+// positively say "validated" must never be read as validated.
+[[nodiscard]] auto parse_validated_3pid_response(std::string_view body) -> std::optional<ValidatedThreepid>;
+
+// Request target (path and query) for GET getValidated3pid. Both values are
+// percent-encoded: the sid is chosen by the identity server and the client
+// secret by the client, so neither may add a query parameter or end the query.
+[[nodiscard]] auto build_get_validated_3pid_path(std::string_view client_secret, std::string_view sid) -> std::string;
 
 // Test-only override for one identity-server host. Mirrors the homeserver's
 // `TestOnlyForcedOutboundResolution` contract: when `HomeserverRuntime` has an
@@ -162,6 +184,14 @@ public:
     // + sid from a prior requestToken flow) to `mxid` at the IS. Authenticated.
     [[nodiscard]] auto bind(std::string_view base_url, std::string_view id_access_token, std::string_view client_secret,
                             std::string_view sid, std::string_view mxid) -> IdentityServerResult;
+
+    // GET /_matrix/identity/v2/3pid/getValidated3pid. Asks the IS whether the
+    // session (sid + client_secret from a prior requestToken) was validated by
+    // the 3PID's owner. Authenticated. On 200 the caller parses `body` with
+    // parse_validated_3pid_response; 400 means not validated or expired, 404
+    // an unknown session. This is the homeserver's only proof of 3PID ownership.
+    [[nodiscard]] auto get_validated_3pid(std::string_view base_url, std::string_view id_access_token,
+                                          std::string_view client_secret, std::string_view sid) -> IdentityServerResult;
 
     // POST /_matrix/identity/v2/3pid/unbind. Removes a 3PID binding. Authenticated.
     [[nodiscard]] auto unbind(std::string_view base_url, std::string_view id_access_token,

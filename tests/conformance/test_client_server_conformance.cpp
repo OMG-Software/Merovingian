@@ -29,6 +29,7 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -52,6 +53,7 @@ namespace
 {
 
 using namespace merovingian::tests;
+using merovingian::tests::tls_mock::MockIdentityServer;
 
 [[nodiscard]] auto conformance_config() -> merovingian::config::Config
 {
@@ -4885,11 +4887,14 @@ SCENARIO("GET /account/3pid returns associated identifiers with required fields"
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({{"email", "user@example.org"}})};
+        identity_server.install(started.runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"POST",
                               "/_matrix/client/v3/account/3pid/email/requestToken",
                               {},
-                              R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+                              identity_server.with_identity_server(
+                                  R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})")});
         REQUIRE(token_request.response.status == 200U);
         auto const token_request_body = parse_object(token_request.response.body);
         auto const* sid = string_member(token_request_body, "sid");
@@ -4936,11 +4941,14 @@ SCENARIO("POST /account/3pid/add enforces UIA and accepts the validated identifi
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({{"email", "add@example.org"}})};
+        identity_server.install(started.runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"POST",
                               "/_matrix/client/v3/account/3pid/email/requestToken",
                               {},
-                              R"({"client_secret":"secret654","email":"add@example.org","send_attempt":1})"});
+                              identity_server.with_identity_server(
+                                  R"({"client_secret":"secret654","email":"add@example.org","send_attempt":1})")});
         REQUIRE(token_request.response.status == 200U);
         auto const token_request_body = parse_object(token_request.response.body);
         auto const* sid = string_member(token_request_body, "sid");
@@ -4977,6 +4985,8 @@ SCENARIO("POST /account/3pid/email/requestToken is unauthenticated and returns a
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({})};
+        identity_server.install(started.runtime);
 
         WHEN("POST /account/3pid/email/requestToken is called")
         {
@@ -4984,7 +4994,8 @@ SCENARIO("POST /account/3pid/email/requestToken is unauthenticated and returns a
                 started.runtime, {"POST",
                                   "/_matrix/client/v3/account/3pid/email/requestToken",
                                   {},
-                                  R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
+                                  identity_server.with_identity_server(
+                                      R"({"client_secret":"s","email":"user@example.org","send_attempt":1})")});
 
             THEN("the server returns 200 with a sid")
             {
@@ -5008,6 +5019,8 @@ SCENARIO("POST /account/3pid/msisdn/requestToken is unauthenticated and returns 
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({})};
+        identity_server.install(started.runtime);
 
         WHEN("POST /account/3pid/msisdn/requestToken is called")
         {
@@ -5016,7 +5029,8 @@ SCENARIO("POST /account/3pid/msisdn/requestToken is unauthenticated and returns 
                 {"POST",
                  "/_matrix/client/v3/account/3pid/msisdn/requestToken",
                  {},
-                 R"({"client_secret":"s","country":"GB","phone_number":"07700000000","send_attempt":1})"});
+                 identity_server.with_identity_server(
+                     R"({"client_secret":"s","country":"GB","phone_number":"07700000000","send_attempt":1})")});
 
             THEN("the server returns 200 with a sid")
             {
@@ -5196,6 +5210,8 @@ SCENARIO("POST /register/email/requestToken returns a spec-shaped validation ses
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({})};
+        identity_server.install(started.runtime);
 
         WHEN("an email validation request is submitted")
         {
@@ -5204,7 +5220,8 @@ SCENARIO("POST /register/email/requestToken returns a spec-shaped validation ses
                 {"POST",
                  "/_matrix/client/v3/register/email/requestToken",
                  {},
-                 R"({"client_secret":"secret123","email":"user@example.org","next_link":"https://example.org/next","send_attempt":1})"});
+                 identity_server.with_identity_server(
+                     R"({"client_secret":"secret123","email":"user@example.org","next_link":"https://example.org/next","send_attempt":1})")});
 
             THEN("the response is 200 with a valid sid")
             {
@@ -5236,6 +5253,8 @@ SCENARIO("POST /register/msisdn/requestToken returns a spec-shaped validation se
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({})};
+        identity_server.install(started.runtime);
 
         WHEN("an MSISDN validation request is submitted")
         {
@@ -5244,7 +5263,8 @@ SCENARIO("POST /register/msisdn/requestToken returns a spec-shaped validation se
                 {"POST",
                  "/_matrix/client/v3/register/msisdn/requestToken",
                  {},
-                 R"({"client_secret":"secret123","country":"GB","next_link":"https://example.org/next","phone_number":"07700000000","send_attempt":1})"});
+                 identity_server.with_identity_server(
+                     R"({"client_secret":"secret123","country":"GB","next_link":"https://example.org/next","phone_number":"07700000000","send_attempt":1})")});
 
             THEN("the response is 200 with a valid sid")
             {

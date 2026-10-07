@@ -511,6 +511,43 @@ public:
         return "https://" + host_port();
     }
 
+    // A cooperative identity server for tests that only need a 3PID to end up
+    // associated with an account: requestToken is answered with the sid
+    // "email-sid" or "msisdn-sid", and getValidated3pid for that sid reports the
+    // matching entry of `validated` (medium, address) validated at
+    // `cooperative_validated_at_ms`. Bind and unbind succeed.
+    [[nodiscard]] static auto cooperative_responses(std::vector<std::pair<std::string, std::string>> const& validated)
+        -> Responses
+    {
+        auto responses = Responses{
+            {"validate/email/requestToken",  json_http_response("200 OK", R"({"sid":"email-sid"})") },
+            {"validate/msisdn/requestToken", json_http_response("200 OK", R"({"sid":"msisdn-sid"})")},
+            {"3pid/bind",                    json_http_response("200 OK", "{}")                     },
+            {"3pid/unbind",                  json_http_response("200 OK", "{}")                     },
+        };
+        for (auto const& [medium, address] : validated)
+        {
+            responses.emplace_back("sid=" + medium + "-sid",
+                                   json_http_response("200 OK", R"({"address":")" + address + R"(","medium":")" +
+                                                                    medium + R"(","validated_at":)" +
+                                                                    std::to_string(cooperative_validated_at_ms) + "}"));
+        }
+        return responses;
+    }
+
+    static constexpr auto cooperative_validated_at_ms = std::uint64_t{1700000000000U};
+
+    // Returns `json_object` (a JSON object literal) with this server named as
+    // the request's id_server, together with an IS access token: the pair that
+    // delegates a requestToken call to it.
+    [[nodiscard]] auto with_identity_server(std::string json_object) const -> std::string
+    {
+        auto const closing = json_object.rfind('}');
+        REQUIRE(closing != std::string::npos);
+        json_object.insert(closing, R"(,"id_server":")" + host_port() + R"(","id_access_token":"opaque")");
+        return json_object;
+    }
+
     // Marks this server trusted and pins its host to loopback with its
     // self-signed certificate. `Runtime` is a ClientServerRuntime; it is a
     // template parameter so this header stays free of the client-server header.

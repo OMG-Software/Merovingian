@@ -621,6 +621,15 @@ Used for 3PID (email/phone) invites, binds, unbinds, and `requestToken`
 flows. With `trusted_servers` empty (the default) every operation that needs
 an identity server fails closed rather than silently minting tokens locally.
 
+Merovingian cannot send email or SMS itself, so a user can add an email address
+or phone number to their account only through a trusted identity server: the
+client asks for the validation token with `id_server` and `id_access_token`,
+the identity server messages the user, and the address is added only once the
+identity server confirms the user completed validation. Without a trusted
+identity server the `requestToken` endpoints answer
+`M_THREEPID_MEDIUM_NOT_SUPPORTED` and adding an email address or phone number
+is not possible. 3PIDs are not used for login or password reset.
+
 | Key | Default | When to change |
 |---|---|---|
 | `server.identity_server.trusted_servers` | (empty) | Comma-separated allow-list of identity server base URLs (must be HTTPS). A 3PID operation naming an `id_server` outside this list is refused. |
