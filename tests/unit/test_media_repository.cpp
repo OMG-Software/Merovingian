@@ -41,7 +41,7 @@ SCENARIO("Local media repository uploads, downloads, and deduplicates safe media
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
             auto const second = merovingian::media::upload_local_media(
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
-            auto const downloaded = merovingian::media::download_local_media(repository, "example.org", first.media_id);
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, first.media_id);
 
             THEN("two media records reference one stored blob and bytes are served safely")
             {
@@ -58,7 +58,9 @@ SCENARIO("Local media repository uploads, downloads, and deduplicates safe media
                 REQUIRE(repository.metrics.deduplicated_uploads == 1U);
                 REQUIRE(downloaded.ok);
                 REQUIRE(downloaded.content_type == "text/plain");
-                REQUIRE(downloaded.bytes == "hello");
+                // ADR-0119: the repository resolves the blob; its bytes are read
+                // from the database by the media service.
+                REQUIRE(downloaded.storage_id == repository.blobs.front().storage_id);
             }
         }
     }
@@ -75,10 +77,9 @@ SCENARIO("Local media repository quarantines scanner failures and blocks downloa
         {
             auto const uploaded = merovingian::media::upload_local_media(
                 repository, "example.org", {"@alice:example.org", "image/png", "image/png", "png-bytes", false});
-            auto const blocked = merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
+            auto const blocked = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
             auto const released = merovingian::media::release_local_media(repository, uploaded.media_id);
-            auto const downloaded =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
 
             THEN("quarantined media cannot be served until an admin release")
             {
@@ -90,7 +91,7 @@ SCENARIO("Local media repository quarantines scanner failures and blocks downloa
                 REQUIRE(blocked.status == 451U);
                 REQUIRE(released.ok);
                 REQUIRE(downloaded.ok);
-                REQUIRE(downloaded.bytes == "png-bytes");
+                REQUIRE(downloaded.storage_id == repository.records.front().storage_id);
             }
         }
     }
@@ -111,8 +112,7 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "small", true});
             auto const removed =
                 merovingian::media::remove_local_media(repository, uploaded.media_id, "retention expired");
-            auto const after_remove =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
+            auto const after_remove = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
 
             THEN("oversized uploads fail closed and removed bytes are no longer served")
             {
@@ -122,7 +122,8 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
                 REQUIRE(uploaded.ok);
                 REQUIRE(removed.ok);
                 REQUIRE(repository.blobs.front().ref_count == 0U);
-                REQUIRE(repository.blobs.front().bytes.empty());
+                REQUIRE(merovingian::media::find_local_media_blob(repository, repository.blobs.front().storage_id) ==
+                        nullptr);
                 REQUIRE_FALSE(after_remove.ok);
                 REQUIRE(after_remove.status == 404U);
             }
@@ -145,8 +146,7 @@ SCENARIO("Local media repository revives removed storage without duplicate blob 
                 merovingian::media::remove_local_media(repository, first.media_id, "retention expired");
             auto const second = merovingian::media::upload_local_media(
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "reupload", true});
-            auto const downloaded =
-                merovingian::media::download_local_media(repository, "example.org", second.media_id);
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, second.media_id);
 
             THEN("one live blob holds the re-upload and its final removal erases the bytes")
             {
@@ -157,13 +157,13 @@ SCENARIO("Local media repository revives removed storage without duplicate blob 
                 CHECK(repository.blobs.size() == 1U);
                 CHECK(repository.blobs.front().ref_count == 1U);
                 CHECK(downloaded.ok);
-                CHECK(downloaded.bytes == "reupload");
+                CHECK(downloaded.storage_id == repository.records.back().storage_id);
                 auto const* stored =
                     merovingian::media::find_local_media_blob(repository, repository.records.back().storage_id);
                 CHECK(stored != nullptr);
                 if (stored != nullptr)
                 {
-                    CHECK(stored->bytes == "reupload");
+                    CHECK(stored->size_bytes == 8U);
                 }
                 auto const removed_again =
                     merovingian::media::remove_local_media(repository, second.media_id, "removed again");
@@ -171,7 +171,7 @@ SCENARIO("Local media repository revives removed storage without duplicate blob 
                 for (auto const& blob : repository.blobs)
                 {
                     CHECK(blob.ref_count == 0U);
-                    CHECK(blob.bytes.empty());
+                    CHECK(merovingian::media::find_local_media_blob(repository, blob.storage_id) == nullptr);
                 }
             }
         }
@@ -1034,7 +1034,7 @@ SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads", "[
         WHEN("the authenticated v1 endpoint requests the media")
         {
             auto const authenticated =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, false);
+                merovingian::media::resolve_local_media_download(repository, uploaded.media_id, false);
 
             THEN("the bytes are served")
             {
@@ -1045,8 +1045,7 @@ SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads", "[
 
         WHEN("the legacy unauthenticated v3 endpoint requests the same media")
         {
-            auto const legacy =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, true);
+            auto const legacy = merovingian::media::resolve_local_media_download(repository, uploaded.media_id, true);
 
             THEN("the endpoint is frozen and returns a 404")
             {
@@ -1060,13 +1059,68 @@ SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads", "[
         {
             REQUIRE(!repository.records.empty());
             repository.records.front().legacy_endpoint_visible = true;
-            auto const legacy =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, true);
+            auto const legacy = merovingian::media::resolve_local_media_download(repository, uploaded.media_id, true);
 
             THEN("the legacy endpoint serves it, preserving backward compatibility for old uploads")
             {
                 REQUIRE(legacy.ok);
                 REQUIRE(legacy.status == 200U);
+            }
+        }
+    }
+}
+
+// ADR-0119: bytes are read with the runtime mutex released, so moderation can
+// land between resolving a download and serving it. The re-check must refuse.
+SCENARIO("Media resolved for download is refused if moderation lands before it is served",
+         "[media][repository][media-on-demand]")
+{
+    GIVEN("an uploaded file resolved for download")
+    {
+        auto repository = test_repository();
+        auto const uploaded = merovingian::media::upload_local_media(
+            repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+        REQUIRE(uploaded.ok);
+        auto const target = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
+        REQUIRE(target.ok);
+
+        WHEN("nothing changes before it is served")
+        {
+            THEN("it may still be served")
+            {
+                REQUIRE(
+                    merovingian::media::local_media_still_servable(repository, uploaded.media_id, target.storage_id));
+            }
+        }
+
+        WHEN("it is quarantined before it is served")
+        {
+            REQUIRE(merovingian::media::quarantine_local_media(repository, uploaded.media_id, "reported").ok);
+
+            THEN("it may no longer be served")
+            {
+                REQUIRE_FALSE(
+                    merovingian::media::local_media_still_servable(repository, uploaded.media_id, target.storage_id));
+            }
+        }
+
+        WHEN("it is removed before it is served")
+        {
+            REQUIRE(merovingian::media::remove_local_media(repository, uploaded.media_id, "abuse").ok);
+
+            THEN("it may no longer be served")
+            {
+                REQUIRE_FALSE(
+                    merovingian::media::local_media_still_servable(repository, uploaded.media_id, target.storage_id));
+            }
+        }
+
+        WHEN("it was resolved for the authenticated endpoint and is checked for the legacy one")
+        {
+            THEN("the legacy freeze still applies")
+            {
+                REQUIRE_FALSE(merovingian::media::local_media_still_servable(repository, uploaded.media_id,
+                                                                             target.storage_id, true));
             }
         }
     }

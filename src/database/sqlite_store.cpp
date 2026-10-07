@@ -614,12 +614,14 @@ namespace
                                                     text_is_true(column_text(row, 7)),
                                                     text_is_true(column_text(row, 8))});
                    }) &&
+               // ADR-0119: metadata only. The bytes are read per request
+               // (read_media_blob), so memory does not grow with stored media.
                load_rows(connection,
-                         "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs",
+                         "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM media_blobs",
                          [&store](sqlite3_stmt& row) {
                              store.media_blobs.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                          parse_u64(column_text(row, 3)), column_text(row, 4),
-                                                          parse_u64(column_text(row, 5))});
+                                                          parse_u64(column_text(row, 3)), std::string{},
+                                                          parse_u64(column_text(row, 4))});
                          }) &&
                load_rows(connection,
                          "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
@@ -1203,6 +1205,30 @@ namespace detail
             return std::nullopt;
         }
         return load_room_snapshot_impl(**connection, room_id);
+    }
+
+    auto read_media_blob_from_sqlite(std::string const& path, std::string_view storage_id) -> std::optional<std::string>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto connection = open_sqlite_connection(path);
+        if (!connection.has_value())
+        {
+            return std::nullopt;
+        }
+        auto bytes = std::optional<std::string>{};
+        auto const ok =
+            load_rows_bound(**connection, "SELECT bytes FROM media_blobs WHERE storage_id = ?1 AND ref_count <> '0'",
+                            {std::string{storage_id}}, [&bytes](sqlite3_stmt& row) {
+                                bytes = column_text(row, 0);
+                            });
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        return bytes;
     }
 
     auto load_audit_events_from_sqlite(std::string const& path, std::string_view prefix, std::size_t limit)

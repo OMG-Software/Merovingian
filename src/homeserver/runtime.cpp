@@ -125,8 +125,8 @@ namespace
         return value;
     }
 
-    auto hydrate_media_repository(media::LocalMediaRepository& repository, database::PersistentStore& persistent_store)
-        -> void
+    auto hydrate_media_repository(media::LocalMediaRepository& repository,
+                                  database::PersistentStore const& persistent_store) -> void
     {
         auto records = std::vector<media::LocalMediaRecord>{};
         records.reserve(persistent_store.local_media.size());
@@ -148,16 +148,15 @@ namespace
             records.push_back(std::move(record));
         }
 
+        // ADR-0119: the repository holds blob metadata only. SQLite and
+        // PostgreSQL hydrate these rows without their bytes; for the memory
+        // backend the rows are the database and keep them.
         auto blobs = std::vector<media::LocalMediaBlob>{};
         blobs.reserve(persistent_store.media_blobs.size());
-        for (auto& blob_row : persistent_store.media_blobs)
+        for (auto const& blob_row : persistent_store.media_blobs)
         {
             blobs.push_back({blob_row.storage_id, blob_row.hash_algorithm, blob_row.digest, blob_row.size_bytes,
-                             std::move(blob_row.bytes), blob_row.ref_count});
-            // MED-6: after the runtime repository takes ownership, the persistent
-            // store must not hold a second in-memory copy of the payload.
-            blob_row.bytes.clear();
-            blob_row.bytes.shrink_to_fit();
+                             blob_row.ref_count});
         }
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }

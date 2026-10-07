@@ -28,13 +28,15 @@ enum class LocalMediaAdminAction
     remove,
 };
 
+// ADR-0119: a blob's metadata. Its bytes live only in the database and are
+// read per request (database::read_media_blob); there is deliberately no
+// bytes member, so nothing can come to rely on them being in memory.
 struct LocalMediaBlob final
 {
     std::string storage_id{};
     std::string hash_algorithm{};
     std::string digest{};
     std::uint64_t size_bytes{0U};
-    std::string bytes{};
     std::uint64_t ref_count{0U};
 };
 
@@ -145,6 +147,19 @@ struct LocalMediaUploadResult final
     std::string reason{};
 };
 
+// Where a servable local media file's bytes are (ADR-0119). The caller reads
+// them with database::read_media_blob and then checks
+// local_media_still_servable before serving them.
+struct LocalMediaDownloadTarget final
+{
+    bool ok{false};
+    std::uint16_t status{500U};
+    std::string content_type{};
+    std::string storage_id{};
+    std::string reason{};
+};
+
+// A download with its bytes, as the federation media endpoint returns it.
 struct LocalMediaDownloadResult final
 {
     bool ok{false};
@@ -191,6 +206,12 @@ struct RemoteMediaDownloadResult final
     std::string storage_id{};
     std::string local_media_id{};
     bool quarantined{false};
+    // True when this call admitted a new local record, which the caller must
+    // make durable (ADR-0119); false when an existing cached record was reused.
+    bool admitted_new_record{false};
+    // True when that record's blob is new (or revived), so its bytes must be
+    // written; false when it deduplicated onto stored bytes.
+    bool stored_new_blob{false};
 };
 
 [[nodiscard]] auto local_media_state_name(LocalMediaState state) noexcept -> char const*;
@@ -215,9 +236,16 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 // entry are removed and the blob reference it took is released. Returns false
 // when no record has that ID.
 [[nodiscard]] auto rollback_local_media_upload(LocalMediaRepository& repository, std::string_view media_id) -> bool;
-[[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
-                                        std::string_view media_id, bool legacy_endpoint = false)
-    -> LocalMediaDownloadResult;
+// Resolves a local media download to the blob that holds its bytes, applying
+// the record checks (state, legacy visibility). Reads no bytes.
+[[nodiscard]] auto resolve_local_media_download(LocalMediaRepository& repository, std::string_view media_id,
+                                                bool legacy_endpoint = false) -> LocalMediaDownloadTarget;
+// True while `media_id` may still be served from `storage_id`: available, not
+// moved to another blob, the blob still referenced, and visible to the legacy
+// endpoints when `legacy_endpoint`. Checked again after bytes are read without
+// the runtime mutex, so media removed or quarantined meanwhile is not served.
+[[nodiscard]] auto local_media_still_servable(LocalMediaRepository& repository, std::string_view media_id,
+                                              std::string_view storage_id, bool legacy_endpoint = false) -> bool;
 // Performs the same input and current-record checks as the moderation actions
 // without changing repository state, counters, or logs. Call before durable
 // moderation writes so persistence failure cannot leave a partial mutation.

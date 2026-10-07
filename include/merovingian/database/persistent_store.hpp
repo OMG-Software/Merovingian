@@ -1328,8 +1328,29 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 // DB-5: writes a new upload's media row and its blob (inserted, or updated with the
 // new reference count when deduplicated) in one transaction. The in-memory mirror
 // changes only after the commit succeeds; on failure nothing is written.
+// When `new_blob` is true the blob row is written with `blob.bytes` (a new
+// blob, or a removed one revived by a re-upload); otherwise the bytes are
+// already durable and only the reference count is updated (ADR-0119).
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
-                                             PersistentMediaBlob const& blob) -> bool;
+                                             PersistentMediaBlob const& blob, bool new_blob) -> bool;
+
+// ADR-0119: media bytes live only in the database and are read per request.
+// prepare_media_blob_read runs under the runtime mutex and captures where to
+// read from; read_media_blob then runs with the mutex released. The SQLite
+// path and PostgreSQL connection details are fixed once the store is open.
+// The memory backend has no other copy of the bytes, so they are copied here.
+struct MediaBlobRead final
+{
+    PersistentStoreBackend backend{PersistentStoreBackend::memory};
+    std::string storage_id{};
+    std::string sqlite_path{};
+    std::string_view postgresql_conninfo{};
+    std::string_view postgresql_runtime_role{};
+    std::optional<std::string> memory_bytes{};
+};
+[[nodiscard]] auto prepare_media_blob_read(PersistentStore const& store, std::string_view storage_id) -> MediaBlobRead;
+// The blob's bytes, or nullopt when it is not referenced or cannot be read.
+[[nodiscard]] auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
 // Commit moderation metadata, optional blob removal and both audit records
@@ -1555,6 +1576,12 @@ namespace detail
         -> std::optional<std::vector<PersistentAuditEvent>>;
     [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
+    // ADR-0119: one referenced media blob's bytes. nullopt on a missing or
+    // unreferenced blob and on a connection or query failure.
+    [[nodiscard]] auto read_media_blob_from_sqlite(std::string const& path, std::string_view storage_id)
+        -> std::optional<std::string>;
+    [[nodiscard]] auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                       std::string_view storage_id) -> std::optional<std::string>;
     [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                           std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;

@@ -1794,7 +1794,11 @@ SCENARIO("Persistent store replays policy rules and durable media blobs after re
                 REQUIRE(reopened.store.policy_rules.front().action == "deny");
                 REQUIRE(reopened.store.media_blobs.size() == 1U);
                 REQUIRE(reopened.store.media_blobs.front().storage_id == "blob_" + digest + "_5");
-                REQUIRE(reopened.store.media_blobs.front().bytes == "hello");
+                // ADR-0119: hydration carries metadata only; the payload is read
+                // from the database on demand.
+                REQUIRE(reopened.store.media_blobs.front().bytes.empty());
+                REQUIRE(merovingian::database::read_media_blob(merovingian::database::prepare_media_blob_read(
+                            reopened.store, "blob_" + digest + "_5")) == std::optional<std::string>{"hello"});
                 REQUIRE(reopened.store.media_blobs.front().ref_count == 2U);
             }
         }
@@ -3444,8 +3448,13 @@ SCENARIO("Persistent store round-trips binary media blob bytes containing NUL an
                 REQUIRE(blob_ok);
                 REQUIRE(reopened.store.media_blobs.size() == 1U);
                 auto const& row = reopened.store.media_blobs.front();
-                REQUIRE(row.bytes.size() == binary.size());
-                REQUIRE(row.bytes == binary);
+                // ADR-0119: read on demand rather than hydrated.
+                REQUIRE(row.bytes.empty());
+                auto const read = merovingian::database::read_media_blob(
+                    merovingian::database::prepare_media_blob_read(reopened.store, row.storage_id));
+                REQUIRE(read.has_value());
+                REQUIRE(read->size() == binary.size());
+                REQUIRE(*read == binary);
             }
         }
 

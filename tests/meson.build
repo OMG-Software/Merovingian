@@ -380,6 +380,7 @@ shell = find_program('sh')
       'integration/test_join_room_flow.cpp',
       'integration/test_identity_service_flow.cpp',
       'integration/test_media_repository_security.cpp',
+      'integration/test_media_on_demand_flow.cpp',
       'integration/test_media_thumbnail_flow.cpp',
       'integration/test_security_audit_remote_media.cpp',
       'integration/test_observability_flow.cpp',

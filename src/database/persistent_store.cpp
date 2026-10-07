@@ -2826,21 +2826,41 @@ namespace
         return !blob.storage_id.empty() && !blob.hash_algorithm.empty() && !blob.digest.empty();
     }
 
-    // MED-6: the runtime repository is the single in-memory copy of the blob
-    // bytes. Once the row is durable the store keeps only its metadata.
-    auto remember_media_blob_metadata(PersistentStore& store, PersistentMediaBlob const& blob) -> void
+    // ADR-0119: once a blob row is durable the store mirrors only its
+    // metadata; its bytes are read from the database on demand. The memory
+    // backend is the exception, because its mirror is the database: there the
+    // bytes are kept when written and left alone when only the reference count
+    // changes.
+    auto remember_media_blob(PersistentStore& store, PersistentMediaBlob const& blob, bool bytes_written) -> void
     {
-        auto metadata_only =
-            PersistentMediaBlob{blob.storage_id, blob.hash_algorithm, blob.digest, blob.size_bytes, {}, blob.ref_count};
+        auto const keep_bytes = store.backend == PersistentStoreBackend::memory && bytes_written;
         auto existing = std::ranges::find_if(store.media_blobs, [&blob](PersistentMediaBlob const& current) {
             return current.storage_id == blob.storage_id;
         });
-        if (existing != store.media_blobs.end())
+        if (existing == store.media_blobs.end())
         {
-            *existing = std::move(metadata_only);
+            store.media_blobs.push_back({blob.storage_id, blob.hash_algorithm, blob.digest, blob.size_bytes,
+                                         keep_bytes ? blob.bytes : std::string{}, blob.ref_count});
             return;
         }
-        store.media_blobs.push_back(std::move(metadata_only));
+        existing->hash_algorithm = blob.hash_algorithm;
+        existing->digest = blob.digest;
+        existing->size_bytes = blob.size_bytes;
+        existing->ref_count = blob.ref_count;
+        if (bytes_written)
+        {
+            existing->bytes = keep_bytes ? blob.bytes : std::string{};
+        }
+    }
+
+    [[nodiscard]] auto update_media_blob_ref_count_statement(PersistentMediaBlob const& blob) -> PreparedStatement
+    {
+        return record_statement("update_media_blob_ref_count",
+                                "UPDATE media_blobs SET ref_count = $2 WHERE storage_id = $1",
+                                {
+                                    {blob.storage_id,                false},
+                                    {std::to_string(blob.ref_count), false}
+        });
     }
 
 } // namespace
@@ -2856,23 +2876,63 @@ namespace
 }
 
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
-                                             PersistentMediaBlob const& blob) -> bool
+                                             PersistentMediaBlob const& blob, bool new_blob) -> bool
 {
-    if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.storage_id.empty() ||
-        blob.ref_count == 0U)
+    if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.ref_count == 0U ||
+        (new_blob && blob.bytes.size() != blob.size_bytes))
     {
         return false;
     }
     // DB-5: the record and the blob it points at are durable together or not at
     // all. A record without its blob would survive a restart as unservable
     // media, and a blob without its record as an orphaned reference count.
-    if (!commit_persistent_transaction(store, {insert_local_media_statement(media), upsert_media_blob_statement(blob)}))
+    // ADR-0119: a deduplicated upload's bytes are already durable, so only its
+    // reference count is written; re-binding them would copy the whole file.
+    auto const blob_statement =
+        new_blob ? upsert_media_blob_statement(blob) : update_media_blob_ref_count_statement(blob);
+    if (!commit_persistent_transaction(store, {insert_local_media_statement(media), blob_statement}))
     {
         return false;
     }
     store.local_media.push_back(std::move(media));
-    remember_media_blob_metadata(store, blob);
+    remember_media_blob(store, blob, new_blob);
     return true;
+}
+
+auto prepare_media_blob_read(PersistentStore const& store, std::string_view storage_id) -> MediaBlobRead
+{
+    auto read = MediaBlobRead{};
+    read.backend = store.backend;
+    read.storage_id = std::string{storage_id};
+    read.sqlite_path = store.sqlite_path;
+    read.postgresql_conninfo = store.postgresql_conninfo;
+    read.postgresql_runtime_role = store.postgresql_runtime_role;
+    if (store.backend == PersistentStoreBackend::memory)
+    {
+        auto const blob = std::ranges::find_if(store.media_blobs, [storage_id](PersistentMediaBlob const& row) {
+            return row.storage_id == storage_id && row.ref_count > 0U;
+        });
+        if (blob != store.media_blobs.end())
+        {
+            read.memory_bytes = blob->bytes;
+        }
+    }
+    return read;
+}
+
+auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
+{
+    switch (read.backend)
+    {
+    case PersistentStoreBackend::memory:
+        return read.memory_bytes;
+    case PersistentStoreBackend::sqlite:
+        return detail::read_media_blob_from_sqlite(read.sqlite_path, read.storage_id);
+    case PersistentStoreBackend::postgresql:
+        return detail::read_media_blob_from_postgresql(read.postgresql_conninfo, read.postgresql_runtime_role,
+                                                       read.storage_id);
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
@@ -3001,7 +3061,7 @@ namespace
     {
         return false;
     }
-    remember_media_blob_metadata(store, blob);
+    remember_media_blob(store, blob, true);
     return true;
 }
 

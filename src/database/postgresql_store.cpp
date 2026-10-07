@@ -1065,7 +1065,7 @@ namespace
         {
             auto media_blobs =
                 query_rows(connection, "postgresql_load_media_blobs",
-                           "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs "
+                           "SELECT storage_id, hash_algorithm, digest, size_bytes, ref_count FROM media_blobs "
                            "ORDER BY storage_id");
             if (!media_blobs.ok)
             {
@@ -1073,11 +1073,10 @@ namespace
             }
             for (auto const& row : media_blobs.rows)
             {
-                if (row.size() >= 6U)
+                if (row.size() >= 5U)
                 {
-                    // `bytes` is a bytea column; the result loader has already
-                    // decoded it to the raw payload.
-                    store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], parse_u64(row[5])});
+                    // ADR-0119: metadata only; the bytes are read per request.
+                    store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]), {}, parse_u64(row[4])});
                 }
             }
         }
@@ -2267,6 +2266,34 @@ namespace detail
             return std::nullopt;
         }
         return load_room_snapshot_impl(opened.connection, room_id);
+    }
+
+    auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                         std::string_view storage_id) -> std::optional<std::string>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
+        {
+            return std::nullopt;
+        }
+        // bytes is a bytea column; the result loader decodes it byte-exactly.
+        auto result = opened.connection.execute({"postgresql_read_media_blob",
+                                                 "SELECT bytes FROM media_blobs WHERE storage_id = $1 AND "
+                                                 "ref_count <> '0'",
+                                                 {{std::string{storage_id}, false}}});
+        if (!result.ok || result.rows.empty() || result.rows.front().empty())
+        {
+            return std::nullopt;
+        }
+        return result.rows.front().front();
     }
 
     auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,

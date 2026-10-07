@@ -15,10 +15,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
+
+#include <sqlite3.h>
 
 namespace
 {
@@ -90,6 +95,53 @@ namespace
 
 } // namespace
 
+namespace
+{
+
+struct SqliteHandleCloser final
+{
+    auto operator()(sqlite3* connection) const noexcept -> void
+    {
+        std::ignore = sqlite3_close(connection);
+    }
+};
+
+struct SqliteStatementFinalizer final
+{
+    auto operator()(sqlite3_stmt* statement) const noexcept -> void
+    {
+        std::ignore = sqlite3_finalize(statement);
+    }
+};
+
+// ADR-0119: the length of every media blob's durable bytes, read straight from
+// the SQLite file, since the server keeps no copy of them in memory.
+[[nodiscard]] auto durable_blob_lengths(std::filesystem::path const& path) -> std::vector<std::int64_t>
+{
+    auto lengths = std::vector<std::int64_t>{};
+    sqlite3* raw_connection = nullptr;
+    auto const opened = sqlite3_open_v2(path.string().c_str(), &raw_connection, SQLITE_OPEN_READONLY, nullptr);
+    auto const connection = std::unique_ptr<sqlite3, SqliteHandleCloser>{raw_connection};
+    if (opened != SQLITE_OK)
+    {
+        return lengths;
+    }
+    sqlite3_stmt* raw_statement = nullptr;
+    if (sqlite3_prepare_v2(connection.get(), "SELECT length(bytes) FROM media_blobs", -1, &raw_statement, nullptr) !=
+        SQLITE_OK)
+    {
+        return lengths;
+    }
+    auto const statement = std::unique_ptr<sqlite3_stmt, SqliteStatementFinalizer>{raw_statement};
+    while (sqlite3_step(statement.get()) == SQLITE_ROW)
+    {
+        lengths.push_back(sqlite3_column_int64(statement.get(), 0));
+    }
+    return lengths;
+}
+
+} // namespace
+
 SCENARIO("Removed media can be re-uploaded durably and erased again", "[med-3][media][database][restart]")
 {
     GIVEN("a SQLite repository with removed and then re-uploaded content")
@@ -133,12 +185,16 @@ SCENARIO("Removed media can be re-uploaded durably and erased again", "[med-3][m
                     for (auto const& blob : restarted.runtime.media_repository.blobs)
                     {
                         CHECK(blob.ref_count == 0U);
-                        CHECK(blob.bytes.empty());
                     }
                     for (auto const& blob : restarted.runtime.database.persistent_store.media_blobs)
                     {
                         CHECK(blob.ref_count == 0U);
-                        CHECK(blob.bytes.empty());
+                    }
+                    auto const lengths = durable_blob_lengths(path);
+                    CHECK(lengths.size() == 1U);
+                    for (auto const length : lengths)
+                    {
+                        CHECK(length == 0);
                     }
                 }
             }
@@ -147,7 +203,6 @@ SCENARIO("Removed media can be re-uploaded durably and erased again", "[med-3][m
             for (auto const& blob : reopened.runtime.media_repository.blobs)
             {
                 CHECK(blob.ref_count == 0U);
-                CHECK(blob.bytes.empty());
             }
         }
         std::filesystem::remove(path);

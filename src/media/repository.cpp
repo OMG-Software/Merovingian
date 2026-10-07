@@ -644,7 +644,6 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         new_blob.hash_algorithm = "blake2b";
         new_blob.digest = digest;
         new_blob.size_bytes = size_bytes;
-        new_blob.bytes = request.bytes;
         new_blob.ref_count = 1U;
         // Storage IDs are durable primary keys. Revive the emptied row rather
         // than appending a second identity that persistence or removal could
@@ -682,8 +681,6 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         if (--blob->ref_count == 0U)
         {
             remove_blob_index(repository, blob->storage_id);
-            blob->bytes.clear();
-            blob->bytes.shrink_to_fit();
         }
         ++repository.metrics.uploads_rejected;
         log_diagnostic("upload.rejected",
@@ -776,8 +773,6 @@ auto rollback_local_media_upload(LocalMediaRepository& repository, std::string_v
         if (--blob->ref_count == 0U)
         {
             remove_blob_index(repository, storage_id);
-            blob->bytes.clear();
-            blob->bytes.shrink_to_fit();
         }
     }
     if (repository.metrics.uploads_accepted > 0U)
@@ -793,10 +788,9 @@ auto rollback_local_media_upload(LocalMediaRepository& repository, std::string_v
     return true;
 }
 
-auto download_local_media(LocalMediaRepository& repository, std::string_view server_name, std::string_view media_id,
-                          bool legacy_endpoint) -> LocalMediaDownloadResult
+auto resolve_local_media_download(LocalMediaRepository& repository, std::string_view media_id, bool legacy_endpoint)
+    -> LocalMediaDownloadTarget
 {
-    std::ignore = server_name;
     log_diagnostic("download.dispatch", {
                                             {"media_id", std::string{media_id}, false}
     });
@@ -834,8 +828,7 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
         return {false, 451U, {}, {}, "media is quarantined"};
     }
 
-    auto const* blob = find_blob(repository, record->storage_id);
-    if (blob == nullptr)
+    if (find_blob(repository, record->storage_id) == nullptr)
     {
         ++repository.metrics.downloads_blocked;
         log_diagnostic("download.rejected",
@@ -852,7 +845,15 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
                                             {"content_type", record->content_type,               false},
                                             {"size_bytes",   std::to_string(record->size_bytes), false}
     });
-    return {true, 200U, record->content_type, blob->bytes, {}};
+    return {true, 200U, record->content_type, record->storage_id, {}};
+}
+
+auto local_media_still_servable(LocalMediaRepository& repository, std::string_view media_id,
+                                std::string_view storage_id, bool legacy_endpoint) -> bool
+{
+    auto const* record = find_local_media_record(repository, media_id);
+    return record != nullptr && record->state == LocalMediaState::available && record->storage_id == storage_id &&
+           (!legacy_endpoint || record->legacy_endpoint_visible) && find_blob(repository, storage_id) != nullptr;
 }
 
 [[nodiscard]] auto make_multipart_boundary() -> std::string
@@ -1009,7 +1010,6 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
         if (blob->ref_count == 0U)
         {
             remove_blob_index(repository, storage_id);
-            blob->bytes.clear();
         }
     }
 
@@ -1057,20 +1057,17 @@ namespace
             {std::string{origin_server}, std::string{media_id}, std::string{local_media_id}, now + ttl_ms, now});
     }
 
-    [[nodiscard]] auto cached_remote_media_result(LocalMediaRepository& repository, LocalMediaRecord const& record)
-        -> RemoteMediaDownloadResult
+    // The bytes are the ones just fetched, which match the cached record's
+    // digest; nothing is read from storage here.
+    [[nodiscard]] auto cached_remote_media_result(LocalMediaRepository& repository, LocalMediaRecord const& record,
+                                                  std::string const& fetched_bytes) -> RemoteMediaDownloadResult
     {
-        auto const* blob = find_local_media_blob(repository, record.storage_id);
-        if (blob == nullptr)
-        {
-            return {false, 404U, "cached remote media blob is missing"};
-        }
         ++repository.metrics.downloads_served;
         return {true,
                 200U,
                 {},
                 record.content_type,
-                blob->bytes,
+                fetched_bytes,
                 record.size_bytes,
                 record.hash_algorithm,
                 record.digest,
@@ -1163,7 +1160,7 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
     if (auto const* cached = find_cached_remote_media(repository, request.origin_server, request.media_id, now);
         cached != nullptr)
     {
-        return cached_remote_media_result(repository, *cached);
+        return cached_remote_media_result(repository, *cached, request.bytes);
     }
 
     auto upload = LocalMediaUploadRequest{};
@@ -1202,7 +1199,9 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
                 result.digest,
                 make_storage_id(result.digest, result.size_bytes),
                 result.media_id,
-                true};
+                true,
+                true,
+                !result.deduplicated};
     }
     cache_remote_media(repository, request.origin_server, request.media_id, result.media_id, now);
     ++repository.metrics.remote_fetches_accepted;
@@ -1216,7 +1215,9 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
             result.digest,
             make_storage_id(result.digest, result.size_bytes),
             result.media_id,
-            result.quarantined};
+            result.quarantined,
+            true,
+            !result.deduplicated};
 }
 
 } // namespace merovingian::media
