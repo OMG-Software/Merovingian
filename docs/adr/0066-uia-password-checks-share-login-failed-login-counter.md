@@ -1,6 +1,6 @@
 # UI-auth password checks share the `/login` failed-login counter
 
-* Status: accepted
+* Status: superseded by [ADR-0122](0122-login-failures-are-throttled-per-source-with-an-account-ceiling.md) (2026-10-07)
 * Date: 2026-09-24
 
 ## Context and Problem Statement
