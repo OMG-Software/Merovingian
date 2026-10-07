@@ -1,5 +1,9 @@
 ## 0.12.20
 
+- **TESTS:** the PostgreSQL-only media scenarios (`[postgresql][media]`) read blob bytes
+  after a reopen through `read_media_blob`, since hydration no longer loads them, and the
+  released-blob scenario checks the `bytes` column directly, because `read_media_blob`
+  skips unreferenced blobs and would pass whether or not the bytes were cleared.
 - **CHANGED: media bytes live in the database and are read on demand (ADR-0119).** Every
   stored media file used to be loaded into memory at startup and served from there, so
   memory grew with stored media. Hydration now reads blob metadata only; downloads,

@@ -444,8 +444,14 @@ SCENARIO("PostgreSQL media blob bytes round-trip exactly through a real BYTEA co
                     REQUIRE(reopened.ok);
                     auto const* reloaded = find_blob(reopened.store, storage_id);
                     REQUIRE(reloaded != nullptr);
-                    REQUIRE(reloaded->bytes.size() == payload.size());
-                    REQUIRE(reloaded->bytes == payload);
+                    // ADR-0119: hydration loads metadata only; the bytes are
+                    // read from the BYTEA column on demand.
+                    REQUIRE(reloaded->bytes.empty());
+                    auto const read = merovingian::database::read_media_blob(
+                        merovingian::database::prepare_media_blob_read(reopened.store, storage_id));
+                    REQUIRE(read.has_value());
+                    REQUIRE(read->size() == payload.size());
+                    REQUIRE(*read == payload);
                 }
             }
         }

@@ -30,6 +30,23 @@ namespace
     return std::to_string(base) + "-" + std::to_string(counter++);
 }
 
+// The length of the bytes stored in the blob's row, read straight from the
+// table. read_media_blob filters out unreferenced blobs, so it cannot show
+// that a released blob's bytes were actually cleared.
+[[nodiscard]] auto stored_blob_byte_length(std::string_view uri, std::string const& storage_id) -> std::string
+{
+    auto opened = merovingian::database::open_postgresql_connection(uri);
+    REQUIRE(opened.ok);
+    auto const result =
+        opened.connection.execute({"test_stored_blob_byte_length",
+                                   "SELECT COALESCE(octet_length(bytes), 0) FROM media_blobs WHERE storage_id = $1",
+                                   {{storage_id, false}}});
+    REQUIRE(result.ok);
+    REQUIRE(result.rows.size() == 1U);
+    REQUIRE(result.rows.front().size() == 1U);
+    return result.rows.front().front();
+}
+
 [[nodiscard]] auto find_media(merovingian::database::PersistentStore const& store, std::string_view media_id)
 {
     return std::ranges::find_if(store.local_media, [media_id](auto const& media) {
@@ -134,7 +151,11 @@ SCENARIO("PostgreSQL media moderation commits shared-blob references and audit r
                 auto const persisted_blob = find_blob(after_first_restart.store, storage_id);
                 REQUIRE(persisted_blob != after_first_restart.store.media_blobs.end());
                 CHECK(persisted_blob->ref_count == 1U);
-                CHECK(persisted_blob->bytes == bytes);
+                // ADR-0119: hydration loads blob metadata only; the bytes are
+                // read from PostgreSQL on demand.
+                CHECK(persisted_blob->bytes.empty());
+                CHECK(merovingian::database::read_media_blob(merovingian::database::prepare_media_blob_read(
+                          after_first_restart.store, storage_id)) == bytes);
                 CHECK(admin_action_count(after_first_restart.store, first_media_id) == 1U);
                 CHECK(audit_event_count(after_first_restart.store, first_media_id) == 1U);
 
@@ -157,7 +178,10 @@ SCENARIO("PostgreSQL media moderation commits shared-blob references and audit r
                     auto const final_blob = find_blob(after_final_restart.store, storage_id);
                     REQUIRE(final_blob != after_final_restart.store.media_blobs.end());
                     CHECK(final_blob->ref_count == 0U);
-                    CHECK(final_blob->bytes.empty());
+                    CHECK_FALSE(merovingian::database::read_media_blob(merovingian::database::prepare_media_blob_read(
+                                                                           after_final_restart.store, storage_id))
+                                    .has_value());
+                    CHECK(stored_blob_byte_length(uri, storage_id) == "0");
                     CHECK(admin_action_count(after_final_restart.store, first_media_id) == 1U);
                     CHECK(admin_action_count(after_final_restart.store, final_media_id) == 1U);
                     CHECK(audit_event_count(after_final_restart.store, first_media_id) == 1U);
