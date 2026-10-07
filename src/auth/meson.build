@@ -1,5 +1,6 @@
 auth_sources = files(
   'client_server_api.cpp',
+  'failure_window_table.cpp',
   'identity.cpp',
   'key_api.cpp',
   'oidc_discovery.cpp',

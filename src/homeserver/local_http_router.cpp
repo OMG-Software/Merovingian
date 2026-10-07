@@ -4850,7 +4850,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         auto const fields = split_pipe_3(request.body);
         return fields.has_value()
-                   ? response_from_operation(login_local_user(runtime, (*fields)[0], (*fields)[1], (*fields)[2]), 200U)
+                   ? response_from_operation(login_local_user(runtime, (*fields)[0], (*fields)[1], (*fields)[2], false,
+                                                              rate_limit_client_key(request, runtime.config.server())),
+                                             200U)
                    : response(400U, "login body must be user_id|password|device_id");
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/logout")

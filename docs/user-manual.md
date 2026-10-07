@@ -836,6 +836,21 @@ revoked — the request returns `401 M_UNKNOWN_TOKEN` and the audit log records
 without an expiry remain valid, so upgrading does not invalidate legacy
 sessions.
 
+#### Failed-login throttle — `security.login_throttle.*`
+
+| Key | Default | When to change |
+|---|---|---|
+| `security.login_throttle.max_failures_per_source` | `5` | Failed password logins for one account from one client source (and failed UIA password checks from one device) inside the window before that source is refused. `1` to `1000`; `0` is rejected. |
+| `security.login_throttle.max_failures_per_account` | `50` | Failed password logins for one account across all sources inside the window before every source is refused. `1` to `100000`; must not be below the per-source value. Lower it on a small server where 50 guesses a quarter of an hour is too generous. |
+| `security.login_throttle.window` | `15m` | Counting window, and how long a source or account stays refused once it trips. `1s` to `1440m` (`s` and `m` suffixes only). |
+
+A refused login returns `429 M_LIMIT_EXCEEDED` with `retry_after_ms`, even for
+the correct password. Because the per-source counter keys on the client source,
+set `server.trusted_proxies` when running behind a reverse proxy: otherwise every
+client shares the proxy's address and one person's failures lock out everyone's
+logins for that account. The counters hold at most 100 000 entries each. All
+three keys are reloadable. See `docs/auth-identity.md` "Failed-login throttle".
+
 #### Encryption policy — `security.encryption.*`
 
 These keys enforce the room encryption policy. The defaults require encryption
@@ -1278,6 +1293,7 @@ only reports what *would* happen.
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |
+| `security.login_throttle.*` | Reloadable |
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
 | `security.encryption.*` | Reloadable |

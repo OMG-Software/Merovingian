@@ -825,7 +825,7 @@ SCENARIO("Admin safety-report listing keeps earlier reports after unauthenticate
             for (auto i = std::size_t{0U}; i < merovingian::database::max_in_memory_audit_events + 76U; ++i)
             {
                 merovingian::homeserver::append_local_audit(
-                    runtime.homeserver.database, merovingian::observability::AuditCategory::auth, "login.rejected",
+                    runtime.homeserver.database, merovingian::observability::AuditCategory::auth, "auth.login",
                     "<unknown>", std::to_string(i), "403:unknown user");
             }
             auto const reports = merovingian::homeserver::handle_client_server_request(

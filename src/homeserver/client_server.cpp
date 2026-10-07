@@ -10475,7 +10475,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         // Use the client-supplied device_id when provided; generate one otherwise.
         auto const reg_device_id = body->device_id.empty() ? generate_device_id() : body->device_id;
-        auto const session = login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id);
+        auto const session = login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id, false,
+                                              rate_limit_client_key(req, rt.homeserver.config.server()));
         if (!session.ok)
         {
             return dispatch_resp(req, rt, 200U,
@@ -10650,7 +10651,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             body->type == "m.login.token"
                 ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens)
                 : login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
-                                   body->supports_refresh_tokens);
+                                   body->supports_refresh_tokens,
+                                   rate_limit_client_key(req, rt.homeserver.config.server()));
         if (!result.ok)
         {
             // A throttled login is a rate-limit outcome, not a credential

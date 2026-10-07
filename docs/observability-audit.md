@@ -145,6 +145,7 @@ event families" below for the rest of what `append_local_audit` records.
 |-----------|--------|----------------|------------------|
 | Rate-limit 429 | `rate_limit` | `policy` | `rate_limit.exceeded` |
 | Login rejected | `auth` | `auth` | `login.rejected` |
+| Login refused by the failed-login throttle | `auth` | `auth` | `login.throttled` |
 | Access-token rejected | `auth` | `auth` | `access_token.rejected` |
 | Client-server request rejected | `client_server` | `policy` | `request.rejected` |
 | Locked-user request rejected | `client_server` | `auth` | `request.user_locked` |
@@ -152,9 +153,9 @@ event families" below for the rest of what `append_local_audit` records.
 | Registration policy denied | `auth` | `policy` | `registration_policy.denied` |
 | Federation ACL rejected | `federation` | `policy` | `federation.acl_rejected` |
 
-`rate_limit.exceeded`, `access_token.rejected` and `request.rejected` are
-rate-capped per kind (10 durable rows per 60 seconds, the rest counted): see
-"Audit volume bounds" below.
+`rate_limit.exceeded`, `access_token.rejected`, `request.rejected`,
+`login.rejected` and `login.throttled` are rate-capped per kind (10 durable rows
+per 60 seconds, the rest counted): see "Audit volume bounds" below.
 
 ### Other durably persisted event families
 
@@ -233,21 +234,24 @@ filter; the response is empty (still 200).
 
 ## Audit volume bounds (AUTH-1, ADR-0080)
 
-Three audit events are triggered by requests from clients that have proved
+Five audit events are triggered by requests from clients that have proved
 nothing: `access_token.rejected` (unknown, invalid or expired bearer token),
 `rate_limit.exceeded` and `request.rejected` (413, 429 and 503 outcomes decided
-before routing). They must not give such a client control over durable writes
+before routing), `login.rejected` (a password login that failed) and
+`login.throttled` (one refused by the failed-login throttle). The last two were
+at first left ungated on the reasoning that the per-IP limit bounds them, which
+a flood from many addresses defeats. They must not give such a client control over durable writes
 or memory, so the audit-append layer bounds the volume.
 
-- **Rate-capped rejection rows.** `append_local_audit` passes these three kinds
+- **Rate-capped rejection rows.** `append_local_audit` passes these five kinds
   through `observability::AuditRateGate`. At most **10 durable rows per event kind
   per 60-second window** are written; further events in the window are only
   counted. The first row written for that kind after the window carries
   ` suppressed=<n>` appended to its `reason` (for example
   `session not found suppressed=4990`), so an investigator sees that events were
   dropped and how many. The count is reported once, and only when the kind occurs
-  again; it is not persisted separately. Every other audit event (successful and
-  failed logins, admin actions, room and media moderation, authenticated security
+  again; it is not persisted separately. Every other audit event (successful
+  logins, admin actions, room and media moderation, authenticated security
   events) is written on every occurrence and is never gated. The diagnostic log
   line the call site emits is unchanged, so a suppressed event still leaves one
   log line and no audit work.

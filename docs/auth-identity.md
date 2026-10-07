@@ -508,38 +508,104 @@ a SHOULD, not a MUST, so this is not a conformance violation, but a client
 that explicitly asks for erasure gets the same silent no-op as a client that
 does not. The account's rooms are also not left on its behalf.
 
-## Per-account failed-login throttle
+## Failed-login throttle
 
-`/login` was previously throttled only per source IP, because the runtime
-rate limiter's per-user tier keys on the *authenticated* user — someone who,
-before a login succeeds, does not exist yet (see `docs/http-transport.md`
-"Rate-limit policy"). Guesses against one account spread across many source
-IPs therefore accumulated against nothing at all.
+`/login` is throttled per source IP by the runtime rate limiter, but that
+limiter's per-user tier keys on the *authenticated* user, who does not exist
+before a login succeeds (see `docs/http-transport.md` "Rate-limit policy").
+Guesses against one account spread across many source IPs would therefore
+accumulate against nothing. `login_local_user`
+(`src/homeserver/auth_service.cpp`) counts failed password logins against the
+*claimed* user ID, whether or not that user exists, so the throttle cannot be
+used to probe which accounts are real.
 
-`login_local_user` (`src/homeserver/auth_service.cpp`) now tracks failures
-against the *claimed* user ID, whether or not that user exists, so the
-throttle cannot itself be used to probe which accounts are real: five
-failures within a fifteen-minute window lock that claimed identity out for
-fifteen minutes, returning `429`. Any successful login clears the account's
-failure history. Tracking a claimed identity does mean a third party can
-deliberately trip a real account's lockout — the standard account-lockout
-trade-off — bounded by the window being fixed and short rather than
-escalating or sticky, and by a real login clearing it immediately. The
-thresholds (five failures, fifteen-minute window, fifteen-minute lockout)
-are compile-time constants; exposing them as configuration is not done (see
-`docs/todos/capability-gaps.md`).
+### What is counted, and what is refused
 
-This same counter is also enforced by `verify_local_user_password`
-(`src/homeserver/auth_service.cpp`), the password stage used by every
-UI-Auth (UIA) flow: password change, account deactivation, adding a 3PID,
-cross-signing key upload, and single/bulk device deletion. A stolen access
-token therefore no longer gets a separate, unbounded password-guessing
-budget through UIA; the fifth failed re-auth attempt locks the account for
-the same fifteen-minute window as a direct `/login` attacker. While locked,
-`verify_local_user_password` returns a non-zero `retry_after_ms` and every
-UIA call site surfaces it as `429 M_LIMIT_EXCEEDED` with a `Retry-After`
-header. A correct password during lockout is still refused until the window
-elapses, and it clears the failure history on success.
+Failures are counted twice, in two bounded tables on the runtime:
+
+| Counter | Keyed on | Default limit | Refuses |
+|---|---|---|---|
+| per source | (account, client source) | 5 failures in 15 minutes | password logins for that account **from that source only** |
+| per account ceiling | account | 50 failures in 15 minutes | password logins for that account **from every source** |
+
+The client source is the same key the HTTP rate limiter uses
+(`rate_limit_client_key`): it honours `server.trusted_proxies` and groups IPv6
+clients by `server.http.ipv6_client_prefix_length`. Behind a reverse proxy that
+is not listed in `server.trusted_proxies` every client shares the proxy's
+address, so the per-source counter degrades to a per-account counter: configure
+`trusted_proxies`.
+
+Consequences, which are the point of the design:
+
+- A stranger who fails five logins as `@alice` locks `@alice` out from the
+  stranger's address, not from her own. Alice, logging in from another address,
+  is not affected.
+- Guessing spread over many addresses stops at the per-account ceiling. Past it,
+  every password login for that account is refused, the account owner's
+  included, until the window ends. This is the standard account-lockout
+  trade-off, now reachable only by an attacker who can make 50 failed logins
+  inside one window rather than 5.
+- A refused login is `429 M_LIMIT_EXCEEDED` carrying `retry_after_ms`. It is
+  refused before the password is checked, so a refused attempt neither counts
+  nor spends Argon2id time, and a correct password during a lockout is still
+  refused.
+- A refusal that comes from load shedding (the Argon2id admission limit) is not
+  a failed login and is not counted.
+
+A window opens at a key's first failure. When the count reaches the limit the
+window restarts at that failure, so the key stays refused for one full window
+from the failure that tripped it. A key whose window has elapsed forgets its
+failures. **A successful login clears only the per-source counter for the source
+it came from.** It does not clear the per-account ceiling: otherwise an attacker
+could spend 49 guesses, wait for the owner to log in, and start again.
+
+All three numbers are configuration, and a change is reloadable:
+`security.login_throttle.max_failures_per_source` (default 5, 1 to 1000),
+`security.login_throttle.max_failures_per_account` (default 50, 1 to 100000, not
+below the per-source limit) and `security.login_throttle.window` (default
+`15m`, `1s` to `1440m`). See `docs/user-manual.md`.
+
+### Bounded memory (AUTH-10)
+
+Each table (`auth::FailureWindowTable`, `include/merovingian/auth/failure_window_table.hpp`)
+holds at most 100 000 entries. A key is a fixed-size BLAKE2b-256 digest of the
+counter kind and its parts, so a user ID chosen to be 60 KiB costs the same 32
+bytes as a short one, and the account is length-prefixed so two different
+(account, source) pairs cannot hash alike. Entries sit in a list ordered by the
+time their window opened, which is also the order they expire in, so expiry pops
+the front: each failure and each check is amortised O(1), never a scan of the
+table. When a table is full, a new key evicts the oldest entry. The cap bounds
+memory against a flood of distinct claimed user IDs; it means a flood of more
+than 100 000 distinct IDs inside one window can push an earlier counter out
+early, which the per-IP HTTP rate limit (20 requests a minute at the auth
+tier) makes expensive. The tables are guarded by `HomeserverRuntime::mutex`.
+
+### User-interactive auth is separate
+
+`verify_local_user_password` (`src/homeserver/auth_service.cpp`) is the password
+stage of every UI-Auth (UIA) flow: password change, account deactivation,
+adding a 3PID, cross-signing key upload, and single/bulk device deletion. It is
+reached only with a valid access token, so it has its own counter, keyed on
+(account, device) with the same per-source limit and window. Two properties:
+
+- Unauthenticated login failures never touch it. A stranger failing logins as
+  `@alice` cannot stop her changing her password, deactivating, or deleting a
+  device from a session she is already signed in on. (Sharing the counter, as
+  an earlier version did, allowed exactly that.)
+- UIA failures never feed the login counters. A stolen access token still has a
+  bounded password-guessing budget through UIA (the fifth failed check on that
+  device refuses the sixth with `429 M_LIMIT_EXCEEDED` and `Retry-After`), but
+  spending it does not lock the owner out of logging in.
+
+A correct password clears the device's UIA counter.
+
+### Audit
+
+A refused login writes `login.throttled`, a failed one `login.rejected`. Both
+can be triggered by anyone, so both pass through `observability::AuditRateGate`
+(10 durable rows per kind per 60 seconds; the rest are counted and reported as
+`suppressed=<n>` on the next row, and the diagnostic log line is still written
+for every attempt). See `docs/observability-audit.md`.
 
 ## Security posture
 

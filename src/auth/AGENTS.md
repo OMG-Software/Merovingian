@@ -13,6 +13,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 | `identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
 | `password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
 | `oidc_discovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
+| `failure_window_table.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
 | `key_api.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
 
 UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in this module.
@@ -30,6 +31,16 @@ UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in
 5. **Validate all user IDs** against the identifier grammar before accepting registration.
 6. **Revocation is one-way.** Never restore a revoked token; revoke more narrowly instead
    (e.g. `revoke_tokens_for_user_except_device`). See ADR-0052.
+
+## Failed-login throttle
+
+Three `FailureWindowTable`s on `HomeserverRuntime` back it (AUTH-2, AUTH-10); the policy lives in
+`src/homeserver/auth_service.cpp`. Never merge them: login failures keyed (account, source) and per
+account must not be consulted by user-interactive-auth password checks, which have their own
+(account, device) table, or any stranger can lock the owner out of changing their password. UIA
+failures must not feed the login tables either. A successful login clears only the (account,
+source) key, never the per-account ceiling. Keep the cap and the amortised-O(1) expiry: no code
+path may scan a table. See `docs/auth-identity.md` "Failed-login throttle".
 
 ## Token lifecycle
 

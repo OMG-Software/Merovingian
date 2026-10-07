@@ -1345,9 +1345,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   `suppressed=<n>` on the kind's next row; `LocalDatabase::audit_events` and
   `PersistentStore::audit_log` keep only the newest 1 024 rows; actor, target and
   reason are cut to 255 bytes on a UTF-8 boundary with invalid bytes and control
-  characters replaced. **Residual:** `login.rejected` is not gated (it is
-  throttled per IP at the auth tier), so many source addresses can still write
-  one row per attempt; and the `audit_log` table itself has no retention, so a
+  characters replaced. `login.rejected` and `login.throttled` are gated the
+  same way. **Residual:** the `audit_log` table itself has no retention, so a
   distributed flood of ungated kinds still grows it. Rejected requests beyond a
   window's allowance keep their diagnostic log line but no audit row.
 
@@ -1425,6 +1424,13 @@ threat it closes; the controls above are the standing defences these reinforce.
   authenticated user, who pre-login is nobody. Guesses spread across many source
   IPs accumulated nowhere. Fixed by counting failures against the claimed user ID
   — existent or not, so the throttle cannot probe which accounts are real.
+  Revised (2026-09-29 audit AUTH-2, AUTH-10): failures are counted per (account,
+  client source) with a higher per-account ceiling, so a stranger can lock an
+  account out only from their own address, or from everywhere only by making 50
+  failed logins in the window; user-interactive-auth password checks use their
+  own per-(account, device) counter that login failures never touch; and the
+  counters are bounded (100 000 entries, fixed-size keys, time-ordered expiry).
+  See `docs/auth-identity.md` "Failed-login throttle".
 
 - **Root secret in swappable memory, silently (0.12.4):** the master key file was
   read twice per authenticated request, each read `mlock`-ing a fresh 4 KiB

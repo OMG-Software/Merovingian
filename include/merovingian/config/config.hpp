@@ -367,6 +367,18 @@ struct RegistrationSecurityConfig final
     std::string token_file{};
 };
 
+// AUTH-2: the failed-password-login throttle. A password login is refused once
+// the account has `max_failures_per_source` failures from one client source
+// inside `window` (that source only), or `max_failures_per_account` failures
+// across all sources (everyone). The same per-source number bounds the
+// password checks of user-interactive auth, counted separately per device.
+struct LoginThrottleSecurityConfig final
+{
+    std::uint32_t max_failures_per_source{5U};
+    std::uint32_t max_failures_per_account{50U};
+    std::string window{"15m"};
+};
+
 struct EncryptionSecurityConfig final
 {
     bool default_for_new_rooms{true};
@@ -746,6 +758,7 @@ struct AppserviceConfig final
 struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
+    LoginThrottleSecurityConfig login_throttle{};
     EncryptionSecurityConfig encryption{};
     FederationSecurityConfig federation{};
     MediaSecurityConfig media{};
