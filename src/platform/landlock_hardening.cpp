@@ -14,6 +14,7 @@
 
 #ifdef __linux__
 #include <cerrno>
+#include <cstddef>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -160,12 +161,15 @@ namespace
     } __attribute__((packed));
 #endif // !MEROVINGIAN_HAVE_LINUX_LANDLOCK_H
 
-    // Unqualified lookup: resolves to the global ::landlock_ruleset_attr /
-    // ::landlock_path_beneath_attr from <linux/landlock.h> when it is
-    // available, or to the fallback definitions immediately above (in this
-    // same anonymous namespace) otherwise. Exactly one definition exists in
-    // either case, so there is no ambiguity.
-    using RulesetAttr = landlock_ruleset_attr;
+    // Independent ruleset attribute with the ABI-6 scoped member. The runtime
+    // kernel is asked for the ABI version first, so we can pass the correct size
+    // for that ABI; the layout always matches the kernel's current definition.
+    struct RulesetAttr
+    {
+        std::uint64_t handled_access_fs;
+        std::uint64_t handled_access_net;
+        std::uint64_t scoped;
+    };
     using PathBeneathAttr = landlock_path_beneath_attr;
 
     constexpr auto k_create_ruleset_version_flag = std::uint32_t{1U << 0U};
@@ -199,21 +203,36 @@ namespace
 
 #ifdef __NR_landlock_create_ruleset
 
+    // Landlock ABI 6 (Linux 6.10) scope: signals only within the domain. The
+    // kernel headers may not define it yet, so it is named here. Declared only
+    // where the real ruleset is built, which is the only place it is used; on
+    // other platforms an unused constant is an error under -Werror.
+    constexpr std::uint64_t k_scope_signal = 1ULL << 1U;
+
     [[nodiscard]] auto real_query_abi_version() -> int
     {
         return static_cast<int>(::syscall(__NR_landlock_create_ruleset, nullptr, 0U, k_create_ruleset_version_flag));
     }
 
-    [[nodiscard]] auto real_create_ruleset(std::uint64_t handled_access_fs) -> int
+    [[nodiscard]] auto real_create_ruleset(std::uint64_t handled_access_fs, int abi) -> int
     {
         // Value-initialise, then set the fields this code knows. Newer kernel
-        // headers add members (scoped, quiet_access_*), which a designated
-        // initializer would have to name to satisfy -Wmissing-field-initializers,
-        // and the kernel requires every byte it does not understand to be zero.
+        // headers add members (quiet_access_*), which a designated initializer
+        // would have to name to satisfy -Wmissing-field-initializers, and the
+        // kernel requires every byte it does not understand to be zero.
         auto attr = RulesetAttr{};
         attr.handled_access_fs = handled_access_fs;
         attr.handled_access_net = 0U;
-        return static_cast<int>(::syscall(__NR_landlock_create_ruleset, &attr, sizeof(attr), 0U));
+        // ISO-2: when Landlock ABI 6+ is available, scope signal delivery so a
+        // compromised worker cannot target processes outside its own sandbox.
+        if (abi >= 6)
+        {
+            attr.scoped = k_scope_signal;
+        }
+        // Pass the size the target ABI understands. Older kernels reject a
+        // larger attribute, so do not include the scoped member unless ABI 6+.
+        auto const attr_size = (abi >= 6) ? sizeof(RulesetAttr) : offsetof(RulesetAttr, scoped);
+        return static_cast<int>(::syscall(__NR_landlock_create_ruleset, &attr, attr_size, 0U));
     }
 
 #else
@@ -224,7 +243,7 @@ namespace
         return -1;
     }
 
-    [[nodiscard]] auto real_create_ruleset(std::uint64_t /*handled_access_fs*/) -> int
+    [[nodiscard]] auto real_create_ruleset(std::uint64_t /*handled_access_fs*/, int /*abi*/) -> int
     {
         errno = ENOSYS;
         return -1;
@@ -480,7 +499,7 @@ auto apply_worker_landlock(std::vector<LandlockPathRule> const& rules, bool allo
     }
 
     auto const bounded_abi = std::min(abi, k_landlock_max_known_abi);
-    auto ruleset_fd = core::FileDescriptor{ops.create_ruleset(landlock_handled_access_fs(bounded_abi))};
+    auto ruleset_fd = core::FileDescriptor{ops.create_ruleset(landlock_handled_access_fs(bounded_abi), abi)};
     if (!ruleset_fd.valid())
     {
         return {.accepted = false,

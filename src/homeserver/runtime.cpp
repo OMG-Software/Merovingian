@@ -56,8 +56,8 @@ namespace
     }
 
     [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
-                                   std::string help,
-                                   std::vector<observability::MetricLabel> labels = {}) -> observability::MetricSample
+                                   std::string help, std::vector<observability::MetricLabel> labels = {})
+        -> observability::MetricSample
     {
         return {std::move(name), value, true, type, std::move(help), std::move(labels)};
     }
@@ -125,8 +125,8 @@ namespace
         return value;
     }
 
-    auto hydrate_media_repository(media::LocalMediaRepository& repository,
-                                  database::PersistentStore const& persistent_store) -> void
+    auto hydrate_media_repository(media::LocalMediaRepository& repository, database::PersistentStore& persistent_store)
+        -> void
     {
         auto records = std::vector<media::LocalMediaRecord>{};
         records.reserve(persistent_store.local_media.size());
@@ -150,16 +150,20 @@ namespace
 
         auto blobs = std::vector<media::LocalMediaBlob>{};
         blobs.reserve(persistent_store.media_blobs.size());
-        for (auto const& blob_row : persistent_store.media_blobs)
+        for (auto& blob_row : persistent_store.media_blobs)
         {
             blobs.push_back({blob_row.storage_id, blob_row.hash_algorithm, blob_row.digest, blob_row.size_bytes,
-                             blob_row.bytes, blob_row.ref_count});
+                             std::move(blob_row.bytes), blob_row.ref_count});
+            // MED-6: after the runtime repository takes ownership, the persistent
+            // store must not hold a second in-memory copy of the payload.
+            blob_row.bytes.clear();
+            blob_row.bytes.shrink_to_fit();
         }
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -171,8 +175,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
@@ -453,8 +457,8 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     return *this;
 }
 
-[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt,
-                                                std::string_view room_id) -> std::vector<std::string>
+[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
+    -> std::vector<std::string>
 {
     auto users = std::vector<std::string>{};
     for (auto const& entry : rt.typing_users)
@@ -633,6 +637,9 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
 
     database.opened = true;
     database.persistent_store = std::move(opened.store);
+    database.persistent_store.max_to_device_messages_per_user_device =
+        config.server().client_api.max_to_device_messages_per_user_device;
+    database.persistent_store.to_device_message_ttl_seconds = config.server().client_api.to_device_message_ttl_seconds;
     database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;
@@ -853,7 +860,7 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         // claimable by ordinary registration (AUTH-3). Registration is
         // passwordless — the bridge authenticates by as_token and masquerades
         // by user_id.
-        for (auto const& registration : runtime.appservices.all())
+        for (auto const& registration : loaded.registry.all())
         {
             auto const sender_id = appservice::sender_user_id(registration, runtime.config.server().server_name);
             auto const user_exists = std::ranges::any_of(runtime.database.users, [&sender_id](LocalUser const& user) {
@@ -896,6 +903,13 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // test. The build scripts set MEROVINGIAN_TEST_DISABLE_HARDENING=1 when they
     // invoke the test suite; production binaries never see it.
     auto const hardening_controls = [&]() {
+        if (opts.process_hardening_applied_by_caller)
+        {
+            // The federation worker hardened itself before calling us; its
+            // seccomp filter denies setrlimit, which the main profile below
+            // would call (ISO-2, ADR-0112).
+            return platform::HardeningPlanDecision{true, false, "applied by the caller before start_runtime"};
+        }
         if (std::getenv("MEROVINGIAN_TEST_DISABLE_HARDENING") != nullptr)
         {
             log_diagnostic(
@@ -1047,8 +1061,8 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
     return summary;
 }
 
-auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope,
-                      std::string_view entity) -> std::optional<database::PersistentPolicyRule>
+auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
+    -> std::optional<database::PersistentPolicyRule>
 {
     auto const& rules = runtime.database.persistent_store.policy_rules;
     auto const exact = std::ranges::find_if(rules, [scope, entity](database::PersistentPolicyRule const& rule) {

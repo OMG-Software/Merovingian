@@ -228,6 +228,24 @@ struct ClientApiConfig final
     std::uint32_t max_notifications_retained_per_user{1000U};
     std::uint32_t max_relations_page_size{500U};
     std::uint32_t max_threads_page_size{500U};
+    // CSAZ-10: bound the per-recipient to-device queue so undelivered rows
+    // (for example to a non-existent device) cannot grow without limit.  The
+    // cap is per (user, device); the TTL drops any row older than the limit
+    // regardless of acknowledgement.  Both are enforced at enqueue and drain
+    // time, so the queue stays bounded even for recipients that never sync.
+    std::uint32_t max_to_device_messages_per_user_device{10000U};
+    std::uint32_t to_device_message_ttl_seconds{604800U};
+    // CSAZ-10: bound the end-to-end key material and filters one user can
+    // store.  An upload that would take the user over a cap is refused with
+    // M_TOO_LARGE and stores nothing; stored rows are never evicted to make
+    // room.  Re-uploading an id the user already holds does not count twice.
+    //   - max_one_time_keys_per_device: one-time keys held per (user, device).
+    //   - max_key_signatures_per_user: cross-signing signatures a user has
+    //     uploaded, counted per (target user, target key).
+    //   - max_filters_per_user: stored sync filters per user.
+    std::uint32_t max_one_time_keys_per_device{1000U};
+    std::uint32_t max_key_signatures_per_user{10000U};
+    std::uint32_t max_filters_per_user{1000U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
 };
@@ -492,15 +510,21 @@ struct FederationSecurityConfig final
 struct MediaSecurityConfig final
 {
     std::string max_upload_size{"50MiB"};
-    // Repository capacity limits (0.12.5 audit, finding 19). The in-memory media
-    // index was unbounded, so upload spam or a large remote-media cache could
-    // exhaust memory. An upload that would cross any of these is refused with
-    // 507 M_LIMIT_EXCEEDED rather than evicting an older blob: clients hold
-    // mxc:// URIs for what is already stored, and eviction would break them.
-    // Empty means no limit, which is the pre-0.12.5 behaviour.
-    std::string max_total_size{};
-    std::string max_size_per_user{};
-    std::uint64_t max_records{0U};
+    // Repository capacity limits (0.12.5 audit, finding 19; 0.12.12 audit,
+    // finding MED-6). The in-memory media index was unbounded, so upload spam
+    // or a large remote-media cache could exhaust memory. An upload that would
+    // cross any of these is refused with 507 M_LIMIT_EXCEEDED rather than
+    // evicting an older blob: clients hold mxc:// URIs for what is already
+    // stored, and eviction would break them. Empty explicitly means no limit;
+    // the defaults below are non-zero so an unconfigured server is bounded.
+    // Every blob is held in memory, so max_total_size is a memory budget and
+    // the default suits a small host (ADR-0113). max_size_per_user must stay at
+    // or above max_upload_size, or one legitimate upload is refused. Remote
+    // media is stored under one owner per origin and is exempt from the
+    // per-user quota, but counts toward max_total_size and max_records.
+    std::string max_total_size{"2GiB"};
+    std::string max_size_per_user{"256MiB"};
+    std::uint64_t max_records{100000U};
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
@@ -520,6 +544,12 @@ struct MediaSecurityConfig final
     std::string remote_fetch_timeout{"30s"};
     bool remote_fetch_enabled{false};
     bool decode_in_sandbox{true};
+    // OUT-4: remote media cache settings. The cache is keyed by (origin_server,
+    // media_id) and holds the local media_id that was assigned when the remote
+    // bytes were first admitted. TTL is in seconds; max_entries caps in-memory
+    // mappings. A max_entries of 0 disables caching.
+    std::uint32_t remote_media_cache_ttl_seconds{86400U};
+    std::uint64_t remote_media_cache_max_entries{1024U};
 };
 
 struct TrustSafetySecurityConfig final
@@ -614,6 +644,17 @@ struct FederationWorkerConfig final
     // worker answers the remote server with a retryable 5xx. 0 disables the
     // cap (not recommended). Restart required.
     std::uint32_t ipc_max_in_flight_requests{256U};
+    // CRY-2 (0.12.12 audit): maximum number of request frames the reader thread
+    // will queue for the dispatch thread before treating the channel as flooded.
+    // Bound together with ipc_max_dispatch_queue_bytes so a compromised worker
+    // cannot pin unbounded heap in the main process. 0 disables the cap (not
+    // recommended). Restart required.
+    std::uint32_t ipc_max_dispatch_queue_count{1024U};
+    // CRY-2 (0.12.12 audit): maximum queued request bytes the reader thread will
+    // hold for the dispatch thread. Bound together with
+    // ipc_max_dispatch_queue_count. 0 disables the cap (not recommended). Restart
+    // required.
+    std::uint64_t ipc_max_dispatch_queue_bytes{128U * 1024U * 1024U};
     // Absolute path to the merovingian-fed-worker binary. Empty means use
     // the compile-time libexec default.
     std::string worker_binary{};

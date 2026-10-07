@@ -405,6 +405,24 @@ separate process on the same host:
   unbounded handler pool. The cap is per channel, not global, so one slow or
   abusive worker cannot starve others and a crashed channel's count is released
   with the channel.
+* **Bounded IPC dispatch queue** (CRY-2,
+  [ADR-0111](adr/0111-bound-the-ipc-dispatch-queue.md)): the in-flight cap is
+  applied when a request is dequeued, so the reader thread's queue in front of
+  it is bounded separately, by `federation.worker.ipc_max_dispatch_queue_count`
+  (default `1024` frames) and `federation.worker.ipc_max_dispatch_queue_bytes`
+  (default 128 MiB). A worker that floods past either marks its channel
+  unhealthy and the reader stops, so the supervisor replaces the worker instead
+  of main buffering without limit. Every IPC socket has a 30 s send timeout, so
+  a peer that stops reading cannot pin a writer.
+* **The worker cannot signal or re-limit other processes** (ISO-2,
+  [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md)): the
+  worker seccomp filter has no `kill`, `tkill`, `setrlimit` or `prlimit64`, and
+  allows `tgkill` only when its thread-group argument is the worker itself.
+  On Landlock ABI 6 and later the ruleset also scopes signals to the worker's
+  domain. The worker still shares main's uid, so these filters are what stop
+  `kill(getppid(), SIGSTOP)`. `[iso2]` in
+  `tests/unit/test_worker_hardening_threads.cpp` runs the real filter in a
+  forked child.
 * **No thread exists before hardening; seccomp is installed with `TSYNC`
   (ISO-1, [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)):**
   seccomp filters and Landlock rulesets attach to the calling thread only, so

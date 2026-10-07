@@ -59,6 +59,8 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         1U,
         64U,
         true,
+        config.security().media.remote_media_cache_max_entries,
+        config.security().media.remote_media_cache_ttl_seconds,
         std::string{MEROVINGIAN_THUMBNAIL_WORKER_PATH},
         10U,
     };

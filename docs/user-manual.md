@@ -441,13 +441,15 @@ the per-IP rate limiter still applies to the forwarded client address.
 
 #### Operational budgets
 
-All settings below require a restart, including the federation workers. The runtime copies these policies at startup; SIGHUP does not reconstruct their consumers. Existing config files keep their explicit values after upgrade: update those values or remove the overrides to use the defaults in 0.12.18.
+All settings below require a restart, including the federation workers. The runtime copies these policies at startup; SIGHUP does not reconstruct their consumers. Existing config files keep their explicit values after upgrade: update those values or remove the overrides to use the defaults in 0.12.19.
 
 Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 requests per minute per source address. Login and registration retain 20/minute, administrative traffic retains 30/minute, key/device refinements allow 120/minute and thumbnails 240/minute. Explicit `client_rate_limits.per_ip`, `per_user` and `tier` overrides retain precedence. Several users behind one address share its bucket; prefer narrow prefix overrides when a particular route needs more capacity.
 
 `server.client_api` budgets bound room timelines, paging, scan work, sliding-sync state and transient sessions. A higher timeline maximum allows a larger client-requested limit; it does not make the client request more messages automatically. Search context can multiply work by page size, so tune both together. A bounded `/sync` room list is not a capacity guarantee for a user's entire room set.
 
 Notification history retains the newest `max_notifications_retained_per_user` rows per user (default 1,000), including when push delivery is disabled. Raising retention preserves future rows; it cannot restore entries already pruned.
+
+Three per-user caps bound end-to-end key material and filters. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. Each device keeps one fallback key per algorithm, as the Matrix specification requires; a new fallback key replaces the previous one.
 
 The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. Sync admission is clamped to the configured sync worker count; the per-device and per-user caps cannot exceed global admission.
 
@@ -485,6 +487,11 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_hierarchy_rooms` | `1000` | 1..10,000 |
 | `max_threads_page_size` | `500` | 1..1,000 |
 | `max_notifications_retained_per_user` | `1000` | 1..100,000 |
+| `max_to_device_messages_per_user_device` | `10000` | 1..1,000,000 |
+| `to_device_message_ttl_seconds` | `604800` | 1..31,536,000 |
+| `max_one_time_keys_per_device` | `1000` | 1..100,000 |
+| `max_key_signatures_per_user` | `10000` | 1..1,000,000 |
+| `max_filters_per_user` | `1000` | 1..100,000 |
 | `max_body_size` | `1MiB` | 1 byte..64MiB |
 
 `server.http.*`:
@@ -1007,6 +1014,8 @@ in-process fallback — requests return `503` while a crashed worker restarts.
 | `federation.worker.shards` | `1` | Number of independent worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints go to shard 0. Must be `>= 1`. The shipped example sets `2`. |
 | `federation.worker.request_timeout_seconds` | `120` | Base per-request IPC timeout in seconds. The actual IPC timeout for inbound federation requests is `max(request_timeout_seconds, security.federation.remote_timeout) + 10 s`, so a worker-side outbound HTTP call can complete before main gives up. A request slower than the effective timeout returns `504` to the remote server. The shipped example sets `30`. |
 | `federation.worker.ipc_max_in_flight_requests` | `256` | Per-channel cap on concurrent IPC requests from each worker process to main. Requests that arrive while the channel is at the cap receive an explicit `main_overloaded` error and the worker answers the remote with a retryable `503 M_UNKNOWN`, so nothing is silently dropped. Larger values increase memory use on main; smaller values raise the chance of transient retries from legitimate traffic. **Requires restart.** |
+| `federation.worker.ipc_max_dispatch_queue_count` | `1024` | Cap on request frames from one worker waiting for main's dispatch thread. A worker that exceeds it, or the byte cap below, has its channel closed and is restarted. `0` disables the cap (not recommended). **Requires restart.** |
+| `federation.worker.ipc_max_dispatch_queue_bytes` | `134217728` (128 MiB) | Cap on the bytes of those queued frames. `0` disables the cap (not recommended). **Requires restart.** |
 | `federation.worker.apply_hardening` | `true` | Apply seccomp/capability sandboxing to workers. Keep `true` in production. |
 | `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path (`$libexecdir/merovingian/merovingian-fed-worker`). |
 | `federation.worker.database_uri_file` | `/etc/merovingian/fed-worker-db-uri` | Secret file holding a PostgreSQL connection URI for a **separate, least-privilege** worker login (ADR-0062 part 2) — see [`docs/database-persistence.md`](database-persistence.md), "Federation worker least-privilege role", and `packaging/postgresql/provision-federation-worker-role.sql`. Required (the file must exist and be readable) when `database.backend=postgresql` and federation is enabled, unless `allow_shared_database_credentials=true`. Ignored for `database.backend=sqlite`. Same secret-file permission rules as `database.uri_file` (owner-only, regular file). |
@@ -1055,17 +1064,9 @@ Service API".
 | Key | Default | When to change |
 |---|---|---|
 | `security.media.max_upload_size` | `50MiB` | Maximum local upload size. Match your reverse-proxy body-size limit. |
-| `security.media.max_total_size` | (empty) | Cap on total stored media bytes. Empty means no limit. |
-| `security.media.max_size_per_user` | (empty) | Per-user media quota in bytes. Empty means no limit. |
-| `security.media.max_records` | `0` | Cap on stored media records. `0` means no limit. |
-
-The three capacity limits bound the in-memory media index, which is otherwise
-unbounded: upload spam, or a large cache of remote media, grows it until the
-process runs out of memory. An upload that would cross any limit is refused with
-`507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
-for what is already stored and eviction would break those links rather than shed
-load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
-record but no additional bytes.
+| `security.media.max_total_size` | `2GiB` | Cap on total stored media bytes. All media is held in memory, so this is a memory budget: raise it only as far as the host's RAM allows. Empty means no limit. |
+| `security.media.max_size_per_user` | `256MiB` | Per-user media quota in bytes. Keep it at or above `max_upload_size`. Remote media is exempt (see below). Empty means no limit. |
+| `security.media.max_records` | `100000` | Cap on stored media records. `0` means no limit. |
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |
@@ -1075,6 +1076,22 @@ record but no additional bytes.
 | `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |
 | `security.media.remote_fetch_media_policy` | `quarantine` | Same values; defaults to `quarantine` because federated origins are unaccountable. |
+| `security.media.remote_media_cache_ttl_seconds` | `86400` | How long admitted remote media is served from the local copy before it is fetched again. |
+| `security.media.remote_media_cache_max_entries` | `1024` | Maximum remote-media cache entries; the least recently used is evicted when full. `0` disables the cache, so every request for remote media goes to the origin. |
+
+The three capacity limits bound the in-memory media index, which would otherwise be
+unbounded: upload spam, or a large cache of remote media, grows it until the
+process runs out of memory. An upload that would cross any limit is refused with
+`507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
+for what is already stored and eviction would break those links rather than shed
+load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
+record but no additional bytes.
+
+Remote media is stored under one `@remote-media:<origin>` owner per origin, so it
+is not charged to `max_size_per_user`; it counts toward `max_total_size` and
+`max_records` like everything else. Repeated requests for the same remote media
+within `remote_media_cache_ttl_seconds` are served from the stored copy without
+contacting the origin.
 
 > **Encrypted-room media can never be scanned, under any configuration, by
 > design.** Matrix E2EE attachments are encrypted client-side before upload;

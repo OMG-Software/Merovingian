@@ -43,35 +43,40 @@ namespace
         observability::log_diagnostic("media_service", event, fields, severity);
     }
 
+    // MED-5: media requests identify a server by name. The same server can be
+    // written with different case or with the default federation port, and must
+    // be recognised as local so it is not bounced through remote fetching
+    // (ADR-0115). Only the default port is dropped: example.org:8449 is a
+    // different server name from example.org, and treating it as local would
+    // serve this server's media under another server's mxc:// URI.
+    [[nodiscard]] auto canonical_media_server_name(std::string_view server_name) -> std::string
+    {
+        auto canonical = std::string{server_name};
+        std::ranges::transform(canonical, canonical.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        constexpr auto default_port_suffix = std::string_view{":8448"};
+        if (canonical.size() > default_port_suffix.size() && canonical.ends_with(default_port_suffix))
+        {
+            canonical.resize(canonical.size() - default_port_suffix.size());
+        }
+        return canonical;
+    }
+
+    [[nodiscard]] auto is_local_media_server(HomeserverRuntime const& runtime, std::string_view server_name) -> bool
+    {
+        return canonical_media_server_name(server_name) ==
+               canonical_media_server_name(runtime.config.server().server_name);
+    }
+
     [[nodiscard]] auto admin_result_to_operation(media::LocalMediaAdminResult const& result) -> OperationResult
     {
         return make_operation_result(result.ok, result.media_id + "|" + media::local_media_state_name(result.state),
                                      result.reason, result.status);
     }
 
-    auto persist_blob_for_media(HomeserverRuntime& runtime, std::string_view media_id) -> void
-    {
-        auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
-        if (record == nullptr)
-        {
-            return;
-        }
-        // Persistence also writes removal tombstones: its lookup must include
-        // the zero-reference row whose cleared bytes need to reach the database.
-        auto const blob = std::ranges::find_if(runtime.media_repository.blobs, [&record](auto const& candidate) {
-            return candidate.storage_id == record->storage_id;
-        });
-        if (blob == runtime.media_repository.blobs.end())
-        {
-            return;
-        }
-        std::ignore = database::store_media_blob(
-            runtime.database.persistent_store,
-            {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
-    }
-
-    [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime,
-                                             std::string_view media_id) -> trust_safety::PolicyDecision
+    [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime, std::string_view media_id)
+        -> trust_safety::PolicyDecision
     {
         auto const local_rule = find_policy_rule(runtime, "media", media_id);
         auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
@@ -113,8 +118,8 @@ namespace
 
     // HTTP header names are case-insensitive; scans linearly since responses
     // carry a small, bounded number of headers.
-    [[nodiscard]] auto find_header_ci(std::vector<http::OutboundHeader> const& headers,
-                                      std::string_view name) -> std::optional<std::string>
+    [[nodiscard]] auto find_header_ci(std::vector<http::OutboundHeader> const& headers, std::string_view name)
+        -> std::optional<std::string>
     {
         for (auto const& header : headers)
         {
@@ -201,8 +206,8 @@ namespace
         std::string_view body{};
     };
 
-    [[nodiscard]] auto find_raw_header_ci(RawMultipartPart const& part,
-                                          std::string_view name) -> std::optional<std::string>
+    [[nodiscard]] auto find_raw_header_ci(RawMultipartPart const& part, std::string_view name)
+        -> std::optional<std::string>
     {
         for (auto const& [key, value] : part.headers)
         {
@@ -320,8 +325,8 @@ namespace
 
     // Finds the next real boundary delimiter at or after `start`, using
     // boundary_at() so inner boundary-like byte sequences are ignored.
-    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary,
-                                          std::size_t start) -> std::size_t
+    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary, std::size_t start)
+        -> std::size_t
     {
         auto const max = body.size();
         if (start >= max)
@@ -343,8 +348,8 @@ namespace
     // Splits a multipart/mixed body on "--{boundary}" delimiters per RFC 2046.
     // Requires the opening delimiter to start on a line boundary and ignores
     // boundary-like strings that are not preceded by a line break.
-    [[nodiscard]] auto split_multipart_body(std::string_view body,
-                                            std::string_view boundary) -> std::vector<RawMultipartPart>
+    [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary)
+        -> std::vector<RawMultipartPart>
     {
         auto parts = std::vector<RawMultipartPart>{};
         if (boundary.empty())
@@ -393,8 +398,8 @@ namespace
     // unauthenticated client can trigger this, so it must not write a durable
     // row per request (ADR-0080).
     [[nodiscard]] auto remote_media_refusal(HomeserverRuntime& runtime, std::string_view origin_server,
-                                            std::string_view media_id,
-                                            RemoteMediaRequestContext const& remote) -> std::optional<OperationResult>
+                                            std::string_view media_id, RemoteMediaRequestContext const& remote)
+        -> std::optional<OperationResult>
     {
         auto const enabled = runtime.media_repository.config.remote_fetch_enabled;
         if (enabled && remote.allow_remote)
@@ -698,8 +703,8 @@ namespace
     // back to remote_media_fetch_disabled() when federation infrastructure is
     // unavailable.
     [[nodiscard]] auto fetch_remote_media_live(HomeserverRuntime& runtime, std::string_view origin_server,
-                                               std::string_view media_id,
-                                               RemoteMediaRequestContext const& remote) -> OperationResult
+                                               std::string_view media_id, RemoteMediaRequestContext const& remote)
+        -> OperationResult
     {
         // OUT-7: every entry point has already asked, before its own policy
         // hook; asking again here means no future caller can reach discovery or
@@ -707,6 +712,24 @@ namespace
         if (auto refusal = remote_media_refusal(runtime, origin_server, media_id, remote); refusal.has_value())
         {
             return std::move(*refusal);
+        }
+        // OUT-4 (ADR-0114): remote media admitted within the cache TTL is served
+        // from the local record. This must come before the outbound budget slot,
+        // discovery and the request below; checking after them saves storage
+        // but still sends one outbound fetch per client request.
+        if (auto const* cached = media::find_cached_remote_media(runtime.media_repository, origin_server, media_id,
+                                                                 media::remote_media_cache_now_ms());
+            cached != nullptr)
+        {
+            if (auto const* blob = media::find_local_media_blob(runtime.media_repository, cached->storage_id);
+                blob != nullptr)
+            {
+                log_diagnostic("remote_fetch.cache_hit", {
+                                                             {"origin_server", std::string{origin_server}, false},
+                                                             {"media_id",      std::string{media_id},      false}
+                });
+                return make_operation_result(true, cached->content_type + "|" + blob->bytes, {}, 200U);
+            }
         }
         auto* const outbound_client = runtime.outbound_client.get();
         auto* const discovery_network = runtime.discovery_network.get();
@@ -917,8 +940,8 @@ namespace
            "/_matrix/federation/v1/media/download/" + core::percent_encode_path_component(media_id);
 }
 
-[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header,
-                                                    std::string_view body) -> FederationMediaPart
+[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
+    -> FederationMediaPart
 {
     auto const boundary = extract_multipart_boundary(content_type_header);
     auto const parts = split_multipart_body(body, boundary);
@@ -948,8 +971,9 @@ namespace
     return result;
 }
 
-[[nodiscard]] auto resolve_media_redirect_url(
-    std::string_view location_url, federation::ServerDiscoveryNetwork& network) -> MediaRedirectResolutionResult
+[[nodiscard]] auto resolve_media_redirect_url(std::string_view location_url,
+                                              federation::ServerDiscoveryNetwork& network)
+    -> MediaRedirectResolutionResult
 {
     auto result = MediaRedirectResolutionResult{};
     auto const authority = http::parse_outbound_url(location_url);
@@ -1001,18 +1025,30 @@ namespace
         return make_operation_result(false, {}, result.reason, result.status);
     }
 
-    std::ignore = database::store_local_media(runtime.database.persistent_store, {
-                                                                                     result.media_id,
-                                                                                     *user_id,
-                                                                                     result.content_type,
-                                                                                     result.size_bytes,
-                                                                                     result.hash_algorithm,
-                                                                                     result.digest,
-                                                                                     result.quarantined,
-                                                                                     false,
-                                                                                     false,
-                                                                                 });
-    persist_blob_for_media(runtime, result.media_id);
+    // DB-5: the client is given an mxc:// URI only once the media and its blob
+    // are durable. Otherwise the upload is undone in memory too, so a restart
+    // cannot make a URI the client was given disappear.
+    auto const* record = media::find_local_media_record(runtime.media_repository, result.media_id);
+    auto const* blob =
+        record == nullptr ? nullptr : media::find_local_media_blob(runtime.media_repository, record->storage_id);
+    auto const persisted =
+        blob != nullptr &&
+        database::commit_local_media_upload(
+            runtime.database.persistent_store,
+            {result.media_id, *user_id, result.content_type, result.size_bytes, result.hash_algorithm, result.digest,
+             result.quarantined, false, false},
+            {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
+    if (!persisted)
+    {
+        std::ignore = media::rollback_local_media_upload(runtime.media_repository, result.media_id);
+        log_diagnostic("upload.persist_failed",
+                       {
+                           {"actor",    *user_id,        false},
+                           {"media_id", result.media_id, false}
+        },
+                       observability::LogEventSeverity::error);
+        return make_operation_result(false, {}, "media could not be stored", 500U);
+    }
     log_diagnostic(result.quarantined ? "upload.quarantined" : "upload.accepted",
                    {
                        {"actor",        *user_id,                                            false},
@@ -1039,7 +1075,7 @@ namespace
                                         RemoteMediaRequestContext const& remote) -> OperationResult
 {
     // OUT-7: before the policy hook, which can itself make a network call.
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
         {
@@ -1052,7 +1088,7 @@ namespace
         return make_operation_result(false, {}, policy.reason.code, 403U);
     }
 
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         log_diagnostic("download.remote", {
                                               {"origin_server", std::string{server_name}, false},
@@ -1085,7 +1121,7 @@ namespace
                                                   RemoteMediaRequestContext const& remote) -> OperationResult
 {
     // OUT-7: as in download_local_media.
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         if (auto refusal = remote_media_refusal(runtime, server_name, media_id, remote); refusal.has_value())
         {
@@ -1098,7 +1134,7 @@ namespace
         return make_operation_result(false, {}, policy.reason.code, 403U);
     }
 
-    if (server_name != runtime.config.server().server_name)
+    if (!is_local_media_server(runtime, server_name))
     {
         log_diagnostic("thumbnail.remote", {
                                                {"origin_server", std::string{server_name}, false},

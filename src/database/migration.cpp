@@ -582,6 +582,31 @@ auto downgrade_initial_schema_migration() -> MigrationStep
             MigrationDirection::downgrade};
 }
 
+// CSAZ-10 (2026-09-29 audit): bound and TTL the per-recipient to-device queue.
+[[nodiscard]] auto upgrade_to_device_queue_age_bound_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"add_to_device_created_at_ms_column",
+                          "ALTER TABLE to_device_messages ADD COLUMN created_at_ms TEXT NOT NULL DEFAULT '0'",
+                          {}});
+    statements.push_back(PreparedStatement{"create_to_device_recipient_age_index",
+                                           "CREATE INDEX idx_to_device_messages_recipient_age ON to_device_messages "
+                                           "(target_user_id, target_device_id, created_at_ms)",
+                                           {}});
+    return {19U, "to_device_queue_age_bound", std::move(statements), MigrationDirection::upgrade};
+}
+
+[[nodiscard]] auto downgrade_to_device_queue_age_bound_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"drop_to_device_recipient_age_index", "DROP INDEX idx_to_device_messages_recipient_age", {}});
+    statements.push_back(PreparedStatement{
+        "drop_to_device_created_at_ms_column", "ALTER TABLE to_device_messages DROP COLUMN created_at_ms", {}});
+    return {18U, "drop_to_device_queue_age_bound", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -601,7 +626,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_event_graph_state_migration(),
             upgrade_media_legacy_endpoint_visibility_migration(),
             upgrade_token_rotation_lineage_migration(),
-            upgrade_room_directory_visibility_migration()};
+            upgrade_room_directory_visibility_migration(),
+            upgrade_to_device_queue_age_bound_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -752,7 +778,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_room_directory_visibility_migration(),
+    return {downgrade_to_device_queue_age_bound_migration(),
+            downgrade_room_directory_visibility_migration(),
             downgrade_token_rotation_lineage_migration(),
             downgrade_media_legacy_endpoint_visibility_migration(),
             downgrade_event_graph_state_migration(),

@@ -489,6 +489,12 @@ struct RuntimeStartOptions final
     // which database credentials it connects with. See
     // database::table_load_profile_includes.
     database::TableLoadProfile database_load_profile{database::TableLoadProfile::full};
+    // True when the caller has already hardened this process and installed a
+    // seccomp filter that the main-process controls would violate. The
+    // federation worker sets it when federation.worker.apply_hardening is on:
+    // its worker filter denies setrlimit (ISO-2, ADR-0112), so re-applying
+    // the main profile's core-dump limit here kills the worker with SIGSYS.
+    bool process_hardening_applied_by_caller{false};
 };
 
 struct RuntimeStartResult final

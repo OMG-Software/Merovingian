@@ -833,6 +833,104 @@ SCENARIO("IpcChannel dispatch thread survives an unhandled request-handler excep
         pair.client->stop();
     }
 }
+SCENARIO("IpcChannel marks the channel unhealthy when the dispatch queue count cap is exceeded",
+         "[ipc][channel][dispatch][backpressure]")
+{
+    GIVEN("a connected pair with a small dispatch queue count cap and a slow handler")
+    {
+        auto pair = make_channel_pair();
+        pair.server->set_dispatch_queue_limits(2U, 0U);
+
+        auto block = std::atomic<bool>{true};
+        auto handled = std::atomic<std::size_t>{0U};
+        pair.server->set_request_handler([&block, &handled](std::uint64_t /*id*/, std::string /*json*/) {
+            ++handled;
+            while (block.load())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends more request frames than the queue cap")
+        {
+            for (auto i = 0; i < 5; ++i)
+            {
+                auto body = std::string{R"({"type":"flood","i":)"} + std::to_string(i) + "}";
+                pair.client->send_notification(body);
+            }
+
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (pair.server->healthy() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+
+            THEN("the server channel becomes unhealthy rather than pinning unbounded frames")
+            {
+                REQUIRE_FALSE(pair.server->healthy());
+            }
+            AND_THEN("no more than the count cap plus one handler slot is accepted")
+            {
+                block.store(false);
+                auto const drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+                while (handled.load() < 3U && std::chrono::steady_clock::now() < drain_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                REQUIRE(handled.load() <= 3U);
+            }
+        }
+
+        block.store(false);
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcChannel marks the channel unhealthy when the dispatch queue byte cap is exceeded",
+         "[ipc][channel][dispatch][backpressure]")
+{
+    GIVEN("a connected pair with a small dispatch queue byte cap and a slow handler")
+    {
+        auto pair = make_channel_pair();
+        // Count unbounded; bound only the queued bytes to a value smaller than a
+        // single notification frame body (before framing overhead).
+        pair.server->set_dispatch_queue_limits(0U, 16U);
+
+        auto block = std::atomic<bool>{true};
+        pair.server->set_request_handler([&block](std::uint64_t /*id*/, std::string /*json*/) {
+            while (block.load())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends a frame larger than the byte cap")
+        {
+            pair.client->send_notification(R"({"type":"flood","pad":"0123456789abcdef"})");
+
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (pair.server->healthy() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+
+            THEN("the server channel becomes unhealthy rather than pinning the oversize frame")
+            {
+                REQUIRE_FALSE(pair.server->healthy());
+            }
+        }
+
+        block.store(false);
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
 // Regression for #451: a body of exactly "{}" (no fields) was appended after
 // the frame header comma, producing {"id":1,} — invalid JSON. The peer's
 // parser rejected the frame and marked the channel unhealthy, tearing down

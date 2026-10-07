@@ -463,180 +463,182 @@ SCENARIO("worker seccomp filter denies exec/spawn syscalls but allows the worker
 // installed the general server filter, which permits all four. The decoder
 // profile is the seccomp equivalent of pledge("stdio"): work on already-open
 // descriptors only.
+SCENARIO("worker seccomp filter restricts process-control syscalls",
+         "[platform][hardening][seccomp][worker][linux][iso-2]")
+{
+    GIVEN("the worker seccomp allowlist")
+    {
+        WHEN("signal and resource-limit syscalls are checked")
+        {
+            THEN("kill, tkill and setrlimit are denied")
+            {
+                // ISO-2: the worker never needs to send signals to arbitrary
+                // processes or change its own resource limits. Allowing these
+                // would let a compromised worker manipulate the process table or
+                // relax sandbox limits.
+                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_kill));
+#ifdef __NR_tkill
+                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_tkill));
+#endif
+#ifdef __NR_setrlimit
+                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_setrlimit));
+#endif
+            }
+
+            AND_THEN("tgkill and prlimit64 are listed, for the argument-checked uses the worker needs")
+            {
+                // The static predicate checks the syscall number only. The
+                // installed BPF filter allows tgkill only on the worker's own
+                // thread group, and prlimit64 only to read the worker's own
+                // limits (glibc's getrlimit(); thread creation needs it). Those
+                // argument checks are tested against the real kernel in [iso2],
+                // tests/unit/test_worker_hardening_threads.cpp.
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_tgkill));
+#ifdef __NR_prlimit64
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_prlimit64));
+#endif
+            }
+        }
+    }
+}
+
 SCENARIO("decoder seccomp filter confines the thumbnail worker to the stdio "
          "boundary",
-         "[platform][hardening][seccomp][linux][media]") {
-  GIVEN("the decoder seccomp allowlist constants") {
-    WHEN("the default action is queried") {
-      auto const action =
-          merovingian::platform::decoder_seccomp_default_action();
+         "[platform][hardening][seccomp][linux][media]")
+{
+    GIVEN("the decoder seccomp allowlist constants")
+    {
+        WHEN("the default action is queried")
+        {
+            auto const action = merovingian::platform::decoder_seccomp_default_action();
 
-      THEN("it is SECCOMP_RET_KILL_PROCESS (fail-closed)") {
-        REQUIRE(action == static_cast<std::uint32_t>(SECCOMP_RET_KILL_PROCESS));
-      }
-    }
+            THEN("it is SECCOMP_RET_KILL_PROCESS (fail-closed)")
+            {
+                REQUIRE(action == static_cast<std::uint32_t>(SECCOMP_RET_KILL_PROCESS));
+            }
+        }
 
-    WHEN("the syscalls a decoder needs on already-open descriptors are "
-         "checked") {
-      THEN("stdio reads and writes, memory management, and exit are allowed") {
-        // The worker reads the request from stdin and writes the encoded
-        // thumbnail to stdout; both descriptors are already open when the
-        // filter is installed.
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_read));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_write));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_readv));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_writev));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_lseek));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_close));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_fstat));
-        // libpng and libjpeg-turbo allocate freely while decoding.
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_mmap));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_munmap));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_mprotect));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_brk));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_mremap));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_madvise));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_exit));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_exit_group));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_rt_sigreturn));
-      }
-    }
+        WHEN("the syscalls a decoder needs on already-open descriptors are "
+             "checked")
+        {
+            THEN("stdio reads and writes, memory management, and exit are allowed")
+            {
+                // The worker reads the request from stdin and writes the encoded
+                // thumbnail to stdout; both descriptors are already open when the
+                // filter is installed.
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_read));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_write));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_readv));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_writev));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_lseek));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_close));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_fstat));
+                // libpng and libjpeg-turbo allocate freely while decoding.
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_mmap));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_munmap));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_mprotect));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_brk));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_mremap));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_madvise));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_exit));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_exit_group));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_rt_sigreturn));
+            }
+        }
 
-    WHEN("the glibc malloc fast-path per-thread syscalls are checked") {
-      THEN("futex, rseq, membarrier, and getcpu are allowed") {
-        // Same rationale as the main filter: glibc 2.35+ issues rseq,
-        // membarrier, and getcpu from inside malloc. Omitting them would
-        // kill the worker on the first allocation, not on an escape attempt.
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_futex));
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            334)); // rseq
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            324)); // membarrier
-        REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            309)); // getcpu
-      }
-    }
+        WHEN("the glibc malloc fast-path per-thread syscalls are checked")
+        {
+            THEN("futex, rseq, membarrier, and getcpu are allowed")
+            {
+                // Same rationale as the main filter: glibc 2.35+ issues rseq,
+                // membarrier, and getcpu from inside malloc. Omitting them would
+                // kill the worker on the first allocation, not on an escape attempt.
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_futex));
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(334)); // rseq
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(324)); // membarrier
+                REQUIRE(merovingian::platform::decoder_seccomp_is_syscall_allowed(309)); // getcpu
+            }
+        }
 
-    WHEN("network syscalls are checked") {
-      THEN("the decoder cannot create or use sockets") {
-        // A decoder exploit must not be able to exfiltrate media, reach the
-        // federation network, or call home. This is the property
-        // pledge("stdio") gives on OpenBSD and cap_enter() gives on FreeBSD.
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_socket));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_socketpair));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_connect));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_bind));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_listen));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_accept));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_accept4));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_sendto));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_recvfrom));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_sendmsg));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_recvmsg));
-      }
-    }
+        WHEN("network syscalls are checked")
+        {
+            THEN("the decoder cannot create or use sockets")
+            {
+                // A decoder exploit must not be able to exfiltrate media, reach the
+                // federation network, or call home. This is the property
+                // pledge("stdio") gives on OpenBSD and cap_enter() gives on FreeBSD.
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_socket));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_socketpair));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_connect));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_bind));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_listen));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_accept));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_accept4));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_sendto));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_recvfrom));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_sendmsg));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_recvmsg));
+            }
+        }
 
-    WHEN("process-creation syscalls are checked") {
-      THEN("the decoder cannot exec or fork") {
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_execve));
+        WHEN("process-creation syscalls are checked")
+        {
+            THEN("the decoder cannot exec or fork")
+            {
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_execve));
 #ifdef __NR_execveat
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_execveat));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_execveat));
 #endif
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_clone));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            435)); // clone3
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_clone));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(435)); // clone3
 #ifdef __NR_fork
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_fork));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_fork));
 #endif
 #ifdef __NR_vfork
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_vfork));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_vfork));
 #endif
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_ptrace));
-      }
-    }
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_ptrace));
+            }
+        }
 
-    WHEN("path-based filesystem syscalls are checked") {
-      THEN("the decoder cannot open, create, or unlink anything by name") {
-        // The worker is handed its input on stdin. It never needs to name a
-        // file, so opening one is always an escape attempt.
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_openat));
+        WHEN("path-based filesystem syscalls are checked")
+        {
+            THEN("the decoder cannot open, create, or unlink anything by name")
+            {
+                // The worker is handed its input on stdin. It never needs to name a
+                // file, so opening one is always an escape attempt.
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_openat));
 #ifdef __NR_open
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_open));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_open));
 #endif
 #ifdef __NR_openat2
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_openat2));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_openat2));
 #endif
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_unlinkat));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_renameat));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_mkdirat));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_chdir));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_getdents64));
-      }
-    }
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_unlinkat));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_renameat));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_mkdirat));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_chdir));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_getdents64));
+            }
+        }
 
-    WHEN("the decoder profile is compared with the federation worker profile") {
-      THEN("it is strictly tighter - the worker profile permits network and "
-           "process syscalls it denies") {
-        // Guards against someone "simplifying" the decoder onto the worker
-        // filter. The worker legitimately needs sockets and threads for
-        // federation HTTP; a media decoder needs neither, and reusing that
-        // profile would silently reopen this finding.
-        REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(
-            __NR_socket));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_socket));
-        REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(
-            __NR_openat));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_openat));
-        REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(
-            __NR_clone));
-        REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(
-            __NR_clone));
-      }
+        WHEN("the decoder profile is compared with the federation worker profile")
+        {
+            THEN("it is strictly tighter - the worker profile permits network and "
+                 "process syscalls it denies")
+            {
+                // Guards against someone "simplifying" the decoder onto the worker
+                // filter. The worker legitimately needs sockets and threads for
+                // federation HTTP; a media decoder needs neither, and reusing that
+                // profile would silently reopen this finding.
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_socket));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_socket));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_openat));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_openat));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_clone));
+                REQUIRE_FALSE(merovingian::platform::decoder_seccomp_is_syscall_allowed(__NR_clone));
+            }
+        }
     }
-  }
 }
 #endif // __linux__

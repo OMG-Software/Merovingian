@@ -92,8 +92,8 @@ WorkerSupervisor::~WorkerSupervisor()
     stop();
 }
 
-auto make_worker_secret_pipe(std::span<std::uint8_t const> secret,
-                             std::span<int const> reserved_fds) -> core::FileDescriptor
+auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int const> reserved_fds)
+    -> core::FileDescriptor
 {
     if (secret.empty())
     {
@@ -338,6 +338,12 @@ auto WorkerSupervisor::set_max_in_flight(std::size_t cap) noexcept -> void
     ipc_max_in_flight_ = cap;
 }
 
+auto WorkerSupervisor::set_dispatch_queue_limits(std::size_t max_count, std::uint64_t max_bytes) noexcept -> void
+{
+    ipc_max_dispatch_queue_count_ = max_count;
+    ipc_max_dispatch_queue_bytes_ = max_bytes;
+}
+
 auto WorkerSupervisor::worker_pid() const noexcept -> pid_t
 {
     return worker_pid_.load();
@@ -440,6 +446,7 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key,
                                                          max_frame_bytes_);
     new_channel->set_max_in_flight(ipc_max_in_flight_);
+    new_channel->set_dispatch_queue_limits(ipc_max_dispatch_queue_count_, ipc_max_dispatch_queue_bytes_);
     if (request_handler_)
     {
         new_channel->set_request_handler(request_handler_);

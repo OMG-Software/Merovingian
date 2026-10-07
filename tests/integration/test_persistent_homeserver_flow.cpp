@@ -7,6 +7,7 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -358,18 +359,32 @@ SCENARIO("SQLite-backed runtime still expires access tokens after a restart",
         WHEN("a token is issued, the runtime restarts, and the token's lifetime passes")
         {
             auto access_token = std::string{};
+            auto issued_by = std::chrono::system_clock::time_point{};
             {
                 auto started = merovingian::homeserver::start_client_server(config);
                 REQUIRE(started.started);
                 access_token =
                     json_string_field(register_and_login_with_refresh(started.runtime, "expiring"), "access_token");
+                // The token was issued before this point, so it expires no later
+                // than one lifetime after it.
+                issued_by = std::chrono::system_clock::now();
                 REQUIRE(merovingian::homeserver::handle_client_server_request(
                             started.runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}})
                             .response.status == 200U);
             }
             auto restarted = merovingian::homeserver::start_client_server(config);
             REQUIRE(restarted.started);
-            std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+            // Expiry is an absolute wall-clock time, so wait until the wall
+            // clock, not a fixed sleep, is past it. WSL2 can step the wall
+            // clock back by more than a second, which made a fixed 1.5 s sleep
+            // occasionally end before the token's expiry.
+            auto const expired_at = issued_by + std::chrono::milliseconds{1000} + std::chrono::milliseconds{100};
+            auto const give_up = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+            while (std::chrono::system_clock::now() < expired_at && std::chrono::steady_clock::now() < give_up)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+            REQUIRE(std::chrono::system_clock::now() >= expired_at);
             auto const whoami = merovingian::homeserver::handle_client_server_request(
                 restarted.runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}});
 
@@ -602,9 +617,11 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
 
 SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[database][homeserver][integration]")
 {
-    GIVEN("registration-enabled config and no existing schema")
+    GIVEN("registration-enabled config and no existing SQLite schema")
     {
-        auto const config = registration_enabled_config();
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_registration_enabled_config(sqlite_path);
 
         WHEN("the runtime starts")
         {
@@ -623,13 +640,13 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 18U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 19U);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
                         merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
                         "initial_schema");
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "room_directory_visibility");
+                        "to_device_queue_age_bound");
             }
         }
     }
@@ -638,9 +655,11 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
 SCENARIO("Persistent homeserver startup is idempotent for an already migrated schema",
          "[database][homeserver][integration]")
 {
-    GIVEN("an already migrated schema state")
+    GIVEN("an already migrated SQLite schema state")
     {
-        auto const first = merovingian::database::open_persistent_store();
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const first = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
         REQUIRE(first.ok);
 
         WHEN("the runtime starts with that state")
@@ -653,7 +672,7 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 18U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 19U);
             }
         }
     }

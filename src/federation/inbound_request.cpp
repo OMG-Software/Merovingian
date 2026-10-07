@@ -971,6 +971,13 @@ namespace
         {
             return {400U, "membership path is malformed"};
         }
+        if (sender_domain(params->subject) != request.origin)
+        {
+            audit_federation(runtime, "federation.make_membership_rejected", request.origin, request.target,
+                             "userId path parameter is not a user on the origin server");
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM",
+                                                   "userId path parameter is not a user on the origin server")};
+        }
         auto const supported = parse_supported_versions(request.target);
         auto const tmpl =
             runtime.membership_template_provider(route.endpoint, params->room_id, params->subject, supported);

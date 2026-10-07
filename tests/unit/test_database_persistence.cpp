@@ -1137,7 +1137,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 18U);
+                REQUIRE(upgrade_plan.steps.size() == 19U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
@@ -1164,7 +1164,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[11].name == "login_tokens");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 18U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 19U);
                 // v12 (login_tokens) belongs to a sibling branch (SSO login);
                 // registered here only for chain contiguity — see
                 // migrations/AGENTS.md and schema.cpp's v12_table_names comment.
@@ -1182,9 +1182,11 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[16].name == "token_rotation_lineage");
                 REQUIRE(upgrade_plan.steps[17].version == 18U);
                 REQUIRE(upgrade_plan.steps[17].name == "room_directory_visibility");
+                REQUIRE(upgrade_plan.steps[18].version == 19U);
+                REQUIRE(upgrade_plan.steps[18].name == "to_device_queue_age_bound");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 18U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 19U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
@@ -1202,38 +1204,41 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgraded.state.applied_migrations[14].name == "event_graph_state");
                 REQUIRE(upgraded.state.applied_migrations[15].name == "media_legacy_endpoint_visibility");
                 REQUIRE(upgraded.state.applied_migrations[16].name == "token_rotation_lineage");
+                REQUIRE(upgraded.state.applied_migrations[17].name == "room_directory_visibility");
+                REQUIRE(upgraded.state.applied_migrations[18].name == "to_device_queue_age_bound");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 18U);
-                // Downgrade walks v18->v0; directory publication drops before
-                // the v17 token-rotation columns, which drop
-                // first, then the v16 media column, then the v15 tables/columns
+                REQUIRE(downgrade_plan.steps.size() == 19U);
+                // Downgrade walks v19->v0; the to-device queue age bound drops
+                // first, then directory publication, then the v17 token-rotation
+                // columns, then the v16 media column, then the v15 tables/columns
                 // (state groups, forward extremities, event status), then the
                 // users.deactivated column, then the appservice_txn_cursor
                 // table, then login_tokens, then the pushers_data_extra column,
                 // then the openid_tokens table, then notifications, then
                 // pushers, then the account_threepids column drop must precede
                 // the account_threepids table drop.
-                REQUIRE(downgrade_plan.steps[0].name == "drop_room_directory_visibility");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_token_rotation_lineage");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_media_legacy_endpoint_visibility");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_event_graph_state");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_user_deactivation");
-                REQUIRE(downgrade_plan.steps[5].name == "drop_appservice_txn_cursor");
-                REQUIRE(downgrade_plan.steps[6].name == "drop_login_tokens");
-                REQUIRE(downgrade_plan.steps[7].name == "drop_pushers_data_extra");
-                REQUIRE(downgrade_plan.steps[8].name == "drop_openid_tokens");
-                REQUIRE(downgrade_plan.steps[9].name == "drop_notifications");
-                REQUIRE(downgrade_plan.steps[10].name == "drop_pushers");
-                REQUIRE(downgrade_plan.steps[11].name == "drop_account_threepids_columns");
-                REQUIRE(downgrade_plan.steps[12].name == "drop_account_threepids");
-                REQUIRE(downgrade_plan.steps[13].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[14].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[15].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[16].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[17].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps[0].name == "drop_to_device_queue_age_bound");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_room_directory_visibility");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_token_rotation_lineage");
+                REQUIRE(downgrade_plan.steps[3].name == "drop_media_legacy_endpoint_visibility");
+                REQUIRE(downgrade_plan.steps[4].name == "drop_event_graph_state");
+                REQUIRE(downgrade_plan.steps[5].name == "drop_user_deactivation");
+                REQUIRE(downgrade_plan.steps[6].name == "drop_appservice_txn_cursor");
+                REQUIRE(downgrade_plan.steps[7].name == "drop_login_tokens");
+                REQUIRE(downgrade_plan.steps[8].name == "drop_pushers_data_extra");
+                REQUIRE(downgrade_plan.steps[9].name == "drop_openid_tokens");
+                REQUIRE(downgrade_plan.steps[10].name == "drop_notifications");
+                REQUIRE(downgrade_plan.steps[11].name == "drop_pushers");
+                REQUIRE(downgrade_plan.steps[12].name == "drop_account_threepids_columns");
+                REQUIRE(downgrade_plan.steps[13].name == "drop_account_threepids");
+                REQUIRE(downgrade_plan.steps[14].name == "drop_backfill_state_transitions");
+                REQUIRE(downgrade_plan.steps[15].name == "drop_state_transitions");
+                REQUIRE(downgrade_plan.steps[16].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[17].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[18].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -2135,7 +2140,7 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 18U);
+                REQUIRE(loaded.steps.size() == 19U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
@@ -2205,6 +2210,9 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 REQUIRE(loaded.steps[17].version == 18U);
                 REQUIRE(loaded.steps[17].name == "room_directory_visibility");
                 REQUIRE(loaded.steps[17].statements.size() == 1U);
+                REQUIRE(loaded.steps[18].version == 19U);
+                REQUIRE(loaded.steps[18].name == "to_device_queue_age_bound");
+                REQUIRE(loaded.steps[18].statements.size() == 2U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -2292,7 +2300,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // v17 (ADR-0074) adds no new table either; it ALTERs a
                 // predecessor column onto refresh_tokens and access_tokens.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 18U);
+                REQUIRE(merovingian::database::current_schema_version() == 19U);
                 REQUIRE(merovingian::database::current_schema_tables().size() == 57U);
                 // data_extra_json column onto pushers (no new table),
                 // migration v12 adds the login_tokens table (a sibling
@@ -2304,7 +2312,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // schema inventory, while v5, v7, v11 and v14 add no tables --
                 // v14 adds only the users.deactivated column.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 18U);
+                REQUIRE(merovingian::database::current_schema_version() == 19U);
                 REQUIRE(merovingian::database::current_schema_tables().size() == 57U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());

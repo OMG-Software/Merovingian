@@ -1332,3 +1332,176 @@ SCENARIO("change_local_user_password still revokes other devices after the M-05 
         }
     }
 }
+
+// --- DB-5: token revocation paths verify durable-store state --------------------
+//
+// revoke_* helpers return the number of in-memory rows updated, which equals the
+// durable row count only when the backend commit succeeds. A backend failure also
+// returns 0, so callers must verify the persistent store state instead of
+// trusting the count. The scenarios below inject a memory-backend failure and
+// assert that the auth endpoint reports a 500 rather than pretending revocation
+// succeeded.
+
+SCENARIO("logout_local_user fails closed when token revocation cannot persist",
+         "[homeserver][auth][logout][security][db-5]")
+{
+    GIVEN("a started runtime with a logged-in user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        WHEN("the access-token revocation statement is forced to fail")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                       "revoke_access_token");
+            auto const result = merovingian::homeserver::logout_local_user(runtime, login.value);
+
+            THEN("logout reports a persistence failure instead of success")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                REQUIRE(result.reason == "token revocation persistence failed");
+            }
+        }
+    }
+}
+
+SCENARIO("logout_all_local_user fails closed when token revocation cannot persist",
+         "[homeserver][auth][logout_all][security][db-5]")
+{
+    GIVEN("a started runtime with a logged-in user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        WHEN("the access-token revocation statement is forced to fail")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                       "revoke_user_access_tokens");
+            auto const result = merovingian::homeserver::logout_all_local_user(runtime, login.value);
+
+            THEN("logout_all reports a persistence failure instead of success")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                REQUIRE(result.reason == "session revocation persistence failed");
+            }
+        }
+    }
+}
+
+SCENARIO("delete_local_device fails closed when token revocation cannot persist",
+         "[homeserver][auth][delete_device][security][db-5]")
+{
+    GIVEN("a started runtime with a logged-in user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        WHEN("the access-token revocation statement is forced to fail")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                       "revoke_device_access_tokens");
+            auto const result = merovingian::homeserver::delete_local_device(runtime, reg.value, "DEVICE1");
+
+            THEN("device deletion reports a persistence failure instead of success")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                REQUIRE(result.reason == "token revocation persistence failed");
+            }
+        }
+    }
+}
+
+SCENARIO("change_local_user_password fails closed when other-device revocation cannot persist",
+         "[homeserver][auth][password_change][security][db-5]")
+{
+    GIVEN("a user signed in on two devices")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "OldPassword7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const caller = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE1");
+        REQUIRE(caller.ok);
+        std::ignore = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE2");
+
+        WHEN("the other-device revocation statement is forced to fail")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                       "revoke_user_access_tokens_except_device");
+            auto const result =
+                merovingian::homeserver::change_local_user_password(runtime, caller.value, "NewPassword99!");
+
+            THEN("password change reports a persistence failure instead of success")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                REQUIRE(result.reason == "token revocation persistence failed");
+            }
+        }
+    }
+}
+
+SCENARIO("refresh_local_session fails closed when token revocation cannot persist",
+         "[homeserver][auth][refresh][security][db-5]")
+{
+    GIVEN("a registered user with a refresh token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        std::ignore = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const issued = merovingian::homeserver::issue_refresh_token_for_session(runtime, reg.value, "DEVICE1");
+        REQUIRE(issued.ok);
+
+        WHEN("the access-token revocation statement is forced to fail")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.database.persistent_store,
+                                                                       "revoke_device_access_tokens");
+            auto const result = merovingian::homeserver::refresh_local_session(runtime, issued.value);
+
+            THEN("refresh reports a persistence failure and issues no credential")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 500U);
+                REQUIRE(result.access_token.empty());
+                REQUIRE(result.refresh_token.empty());
+            }
+        }
+    }
+}

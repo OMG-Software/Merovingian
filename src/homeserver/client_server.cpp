@@ -78,6 +78,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1395,6 +1396,55 @@ namespace
             return std::nullopt;
         }
         return serialized.output;
+    }
+
+    // Canonical JSON text of `json`, or nullopt when it is not parseable JSON.
+    // Two filter bodies that differ only in key order or whitespace share one
+    // canonical form (CSAZ-10 filter de-duplication).
+    [[nodiscard]] auto canonical_json_text(std::string_view json) -> std::optional<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        return serialized_value(parsed.value);
+    }
+
+    // CSAZ-10: what the user already stores that bears on a new filter upload.
+    struct StoredFilterSummary final
+    {
+        std::size_t count{0U};
+        // filter_id of a stored filter whose text equals the upload's canonical
+        // text, when there is one.
+        std::optional<std::string> identical_filter_id{};
+    };
+
+    // Filters are stored in canonical form (see the filter handler), so an
+    // identical definition is a byte-for-byte match and no stored row has to be
+    // re-parsed: a request cannot make the server parse up to
+    // max_filters_per_user bodies of up to max_body_size each.
+    [[nodiscard]] auto summarise_stored_filters(database::PersistentStore const& store, std::string_view user_id,
+                                                std::string_view canonical_json) -> StoredFilterSummary
+    {
+        auto summary = StoredFilterSummary{};
+        for (auto const& filter : store.filters)
+        {
+            if (filter.user_id != user_id)
+            {
+                continue;
+            }
+            ++summary.count;
+            if (summary.identical_filter_id.has_value())
+            {
+                continue;
+            }
+            if (filter.json == canonical_json)
+            {
+                summary.identical_filter_id = filter.filter_id;
+            }
+        }
+        return summary;
     }
 
     struct MembershipActionBody final
@@ -6029,6 +6079,34 @@ namespace
         return {};
     }
 
+    // CSAZ-10: true when storing the one-time keys named in `keys` would leave
+    // `device_id` holding more than `max_one_time_keys_per_device`. A key id the
+    // device already holds is replaced in place, so it is not counted twice and a
+    // device at its cap can still refresh the keys it has.
+    [[nodiscard]] auto one_time_upload_exceeds_cap(ClientServerRuntime const& rt, std::string_view user,
+                                                   std::string_view device_id, canonicaljson::Object const& keys)
+        -> bool
+    {
+        auto const& stored = rt.homeserver.database.persistent_store.one_time_keys;
+        auto held = std::set<std::string_view>{};
+        for (auto const& key : stored)
+        {
+            if (key.user_id == user && key.device_id == device_id)
+            {
+                held.insert(key.key_id);
+            }
+        }
+        auto added = std::set<std::string_view>{};
+        for (auto const& member : keys)
+        {
+            if (!held.contains(member.key))
+            {
+                added.insert(member.key);
+            }
+        }
+        return held.size() + added.size() > rt.limits.max_one_time_keys_per_device;
+    }
+
     [[nodiscard]] auto store_key_object_members(ClientServerRuntime& rt, std::string_view user,
                                                 std::string_view device_id, canonicaljson::Object const& object,
                                                 bool fallback) -> bool
@@ -6098,6 +6176,15 @@ namespace
             return err(400U, "M_BAD_JSON", "key upload body must be Matrix JSON");
         }
         auto& store = rt.homeserver.database.persistent_store;
+        // CSAZ-10: refuse before anything (device keys, one-time keys, fallback
+        // keys) is stored, so an over-cap request leaves no partial state.
+        if (auto const* one_time_keys = object_member_object(*object, "one_time_keys");
+            one_time_keys != nullptr && one_time_upload_exceeds_cap(rt, user, device_id, *one_time_keys))
+        {
+            return err(400U, "M_TOO_LARGE",
+                       "one-time key upload would exceed the per-device limit of " +
+                           std::to_string(rt.limits.max_one_time_keys_per_device));
+        }
         auto const* raw_device_keys = object_member(*object, "device_keys");
         auto const* device_keys_object = object_member_as_object(*object, "device_keys");
         if (raw_device_keys != nullptr && device_keys_object == nullptr)
@@ -8473,6 +8560,51 @@ namespace
         return json_serialize(json_obj({json_member("policy_rules", json_arr(std::move(rules)))}));
     }
 
+    // CSAZ-10: true when storing the signatures in a /keys/signatures/upload
+    // body would leave `signer` holding more than `max_key_signatures_per_user`
+    // distinct (target user, target key) signatures. A pair the signer already
+    // has is replaced in place, so re-signing is not counted twice. A body that
+    // does not parse is left for the store step to reject.
+    [[nodiscard]] auto signature_upload_exceeds_cap(ClientServerRuntime const& rt, std::string_view signer,
+                                                    std::string_view body) -> bool
+    {
+        auto const parsed = parsed_json_object(body);
+        if (!parsed.has_value())
+        {
+            return false;
+        }
+        using TargetKey = std::pair<std::string_view, std::string_view>;
+        auto held = std::set<TargetKey>{};
+        for (auto const& row : rt.homeserver.database.persistent_store.key_signatures)
+        {
+            if (row.signer_user_id == signer)
+            {
+                held.emplace(row.target_user_id, row.target_device_id);
+            }
+        }
+        auto added = std::set<TargetKey>{};
+        for (auto const& user_member : *parsed)
+        {
+            if (user_member.value == nullptr)
+            {
+                continue;
+            }
+            auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (signed_keys == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_member : *signed_keys)
+            {
+                if (!held.contains(TargetKey{user_member.key, key_member.key}))
+                {
+                    added.emplace(user_member.key, key_member.key);
+                }
+            }
+        }
+        return held.size() + added.size() > rt.limits.max_key_signatures_per_user;
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req, std::string_view version) -> bool
@@ -8916,6 +9048,12 @@ namespace
             return resp(200U, key_api_success_body(route.endpoint));
         }
         case auth::KeyApiEndpoint::upload_signatures:
+            if (signature_upload_exceeds_cap(rt, user, req.body))
+            {
+                return err(400U, "M_TOO_LARGE",
+                           "signature upload would exceed the per-user limit of " +
+                               std::to_string(rt.limits.max_key_signatures_per_user));
+            }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
@@ -9400,6 +9538,9 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_relations_page_size = client_api.max_relations_page_size;
     rt.limits.max_public_rooms_page_size = client_api.max_public_rooms_page_size;
     rt.limits.max_hierarchy_rooms = client_api.max_hierarchy_rooms;
+    rt.limits.max_one_time_keys_per_device = client_api.max_one_time_keys_per_device;
+    rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
+    rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
@@ -14801,8 +14942,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter body must not be empty");
             }
+            // CSAZ-10: an identical definition returns the filter the user already
+            // has instead of storing a duplicate; a distinct one is refused once
+            // the user holds max_filters_per_user. Nothing is evicted.
+            // The definition is stored in canonical form (the text as sent when it
+            // is not parseable JSON) so that identical definitions compare equal.
+            auto const filter_json = canonical_json_text(req.body).value_or(req.body);
+            auto const stored_filters =
+                summarise_stored_filters(rt.homeserver.database.persistent_store, path_user, filter_json);
+            if (stored_filters.identical_filter_id.has_value())
+            {
+                log_diagnostic("filter.deduplicated",
+                               {
+                                   {"actor",     *user,                               false},
+                                   {"filter_id", *stored_filters.identical_filter_id, false}
+                });
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj(
+                                         {json_member("filter_id", json_str(*stored_filters.identical_filter_id))})));
+            }
+            if (stored_filters.count >= rt.limits.max_filters_per_user)
+            {
+                log_diagnostic("filter.rejected",
+                               {
+                                   {"actor",  *user,                   false},
+                                   {"reason", "per-user filter limit", false}
+                });
+                return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                    "filter limit of " + std::to_string(rt.limits.max_filters_per_user) +
+                                        " per user reached");
+            }
             auto const filter_id = generate_filter_id();
-            if (!database::store_filter(rt.homeserver.database.persistent_store, {path_user, filter_id, req.body}))
+            if (!database::store_filter(rt.homeserver.database.persistent_store, {path_user, filter_id, filter_json}))
             {
                 log_diagnostic("filter.rejected", {
                                                       {"actor",     *user,                      false},

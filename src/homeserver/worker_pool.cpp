@@ -1143,6 +1143,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i,
                                                std::move(key_material), max_frame_bytes, std::move(db_uri_material));
         supervisor->set_max_in_flight(cfg_.ipc_max_in_flight_requests);
+        supervisor->set_dispatch_queue_limits(cfg_.ipc_max_dispatch_queue_count, cfg_.ipc_max_dispatch_queue_bytes);
 
         // Per-worker request handler: the IPC dispatch thread only classifies
         // the frame and enqueues the real work on handler_pool_. Each task

@@ -93,10 +93,10 @@ auto merge_visible_key_signatures(canonicaljson::Object& key_object, database::P
         signatures = *existing;
     }
     auto merged_any = false;
-    for (auto const& upload : store.key_signatures)
+    for (auto const& upload_ref : database::key_signatures_for_target(store, target_user_id))
     {
-        if (upload.target_user_id != target_user_id || upload.target_device_id != target_key_id ||
-            !upload_is_visible(upload, target_user_id, viewer_user_id))
+        auto const& upload = upload_ref.get();
+        if (upload.target_device_id != target_key_id || !upload_is_visible(upload, target_user_id, viewer_user_id))
         {
             continue;
         }

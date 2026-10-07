@@ -21,8 +21,8 @@ namespace
     // Emit one change per added, removed, or altered entry of a string-keyed
     // map-valued config block (client_rate_limits.per_*, log_modules.*).
     template <typename MapType>
-    auto diff_keyed_map(ReloadPlan& plan, std::string const& prefix, MapType const& current,
-                        MapType const& next) -> void
+    auto diff_keyed_map(ReloadPlan& plan, std::string const& prefix, MapType const& current, MapType const& next)
+        -> void
     {
         for (auto const& [key, value] : current)
         {
@@ -387,6 +387,14 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.decode_in_sandbox");
     }
+    if (current.security().media.remote_media_cache_ttl_seconds != next.security().media.remote_media_cache_ttl_seconds)
+    {
+        add_change(plan, "security.media.remote_media_cache_ttl_seconds");
+    }
+    if (current.security().media.remote_media_cache_max_entries != next.security().media.remote_media_cache_max_entries)
+    {
+        add_change(plan, "security.media.remote_media_cache_max_entries");
+    }
 
     if (current.security().logging.redact_tokens != next.security().logging.redact_tokens)
     {
@@ -524,6 +532,16 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.federation_worker().ipc_max_in_flight_requests != next.federation_worker().ipc_max_in_flight_requests)
     {
         add_change(plan, "federation.worker.ipc_max_in_flight_requests");
+    }
+    if (current.federation_worker().ipc_max_dispatch_queue_count !=
+        next.federation_worker().ipc_max_dispatch_queue_count)
+    {
+        add_change(plan, "federation.worker.ipc_max_dispatch_queue_count");
+    }
+    if (current.federation_worker().ipc_max_dispatch_queue_bytes !=
+        next.federation_worker().ipc_max_dispatch_queue_bytes)
+    {
+        add_change(plan, "federation.worker.ipc_max_dispatch_queue_bytes");
     }
     if (current.federation_worker().threads != next.federation_worker().threads)
     {
@@ -829,6 +847,18 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         next.server().client_api.max_notifications_retained_per_user)
     {
         add_change(plan, "server.client_api.max_notifications_retained_per_user");
+    }
+    if (current.server().client_api.max_one_time_keys_per_device != next.server().client_api.max_one_time_keys_per_device)
+    {
+        add_change(plan, "server.client_api.max_one_time_keys_per_device");
+    }
+    if (current.server().client_api.max_key_signatures_per_user != next.server().client_api.max_key_signatures_per_user)
+    {
+        add_change(plan, "server.client_api.max_key_signatures_per_user");
+    }
+    if (current.server().client_api.max_filters_per_user != next.server().client_api.max_filters_per_user)
+    {
+        add_change(plan, "server.client_api.max_filters_per_user");
     }
     if (current.server().client_api.max_threads_page_size != next.server().client_api.max_threads_page_size)
     {

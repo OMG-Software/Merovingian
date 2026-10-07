@@ -111,6 +111,14 @@
 * [0108 - Federation worker stale snapshot fallback to main](0108-federation-worker-stale-snapshot-fallback-to-main.md)
 * [0109 - Configure operational budgets with shared recovery bounds](0109-configure-operational-budgets-with-shared-recovery-bounds.md)
 * [0110 - Federation worker trusts the main-process verified identity for room-scoped reads](0110-federation-worker-trusts-main-verified-identity.md)
+* [0111 - Bound the IPC dispatch queue](0111-bound-the-ipc-dispatch-queue.md)
+* [0112 - Restrict worker signals and resource limits](0112-restrict-worker-signals-and-resource-limits.md)
+* [0113 - Default media quotas and a single in-memory blob copy](0113-default-media-quotas-and-single-blob-copy.md)
+* [0114 - Cache remote media by origin server and media ID](0114-cache-remote-media-by-origin-and-media-id.md)
+* [0115 - Canonicalise media server-name comparisons](0115-canonicalise-media-server-name-comparisons.md)
+* [0116 - Verify token revocation state in the auth service](0116-verify-token-revocation-state-in-auth-service.md)
+* [0117 - Bound to-device queues by recipient count and age](0117-bound-to-device-queues-by-recipient-count-and-age.md)
+* [0118 - Refuse E2EE key and filter uploads at per-user caps; store filters canonically](0118-refuse-e2ee-and-filter-uploads-at-per-user-caps.md)
 
 ## Rejected Records
 

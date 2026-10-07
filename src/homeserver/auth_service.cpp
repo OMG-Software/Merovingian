@@ -78,6 +78,100 @@ namespace
         return "@" + std::string{localpart} + ":" + std::string{server_name};
     }
 
+    // DB-5 (2026-09-29 audit): revocation helpers return the number of in-memory
+    // rows they updated, which is also the number of durable rows updated when the
+    // backend commit succeeds. A backend failure returns 0, the same value as
+    // "nothing to revoke". Callers must therefore check the persistent store state
+    // after a revocation rather than trusting the count. These helpers answer
+    // "are all targeted rows actually revoked?" for each scope used by the auth
+    // service, so every revocation path can fail closed on a persistence failure.
+
+    [[nodiscard]] auto access_token_is_revoked(database::PersistentStore const& store, std::string_view token_hash)
+        -> bool
+    {
+        return !std::ranges::any_of(store.access_tokens, [&token_hash](database::PersistentAccessToken const& token) {
+            return crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked;
+        });
+    }
+
+    [[nodiscard]] auto refresh_token_is_revoked(database::PersistentStore const& store, std::string_view token_hash)
+        -> bool
+    {
+        return !std::ranges::any_of(store.refresh_tokens, [&token_hash](database::PersistentRefreshToken const& token) {
+            return crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked;
+        });
+    }
+
+    [[nodiscard]] auto device_access_tokens_are_revoked(database::PersistentStore const& store,
+                                                        std::string_view user_id, std::string_view device_id) -> bool
+    {
+        return !std::ranges::any_of(
+            store.access_tokens, [&user_id, &device_id](database::PersistentAccessToken const& token) {
+                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
+            });
+    }
+
+    [[nodiscard]] auto device_tokens_are_revoked(database::PersistentStore const& store, std::string_view user_id,
+                                                 std::string_view device_id) -> bool
+    {
+        auto const access_remaining = std::ranges::any_of(
+            store.access_tokens, [&user_id, &device_id](database::PersistentAccessToken const& token) {
+                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
+            });
+        auto const refresh_remaining = std::ranges::any_of(
+            store.refresh_tokens, [&user_id, &device_id](database::PersistentRefreshToken const& token) {
+                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
+            });
+        return !access_remaining && !refresh_remaining;
+    }
+
+    [[nodiscard]] auto device_refresh_tokens_are_revoked(database::PersistentStore const& store,
+                                                         std::string_view user_id, std::string_view device_id) -> bool
+    {
+        return !std::ranges::any_of(
+            store.refresh_tokens, [&user_id, &device_id](database::PersistentRefreshToken const& token) {
+                return token.user_id == user_id && token.device_id == device_id && !token.revoked;
+            });
+    }
+
+    [[nodiscard]] auto user_tokens_are_revoked(database::PersistentStore const& store, std::string_view user_id) -> bool
+    {
+        auto const access_remaining =
+            std::ranges::any_of(store.access_tokens, [&user_id](database::PersistentAccessToken const& token) {
+                return token.user_id == user_id && !token.revoked;
+            });
+        auto const refresh_remaining =
+            std::ranges::any_of(store.refresh_tokens, [&user_id](database::PersistentRefreshToken const& token) {
+                return token.user_id == user_id && !token.revoked;
+            });
+        return !access_remaining && !refresh_remaining;
+    }
+
+    [[nodiscard]] auto user_tokens_except_device_are_revoked(database::PersistentStore const& store,
+                                                             std::string_view user_id, std::string_view keep_device_id)
+        -> bool
+    {
+        auto const access_remaining = std::ranges::any_of(
+            store.access_tokens, [&user_id, &keep_device_id](database::PersistentAccessToken const& token) {
+                return token.user_id == user_id && token.device_id != keep_device_id && !token.revoked;
+            });
+        auto const refresh_remaining = std::ranges::any_of(
+            store.refresh_tokens, [&user_id, &keep_device_id](database::PersistentRefreshToken const& token) {
+                return token.user_id == user_id && token.device_id != keep_device_id && !token.revoked;
+            });
+        return !access_remaining && !refresh_remaining;
+    }
+
+    [[nodiscard]] auto refresh_tokens_with_predecessor_are_revoked(database::PersistentStore const& store,
+                                                                   std::string_view predecessor_hash) -> bool
+    {
+        return !std::ranges::any_of(
+            store.refresh_tokens, [&predecessor_hash](database::PersistentRefreshToken const& token) {
+                return !token.predecessor_hash.empty() &&
+                       crypto::constant_time_equal(token.predecessor_hash, predecessor_hash) && !token.revoked;
+            });
+    }
+
     // Master key material loading is shared with the federation worker process
     // via crypto::load_master_key_material (declared in
     // merovingian/crypto/master_key.hpp) so both processes derive the same keys
@@ -1353,6 +1447,12 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     {
         std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
         std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+        if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+        {
+            append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh.reuse_detected",
+                               user_id, device_id, "token revocation persistence failed");
+            return {false, 500U, {}, {}, {}, {}, "token revocation persistence failed"};
+        }
         for (auto& session : runtime.database.sessions)
         {
             if (session.user_id == user_id && session.device_id == device_id)
@@ -1425,11 +1525,23 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     if (!predecessor_hash.empty())
     {
         std::ignore = database::revoke_refresh_token(runtime.database.persistent_store, predecessor_hash);
+        if (!refresh_token_is_revoked(runtime.database.persistent_store, predecessor_hash))
+        {
+            return {false, 500U, {}, {}, {}, {}, "token revocation persistence failed"};
+        }
     }
     std::ignore = database::revoke_refresh_tokens_with_predecessor(runtime.database.persistent_store, presented_hash);
+    if (!refresh_tokens_with_predecessor_are_revoked(runtime.database.persistent_store, presented_hash))
+    {
+        return {false, 500U, {}, {}, {}, {}, "token revocation persistence failed"};
+    }
     // The device's earlier access tokens may be revoked at once (the spec
     // leaves this to the server); that includes a lost earlier pair's token.
     std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    if (!device_access_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+    {
+        return {false, 500U, {}, {}, {}, {}, "token revocation persistence failed"};
+    }
     for (auto& session : runtime.database.sessions)
     {
         if (session.user_id == user_id && session.device_id == device_id)
@@ -1549,15 +1661,24 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
         auto const hash = session->access_token_hash;
         std::ignore =
             database::revoke_refresh_token(runtime.database.persistent_store, session->predecessor_refresh_hash);
-        // Cleared in place (no reallocation, so `session` stays valid); after a
-        // restart hydration restores the field and the idempotent revocation
-        // runs once more.
-        for (auto& live : runtime.database.sessions)
+        // DB-5: do not clear the predecessor marker if the revocation did not
+        // actually persist. Leaving it set means the next authenticated use will
+        // retry the idempotent revocation; clearing it would silently leave the
+        // old refresh token valid.
+        if (refresh_token_is_revoked(runtime.database.persistent_store, session->predecessor_refresh_hash))
         {
-            if (live.access_token_hash == hash)
+            for (auto& live : runtime.database.sessions)
             {
-                live.predecessor_refresh_hash.clear();
+                if (live.access_token_hash == hash)
+                {
+                    live.predecessor_refresh_hash.clear();
+                }
             }
+        }
+        else
+        {
+            append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh.predecessor_revoke",
+                               session->user_id, session->device_id, "failed to persist predecessor revocation");
         }
     }
     log_diagnostic("access_token.accepted",
@@ -1668,7 +1789,8 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
         return make_operation_result(false, {}, "unauthenticated");
     }
 
-    if (database::revoke_access_token(runtime.database.persistent_store, persisted_hash) == 0U)
+    std::ignore = database::revoke_access_token(runtime.database.persistent_store, persisted_hash);
+    if (!access_token_is_revoked(runtime.database.persistent_store, persisted_hash))
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
     }
@@ -1683,6 +1805,10 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     // Spec: docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3logout
     // — the device's access token and refresh token are both invalidated.
     std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    if (!device_refresh_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+    }
     for (auto& session : runtime.database.sessions)
     {
         if (matches_any_token_hash(session.access_token_hash, token_hashes))
@@ -1708,11 +1834,9 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
-    auto const access_revoked =
-        database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    auto const refresh_revoked =
-        database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    if (access_revoked == 0U && refresh_revoked == 0U)
+    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    if (!user_tokens_are_revoked(runtime.database.persistent_store, session->user_id))
     {
         return make_operation_result(false, {}, "session revocation persistence failed", 500U);
     }
@@ -1779,15 +1903,7 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
     // store to make the outcome, not the return count, the thing that decides.
     std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
     std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
-    auto const credentials_remain = std::ranges::any_of(runtime.database.persistent_store.access_tokens,
-                                                        [&session](database::PersistentAccessToken const& token) {
-                                                            return token.user_id == session->user_id && !token.revoked;
-                                                        }) ||
-                                    std::ranges::any_of(runtime.database.persistent_store.refresh_tokens,
-                                                        [&session](database::PersistentRefreshToken const& token) {
-                                                            return token.user_id == session->user_id && !token.revoked;
-                                                        });
-    if (credentials_remain)
+    if (!user_tokens_are_revoked(runtime.database.persistent_store, session->user_id))
     {
         return make_operation_result(false, {}, "token revocation failed during deactivation", 500U);
     }
@@ -1828,6 +1944,10 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     }
     std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
     std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    if (!device_tokens_are_revoked(runtime.database.persistent_store, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+    }
     for (auto& session : runtime.database.sessions)
     {
         if (session.user_id == user_id && session.device_id == device_id)
@@ -1885,6 +2005,10 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         // the caller's device, so no revoked credential is ever reinstated.
         std::ignore = database::revoke_tokens_for_user_except_device(runtime.database.persistent_store, user_id,
                                                                      session->device_id);
+        if (!user_tokens_except_device_are_revoked(runtime.database.persistent_store, user_id, session->device_id))
+        {
+            return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+        }
         for (auto& candidate : runtime.database.sessions)
         {
             if (candidate.user_id == user_id && candidate.device_id != session->device_id)

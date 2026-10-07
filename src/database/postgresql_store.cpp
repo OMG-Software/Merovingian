@@ -1209,16 +1209,17 @@ namespace
 
         if (table_load_profile_includes("to_device_messages", profile))
         {
-            auto to_device = query_rows(connection, "postgresql_load_to_device_messages",
-                                        "SELECT stream_id, sender_user_id, target_user_id, target_device_id, "
-                                        "message_type, content FROM to_device_messages ORDER BY stream_id");
+            auto to_device =
+                query_rows(connection, "postgresql_load_to_device_messages",
+                           "SELECT stream_id, sender_user_id, target_user_id, target_device_id, "
+                           "message_type, content, created_at_ms FROM to_device_messages ORDER BY stream_id");
             if (!to_device.ok)
             {
                 return false;
             }
             for (auto const& row : to_device.rows)
             {
-                if (row.size() >= 6U)
+                if (row.size() >= 7U)
                 {
                     auto entry = PersistentToDeviceMessage{};
                     entry.stream_id = parse_u64(row[0]);
@@ -1227,6 +1228,7 @@ namespace
                     entry.target_device_id = row[3];
                     entry.message_type = row[4];
                     entry.content_json = row[5];
+                    entry.created_at_ms = parse_u64(row[6]);
                     store.to_device_messages.push_back(std::move(entry));
                 }
             }
@@ -1633,8 +1635,8 @@ namespace
         bool held_{false};
     };
 
-    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection,
-                                                SchemaState state) -> std::optional<SchemaState>
+    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state)
+        -> std::optional<SchemaState>
     {
         // Taken before the plan is computed and released only after it is
         // complete (this object outlives every return path below).
@@ -1839,8 +1841,8 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
 }
 
 auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role,
-                                      std::string_view migration_role,
-                                      TableLoadProfile profile) -> PersistentStoreOpenResult
+                                      std::string_view migration_role, TableLoadProfile profile)
+    -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
                                         {"backend", "postgresql", false}
@@ -1972,6 +1974,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     }
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);
@@ -2065,8 +2068,8 @@ auto current_postgresql_user(PostgresqlConnection& connection) -> std::string
 namespace
 {
 
-    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection,
-                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
@@ -2267,8 +2270,8 @@ namespace detail
     }
 
     auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
-                                           std::string_view prefix,
-                                           std::size_t limit) -> std::optional<std::vector<PersistentAuditEvent>>
+                                           std::string_view prefix, std::size_t limit)
+        -> std::optional<std::vector<PersistentAuditEvent>>
     {
         if (conninfo.empty())
         {

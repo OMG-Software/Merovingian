@@ -16,16 +16,24 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <optional>
 #include <sstream>
 #include <streambuf>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <thread>
+#include <tuple>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace
 {
@@ -76,43 +84,126 @@ private:
     return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
 }
 
+// Runs `body` in a forked child, which has only the forking thread, and returns
+// what it wrote to its report pipe. The child _exit()s; nothing in it may use
+// Catch2, whose assertions belong to the parent.
+[[nodiscard]] auto counts_in_single_threaded_child(std::function<void(int)> const& body) -> std::string
+{
+    int fds[2] = {-1, -1}; // NOLINT(*-avoid-c-arrays)
+    REQUIRE(::pipe(fds) == 0);
+    auto const pid = ::fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0)
+    {
+        ::close(fds[0]);
+        body(fds[1]);
+        ::close(fds[1]);
+        ::_exit(0);
+    }
+    ::close(fds[1]);
+    auto report = std::string{};
+    char buffer[256]; // NOLINT(*-avoid-c-arrays)
+    for (auto n = ::read(fds[0], buffer, sizeof(buffer)); n > 0; n = ::read(fds[0], buffer, sizeof(buffer)))
+    {
+        report.append(buffer, static_cast<std::size_t>(n));
+    }
+    ::close(fds[0]);
+    auto status = 0;
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    REQUIRE(WIFEXITED(status));
+    return report;
+}
+
+auto write_report(int fd, std::string const& text) -> void
+{
+    std::ignore = ::write(fd, text.data(), text.size());
+}
+
 } // namespace
 
+// ISO-1: the logger must start no thread until start_writers(). Counted in a
+// forked child, which starts with exactly one thread: the test process's other
+// threads, left by earlier tests, can exit while this counts, which made an
+// in-process count flaky. The child first proves that thread counting works by
+// starting one helper thread; where it does not (no /proc, or NetBSD counting
+// only the calling LWP) the scenario skips with a message instead of passing.
 SCENARIO("The logger starts no thread until its writers are explicitly started", "[observability][logger][iso1]")
 {
-    GIVEN("a logger that has never been started")
+    GIVEN("a logger that has never been started, in a child process with one "
+          "thread")
     {
-        auto logger = SingleLog{};
-        logger.set_console_log_level(LogLevel::off);
-        logger.set_file_log_level(LogLevel::off);
-        auto const tasks_before = merovingian::tests::count_process_tasks();
-        if (tasks_before <= 1U)
+        auto const report = counts_in_single_threaded_child([](int report_fd) {
+            auto const baseline = merovingian::tests::count_process_tasks();
+            {
+                auto release = std::atomic<bool>{false};
+                auto helper = std::thread{[&release] {
+                    while (!release.load())
+                    {
+                        std::this_thread::yield();
+                    }
+                }};
+                auto const with_helper = merovingian::tests::count_process_tasks();
+                release.store(true);
+                helper.join();
+                if (baseline == 0U || with_helper != baseline + 1U)
+                {
+                    write_report(report_fd, "SKIP");
+                    return;
+                }
+            }
+
+            auto logger = SingleLog{};
+            logger.set_console_log_level(LogLevel::off);
+            logger.set_file_log_level(LogLevel::off);
+            logger.info("iso1", "a message logged before the writers exist");
+            logger.critical("iso1", "and a critical one");
+            auto const after_use = merovingian::tests::count_process_tasks();
+            auto const started_before_start = logger.writers_started();
+            auto const started = logger.start_writers();
+            auto const after_start = merovingian::tests::count_process_tasks();
+            auto const started_again = logger.start_writers();
+            auto const after_again = merovingian::tests::count_process_tasks();
+            write_report(report_fd, "before=" + std::to_string(baseline) + " after_use=" + std::to_string(after_use) +
+                                        " flag_before=" + std::to_string(started_before_start ? 1 : 0) +
+                                        " started=" + std::to_string(started ? 1 : 0) +
+                                        " after_start=" + std::to_string(after_start) +
+                                        " again=" + std::to_string(started_again ? 1 : 0) +
+                                        " after_again=" + std::to_string(after_again) + " ");
+        });
+        if (report == "SKIP")
         {
-            SKIP("this platform's /proc/self/task does not reliably enumerate process threads");
+            SKIP("this platform's /proc/self/task does not reliably enumerate "
+                 "process threads");
         }
+        INFO("child report: " << report);
+        auto const value = [&report](std::string_view key) {
+            auto const token = " " + std::string{key} + "=";
+            auto const padded = " " + report;
+            auto const start = padded.find(token);
+            REQUIRE(start != std::string::npos);
+            auto const begin = start + token.size();
+            return std::stoull(padded.substr(begin, padded.find(' ', begin) - begin));
+        };
+        auto const before = value("before");
 
         WHEN("it is constructed and used")
         {
-            logger.info("iso1", "a message logged before the writers exist");
-            logger.critical("iso1", "and a critical one");
-
-            THEN("no thread was created and the logger reports its writers as not started")
+            THEN("no thread was created and the logger reports its writers as not "
+                 "started")
             {
-                REQUIRE_FALSE(logger.writers_started());
-                REQUIRE(merovingian::tests::count_process_tasks() == tasks_before);
+                REQUIRE(value("flag_before") == 0U);
+                REQUIRE(value("after_use") == before);
             }
         }
 
         WHEN("its writers are started")
         {
-            REQUIRE(logger.start_writers());
-
             THEN("exactly two writer threads appear, and starting again adds none")
             {
-                REQUIRE(logger.writers_started());
-                REQUIRE(merovingian::tests::count_process_tasks() == tasks_before + 2U);
-                REQUIRE(logger.start_writers());
-                REQUIRE(merovingian::tests::count_process_tasks() == tasks_before + 2U);
+                REQUIRE(value("started") == 1U);
+                REQUIRE(value("after_start") == before + 2U);
+                REQUIRE(value("again") == 1U);
+                REQUIRE(value("after_again") == before + 2U);
             }
         }
     }

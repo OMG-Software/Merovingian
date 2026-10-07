@@ -10,10 +10,16 @@
 // |  matching, exclusivity, and cross-registration uniqueness validation.  |
 // +-------------------------------------------------------------------------+
 
+#include "../support/in_memory_database_config.hpp"
+#include "../support/master_key.hpp"
+#include "../support/registration_token.hpp"
 #include "merovingian/appservice/registration.hpp"
+#include "merovingian/config/config.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -267,7 +273,8 @@ SCENARIO("namespace regex matching", "[appservice][registration]")
     }
 }
 
-SCENARIO("appservice_owns_user rejects foreign users before namespace matching", "[appservice][registration][security][auth-6]")
+SCENARIO("appservice_owns_user rejects foreign users before namespace matching",
+         "[appservice][registration][security][auth-6]")
 {
     GIVEN("a registration whose users namespace would match a foreign user id")
     {
@@ -336,7 +343,8 @@ SCENARIO("appservice_owns_user resolves the sender_localpart default", "[appserv
     }
 }
 
-SCENARIO("cross-registration sender_localpart is reserved from ordinary registration", "[appservice][registration][security][auth-3]")
+SCENARIO("cross-registration sender_localpart is reserved from ordinary registration",
+         "[appservice][registration][security][auth-3]")
 {
     GIVEN("a registration whose sender_localpart is outside its own users namespace")
     {
@@ -653,20 +661,20 @@ SCENARIO("parsing the spec's own YAML registration example", "[appservice][regis
         // verbatim, including the trailing comment and the empty `rooms` list.
         // Real bridges ship exactly this shape (`registration.yaml`), so a
         // homeserver that cannot read block-style YAML cannot load any of them.
-        auto const document = std::string{
-            "id: \"IRC Bridge\"\n"
-            "url: \"http://127.0.0.1:1234\"\n"
-            "as_token: \"30c05ae90a248a4188e620216fa72e349803310ec83e2a77b34fe90be6081f46\"\n"
-            "hs_token: \"312df522183efd404ec1cd22d2ffa4bbc76a8c1ccf541dd692eef281356bb74e\"\n"
-            "sender_localpart: \"_irc_bot\" # Will result in @_irc_bot:example.org\n"
-            "namespaces:\n"
-            "  users:\n"
-            "    - exclusive: true\n"
-            "      regex: \"@_irc_bridge_.*\"\n"
-            "  aliases:\n"
-            "    - exclusive: false\n"
-            "      regex: \"#_irc_bridge_.*\"\n"
-            "  rooms: []\n"};
+        auto const document =
+            std::string{"id: \"IRC Bridge\"\n"
+                        "url: \"http://127.0.0.1:1234\"\n"
+                        "as_token: \"30c05ae90a248a4188e620216fa72e349803310ec83e2a77b34fe90be6081f46\"\n"
+                        "hs_token: \"312df522183efd404ec1cd22d2ffa4bbc76a8c1ccf541dd692eef281356bb74e\"\n"
+                        "sender_localpart: \"_irc_bot\" # Will result in @_irc_bot:example.org\n"
+                        "namespaces:\n"
+                        "  users:\n"
+                        "    - exclusive: true\n"
+                        "      regex: \"@_irc_bridge_.*\"\n"
+                        "  aliases:\n"
+                        "    - exclusive: false\n"
+                        "      regex: \"#_irc_bridge_.*\"\n"
+                        "  rooms: []\n"};
 
         WHEN("it is parsed")
         {
@@ -696,17 +704,16 @@ SCENARIO("parsing the spec's own YAML registration example", "[appservice][regis
             THEN("the parsed exclusive user namespace claims only its own identifiers")
             {
                 REQUIRE(result.value.has_value());
-                REQUIRE(merovingian::appservice::any_exclusive_namespace_matches(
-                    result.value->namespaces.users, "@_irc_bridge_alice:example.org"));
-                REQUIRE_FALSE(merovingian::appservice::any_exclusive_namespace_matches(
-                    result.value->namespaces.users, "@alice:example.org"));
+                REQUIRE(merovingian::appservice::any_exclusive_namespace_matches(result.value->namespaces.users,
+                                                                                 "@_irc_bridge_alice:example.org"));
+                REQUIRE_FALSE(merovingian::appservice::any_exclusive_namespace_matches(result.value->namespaces.users,
+                                                                                       "@alice:example.org"));
             }
         }
     }
 }
 
-SCENARIO("an inline namespace value is accepted only when it is an empty list",
-         "[appservice][registration][yaml]")
+SCENARIO("an inline namespace value is accepted only when it is an empty list", "[appservice][registration][yaml]")
 {
     GIVEN("a registration whose namespaces use inline flow syntax")
     {
@@ -720,8 +727,8 @@ SCENARIO("an inline namespace value is accepted only when it is an empty list",
                                "  users:\n"
                                "    - exclusive: true\n"
                                "      regex: \"@_bridge_.*\"\n"
-                               "  rooms: "}
-                   + std::string{rooms_value} + "\n";
+                               "  rooms: "} +
+                   std::string{rooms_value} + "\n";
         };
 
         WHEN("the value is the empty flow sequence the spec example uses")
@@ -751,42 +758,41 @@ SCENARIO("an inline namespace value is accepted only when it is an empty list",
 
 namespace
 {
-    [[nodiscard]] auto registration_doc(std::string_view id, std::string_view localpart, std::string_view token,
-                                        std::string_view user_regex, bool exclusive) -> std::string
-    {
-        return std::string{"id: \""} + std::string{id} +
-               "\"\n"
-               "url: \"http://127.0.0.1:1234\"\n"
-               "as_token: \"" +
-               std::string{token} +
-               "\"\n"
-               "hs_token: \"hs-" +
-               std::string{token} +
-               "\"\n"
-               "sender_localpart: \"" +
-               std::string{localpart} +
-               "\"\n"
-               "namespaces:\n"
-               "  users:\n"
-               "    - exclusive: " +
-               (exclusive ? "true" : "false") +
-               "\n"
-               "      regex: \"" +
-               std::string{user_regex} +
-               "\"\n"
-               "  rooms: []\n";
-    }
+[[nodiscard]] auto registration_doc(std::string_view id, std::string_view localpart, std::string_view token,
+                                    std::string_view user_regex, bool exclusive) -> std::string
+{
+    return std::string{"id: \""} + std::string{id} +
+           "\"\n"
+           "url: \"http://127.0.0.1:1234\"\n"
+           "as_token: \"" +
+           std::string{token} +
+           "\"\n"
+           "hs_token: \"hs-" +
+           std::string{token} +
+           "\"\n"
+           "sender_localpart: \"" +
+           std::string{localpart} +
+           "\"\n"
+           "namespaces:\n"
+           "  users:\n"
+           "    - exclusive: " +
+           (exclusive ? "true" : "false") +
+           "\n"
+           "      regex: \"" +
+           std::string{user_regex} +
+           "\"\n"
+           "  rooms: []\n";
+}
 
-    [[nodiscard]] auto parsed(std::string const& document) -> merovingian::appservice::AppserviceRegistration
-    {
-        auto result = merovingian::appservice::parse_registration_yaml(document);
-        REQUIRE(result.value.has_value());
-        return std::move(*result.value);
-    }
+[[nodiscard]] auto parsed(std::string const& document) -> merovingian::appservice::AppserviceRegistration
+{
+    auto result = merovingian::appservice::parse_registration_yaml(document);
+    REQUIRE(result.value.has_value());
+    return std::move(*result.value);
+}
 } // namespace
 
-SCENARIO("two appservices cannot both claim the same exclusive namespace",
-         "[appservice][registration][security]")
+SCENARIO("two appservices cannot both claim the same exclusive namespace", "[appservice][registration][security]")
 {
     GIVEN("two registrations whose user namespaces use the identical pattern")
     {
@@ -902,6 +908,71 @@ SCENARIO("an appservice's sender user may not fall inside another's exclusive na
             THEN("nothing is reported — a non-exclusive claim excludes nobody")
             {
                 REQUIRE(findings.empty());
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto runtime_enabled_config(std::string server_name = "example.org") -> merovingian::config::Config
+{
+    auto server = merovingian::config::ServerConfig{};
+    server.server_name = std::move(server_name);
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    return {
+        server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
+        security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+} // namespace
+
+// AUTH-3: the sender_localpart user must be created at runtime startup,
+// before ordinary client registration can race for the same localpart.
+SCENARIO("appservice sender_localpart users are created at runtime startup",
+         "[appservice][registration][security][auth-3]")
+{
+    GIVEN("a registration file whose sender_localpart is outside its users namespace")
+    {
+        auto const path = std::filesystem::temp_directory_path() / "merovingian-auth3-sender.json";
+        {
+            auto out = std::ofstream{path, std::ios::binary};
+            out << R"({
+                "id": "auth3-bridge",
+                "url": null,
+                "as_token": "as-token-auth3",
+                "hs_token": "hs-token-auth3",
+                "sender_localpart": "_auth3_bot",
+                "namespaces": {
+                    "users": [{"exclusive": true, "regex": "@_auth3_.*"}],
+                    "aliases": [],
+                    "rooms": []
+                },
+                "protocols": []
+            })";
+        }
+
+        auto config = runtime_enabled_config();
+        config.appservice().registration_files = {path.string()};
+
+        WHEN("the runtime starts")
+        {
+            auto started = merovingian::homeserver::start_runtime(config);
+            REQUIRE(started.started);
+            auto const& runtime = started.runtime;
+
+            THEN("the sender_localpart user exists in the local user store")
+            {
+                auto const expected_sender = std::string{"@_auth3_bot:example.org"};
+                auto const found = std::ranges::any_of(
+                    runtime.database.users, [&expected_sender](merovingian::homeserver::LocalUser const& user) {
+                        return user.user_id == expected_sender;
+                    });
+                REQUIRE(found);
             }
         }
     }

@@ -605,14 +605,16 @@ namespace
         436,
 #endif
         // ── Signals ────────────────────────────────────────────────────────
+        // ISO-2: kill() and tkill() are denied; tgkill() is allowed only when
+        // its first argument (tgid) equals the worker's own thread-group id,
+        // so a compromised worker cannot signal arbitrary processes. The
+        // argument filter is emitted by build_seccomp_program().
         __NR_rt_sigaction,
         __NR_rt_sigprocmask,
         __NR_rt_sigreturn,
         __NR_rt_sigsuspend,
         __NR_sigaltstack,
-        __NR_kill,
         __NR_tgkill,
-        __NR_tkill,
         // ── Security and privilege ─────────────────────────────────────────
         __NR_prctl,
         __NR_arch_prctl,
@@ -639,8 +641,11 @@ namespace
         __NR_getegid,
         __NR_getgroups,
         // ── Resource limits and scheduling ─────────────────────────────────
+        // ISO-2: setrlimit() is denied. prlimit64() is allowed only to read the
+        // worker's own limits (argument-checked in argument_check_block):
+        // glibc's getrlimit() is prlimit64(0, resource, NULL, &old), and
+        // thread creation needs it.
         __NR_getrlimit,
-        __NR_setrlimit,
         __NR_prlimit64,
         __NR_sched_getaffinity,
         __NR_getrusage,
@@ -763,6 +768,57 @@ namespace
     // array. The structure mirrors k_seccomp_filter: architecture guard, load
     // syscall number, one JEQ+ALLOW pair per allowed syscall, then the default
     // fail-closed return.
+    // Offset of the low 32-bit word of syscall argument `index`. Both supported
+    // architectures (x86_64, aarch64) are little-endian, so the high word
+    // follows at +4.
+    [[nodiscard]] auto syscall_arg_low_offset(std::size_t index) noexcept -> std::uint32_t
+    {
+        return static_cast<std::uint32_t>(offsetof(struct ::seccomp_data, args) + (index * sizeof(std::uint64_t)));
+    }
+
+    // ISO-2 (ADR-0112): the instructions that follow `JEQ nr` for a syscall
+    // the worker may make only with particular arguments, or an empty block
+    // for one allowed outright. Loading an argument overwrites the syscall
+    // number in the accumulator, so every path through a block ends in its
+    // own RET; none may fall through to the next entry.
+    [[nodiscard]] auto argument_check_block(int nr, std::uint32_t own_tgid, std::uint32_t default_action)
+        -> std::vector<::sock_filter>
+    {
+        ::sock_filter const allow = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+        ::sock_filter const deny = BPF_STMT(BPF_RET | BPF_K, default_action);
+        if (nr == __NR_tgkill)
+        {
+            // Signals only to the worker's own thread group. The kernel reads
+            // the tgid as an int, so the low word is the whole value.
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, own_tgid, 0, 1),
+                allow,
+                deny,
+            };
+        }
+        if (nr == __NR_prlimit64)
+        {
+            // Read-only, on itself: pid 0 or its own pid, and a NULL new limit
+            // (both words of the pointer). This is how glibc implements
+            // getrlimit(), which thread creation calls; reading or changing
+            // another process's limits, or changing its own, is denied.
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),      // [0] A = pid
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0U, 2, 0),                       // [1] pid 0 -> [4]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, own_tgid, 1, 0),                 // [2] own pid -> [4]
+                deny,                                                                // [3]
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(2U)),      // [4] A = new_limit low
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0U, 0, 3),                       // [5] non-zero -> [9]
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(2U) + 4U), // [6] A = new_limit high
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0U, 0, 1),                       // [7] non-zero -> [9]
+                allow,                                                               // [8]
+                deny,                                                                // [9]
+            };
+        }
+        return {};
+    }
+
     [[nodiscard]] auto build_seccomp_program(std::span<int const> allowed, std::uint32_t default_action)
         -> std::vector<::sock_filter>
     {
@@ -784,10 +840,23 @@ namespace
         return filt;
 #endif
         filt.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, static_cast<uint32_t>(offsetof(struct ::seccomp_data, nr))));
+        auto const own_tgid = static_cast<std::uint32_t>(::getpid());
         for (auto const nr : allowed)
         {
-            filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1));
-            filt.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+            auto const block = argument_check_block(nr, own_tgid, default_action);
+            if (block.empty())
+            {
+                filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1));
+                filt.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+                continue;
+            }
+            // ISO-2 (ADR-0112): on another syscall number, skip exactly this
+            // block so the next entry starts at its own JEQ. The offset is
+            // the block's size, never a hand-counted constant: a count that
+            // was one too high once allowed every later syscall.
+            filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0,
+                                    static_cast<std::uint8_t>(block.size())));
+            filt.insert(filt.end(), block.begin(), block.end());
         }
         filt.push_back(BPF_STMT(BPF_RET | BPF_K, default_action));
         return filt;

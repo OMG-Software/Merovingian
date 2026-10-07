@@ -11,12 +11,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace merovingian::database
@@ -146,8 +148,8 @@ inline constexpr std::array<std::string_view, 13> federation_worker_table_allowl
 // table absent from it is never hydrated by the worker regardless of
 // backend. Pure and header-testable: exercised directly by
 // tests/unit/test_worker_db_uri.cpp without a database connection.
-[[nodiscard]] constexpr auto table_load_profile_includes(std::string_view table_name,
-                                                         TableLoadProfile profile) noexcept -> bool
+[[nodiscard]] constexpr auto table_load_profile_includes(std::string_view table_name, TableLoadProfile profile) noexcept
+    -> bool
 {
     if (profile == TableLoadProfile::full)
     {
@@ -502,6 +504,9 @@ struct PersistentToDeviceMessage final
     std::string target_device_id{};
     std::string message_type{};
     std::string content_json{};
+    // CSAZ-10: epoch milliseconds when the row was enqueued. Used to enforce the
+    // per-recipient TTL independently of sync acknowledgement.
+    std::uint64_t created_at_ms{0U};
 };
 
 // Device-list change observed by a syncing user. `change_type` is
@@ -787,6 +792,8 @@ struct PersistentStore final
         , fallback_keys{other.fallback_keys}
         , cross_signing_keys{other.cross_signing_keys}
         , key_signatures{other.key_signatures}
+        , key_signature_target_index{other.key_signature_target_index}
+        , key_signature_indexed_rows{other.key_signature_indexed_rows}
         , key_backup_versions{other.key_backup_versions}
         , key_backup_sessions{other.key_backup_sessions}
         , local_media{other.local_media}
@@ -816,10 +823,14 @@ struct PersistentStore final
         , forward_extremities{other.forward_extremities}
         , captured_statements{other.captured_statements}
         , statement_capture_capacity{other.statement_capture_capacity}
+        , force_next_persist_failures{other.force_next_persist_failures}
+        , force_failure_statement_names{other.force_failure_statement_names}
         , statement_capture_mutex{std::make_unique<std::mutex>()}
         , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
+        , max_to_device_messages_per_user_device{other.max_to_device_messages_per_user_device}
+        , to_device_message_ttl_seconds{other.to_device_message_ttl_seconds}
     {
     }
     PersistentStore(PersistentStore&& other) noexcept = default;
@@ -854,6 +865,8 @@ struct PersistentStore final
         fallback_keys = other.fallback_keys;
         cross_signing_keys = other.cross_signing_keys;
         key_signatures = other.key_signatures;
+        key_signature_target_index = other.key_signature_target_index;
+        key_signature_indexed_rows = other.key_signature_indexed_rows;
         key_backup_versions = other.key_backup_versions;
         key_backup_sessions = other.key_backup_sessions;
         local_media = other.local_media;
@@ -883,10 +896,14 @@ struct PersistentStore final
         forward_extremities = other.forward_extremities;
         captured_statements = other.captured_statements;
         statement_capture_capacity = other.statement_capture_capacity;
+        force_next_persist_failures = other.force_next_persist_failures;
+        force_failure_statement_names = other.force_failure_statement_names;
         statement_capture_mutex = std::make_unique<std::mutex>();
         server_signing_keys_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
+        max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
+        to_device_message_ttl_seconds = other.to_device_message_ttl_seconds;
         return *this;
     }
     auto operator=(PersistentStore&& other) noexcept -> PersistentStore& = default;
@@ -928,6 +945,14 @@ struct PersistentStore final
     std::vector<PersistentFallbackKey> fallback_keys{};
     std::vector<PersistentCrossSigningKey> cross_signing_keys{};
     std::vector<PersistentKeySignature> key_signatures{};
+    // CSAZ-10: positions in `key_signatures` grouped by target_user_id, so
+    // /keys/query merges one target's signatures without scanning every row.
+    // Maintained by store_key_signature and rebuilt after hydration. It is only
+    // trusted while `key_signature_indexed_rows == key_signatures.size()`; a
+    // caller that pushes rows directly leaves the counts unequal and lookups
+    // fall back to a scan until the next rebuild (key_signatures_for_target).
+    std::unordered_map<std::string, std::vector<std::size_t>> key_signature_target_index{};
+    std::size_t key_signature_indexed_rows{0U};
     std::vector<PersistentKeyBackupVersion> key_backup_versions{};
     std::vector<PersistentKeyBackupSession> key_backup_sessions{};
     std::vector<PersistentLocalMedia> local_media{};
@@ -970,6 +995,16 @@ struct PersistentStore final
     // most recent statements; the oldest is dropped first.
     std::deque<PreparedStatement> captured_statements{};
     std::size_t statement_capture_capacity{0U};
+    // Test-only counter: when non-zero the memory backend decrements this and
+    // returns false from the next that many persist operations, simulating a
+    // durable-store failure without involving a real database. Production never
+    // touches this field.
+    std::size_t force_next_persist_failures{0U};
+    // Test-only set: persist operations whose statement name is in this set fail
+    // once (the name is removed as it fires). This lets tests fail a specific
+    // revocation statement without disturbing earlier password/device updates.
+    // Production never touches this field.
+    std::unordered_set<std::string> force_failure_statement_names{};
     // Guards captured_statements and statement_capture_capacity. Written by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
     // and read by sensitive_values_are_redacted. Kept separate from the room
@@ -996,6 +1031,12 @@ struct PersistentStore final
     // regresses it across restarts — which invalidates every pos/since token
     // clients persisted from the previous lifetime.
     std::uint64_t event_stream_watermark{0U};
+    // CSAZ-10: per-recipient to-device queue limits, copied from
+    // server.client_api at runtime startup so the database layer can enforce
+    // them without depending on the config module. A cap of zero disables the
+    // bound (not recommended); a TTL of zero disables age-based eviction.
+    std::uint32_t max_to_device_messages_per_user_device{10000U};
+    std::uint32_t to_device_message_ttl_seconds{604800U};
 };
 
 struct PersistentStoreOpenResult final
@@ -1034,8 +1075,8 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
-[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id,
-                                        std::string_view new_hash) -> bool;
+[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
+    -> bool;
 // Sets the locked/suspended flags of a server-local user. Used by the admin
 // account-moderation endpoints (PUT /v1/admin/lock and /suspend). Persists the
 // change and mirrors it into the in-memory store. Returns false if the user is
@@ -1046,8 +1087,8 @@ struct RoomReloadSnapshot final
 // the user to login again").
 [[nodiscard]] auto set_user_deactivated(PersistentStore& store, std::string_view user_id) -> bool;
 
-[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
-                                          bool locked) -> bool;
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended, bool locked)
+    -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
@@ -1063,8 +1104,8 @@ struct RoomReloadSnapshot final
                                                     std::string_view device_id) -> std::size_t;
 // ADR-0074: revokes the refresh tokens minted from `predecessor_hash` by an
 // earlier POST /refresh whose response the client never received.
-[[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store,
-                                                          std::string_view predecessor_hash) -> std::size_t;
+[[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store, std::string_view predecessor_hash)
+    -> std::size_t;
 // M-05: revokes every access and refresh token for `user_id` except those of
 // `keep_device_id`. Used by the password-change logout_devices flow to drop the
 // user's other sessions while keeping the caller's own alive.
@@ -1086,10 +1127,10 @@ struct RoomReloadSnapshot final
 // Callers that iterate the keys use this rather than the vector itself.
 [[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store)
     -> std::vector<PersistentServerSigningKey>;
-[[nodiscard]] auto store_federation_destination(PersistentStore& store,
-                                                PersistentFederationDestination destination) -> bool;
-[[nodiscard]] auto store_federation_transaction(PersistentStore& store,
-                                                PersistentFederationTransaction transaction) -> bool;
+[[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
+    -> bool;
+[[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
+    -> bool;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
 enum class MembershipStoreResult
 {
@@ -1100,8 +1141,8 @@ enum class MembershipStoreResult
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 // Persists a room's directory visibility before updating its in-memory mirror.
-[[nodiscard]] auto set_room_directory_public(PersistentStore& store, std::string_view room_id,
-                                             bool directory_public) -> bool;
+[[nodiscard]] auto set_room_directory_public(PersistentStore& store, std::string_view room_id, bool directory_public)
+    -> bool;
 // Re-derives every PersistentEvent's prev_event_ids/auth_event_ids/signatures
 // from the flat event_edges/event_auth/event_signatures tables. Those fields
 // are populated directly when an event is stored fresh within a process's
@@ -1127,12 +1168,12 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool;
-[[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id,
-                                     std::string_view user_id) -> bool;
+[[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id)
+    -> bool;
 [[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool;
 [[nodiscard]] auto delete_invite(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool;
-[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id,
-                               std::string_view user_id) -> std::optional<PersistentInvite>;
+[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> std::optional<PersistentInvite>;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
@@ -1160,16 +1201,17 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 // parent id, or `new_state_group_id`), or nullopt if the parent id does not
 // resolve to a valid group (missing, cyclic, or over-long chain) or the
 // backend write fails.
-[[nodiscard]] auto create_or_reuse_state_group(
-    PersistentStore& store, std::string_view room_id, std::string_view new_state_group_id,
-    std::optional<std::string> const& parent_state_group_id,
-    std::vector<PersistentStateGroupStateEntry> const& full_state) -> std::optional<std::string>;
+[[nodiscard]] auto create_or_reuse_state_group(PersistentStore& store, std::string_view room_id,
+                                               std::string_view new_state_group_id,
+                                               std::optional<std::string> const& parent_state_group_id,
+                                               std::vector<PersistentStateGroupStateEntry> const& full_state)
+    -> std::optional<std::string>;
 
 // Returns `state_group_id`'s own row (its room, parent, and delta depth —
 // not its resulting state; see read_state_group_full_state for that), or
 // nullopt if no such group exists.
-[[nodiscard]] auto find_state_group(PersistentStore const& store,
-                                    std::string_view state_group_id) -> std::optional<PersistentStateGroup>;
+[[nodiscard]] auto find_state_group(PersistentStore const& store, std::string_view state_group_id)
+    -> std::optional<PersistentStateGroup>;
 
 // Reads `state_group_id`'s full resulting state by walking parent links back
 // to the nearest snapshot and applying every delta on the chain, newest
@@ -1185,8 +1227,8 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto set_event_state_group(PersistentStore& store, std::string_view event_id,
                                          std::string_view state_group_id) -> bool;
 // Returns the state group mapped to `event_id`, or nullopt if none is recorded.
-[[nodiscard]] auto find_event_state_group(PersistentStore const& store,
-                                          std::string_view event_id) -> std::optional<std::string>;
+[[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
+    -> std::optional<std::string>;
 
 // Forward-extremity bookkeeping for storing an event (ADR-0064). When
 // `accepted` is true, removes every id in `prev_event_ids` from `room_id`'s
@@ -1198,8 +1240,8 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
                                               std::string_view event_id, std::vector<std::string> const& prev_event_ids,
                                               bool accepted) -> bool;
 // Returns `room_id`'s current forward extremity event ids, in no particular order.
-[[nodiscard]] auto find_forward_extremities(PersistentStore const& store,
-                                            std::string_view room_id) -> std::vector<std::string>;
+[[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<std::string>;
 
 // Sets the receipt-order status of `event_id` — one of "accepted",
 // "soft_failed", "rejected", "outlier" (see PersistentEvent::status and
@@ -1209,8 +1251,8 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto set_event_status(PersistentStore& store, std::string_view event_id, std::string_view status) -> bool;
 // Returns event_id's current status, or nullopt if the event is not known
 // to this store.
-[[nodiscard]] auto find_event_status(PersistentStore const& store,
-                                     std::string_view event_id) -> std::optional<std::string>;
+[[nodiscard]] auto find_event_status(PersistentStore const& store, std::string_view event_id)
+    -> std::optional<std::string>;
 
 // Rebuilds the in-memory state_transitions index from scratch. Called after
 // SQLite/PostgreSQL hydration and after any direct backfill of the vector.
@@ -1250,11 +1292,11 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // m.room.create, m.room.join_rules, and m.room.power_levels.
 [[nodiscard]] auto repair_missing_state_entries(PersistentStore& store) -> std::size_t;
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool;
-[[nodiscard]] auto find_room_alias(PersistentStore const& store,
-                                   std::string_view room_alias) -> std::optional<PersistentRoomAlias>;
+[[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
+    -> std::optional<PersistentRoomAlias>;
 [[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool;
-[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id,
-                                   std::string_view device_id) -> std::optional<PersistentDeviceKey>;
+[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentDeviceKey>;
 [[nodiscard]] auto store_one_time_key(PersistentStore& store, PersistentOneTimeKey key) -> bool;
 [[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id,
                                       std::string_view algorithm = {}) -> std::optional<PersistentOneTimeKey>;
@@ -1263,9 +1305,18 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
                                      std::string_view algorithm = {}) -> std::optional<PersistentFallbackKey>;
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
+// Every uploaded signature whose target is `target_user_id`, in storage order.
+// Backed by the target index (CSAZ-10); falls back to a scan only when the
+// index is out of step with the rows. References are valid until the next
+// mutation of `store.key_signatures`.
+[[nodiscard]] auto key_signatures_for_target(PersistentStore const& store, std::string_view target_user_id)
+    -> std::vector<std::reference_wrapper<PersistentKeySignature const>>;
+// Rebuilds the target index from `key_signatures`. Called after SQLite and
+// PostgreSQL hydration and after any direct fill of the vector.
+auto rebuild_key_signature_index(PersistentStore& store) -> void;
 [[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool;
-[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id,
-                                             std::string_view version) -> bool;
+[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
+    -> bool;
 [[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool;
 [[nodiscard]] auto delete_key_backup_room_sessions(PersistentStore& store, std::string_view user_id,
                                                    std::string_view version, std::string_view room_id) -> bool;
@@ -1274,15 +1325,20 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id,
                                                   std::string_view version) -> bool;
 [[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool;
+// DB-5: writes a new upload's media row and its blob (inserted, or updated with the
+// new reference count when deduplicated) in one transaction. The in-memory mirror
+// changes only after the commit succeeds; on failure nothing is written.
+[[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
+                                             PersistentMediaBlob const& blob) -> bool;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
 // Commit moderation metadata, optional blob removal and both audit records
 // together. Repository projections must be changed only after this succeeds.
 [[nodiscard]] auto commit_local_media_moderation(PersistentStore& store, std::string_view media_id, bool quarantined,
-                                                 bool removed, PersistentAdminAction action,
-                                                 PersistentAuditEvent audit) -> bool;
+                                                 bool removed, PersistentAdminAction action, PersistentAuditEvent audit)
+    -> bool;
 [[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool;
-[[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob blob) -> bool;
+[[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob const& blob) -> bool;
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool;
 // Adds `event` to the bounded in-memory audit window without persisting it,
 // evicting the oldest entry once `max_in_memory_audit_events` is reached. Used by
@@ -1322,19 +1378,19 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 // one rejects the whole batch), the rows share ONE newly allocated stream
 // position, and all writes go to the backend in a single transaction. An empty
 // batch succeeds without touching the sync stream.
-[[nodiscard]] auto record_device_list_changes(PersistentStore& store,
-                                              std::vector<PersistentDeviceListChange> changes) -> bool;
+[[nodiscard]] auto record_device_list_changes(PersistentStore& store, std::vector<PersistentDeviceListChange> changes)
+    -> bool;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;
 // Return the filter for (user_id, filter_id), or nullopt when not found.
-[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id,
-                               std::string_view filter_id) -> std::optional<PersistentFilter>;
+[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
+    -> std::optional<PersistentFilter>;
 // Create or replace a user profile row.
 [[nodiscard]] auto store_profile(PersistentStore& store, PersistentProfile profile) -> bool;
 // Return the profile for user_id, or nullopt when not found.
-[[nodiscard]] auto find_profile(PersistentStore const& store,
-                                std::string_view user_id) -> std::optional<PersistentProfile>;
+[[nodiscard]] auto find_profile(PersistentStore const& store, std::string_view user_id)
+    -> std::optional<PersistentProfile>;
 // Update only displayname for an existing profile row.
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool;
@@ -1347,8 +1403,8 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto store_account_threepid(PersistentStore& store, PersistentThreePidBinding binding) -> bool;
 // Return the 3PID binding for (user_id, medium, address), or nullopt.
 [[nodiscard]] auto find_account_threepid(PersistentStore const& store, std::string_view user_id,
-                                         std::string_view medium,
-                                         std::string_view address) -> std::optional<PersistentThreePidBinding>;
+                                         std::string_view medium, std::string_view address)
+    -> std::optional<PersistentThreePidBinding>;
 // Remove the 3PID binding for (user_id, medium, address). Returns false if no
 // such binding exists or the backend delete fails.
 [[nodiscard]] auto delete_account_threepid(PersistentStore& store, std::string_view user_id, std::string_view medium,
@@ -1366,8 +1422,8 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto delete_pusher(PersistentStore& store, std::string_view user_id, std::string_view app_id,
                                  std::string_view pushkey) -> bool;
 // Return every pusher registered for user_id, in insertion order.
-[[nodiscard]] auto list_pushers_for_user(PersistentStore const& store,
-                                         std::string_view user_id) -> std::vector<PersistentPusher>;
+[[nodiscard]] auto list_pushers_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentPusher>;
 // Upsert a notification keyed by (user_id, event_id) -- see
 // PersistentNotification. Persists the row, mirrors it into the in-memory
 // vector, and then prunes user_id's oldest rows beyond max_per_user
@@ -1380,8 +1436,8 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 // Return every notification recorded for user_id, in insertion
 // (stream_ordering) order ascending. Callers apply from/limit/only
 // pagination and filtering.
-[[nodiscard]] auto list_notifications_for_user(PersistentStore const& store,
-                                               std::string_view user_id) -> std::vector<PersistentNotification>;
+[[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentNotification>;
 // Insert an OpenID token row. Persists it, mirrors it into the in-memory
 // vector, and then prunes every already-expired row (across all users) so
 // `openid_tokens` cannot grow without bound -- the time-based analogue of
@@ -1403,14 +1459,14 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 // expired, or already-used token) or if marking it used fails -- fail
 // closed rather than hand back a user_id for a token that might still be
 // replayable.
-[[nodiscard]] auto consume_login_token(PersistentStore& store,
-                                       std::vector<std::string> const& candidate_hashes) -> std::optional<std::string>;
+[[nodiscard]] auto consume_login_token(PersistentStore& store, std::vector<std::string> const& candidate_hashes)
+    -> std::optional<std::string>;
 // Returns the persisted delivery cursor for `appservice_id`, or a
 // default-constructed PersistentAppserviceTxnCursor (next_txn_id=1,
 // everything else 0/absent) if no row exists yet -- the "never delivered
 // anything" starting state, not an error.
-[[nodiscard]] auto find_appservice_txn_cursor(PersistentStore const& store,
-                                              std::string_view appservice_id) -> PersistentAppserviceTxnCursor;
+[[nodiscard]] auto find_appservice_txn_cursor(PersistentStore const& store, std::string_view appservice_id)
+    -> PersistentAppserviceTxnCursor;
 // Upserts the full cursor row for one appservice (keyed on appservice_id).
 // Callers pass the complete desired state; this is not an incremental
 // update.
@@ -1456,6 +1512,14 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // capture and drops anything held. Intended for tests that assert on the SQL and
 // bound parameters a store operation produced; production never calls it.
 auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> void;
+// Test-only: make the next `count` memory-backend persist operations fail. This
+// lets revocation paths prove they do not ignore a durable-store write failure.
+// Production never calls this.
+auto force_next_persist_failures(PersistentStore& store, std::size_t count) -> void;
+// Test-only: make the memory-backend persist operation for `statement_name` fail
+// once. This lets tests fail a specific revocation statement even when the
+// function performs other persists first. Production never calls this.
+auto force_persist_failure_for_statement(PersistentStore& store, std::string_view statement_name) -> void;
 // True when statement capture is enabled and no captured parameter that looks
 // like a token or secret was left unmarked as sensitive. Fails closed: with
 // capture disabled there is nothing to inspect, so it returns false rather than
@@ -1465,9 +1529,8 @@ auto enable_statement_capture(PersistentStore& store, std::size_t capacity) -> v
 namespace detail
 {
 
-    [[nodiscard]] auto persist_statement_to_backend(PersistentStore const& store,
-                                                    PreparedStatement const& statement) -> bool;
-    [[nodiscard]] auto persist_transaction_to_backend(PersistentStore const& store,
+    [[nodiscard]] auto persist_statement_to_backend(PersistentStore& store, PreparedStatement const& statement) -> bool;
+    [[nodiscard]] auto persist_transaction_to_backend(PersistentStore& store,
                                                       std::vector<PreparedStatement> const& statements) -> bool;
     [[nodiscard]] auto persist_transaction_to_postgresql(PersistentStore const& store,
                                                          std::vector<PreparedStatement> const& statements) -> bool;
@@ -1477,8 +1540,8 @@ namespace detail
     // relation fields already reconstructed. Returns nullopt on a
     // connection/query failure; a room that no longer exists is a successful
     // result with `room == nullopt` inside the snapshot, not a nullopt return.
-    [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store,
-                                                       std::string_view room_id) -> std::optional<RoomReloadSnapshot>;
+    [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>;
     // Backend half of load_audit_events_by_type_prefix: newest first, already
     // bounded by `limit`. Returns nullopt on a connection/query failure.
     [[nodiscard]] auto load_audit_events_from_backend(PersistentStore const& store, std::string_view prefix,
@@ -1490,8 +1553,8 @@ namespace detail
     [[nodiscard]] auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                          std::string_view prefix, std::size_t limit)
         -> std::optional<std::vector<PersistentAuditEvent>>;
-    [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path,
-                                                      std::string_view room_id) -> std::optional<RoomReloadSnapshot>;
+    [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>;
     [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                           std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;

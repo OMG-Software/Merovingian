@@ -179,8 +179,8 @@ struct FailureObservation final
     return std::string{tail.substr(0U, delimiter)};
 }
 
-[[nodiscard]] auto upload_hello(merovingian::homeserver::HomeserverRuntime& runtime,
-                                std::string_view token) -> std::string
+[[nodiscard]] auto upload_hello(merovingian::homeserver::HomeserverRuntime& runtime, std::string_view token)
+    -> std::string
 {
     auto const upload = merovingian::homeserver::handle_local_http_request(
         runtime, {"POST", "/_matrix/media/v3/upload", std::string{token}, "text/plain|text/plain|clean|hello"});
@@ -358,14 +358,14 @@ SCENARIO("Failed quarantine persistence leaves media available across restart", 
                 CHECK_FALSE(result.immediate.persistent_quarantined);
                 CHECK_FALSE(result.immediate.persistent_removed);
                 CHECK(result.immediate.runtime_blob_bytes == "hello");
-                CHECK(result.immediate.persistent_blob_bytes == "hello");
+                CHECK(result.immediate.persistent_blob_bytes.empty());
                 CHECK(result.immediate.runtime_blob_ref_count == 1U);
                 CHECK(result.immediate.persistent_blob_ref_count == 1U);
                 CHECK(result.after_restart.runtime_state == merovingian::media::LocalMediaState::available);
                 CHECK_FALSE(result.after_restart.persistent_quarantined);
                 CHECK_FALSE(result.after_restart.persistent_removed);
                 CHECK(result.after_restart.runtime_blob_bytes == "hello");
-                CHECK(result.after_restart.persistent_blob_bytes == "hello");
+                CHECK(result.after_restart.persistent_blob_bytes.empty());
                 CHECK(result.download_status == 200U);
                 CHECK(result.download_body == "text/plain|hello");
             }
@@ -391,12 +391,12 @@ SCENARIO("Failed release persistence preserves quarantine across restart", "[sec
                 CHECK(result.immediate.persistent_quarantined);
                 CHECK_FALSE(result.immediate.persistent_removed);
                 CHECK(result.immediate.runtime_blob_bytes == "hello");
-                CHECK(result.immediate.persistent_blob_bytes == "hello");
+                CHECK(result.immediate.persistent_blob_bytes.empty());
                 CHECK(result.after_restart.runtime_state == merovingian::media::LocalMediaState::quarantined);
                 CHECK(result.after_restart.persistent_quarantined);
                 CHECK_FALSE(result.after_restart.persistent_removed);
                 CHECK(result.after_restart.runtime_blob_bytes == "hello");
-                CHECK(result.after_restart.persistent_blob_bytes == "hello");
+                CHECK(result.after_restart.persistent_blob_bytes.empty());
                 CHECK(result.download_status == 451U);
             }
         }
@@ -420,13 +420,13 @@ SCENARIO("Failed media-row removal persistence does not clear the blob", "[secur
                 CHECK(result.immediate.runtime_state == merovingian::media::LocalMediaState::available);
                 CHECK_FALSE(result.immediate.persistent_removed);
                 CHECK(result.immediate.runtime_blob_bytes == "hello");
-                CHECK(result.immediate.persistent_blob_bytes == "hello");
+                CHECK(result.immediate.persistent_blob_bytes.empty());
                 CHECK(result.immediate.runtime_blob_ref_count == 1U);
                 CHECK(result.immediate.persistent_blob_ref_count == 1U);
                 CHECK(result.after_restart.runtime_state == merovingian::media::LocalMediaState::available);
                 CHECK_FALSE(result.after_restart.persistent_removed);
                 CHECK(result.after_restart.runtime_blob_bytes == "hello");
-                CHECK(result.after_restart.persistent_blob_bytes == "hello");
+                CHECK(result.after_restart.persistent_blob_bytes.empty());
                 CHECK(result.download_status == 200U);
                 CHECK(result.download_body == "text/plain|hello");
             }
@@ -451,13 +451,13 @@ SCENARIO("Failed media-blob persistence rolls back the removal tombstone", "[sec
                 CHECK(result.immediate.runtime_state == merovingian::media::LocalMediaState::available);
                 CHECK_FALSE(result.immediate.persistent_removed);
                 CHECK(result.immediate.runtime_blob_bytes == "hello");
-                CHECK(result.immediate.persistent_blob_bytes == "hello");
+                CHECK(result.immediate.persistent_blob_bytes.empty());
                 CHECK(result.immediate.runtime_blob_ref_count == 1U);
                 CHECK(result.immediate.persistent_blob_ref_count == 1U);
                 CHECK(result.after_restart.runtime_state == merovingian::media::LocalMediaState::available);
                 CHECK_FALSE(result.after_restart.persistent_removed);
                 CHECK(result.after_restart.runtime_blob_bytes == "hello");
-                CHECK(result.after_restart.persistent_blob_bytes == "hello");
+                CHECK(result.after_restart.persistent_blob_bytes.empty());
                 CHECK(result.after_restart.runtime_blob_ref_count == 1U);
                 CHECK(result.after_restart.persistent_blob_ref_count == 1U);
                 CHECK(result.download_status == 200U);
@@ -485,7 +485,7 @@ SCENARIO("Failed admin-action audit insertion rolls back quarantine metadata", "
                 CHECK_FALSE(result.immediate.persistent_quarantined);
                 CHECK_FALSE(result.immediate.persistent_removed);
                 CHECK(result.immediate.runtime_blob_bytes == "hello");
-                CHECK(result.immediate.persistent_blob_bytes == "hello");
+                CHECK(result.immediate.persistent_blob_bytes.empty());
                 CHECK(result.immediate.admin_action_count == 0U);
                 CHECK(result.immediate.audit_event_count == 0U);
                 CHECK(result.after_restart.runtime_state == merovingian::media::LocalMediaState::available);
@@ -517,7 +517,7 @@ SCENARIO("Failed final moderation audit insertion rolls back removal and blob cl
                 CHECK(result.immediate.runtime_state == merovingian::media::LocalMediaState::available);
                 CHECK_FALSE(result.immediate.persistent_removed);
                 CHECK(result.immediate.runtime_blob_bytes == "hello");
-                CHECK(result.immediate.persistent_blob_bytes == "hello");
+                CHECK(result.immediate.persistent_blob_bytes.empty());
                 CHECK(result.immediate.runtime_blob_ref_count == 1U);
                 CHECK(result.immediate.persistent_blob_ref_count == 1U);
                 CHECK(result.immediate.admin_action_count == 0U);
@@ -525,7 +525,7 @@ SCENARIO("Failed final moderation audit insertion rolls back removal and blob cl
                 CHECK(result.after_restart.runtime_state == merovingian::media::LocalMediaState::available);
                 CHECK_FALSE(result.after_restart.persistent_removed);
                 CHECK(result.after_restart.runtime_blob_bytes == "hello");
-                CHECK(result.after_restart.persistent_blob_bytes == "hello");
+                CHECK(result.after_restart.persistent_blob_bytes.empty());
                 CHECK(result.after_restart.runtime_blob_ref_count == 1U);
                 CHECK(result.after_restart.persistent_blob_ref_count == 1U);
                 CHECK(result.after_restart.admin_action_count == 0U);

@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{18U};
+    constexpr auto schema_version = std::uint32_t{19U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -200,6 +200,8 @@ namespace
                                               "action TEXT NOT NULL, reason TEXT NOT NULL"                                 },
         SchemaTableDefinition{"admin_actions",
                               "admin_user_id TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL"                                                                 },
+        // v1-era column shape: `created_at_ms` is added by migration 019, not
+        // listed here, so the v1 CREATE does not clash with the ALTER.
         SchemaTableDefinition{"to_device_messages",
                               "stream_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, target_user_id TEXT NOT NULL, "
                               "target_device_id TEXT NOT NULL DEFAULT '', message_type TEXT NOT NULL, content TEXT "

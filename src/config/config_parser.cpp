@@ -133,6 +133,41 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.client_api.max_to_device_messages_per_user_device")
+        {
+            if (!parse_u32_value(value, server.client_api.max_to_device_messages_per_user_device))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_one_time_keys_per_device")
+        {
+            if (!parse_u32_value(value, server.client_api.max_one_time_keys_per_device))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_key_signatures_per_user")
+        {
+            if (!parse_u32_value(value, server.client_api.max_key_signatures_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.max_filters_per_user")
+        {
+            if (!parse_u32_value(value, server.client_api.max_filters_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.client_api.to_device_message_ttl_seconds")
+        {
+            if (!parse_u32_value(value, server.client_api.to_device_message_ttl_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.client_api.max_threads_page_size")
         {
             if (!parse_u32_value(value, server.client_api.max_threads_page_size))
@@ -1367,6 +1402,20 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.media.remote_media_cache_ttl_seconds")
+        {
+            if (!parse_u32_value(value, security.media.remote_media_cache_ttl_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
+        else if (key == "security.media.remote_media_cache_max_entries")
+        {
+            if (!parse_u64_value(value, security.media.remote_media_cache_max_entries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
         else if (key == "security.trust_safety.enabled")
         {
             if (!parse_bool_value(value, security.trust_safety.enabled))
@@ -1426,6 +1475,20 @@ namespace
             if (!parse_u32_value(value, federation_worker.ipc_max_in_flight_requests))
             {
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "federation.worker.ipc_max_dispatch_queue_count")
+        {
+            if (!parse_u32_value(value, federation_worker.ipc_max_dispatch_queue_count))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "federation.worker.ipc_max_dispatch_queue_bytes")
+        {
+            if (!parse_u64_value(value, federation_worker.ipc_max_dispatch_queue_bytes))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
         else if (key == "federation.worker.threads")

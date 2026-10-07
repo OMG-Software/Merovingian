@@ -1,3 +1,137 @@
+## 0.12.19
+
+- **FIXED: BSD builds failed on an unused Landlock constant.** `k_scope_signal` (ISO-2) was
+  declared on every platform but used only where the Linux ruleset is built; under
+  `-Werror` the FreeBSD, NetBSD and OpenBSD package builds failed. It is now declared in
+  the Linux-only block that uses it.
+- **TESTS:** the logger thread-count scenario (`[logger][iso1]`) runs in a forked child that
+  starts with one thread, and first proves thread counting works by starting a helper
+  thread. In the shared test process it skipped unless another test's thread happened to
+  be lingering, which is exactly when the count was flaky (ASan CI: `3 == 4`).
+- **TESTS:** two PostgreSQL-only scenarios (`[postgresql][media]`) still expected the
+  in-memory blob mirror to carry bytes after a write, which MED-6 removed; they failed only
+  in the `coverage` and `postgres-integration` CI jobs. They now assert the mirror records
+  the size with no bytes, and check the bytes after a reopen reads them from PostgreSQL.
+
+- **FIXED: SQLite room snapshot no longer binds one parameter per event (DB-2).** Federation
+  worker room-snapshot relation queries now scope reads by `room_id` via a JOIN instead
+  of building an `IN (...)` parameter list, so large rooms avoid the 128-parameter limit.
+- Close the remaining six 2026-09-29 security audit medium findings (AUTH-3, FED-6,
+  MED-5, DB-5, CSAZ-10 and DB-2). `docs/security-audit-report-2026-09-29.md` is updated
+  to list them as fixed.
+- Update migration-count and last-migration assertions in unit and integration tests for migration 019 (`to_device_queue_age_bound`).
+- **TESTS:** isolate the persistent-homeserver integration scenarios on per-test SQLite files instead of the shared in-memory backend, removing an ordering dependency that surfaced after migration 019.
+- **FIXED (ISO-2 regression): the federation worker's seccomp filter allowed every syscall after `tgkill`.**
+  The `tgkill` argument check added for ISO-2 skipped one instruction too many when the
+  syscall was not `tgkill`, landing on the next entry's `RET ALLOW`. Every syscall the
+  allow list had not matched before `tgkill`, including `kill`, `prlimit64`, `setrlimit`
+  and `execve`, was therefore allowed. A mismatched tgid also fell through with the
+  accumulator holding `args[0]`. The block now jumps over exactly its own instructions
+  and returns the default action on a mismatched tgid.
+- **FIXED (OUT-4): the remote media cache is consulted before the network.** The cache was
+  looked up only inside `media::fetch_remote_media`, which runs after discovery and the
+  outbound request, so every client request for a remote `mxc://` URI still reached the
+  origin. `fetch_remote_media_live` now serves a cached record before taking an outbound
+  budget slot. Also fixed: an expired entry was never removed and, being found first,
+  made every later lookup for that key miss; `remote_media_cache_max_entries = 0`, documented
+  as disabling the cache, removed its bound instead; a removed or quarantined record's entry
+  is now erased on lookup. New `media::find_cached_remote_media`. ADR-0114 records where
+  the lookup must sit.
+- **TESTS:** `[out-4]` integration scenario counts the requests a real HTTPS origin receives
+  for two downloads of the same remote image (one, not two); the `[out-4]` unit scenarios
+  now drive the pre-network lookup (hit, miss by key, expiry and re-admission, zero cap,
+  removed record, LRU eviction) instead of the post-fetch admission step.
+- **FIXED (MED-5): only the default port is dropped when deciding whether media is local.**
+  The canonicalisation used `federation::strip_server_port`, which drops any port, so a
+  request for `example.org:8449` (a different server name) was served this server's
+  media. It now lowercases and drops a trailing `:8448` only. ADR-0115 corrected: it
+  claimed both behaviours, and claimed a discovery-to-self check the code does not have.
+- **CHANGED (MED-6): media quota defaults sized to memory.** The defaults introduced
+  earlier on this branch (`10MiB` per user) refused a single upload at the `50MiB`
+  `max_upload_size`, and charged all remote media from an origin to one
+  `@remote-media:<origin>` owner, cutting the origin off after 10 MiB. Defaults are now
+  `max_total_size=2GiB`, `max_size_per_user=256MiB`, `max_records=100000`. All media is
+  held in memory, so the total is a memory budget. Remote media is exempt from the
+  per-user quota and still counts toward the total and record caps. ADR-0113 updated;
+  `docs/user-manual.md` documents the defaults and the two remote-media cache keys, and
+  its media table, which a paragraph had split in two, renders as one table again.
+- **TESTS:** `[med-6]` scenarios pin the defaults and their relationship
+  (`max_size_per_user >= max_upload_size`, total ≥ per user), check that a user past the
+  default quota gets 507 while another user is unaffected, and that remote media is
+  exempt from the per-user quota but not from the server total.
+- **FIXED (DB-5): a media upload that could not be stored is refused instead of answered
+  with an `mxc://` URI.** `upload_local_media` discarded the results of the media-row and
+  blob writes, so a database failure left the client holding a URI whose media vanished at
+  the next restart, and the two rows were written in separate transactions. New
+  `database::commit_local_media_upload` writes both in one transaction; on failure the
+  upload answers 500 and new `media::rollback_local_media_upload` removes the record and
+  releases its blob reference in memory, including for a deduplicated upload. The unused
+  `persist_blob_for_media` helper is removed. `docs/database-persistence.md` lists the
+  revocation and upload write rules.
+- **TESTS:** `[db-5]` media scenario fails the blob write of a new upload and the record
+  write of a deduplicated one through the memory backend's statement-failure injection,
+  and checks the response, memory and store, a successful retry, and that the earlier
+  upload is still served.
+- **FIXED (CSAZ-10): to-device rows from before migration 019 were dropped on the next
+  enqueue.** Migration 019 gives existing rows `created_at_ms = 0`. The enqueue path treated
+  that as expired and deleted the row as soon as another message for the same device
+  arrived, while the drain path treated it as fresh. Both now treat an unknown age as not
+  expired; the per-device count cap still bounds such rows.
+- **DOCS (CRY-2, ISO-2):** `federation.worker.ipc_max_dispatch_queue_count` and
+  `ipc_max_dispatch_queue_bytes` are documented in `docs/user-manual.md` and the example
+  config; `docs/hardening.md` and `docs/threat-model.md` describe the dispatch-queue bound
+  and the worker signal/limit restriction, with the shared-uid residual; ADR-0112 records
+  how an argument-checked entry must be laid out in the generated BPF program and that it
+  needs a real-kernel test; ADR-0065 points to ADR-0111; ADR-0111 and ADR-0112 dates
+  corrected.
+- **FIXED (ISO-2 regression): a hardened federation worker was killed at startup.** The ISO-2
+  change removed `setrlimit` and `prlimit64` from the worker filter, but the worker's event
+  loop calls `start_runtime()`, which re-applied the main-process hardening profile and its
+  `setrlimit(RLIMIT_CORE)` after the worker filter was installed: `SIGSYS`, and the supervisor
+  restarted the worker in a loop, taking federation down. The allow-all bug above hid this.
+  New `RuntimeStartOptions::process_hardening_applied_by_caller`, set by the worker when
+  `federation.worker.apply_hardening` is on, skips the main profile. `prlimit64` is allowed
+  again only to read the worker's own limits (pid 0 or its own pid, NULL new limit): glibc's
+  `getrlimit()` is `prlimit64`, and thread creation uses it. The BPF builder now derives each
+  argument-checked entry's skip distance from the block's size instead of a hand-counted
+  constant. `src/federation_worker/AGENTS.md` records the constraint.
+- **TESTS:** `[iso2]` also checks that `prlimit64` reading the process's own limits and
+  `getrlimit()` are allowed while setting a limit or reading the parent's is denied. The
+  `[iso-2]` list test expects `prlimit64` in the worker list, as it already did for `tgkill`,
+  since both are argument-checked. `[federation-worker][seccomp]` passes again.
+- **FIXED (CSAZ-10): per-user caps on E2EE key and filter uploads.** New
+  `server.client_api.max_one_time_keys_per_device` (1000), `max_key_signatures_per_user`
+  (10000) and `max_filters_per_user` (1000). An upload that would cross one is refused with
+  `400 M_TOO_LARGE` and stores nothing. An identical filter (canonical JSON) returns the
+  existing `filter_id` instead of a new one, and new filters are stored canonically.
+  ADR-0118.
+- **FIXED (CSAZ-10): one fallback key per algorithm per device.** The spec says the server
+  "will only persist one key per algorithm"; each fallback-key upload with a new key ID
+  added a row. A new fallback key now replaces the previous one of its algorithm in one
+  transaction.
+- **CHANGED (CSAZ-10): `/keys/query` reads key signatures through an index by target
+  user** (`database::key_signatures_for_target`) instead of scanning every signature
+  upload; a stale index falls back to a scan.
+- **TESTS:** new `[csaz-10]` unit files `test_fallback_key_single.cpp`, `test_otk_cap.cpp`,
+  `test_key_signature_cap.cpp`, `test_filter_cap.cpp`, `test_key_signature_index.cpp`,
+  shared fixture `tests/support/e2ee_caps_support.hpp`, and config scenarios in
+  `test_config_operational_limits.cpp`.
+- **DOCS:** the audit report's "Remediation status" records all 31 medium findings as
+  fixed, with what was corrected in the first-round fixes and the residual notes (ISO-2
+  shared uid, MED-5 no discovery-to-self check); its earlier claim of such a check is
+  removed. `docs/todos/capability-gaps.md` closes the medium remediation section, whose
+  table had marked AUTH-3 complete.
+- **TESTS:** `[session_restart]` waits until the wall clock, which token expiry is measured
+  against, is past the token's expiry instead of sleeping a fixed 1.5 s. WSL2 can step the
+  wall clock back by over a second; a full-suite run and 1 in 20 isolated runs failed
+  because the sleep ended before the expiry. The assertion is unchanged.
+- **TESTS:** the worker-seccomp TSYNC scenario no longer skips. The skip added with the
+  regression above masked it: the pre-existing thread's `execve` succeeded because the
+  filter allowed it, not because of a kernel quirk. New real-kernel scenario
+  `[iso2]` installs the worker filter in a forked child and checks that `kill` and
+  `tgkill` aimed at the parent and `prlimit64` are denied, `tgkill` on its own thread group
+  is allowed, and syscalls listed after `tgkill` are still matched correctly.
+
 ## 0.12.18
 
 - Remove the retired September 2026 audit report and its documentation navigation entry; retain the later 29 September report and remediation ADRs.
@@ -9,6 +143,11 @@
 - Replace the conflicted-event duplicate scan with hash indexing while preserving first-occurrence order, avoiding quadratic collection work at larger resolver capacities.
 - Honor the configured federation transaction byte cap at the HTTP layer and size worker IPC frames for the configured request and response caps.
 - Require restart for startup-snapshotted federation/client limits rather than claiming that SIGHUP applies them.
+- **FIXED: application-service sender_localpart users are created from the loaded registry at startup (AUTH-3).** The startup loop that ensures each registered appservice has a real `sender_localpart` user was iterating `runtime.appservices` before the registry had been moved from the temporary `loaded.registry`, so no sender users were ever created. It now walks the loaded registry directly.
+- **FIXED: federation `make_join`/`make_leave`/`make_knock` reject a `{userId}` that is not on the origin server (FED-6).** `handle_make_membership` now compares the path parameter's domain with the verified requesting `origin`; a mismatch returns 400 `M_INVALID_PARAM`.
+- **FIXED: media downloads canonicalise the local server name before routing (MED-5).** Host case and the default federation port (`:8448`) are now normalised so variants such as `EXAMPLE.ORG:8448` are treated as local media rather than fetched remotely.
+- **FIXED: token revocation paths fail closed on persistence failures (DB-5).** `revoke_*` helpers return a row count, so zero is ambiguous between "no rows" and "the backend write failed". Every auth-service revocation path now verifies the persistent-store state after the write and returns 500 if any targeted token is still unrevoked. A test-only memory-backend seam lets unit tests force a named revocation statement to fail. ADR-0116.
+- **FIXED: per-recipient to-device queues are bounded by count and age (CSAZ-10).** `to_device_messages` gains a `created_at_ms` column, migration 019, and configurable `server.client_api.max_to_device_messages_per_user_device` / `to_device_message_ttl_seconds`. Enqueue evicts expired rows then the oldest rows until the new message fits; drain also purges TTL-expired rows. This prevents non-existent devices from accumulating unbounded queue state. ADR-0117.
 - **FIXED: federation worker room-scoped reads trust main's verified identity.** When main forwards an inbound request to the worker over authenticated IPC, the X-Matrix signature has already been verified and server/discovery/trust policy applied. The worker now synthesizes a minimal remote record from the verified `origin`/`key_id` instead of re-resolving the peer, allowing room-scoped reads to be served (and fallback-tested) without a redundant network resolution step. Direct, unverified requests keep the full fail-closed resolution path. ADR-0110.
 - **TEST-ONLY: `handle_local_http_request` supports `PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}[/{stateKey}]`.** This lets integration tests seed room state events (e.g., `m.room.server_acl` and `m.room.history_visibility`) through the local-router seam used by federation-worker tests.
 - **TESTS:** new `tests/integration/test_security_audit_worker_snapshot_flow.cpp` verifies that a failed worker room reload falls back to main's authoritative state, so a stale allow-ACL cannot outlive a fresh deny-ACL. `tests/integration/test_security_audit_federated_to_device_flow.cpp` is now registered and passing.
@@ -22,6 +161,11 @@
 - **FIXED: tests build on the libc++ of FreeBSD and OpenBSD again.** Four new scenarios used `std::jthread`, which that libc++ does not provide; they now use `tests/support/joining_threads.hpp`, which gains an explicit `join()` for scenarios that assert after the thread has finished.
 - **FIXED: `merovingian-http` declares its link to `merovingian-core`.** `outbound_client.cpp` now uses `core::SocketHandle`, so targets linking `http_lib` without `core_lib` (the `fuzz-srv-record` fuzz target) failed to link.
 - **TESTS:** the `%2e%2e` path-preservation check in `test_security_audit_outbound_flow.cpp` compares the request line case-insensitively. libcurl 8.20 and later send percent-encodings with upper-case hex digits (equivalent under RFC 3986), which failed the exact-byte comparison on openSUSE, NetBSD and the coverage job's bundled curl; the dot segment is still required to reach the peer unresolved.
+
+- **FIXED: IPC dispatch queue is bounded (CRY-2).** `IpcChannel::dispatch_queue_` previously grew without limit on a fast producer, allowing memory exhaustion. The queue now drops the oldest stale frame once a configurable cap is reached and counts the drops. ADR-0111.
+- **FIXED: federation worker syscall profile is tighter (ISO-2).** The worker seccomp allow-list no longer permits `kill`, `tkill`, `setrlimit`, or `prlimit64`; `tgkill` remains allowed only when its thread-group argument matches the worker's own TGID. Landlock rulesets now request ABI-6 signal scoping on capable kernels. ADR-0112.
+- **FIXED: media quotas default to operational bounds and blobs are held once in memory (MED-6).** `security.media.max_total_size`, `max_size_per_user`, and `max_records` now default to `1GiB`, `10MiB`, and `100000` instead of zero. After hydrating the runtime repository from `PersistentStore`, the persistent copy of blob bytes is cleared so only one in-memory copy is held. ADR-0113.
+- **FIXED: remote media downloads are cached by origin and media ID (OUT-4).** Fetched remote media is keyed by `(origin_server, media_id)` with a configurable TTL and LRU eviction, so repeated requests serve the already-stored local record instead of re-fetching and re-storing. ADR-0114.
 
 ## 0.12.17
 

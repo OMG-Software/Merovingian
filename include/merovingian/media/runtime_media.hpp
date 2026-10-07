@@ -15,16 +15,17 @@ namespace merovingian::media
 struct RuntimeMediaConfig final
 {
     std::uint64_t max_upload_bytes{0U};
-    // Repository capacity limits (0.12.5 audit, finding 19). The in-memory
-    // media index had no cap on total records, total bytes, or per-user usage,
-    // so upload spam or a large remote-media cache grew it until the process was
-    // OOM-killed. An upload that would cross any of these is refused with 507
-    // rather than evicting: media is addressable content a client already holds
-    // an mxc:// URI for, so silently dropping the oldest blob would turn a
-    // capacity problem into broken links.
+    // Repository capacity limits (0.12.5 audit, finding 19; 0.12.12 audit,
+    // finding MED-6). The in-memory media index had no cap on total records,
+    // total bytes, or per-user usage, so upload spam or a large remote-media
+    // cache grew it until the process was OOM-killed. An upload that would
+    // cross any of these is refused with 507 rather than evicting: media is
+    // addressable content a client already holds an mxc:// URI for, so silently
+    // dropping the oldest blob would turn a capacity problem into broken links.
     //
-    // All three default to 0, meaning no limit — the pre-0.12.5 behaviour.
-    // Operators set them from the media config keys of the same name.
+    // Parsed from the media config keys of the same name. The configuration
+    // defaults are non-zero; an explicit empty config value still maps to 0,
+    // preserving the pre-0.12.5 unbounded behaviour for operators who opt out.
     std::uint64_t max_records{0U};
     std::uint64_t max_total_bytes{0U};
     std::uint64_t max_bytes_per_user{0U};
@@ -52,6 +53,12 @@ struct RuntimeMediaConfig final
     std::uint64_t max_animation_frames{1U};
     std::uint64_t max_decompression_ratio{64U};
     bool thumbnailing_enabled{true};
+    // Remote media cache (0.12.12 audit, finding OUT-4). Fetched remote media is
+    // keyed by (origin_server, media_id) so repeated requests within the TTL serve
+    // the already-stored local record instead of re-fetching and re-storing.
+    // The cache is bounded by max_entries with LRU eviction when it is full.
+    std::uint64_t remote_media_cache_max_entries{1024U};
+    std::uint32_t remote_media_cache_ttl_seconds{86400U};
     // Absolute path to the out-of-process thumbnail worker. Empty disables
     // resampling (the original media bytes are served instead). Defaults to the
     // build-time install location; see make_runtime_media_config.
