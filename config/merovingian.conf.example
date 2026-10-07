@@ -641,6 +641,13 @@ server.http.sync_threads=128
 server.http.sync_max_in_flight=128
 server.http.sync_max_per_user=4
 server.http.sync_max_per_device=2
+# Remote media fetch pool (ADR-0121): a remote media download or thumbnail that
+# must fetch from the origin runs here, not on the main request pool. At most
+# media_fetch_max_in_flight fetches run or wait, media_fetch_max_per_client of
+# them for one client; over either the client gets 429 at once.
+server.http.media_fetch_threads=16
+server.http.media_fetch_max_in_flight=64
+server.http.media_fetch_max_per_client=8
 server.http.max_start_line_bytes=8192
 server.http.max_header_bytes=32768
 server.http.max_header_count=100

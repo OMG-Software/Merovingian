@@ -6,6 +6,8 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/client_address.hpp"
 #include "merovingian/http/connection_guard.hpp"
@@ -476,6 +478,7 @@ namespace
         ClientServerRuntime& runtime;
         HttpServeStats& stats;
         net::ThreadPool* sync_pool;                     // may be null (tests, no long-poll offload)
+        net::ThreadPool* media_fetch_pool;              // may be null (tests: remote media fetched inline)
         std::shared_ptr<HttpConnectionDispatcher::Impl> // SHARED_PTR: reviewed — pool tasks keep the dispatcher alive
             dispatcher;
         HttpServeTuning tuning;
@@ -1118,9 +1121,12 @@ namespace
     }
 
     // Routes a request without ever blocking. The caller is responsible for
-    // handling DispatchResult::Status::needs_wait (long-poll sync).
+    // handling DispatchResult::Status::needs_wait (long-poll sync) and, when it
+    // passes RemoteMediaFetchMode::defer, needs_media_fetch (ADR-0121).
     [[nodiscard]] auto route_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
-                                     HttpDispatchMode mode) -> DispatchResult
+                                     HttpDispatchMode mode,
+                                     RemoteMediaFetchMode remote_media = RemoteMediaFetchMode::inline_fetch)
+        -> DispatchResult
     {
         // Fast path: the key-server endpoint is served from a lock-free atomic
         // cache so concurrent federation makes-join cannot delay it.
@@ -1148,7 +1154,8 @@ namespace
         switch (mode)
         {
         case HttpDispatchMode::client_server:
-            result = handle_client_server_request(runtime, request);
+            result = handle_client_server_request(runtime, request,
+                                                  ClientServerDispatchOptions{.remote_media = remote_media});
             break;
         case HttpDispatchMode::federation:
             if (runtime.homeserver.federation_proxy != nullptr)
@@ -1181,6 +1188,14 @@ auto sync_admission_caps(config::HttpTransportConfig const& settings, std::size_
         .global = global,
         .per_user = std::min(settings.sync_max_per_user, global),
         .per_device = std::min(settings.sync_max_per_device, global),
+    };
+}
+
+auto media_fetch_admission_caps(config::HttpTransportConfig const& settings) noexcept -> MediaFetchAdmissionCaps
+{
+    return MediaFetchAdmissionCaps{
+        .global = settings.media_fetch_max_in_flight,
+        .per_client = std::min(settings.media_fetch_max_per_client, settings.media_fetch_max_in_flight),
     };
 }
 
@@ -1233,11 +1248,12 @@ class HttpConnectionDispatcher::Impl final : public std::enable_shared_from_this
 {
 public:
     Impl(ClientServerRuntime& runtime_ref, HttpServeStats& stats_ref, net::ThreadPool& pool_ref,
-         net::ThreadPool* sync_pool_ptr, HttpServeTuning tuning_value)
+         net::ThreadPool* sync_pool_ptr, HttpServeTuning tuning_value, net::ThreadPool* media_fetch_pool_ptr)
         : runtime{runtime_ref}
         , stats{stats_ref}
         , pool{pool_ref}
         , sync_pool{sync_pool_ptr}
+        , media_fetch_pool{media_fetch_pool_ptr}
         , tuning{tuning_value}
     {
     }
@@ -1270,6 +1286,7 @@ public:
     HttpServeStats& stats;
     net::ThreadPool& pool;
     net::ThreadPool* sync_pool;
+    net::ThreadPool* media_fetch_pool;
     HttpServeTuning const tuning;
 
 private:
@@ -1465,6 +1482,96 @@ namespace
         handoff.connection.reset();
     }
 
+    // A remote media request handed to the media fetch pool (ADR-0121). It owns
+    // the connection from the moment it is submitted, and its admission slot
+    // until it ends; everything it needs is held by value, since the round that
+    // created it may be gone by the time it runs.
+    struct MediaFetchHandoff final
+    {
+        ConnectionOwner connection;
+        ConnectionContext ctx;
+        LocalHttpRequest request;
+        http::HttpVersion version;
+        std::string connection_header;
+        std::string origin;
+        http::InFlightBudget::Slot slot;
+    };
+
+    auto run_media_fetch_handoff(MediaFetchHandoff& handoff) -> void
+    {
+        auto& connection = http_connection(handoff.connection);
+        auto* const media_fetch_pool = handoff.ctx.media_fetch_pool;
+        auto result = DispatchResult{};
+        if (media_fetch_pool == nullptr || !media_fetch_pool->running())
+        {
+            // A stopping pool still runs what is queued. Starting a fetch now
+            // would hold shutdown for the fetch's whole deadline.
+            result.response = LocalHttpResponse{503U, matrix_error("M_UNKNOWN", "server is shutting down"),
+                                                transport_cors_headers(handoff.ctx, handoff.origin)};
+        }
+        else
+        {
+            // The client may have gone while the request was queued; then there
+            // is nobody to fetch for. recv returns 0 or an error other than
+            // EAGAIN for a closed peer, and data or EAGAIN for a live one.
+            auto peek_buf = std::array<char, 1>{};
+            auto const peeked = ::recv(connection.fd(), peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
+            if (peeked == 0 || (peeked < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+            {
+                log_diagnostic("media_fetch.client_gone",
+                               {
+                                   {"target", observability::sanitized_http_target(handoff.request.target), false}
+                });
+                handoff.connection.reset();
+                return;
+            }
+            auto threw = false;
+            try
+            {
+                // Run again in admitted mode: the fetch skips the main-pool
+                // budget, which this handoff's slot replaces, and the request
+                // was already counted by the rate limiter.
+                result = handle_client_server_request(
+                    handoff.ctx.runtime, handoff.request,
+                    ClientServerDispatchOptions{.can_wait = false,
+                                                .remote_media = RemoteMediaFetchMode::admitted,
+                                                .rate_limit_admitted = true});
+            }
+            catch (...)
+            {
+                log_swallowed_exception("media_fetch_dispatch");
+                threw = true;
+            }
+            if (threw || result.status != DispatchResult::Status::complete)
+            {
+                result.response = LocalHttpResponse{500U, matrix_error("M_UNKNOWN", "remote media fetch failed"),
+                                                    transport_cors_headers(handoff.ctx, handoff.origin)};
+            }
+        }
+        ++handoff.ctx.stats.completed_requests;
+        log_diagnostic("request.completed",
+                       {
+                           {"method",         handoff.request.method,                                       false},
+                           {"target",         observability::sanitized_http_target(handoff.request.target), false},
+                           {"status",         std::to_string(result.response.status),                       false},
+                           {"response_bytes", std::to_string(result.response.body.size()),                  false}
+        });
+        auto const decision = decide_connection(handoff.ctx, connection, handoff.version, handoff.connection_header);
+        auto const formatted = format_response(result.response.status, result.response.body, result.response.headers,
+                                               decision, keep_alive_policy_for(handoff.ctx).idle_timeout_seconds);
+        auto stream = make_connection_stream(connection);
+        auto const written = stream != nullptr && send_all(*stream, formatted);
+        stream.reset();
+        if (written && decision == http::ConnectionPreference::keep_alive && handoff.ctx.dispatcher != nullptr)
+        {
+            // Back to the dispatcher: the next request runs on a main-pool
+            // worker, as after a sync handoff.
+            handoff.ctx.dispatcher->park_for_next_request(std::move(handoff.connection));
+            return;
+        }
+        handoff.connection.reset();
+    }
+
     // Serves exactly one request round on `connection`: read the head, drain
     // the body exactly, route, write one response. Pipelined bytes past this
     // request's body stay in connection.leftover for the next round. The
@@ -1636,7 +1743,51 @@ namespace
                            {"has_access_token", local_request.access_token.empty() ? "false" : "true",      false}
         });
 
-        auto result = route_request(ctx.runtime, local_request, ctx.dispatch_mode);
+        auto result = route_request(ctx.runtime, local_request, ctx.dispatch_mode,
+                                    ctx.media_fetch_pool != nullptr ? RemoteMediaFetchMode::defer
+                                                                    : RemoteMediaFetchMode::inline_fetch);
+
+        if (result.status == DispatchResult::Status::needs_media_fetch)
+        {
+            // ADR-0121: the request needs a fetch from a remote server. Hand it
+            // to the media fetch pool so no main-pool worker waits on that
+            // server. Admit before submitting: queued fetches count too, and one
+            // client must not occupy the pool.
+            auto const origin = find_header_value(parse.request, "origin");
+            auto const& server_settings = ctx.runtime.homeserver.config.server();
+            auto const caps = media_fetch_admission_caps(server_settings.http);
+            auto slot = ctx.runtime.media_fetch_budget->try_acquire(
+                rate_limit_client_key(local_request, server_settings), caps.global, caps.per_client);
+            if (!slot.has_value())
+            {
+                log_diagnostic("media_fetch.over_budget",
+                               {
+                                   {"target", observability::sanitized_http_target(local_request.target), false}
+                });
+                write_error_response(
+                    *stream, 429U, matrix_error("M_LIMIT_EXCEEDED", "too many concurrent remote media fetches", 1000U),
+                    transport_cors_headers(ctx, origin));
+                return RoundOutcome::close_connection;
+            }
+            auto handoff = std::make_shared<MediaFetchHandoff>(
+                MediaFetchHandoff{// SHARED_PTR: reviewed — copyable pool task
+                                  std::move(owner), ctx, local_request, parse.request.version, connection_header,
+                                  std::string{origin}, std::move(*slot)});
+            if (ctx.media_fetch_pool != nullptr && ctx.media_fetch_pool->submit([handoff] {
+                    run_media_fetch_handoff(*handoff);
+                }))
+            {
+                return RoundOutcome::transferred;
+            }
+            // A refused handoff is backpressure, never a reason to fetch on a
+            // main-pool worker. Take ownership back before answering; the slot
+            // is released with the handoff.
+            owner = std::move(handoff->connection);
+            handoff.reset();
+            write_error_response(*stream, 429U, matrix_error("M_LIMIT_EXCEEDED", "media fetch pool unavailable", 1000U),
+                                 transport_cors_headers(ctx, origin));
+            return RoundOutcome::close_connection;
+        }
 
         if (result.status == DispatchResult::Status::needs_wait)
         {
@@ -1889,8 +2040,8 @@ auto HttpConnectionDispatcher::Impl::serve(net::ConnectionParker::Dispatched dis
         park_awaiting_first_request(std::move(owner));
         return;
     }
-    auto ctx =
-        ConnectionContext{runtime, stats, sync_pool, shared_from_this(), tuning, connection.mode, connection.peer_addr};
+    auto ctx = ConnectionContext{runtime, stats,           sync_pool,           media_fetch_pool, shared_from_this(),
+                                 tuning,  connection.mode, connection.peer_addr};
     switch (serve_request_round(ctx, connection, owner))
     {
     case RoundOutcome::close_connection:
@@ -1905,8 +2056,8 @@ auto HttpConnectionDispatcher::Impl::serve(net::ConnectionParker::Dispatched dis
 
 HttpConnectionDispatcher::HttpConnectionDispatcher(ClientServerRuntime& runtime, HttpServeStats& stats,
                                                    net::ThreadPool& pool, net::ThreadPool* sync_pool,
-                                                   HttpServeTuning tuning)
-    : m_impl{std::make_shared<Impl>(runtime, stats, pool, sync_pool, tuning)}
+                                                   HttpServeTuning tuning, net::ThreadPool* media_fetch_pool)
+    : m_impl{std::make_shared<Impl>(runtime, stats, pool, sync_pool, tuning, media_fetch_pool)}
 {
 }
 
@@ -2001,19 +2152,19 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool, std::string_view peer_addr)
-    -> bool
+                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool, std::string_view peer_addr,
+                               net::ThreadPool* media_fetch_pool) -> bool
 {
     // Direct callers (tests, one-off embeds) keep the historical one-request-
     // per-call contract: with no dispatcher there is nowhere to park the
     // connection, so keep-alive is off (see keep_alive_policy_for) and this
     // serves a single round. The caller owns the descriptor unless it was
-    // transferred to the sync pool, which then closes it.
+    // transferred to the sync or media fetch pool, which then closes it.
     auto owner = ConnectionOwner{std::make_unique<HttpConnection>(core::SocketHandle{client_fd}, dispatch_mode,
                                                                   std::string{peer_addr}, std::string{})};
     auto& connection = http_connection(owner);
-    auto ctx =
-        ConnectionContext{runtime, stats, sync_pool, nullptr, HttpServeTuning{}, dispatch_mode, std::string{peer_addr}};
+    auto ctx = ConnectionContext{
+        runtime, stats, sync_pool, media_fetch_pool, nullptr, HttpServeTuning{}, dispatch_mode, std::string{peer_addr}};
     if (serve_request_round(ctx, connection, owner) == RoundOutcome::transferred)
     {
         return true;

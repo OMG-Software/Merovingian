@@ -101,6 +101,12 @@ public:
         return std::chrono::steady_clock::now() >= m_end;
     }
 
+    // The deadline itself, for a wait that must end with it.
+    [[nodiscard]] auto end() const noexcept -> std::chrono::steady_clock::time_point
+    {
+        return m_end;
+    }
+
 private:
     std::chrono::steady_clock::time_point m_end;
 };
@@ -110,12 +116,12 @@ private:
 // runtime.client_outbound_proxy_policy.retry_after_ms and make no outbound
 // call. Hold the returned slot until the call has finished; it releases on
 // every exit path. Take it before releasing the runtime lock.
-[[nodiscard]] auto admit_client_outbound_proxy(HomeserverRuntime& runtime,
-                                               std::string client_key) -> std::optional<http::InFlightBudget::Slot>;
+[[nodiscard]] auto admit_client_outbound_proxy(HomeserverRuntime& runtime, std::string client_key)
+    -> std::optional<http::InFlightBudget::Slot>;
 
 // `requested_seconds` bounded by the operator's federation remote_timeout when
 // that is configured, so this policy only ever shortens a call.
-[[nodiscard]] auto effective_client_outbound_deadline(HomeserverRuntime const& runtime,
-                                                      std::uint32_t requested_seconds) -> std::uint32_t;
+[[nodiscard]] auto effective_client_outbound_deadline(HomeserverRuntime const& runtime, std::uint32_t requested_seconds)
+    -> std::uint32_t;
 
 } // namespace merovingian::homeserver

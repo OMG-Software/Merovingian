@@ -39,6 +39,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -9667,9 +9668,10 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
 // path (complete() and sync_json() build raw DispatchResult structs).
 // All callers MUST go through the public handle_client_server_request wrapper
 // which applies CORS at the boundary unconditionally.
-static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttpRequest const& raw_req, bool can_wait)
-    -> DispatchResult
+static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttpRequest const& raw_req,
+                                              ClientServerDispatchOptions const& dispatch_options) -> DispatchResult
 {
+    auto const can_wait = dispatch_options.can_wait;
     // `req` shadows the parameter with a mutable local copy for the rest of
     // this function. Application Service API (Matrix v1.19) as_token bearer
     // auth + `?user_id=`/`?device_id=` identity-assertion masquerade (see
@@ -9802,7 +9804,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // outbound federation call made while serving a client request freezes all
     // other client and federation traffic until the remote answers or times out.
     auto const lock_scope = RequestLockScope{guard};
-    auto const rate_limit_decision = allow(rt, req);
+    // ADR-0121: a request the media fetch pool runs again was counted when the
+    // main pool first ran it; counting it again would refuse a client allowed
+    // one more request.
+    auto const rate_limit_decision =
+        dispatch_options.rate_limit_admitted ? http::RateLimitDecision{.allowed = true} : allow(rt, req);
     if (!rate_limit_decision.allowed)
     {
         // `allow()` already emits the warning-level rate_limit.exceeded
@@ -15343,7 +15349,22 @@ auto media_upload_authentication_refusal(ClientServerRuntime& rt, LocalHttpReque
 
 auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait) -> DispatchResult
 {
-    auto result = handle_client_server_request_impl(rt, req, can_wait);
+    return handle_client_server_request(rt, req, ClientServerDispatchOptions{.can_wait = can_wait});
+}
+
+auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                  ClientServerDispatchOptions const& options) -> DispatchResult
+{
+    // ADR-0121: the fetch deep in the media service reads this mode. In defer
+    // mode a fetch that would go to the network records a deferral and returns;
+    // its placeholder response is discarded here and the transport hands the
+    // request to the media fetch pool.
+    auto const fetch_scope = RemoteMediaFetchScope{options.remote_media};
+    auto result = handle_client_server_request_impl(rt, req, options);
+    if (fetch_scope.deferred())
+    {
+        return DispatchResult{DispatchResult::Status::needs_media_fetch, {}, {}};
+    }
     if (result.status == DispatchResult::Status::complete)
     {
         apply_cors_headers(req, result.response, rt.cors);

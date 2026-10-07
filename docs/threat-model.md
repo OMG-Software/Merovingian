@@ -1996,6 +1996,12 @@ until the refresh).
     taken before the runtime lock is released and dropped on every exit path. Tests:
     `[http-2]` and `[out-7]` in `tests/integration/test_client_outbound_proxy_flow.cpp`,
     `tests/unit/test_http_in_flight_budget.cpp`, `tests/unit/test_client_outbound_proxy.cpp`.
+  - ADR-0121: remote media no longer runs on the main pool at all. A cache miss is handed to a
+    dedicated media fetch pool (16 workers), admitted by its own budget (64 running or queued, 8
+    per client, `429` over either, at once), so a peer that never answers can occupy that pool
+    but no main-pool worker. Concurrent requests for one remote file share one fetch. Tests:
+    `[media-fetch-pool]` in `tests/integration/test_remote_media_fetch_pool_flow.cpp` and
+    `tests/unit/test_remote_media_fetch.cpp`.
 - **Residual risk:** an attacker holding 4 slots costs the pool 4 of 8 threads for up to 10 s
   (30 s for media) at a time, and each address needs to be distinct to hold more than one, so a
   botnet can keep the 4 slots busy and lock legitimate remote lookups out with 429; the other 4

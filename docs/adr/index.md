@@ -121,6 +121,7 @@
 * [0118 - Refuse E2EE key and filter uploads at per-user caps; store filters canonically](0118-refuse-e2ee-and-filter-uploads-at-per-user-caps.md)
 * [0119 - Media bytes live in the database and are read on demand](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md)
 * [0120 - Cached remote media has its own storage budget](0120-cached-remote-media-has-its-own-storage-budget.md)
+* [0121 - Remote media fetches run on their own pool, one fetch per remote file](0121-remote-media-fetches-run-on-their-own-pool.md)
 
 ## Rejected Records
 
@@ -137,4 +138,5 @@
 ## Records with non-standard statuses
 
 * None
+* [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md) — Superseded by ADR-0121 for remote media downloads and thumbnails, which run on their own pool; directory lookups keep this budget
 * [0015 - Keep the signing secret out of the federation worker](0015-keep-the-signing-secret-out-of-the-federation-worker.md) — Superseded by ADR-0078 for the signing-oracle part (the `sign_request` frame); the signing secret still never enters the worker

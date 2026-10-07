@@ -1,3 +1,39 @@
+## 0.12.21
+
+- **FIXED: a federated user's attachment could not be downloaded in Element (ADR-0121).** A
+  remote media download or thumbnail held a main request-pool thread for the whole fetch, so
+  ADR-0079 allowed one per client address and refused the rest with `429 M_LIMIT_EXCEEDED`.
+  Element Web downloads an image and its thumbnail at once, and every remote image on screen,
+  and does not retry a media `429`: the image stayed broken (`[429] too many concurrent remote
+  media fetches`). Remote media that must be fetched now runs on a dedicated media fetch pool.
+  The main pool still does the quick checks (`remote_fetch_enabled`, `allow_remote`, policy,
+  the remote media cache) and on a cache miss hands the request to the pool, as a waiting
+  `/sync` is handed to the sync pool. A peer that never answers can occupy the media pool but no
+  main-pool worker. Directory lookups (`publicRooms?server=`, remote aliases) keep the ADR-0079
+  budget.
+- **NEW: `server.http.media_fetch_threads` (16), `server.http.media_fetch_max_in_flight` (64)
+  and `server.http.media_fetch_max_per_client` (8).** Workers of the media fetch pool, fetches
+  running or queued, and of those for one client (the rate-limit key, `trusted_proxies`
+  honoured). Over either cap a request gets `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 at
+  once. Restart required.
+- **FIXED: concurrent requests for the same remote file fetched it twice.** The second admission
+  displaced the first copy from the remote media cache and deleted it while the first request
+  could still be reading it. Fetches of one remote file are now coalesced
+  (`RemoteMediaFetchCoalescer`): a second request waits for the first, with the runtime mutex
+  released and within its own deadline, and serves the stored copy.
+- **FIXED: a request run a second time by another pool is no longer counted twice by the rate
+  limiter** when it is a remote media request (`ClientServerDispatchOptions::rate_limit_admitted`).
+  The sync pool's re-runs of a long-poll are unchanged.
+- **TESTS:** `[media-fetch-pool]`: `tests/integration/test_remote_media_fetch_pool_flow.cpp` (a
+  stalled origin does not hold a request thread; three remote files from one client all served;
+  a download and thumbnail of one file reach the origin once; per-client and stopped-pool
+  backpressure; one rate-limit count per request) and `tests/unit/test_remote_media_fetch.cpp`
+  (coalescer, fetch scope, admission caps); config scenarios in
+  `tests/unit/test_config_operational_limits.cpp`.
+- Docs: ADR-0121 (ADR-0079 superseded for remote media), `docs/http-transport.md` "Remote media
+  fetch pool", media repository, threat model, user manual, example config, security coding
+  rules, `src/homeserver/AGENTS.md`.
+
 ## 0.12.20
 
 - **TESTS:** the PostgreSQL-only media scenarios (`[postgresql][media]`) read blob bytes

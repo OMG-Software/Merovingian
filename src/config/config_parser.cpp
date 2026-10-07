@@ -368,6 +368,27 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.http.media_fetch_threads")
+        {
+            if (!parse_u32_value(value, server.http.media_fetch_threads))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.media_fetch_max_in_flight")
+        {
+            if (!parse_u32_value(value, server.http.media_fetch_max_in_flight))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.http.media_fetch_max_per_client")
+        {
+            if (!parse_u32_value(value, server.http.media_fetch_max_per_client))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.http.max_start_line_bytes")
         {
             if (!parse_u32_value(value, server.http.max_start_line_bytes))
