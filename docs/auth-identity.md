@@ -545,6 +545,26 @@ a SHOULD, not a MUST, so this is not a conformance violation, but a client
 that explicitly asks for erasure gets the same silent no-op as a client that
 does not. The account's rooms are also not left on its behalf.
 
+## Argon2id admission
+
+Argon2id is memory-hard, so one request can pin a core and tens of MiB for tens of milliseconds. Every
+place a client request reaches it shares one concurrency budget, `HomeserverRuntime::argon2id_admission`
+(`auth::Argon2idAdmission`), and none of them holds `runtime.mutex` while it hashes:
+
+| Call site | Admission | Re-validated after the lock is re-taken |
+|---|---|---|
+| `/login` (`login_local_user`) | slot, else 429 | user still exists and stored hash unchanged |
+| Ordinary and appservice registration (`make_user`) | slot, else 429 | username still free, else the duplicate-username error |
+| Registration token check | slot, else 429 | none: no runtime state is used |
+| `POST /account/password` (`change_local_user_password`) | slot, else 429 | account exists, stored hash unchanged since the request started, access token still valid; otherwise refused with 403 and nothing written |
+| UIA password check (`verify_local_user_password`) | slot, else 429 | account exists, stored hash unchanged, access token still valid; otherwise not verified |
+
+A refusal for lack of a slot is `429 M_LIMIT_EXCEEDED` carrying `retry_after_ms`, answered before any hash
+work. It changes nothing and is not a failed attempt: it counts toward neither the login throttle nor the
+UIA throttle. A stale result (the password changed while it was being verified) is also not counted as a
+wrong guess, since the guess may well have been right for the hash it was checked against. Registration
+checks the username before taking a slot, so a request that cannot succeed never costs a hash.
+
 ## Failed-login throttle
 
 `/login` is throttled per source IP by the runtime rate limiter, but that
