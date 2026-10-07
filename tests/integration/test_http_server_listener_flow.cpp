@@ -1958,6 +1958,83 @@ SCENARIO("A waiting sync is counted against the rate limit once, however often i
             }
         }
 
+        // Waits until a long-poll is blocked in the notifier, then creates a
+        // room for the device so the waiting sync is woken and run again.
+        auto const wake_waiting_sync = [&runtime, &login] {
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+            while (runtime.sync_notifier->waiting() == 0U && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            auto const was_waiting = runtime.sync_notifier->waiting() == 1U;
+            auto const created = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", login.value, "{}"});
+            return was_waiting && created.response.status == 200U;
+        };
+
+        WHEN("a long-poll waits on its request worker, with no sync pool, until its timeout")
+        {
+            auto const [transferred, response] = serve_on_socket(sync_target("300"), nullptr);
+
+            THEN("it is answered on that worker, not refused as a second request")
+            {
+                REQUIRE_FALSE(transferred);
+                INFO(response.substr(0U, 200U));
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+            }
+        }
+
+        WHEN("a long-poll waiting on its request worker, with no sync pool, is woken by a new event")
+        {
+            // Built and checked on this thread: Catch2 assertions are not
+            // thread-safe, so the worker thread only serves the request.
+            auto sockets = std::array<int, 2>{-1, -1};
+            REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets.data()) == 0);
+            auto server = merovingian::core::FileDescriptor{sockets[0]};
+            auto client = merovingian::core::FileDescriptor{sockets[1]};
+            REQUIRE(send_all(client.get(), "GET " + sync_target("10000") +
+                                               " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + login.value +
+                                               "\r\nConnection: close\r\n\r\n"));
+            auto transferred = true;
+            auto worker = std::thread{[&] {
+                transferred = merovingian::homeserver::serve_one_http_connection(
+                    server.get(), runtime, stats, merovingian::homeserver::HttpDispatchMode::client_server, nullptr);
+            }};
+            auto const woken = wake_waiting_sync();
+            worker.join();
+            server.reset();
+            auto const response = receive_until_close(client.get());
+
+            THEN("the woken sync is answered with the new room, not refused as a second request")
+            {
+                REQUIRE(woken);
+                REQUIRE_FALSE(transferred);
+                INFO(response.substr(0U, 200U));
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.find("\"join\"") != std::string::npos);
+            }
+        }
+
+        WHEN("a long-poll waiting in dispatch_local_http_request is woken by a new event")
+        {
+            auto response = merovingian::homeserver::LocalHttpResponse{};
+            auto waiter = std::thread{[&] {
+                response = merovingian::homeserver::dispatch_local_http_request(
+                    runtime, {"GET", sync_target("10000"), login.value, {}},
+                    merovingian::homeserver::HttpDispatchMode::client_server);
+            }};
+            auto const woken = wake_waiting_sync();
+            waiter.join();
+
+            THEN("the woken sync is answered with the new room, not refused as a second request")
+            {
+                REQUIRE(woken);
+                INFO(response.body.substr(0U, 200U));
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("\"join\"") != std::string::npos);
+            }
+        }
+
         WHEN("a long-poll waits in dispatch_local_http_request, which has no sync pool")
         {
             auto const response = merovingian::homeserver::dispatch_local_http_request(

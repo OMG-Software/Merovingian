@@ -8,9 +8,12 @@
   as the media fetch pool's re-run does (0.12.21), so each `/sync` is counted once, when it
   first arrives.
 - **TESTS:** `[http-4][sync][rate-limit]` in `tests/integration/test_http_server_listener_flow.cpp`:
-  under a sync limit of one per minute, a long-poll answered at its timeout, one woken by a new
-  room, and one waiting in `dispatch_local_http_request` are each answered `200`, and the
-  client's next `/sync` in the window is still refused.
+  under a sync limit of one per minute, every re-run path is answered `200`: on the sync pool, on
+  a request worker with no sync pool, and in `dispatch_local_http_request`, each both at its
+  timeout and when woken by a new room; the client's next `/sync` in the window is still refused.
+  Each path fails with `429` when the re-runs are counted again.
+- **NEW: `sync::SyncNotifier::waiting()`**, the number of callers blocked in `wait_for_change`, so
+  a test can tell when a long-poll has started waiting (`[sync][notifier]` scenario).
 - Docs: `docs/http-transport.md` (sync re-runs; the default per-account and per-device wait caps
   are 4 and 2, not 8 and 4 as it said).
 
