@@ -43,6 +43,12 @@ shell = find_program('sh')
   )
 
   test(
+    'catch2-bdd-gate-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_check_catch2_bdd.py'],
+  )
+
+  test(
     'rewrite-merovingian-includes',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_rewrite_merovingian_includes.py'],

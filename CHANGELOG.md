@@ -39,6 +39,11 @@
 - **TESTS:** the logger thread-count scenario (`[logger][iso1]`) waits for its calibration helper
   thread to leave `/proc/self/task` before counting. A joined thread can stay listed for a moment
   after `join()` returns, which charged it to the logger (Ubuntu CI: `before=1 after_use=2`).
+- **FIXED: the Catch2 BDD gate timed out on OpenBSD CI.** `scripts/check-catch2-bdd-tests.sh`
+  ran up to six `grep` processes per unit test file (~1,300 per run) and exceeded meson's 30 s
+  test timeout on the OpenBSD VM. It now reads every file once in a single `awk` process, with the
+  same rules and messages (3.7 s to 1.0 s on WSL); the comment-marker rule no longer relies on the
+  GNU-only `\|` alternation. New `tests/tooling/test_check_catch2_bdd.py` pins the behaviour.
 - Docs: ADR-0121 (ADR-0079 superseded for remote media), `docs/http-transport.md` "Remote media
   fetch pool", media repository, threat model, user manual, example config, security coding
   rules, `src/homeserver/AGENTS.md`.
