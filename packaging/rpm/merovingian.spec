@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.21
+Version:        0.12.22
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Oct 07 2026 James Chapman <claude@ping.me.uk> - 0.12.22-1
+- Count a waiting sync request against the rate limit once.
+
 * Wed Oct 07 2026 James Chapman <claude@ping.me.uk> - 0.12.21-1
 - Fetch remote media on a dedicated pool so a client can load several
   remote attachments at once.

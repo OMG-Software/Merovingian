@@ -1,3 +1,19 @@
+## 0.12.22
+
+- **FIXED: a waiting `/sync` was counted against the rate limit again every time it was run
+  again.** A long-poll is run once more after each wake-up and when its timeout expires (on the
+  sync pool, in the no-pool fallback and in `dispatch_local_http_request`), and each run went
+  through `allow()`. A client allowed one more `/sync` was refused with `429` at the moment its
+  waiting sync was answered. The re-runs now pass `rate_limit_admitted` (`rerun_waiting_sync`),
+  as the media fetch pool's re-run does (0.12.21), so each `/sync` is counted once, when it
+  first arrives.
+- **TESTS:** `[http-4][sync][rate-limit]` in `tests/integration/test_http_server_listener_flow.cpp`:
+  under a sync limit of one per minute, a long-poll answered at its timeout, one woken by a new
+  room, and one waiting in `dispatch_local_http_request` are each answered `200`, and the
+  client's next `/sync` in the window is still refused.
+- Docs: `docs/http-transport.md` (sync re-runs; the default per-account and per-device wait caps
+  are 4 and 2, not 8 and 4 as it said).
+
 ## 0.12.21
 
 - **FIXED: a federated user's attachment could not be downloaded in Element (ADR-0121).** A
