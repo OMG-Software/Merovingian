@@ -419,12 +419,15 @@ security.media.local_upload_policy=allow
 # inspects plaintext media before it reaches Merovingian.
 security.media.remote_fetch_media_policy=allow
 security.media.block_private_ip_fetches=true
-# Remote media fetching is opt-in and live: the homeserver resolves the
-# origin server, fetches the media over HTTPS, and ingests the response
-# through remote_fetch_media_policy above. remote_fetch_timeout is parsed and
-# validated, but the live fetch path still uses hard-coded discovery/HTTP
-# timeout values.
-# security.media.remote_fetch_enabled=false
+# Remote media fetching: the homeserver resolves the origin server, fetches
+# the media over HTTPS, and ingests the response through
+# remote_fetch_media_policy above. Enabled here so users can download
+# attachments sent from other servers. The built-in default when this line is
+# absent is false: then every download or thumbnail of another server's media
+# is answered 404 M_NOT_FOUND and nothing leaves this server. Fetches run on
+# the media fetch pool (server.http.media_fetch_*). remote_fetch_timeout is
+# parsed and validated, but the live fetch path uses a fixed 30 s deadline.
+security.media.remote_fetch_enabled=true
 # security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true
 

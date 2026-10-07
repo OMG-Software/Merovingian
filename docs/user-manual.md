@@ -1072,7 +1072,7 @@ Service API".
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |
-| `security.media.remote_fetch_enabled` | `false` | Opt-in for live remote media fetching. While it is `false` (the default) a download or thumbnail of media hosted on another server is answered `404 M_NOT_FOUND` before any server discovery or outbound call, on the legacy `/_matrix/media/v3/` routes and the authenticated `/_matrix/client/v1/media/` routes alike. When it is `true`, fetches run on a dedicated media fetch pool, so a slow remote server never holds a main request thread, with at most `server.http.media_fetch_max_in_flight` (64) fetches running or waiting and `server.http.media_fetch_max_per_client` (8) for one client; over either the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000. Requests for the same remote file at the same time share one fetch, and each fetch has a 30 s total deadline. A request that carries `allow_remote=false` is never fetched remotely, whatever this is set to. |
+| `security.media.remote_fetch_enabled` | `false` (the example config sets `true`) | Opt-in for live remote media fetching. While it is `false` (the default) a download or thumbnail of media hosted on another server is answered `404 M_NOT_FOUND` before any server discovery or outbound call, on the legacy `/_matrix/media/v3/` routes and the authenticated `/_matrix/client/v1/media/` routes alike. When it is `true`, fetches run on a dedicated media fetch pool, so a slow remote server never holds a main request thread, with at most `server.http.media_fetch_max_in_flight` (64) fetches running or waiting and `server.http.media_fetch_max_per_client` (8) for one client; over either the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000. Requests for the same remote file at the same time share one fetch, and each fetch has a 30 s total deadline. A request that carries `allow_remote=false` is never fetched remotely, whatever this is set to. |
 | `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path does not read it: remote fetches use the fixed 30 s client-outbound deadline (bounded further by `security.federation.remote_timeout` when that is shorter). |
 | `security.media.decode_in_sandbox` | `true` | Decode/thumbnail media inside a sandboxed child process. |
 | `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
@@ -2202,7 +2202,10 @@ If joins to big rooms time out or return `502`:
 
 ### Remote media fetching
 
-Remote fetching is opt-in:
+Remote fetching is off unless configured. The example config
+(`config/merovingian.conf.example`) turns it on, so a server set up from it can download
+attachments sent from other servers; a config without the line refuses every remote download
+with `404`:
 
 ```ini
 security.media.remote_fetch_enabled=true
