@@ -1649,6 +1649,35 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     return {true, 200U, *access_token, *new_refresh_token, user_id, device_id, {}};
 }
 
+auto asserted_user_is_active(HomeserverRuntime const& runtime, std::string_view user_id) -> bool
+{
+    auto const* user = find_user(runtime.database, user_id);
+    return user != nullptr && !user->deactivated;
+}
+
+namespace
+{
+    // Everything an asserted identity must still satisfy at the point it is
+    // used: the appservice is still registered, the user is in its namespace
+    // and not exclusively reserved by another service (AUTH-7), and the user
+    // is a registered, active account (AUTH-12).
+    [[nodiscard]] auto masquerade_identity_is_valid(HomeserverRuntime const& runtime,
+                                                    appservice::MasqueradeIdentity const& identity) -> bool
+    {
+        auto const* registration = runtime.appservices.find_by_id(identity.appservice_id);
+        if (registration == nullptr ||
+            !appservice::appservice_owns_user(*registration, runtime.config.server().server_name, identity.user_id))
+        {
+            return false;
+        }
+        if (runtime.appservices.user_namespace_exclusively_owned_by_other(identity.user_id, registration->id))
+        {
+            return false;
+        }
+        return asserted_user_is_active(runtime, identity.user_id);
+    }
+} // namespace
+
 auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token) -> std::optional<std::string>
 {
     // Application Service API (Matrix v1.19) identity-assertion masquerade.
@@ -1663,9 +1692,7 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
     // surviving a config reload that removed/changed the appservice.
     if (auto const identity = appservice::decode_masquerade_token(access_token); identity.has_value())
     {
-        auto const* registration = runtime.appservices.find_by_id(identity->appservice_id);
-        if (registration == nullptr ||
-            !appservice::appservice_owns_user(*registration, runtime.config.server().server_name, identity->user_id))
+        if (!masquerade_identity_is_valid(runtime, *identity))
         {
             return std::nullopt;
         }
@@ -1764,9 +1791,7 @@ auto authenticated_session(HomeserverRuntime const& runtime, std::string_view ac
     // See authenticated_user() above for why this branch is safe.
     if (auto const identity = appservice::decode_masquerade_token(access_token); identity.has_value())
     {
-        auto const* registration = runtime.appservices.find_by_id(identity->appservice_id);
-        if (registration == nullptr ||
-            !appservice::appservice_owns_user(*registration, runtime.config.server().server_name, identity->user_id))
+        if (!masquerade_identity_is_valid(runtime, *identity))
         {
             return std::nullopt;
         }

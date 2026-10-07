@@ -42,9 +42,27 @@ namespace
 
 } // namespace
 
-auto is_account_management_endpoint(std::string_view /*method*/, std::string_view /*path*/) noexcept -> bool
+auto is_account_management_endpoint(std::string_view method, std::string_view path) noexcept -> bool
 {
-    return false;
+    constexpr auto client_prefix = std::string_view{"/_matrix/client/"};
+    if (!path.starts_with(client_prefix))
+    {
+        return false;
+    }
+    auto const after_prefix = path.substr(client_prefix.size());
+    // Skip the API version segment (v3, r0, v1, ...).
+    auto const version_end = after_prefix.find('/');
+    if (version_end == std::string_view::npos)
+    {
+        return false;
+    }
+    auto const resource = after_prefix.substr(version_end + 1U);
+    if (resource != "account" && !resource.starts_with("account/"))
+    {
+        return false;
+    }
+    // The spec's own identity-assertion example is GET /account/whoami.
+    return !(method == "GET" && resource == "account/whoami");
 }
 
 auto is_masquerade_token(std::string_view token) noexcept -> bool

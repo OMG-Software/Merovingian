@@ -48,6 +48,12 @@ namespace merovingian::homeserver
                                                    std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
     -> SessionRefreshResult;
+// True when `user_id` is a registered, not-deactivated local account. Identity
+// assertion (Application Service API) must act only as such a user (AUTH-12):
+// asserting an unregistered or deactivated user is refused with 403
+// M_FORBIDDEN by the dispatcher, and authenticated_user/authenticated_session
+// re-check it as defense in depth.
+[[nodiscard]] auto asserted_user_is_active(HomeserverRuntime const& runtime, std::string_view user_id) -> bool;
 [[nodiscard]] auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token)
     -> std::optional<std::string>;
 [[nodiscard]] auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)

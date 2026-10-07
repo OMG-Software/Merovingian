@@ -1075,6 +1075,16 @@ should win; check the startup log for `start.appservice_registration_rejected`
 events. `as_token`/`hs_token` are held in an mlocked `core::SecretBuffer` and
 never appear in logs or diagnostics.
 
+Identity assertion (`?user_id=` with the `as_token`) acts only as a user that
+exists and is not deactivated: a bridge must create each virtual user with
+`POST /register` (`type: m.login.application_service`) before asserting it,
+otherwise the request is `403 M_FORBIDDEN`. The bridge's own
+`sender_localpart` user is created at startup. A bridge cannot register, log in
+as or assert a user inside another bridge's *exclusive* namespace
+(`M_EXCLUSIVE`), and an `as_token` request is refused (`403 M_FORBIDDEN`) on the
+Account Management endpoints (`/account/password`, `/account/deactivate`,
+`/account/3pid*`); only `GET /account/whoami` accepts assertion.
+
 Outbound delivery (`PUT /_matrix/app/v1/transactions/{txnId}`) is wired into
 the event pipeline. The outbound query hooks (`GET /_matrix/app/v1/users/
 {userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) exist but are not yet

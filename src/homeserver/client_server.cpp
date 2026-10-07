@@ -9887,6 +9887,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
                                 "user_id is not within this appservice's registered namespace");
         }
+        if (rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(effective_user_id,
+                                                                                appservice_registration->id))
+        {
+            // Spec: "An exclusive namespace prevents humans and other
+            // application services from creating/deleting entities in that
+            // namespace." M_EXCLUSIVE: "The resource being requested is
+            // reserved by an application service". 403 matches the sibling
+            // refusals on /login and above (AUTH-7).
+            return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
+                                "user_id is reserved by another application service's exclusive namespace");
+        }
         auto const requested_device_id = query_param_value(req.target, "device_id");
         if (requested_device_id.has_value() && !requested_device_id->empty())
         {
@@ -10042,6 +10053,34 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     auto const request_path = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+    // Application Service API identity assertion (the as_token was verified at
+    // the top of this function; req.access_token now carries the internal
+    // masquerade identity). Runs under the request lock so the user lookup
+    // cannot race a registration or deactivation.
+    if (auto const masquerade = appservice::decode_masquerade_token(req.access_token); masquerade.has_value())
+    {
+        // AUTH-8. Spec (Identity assertion): "This applies to all aspects of
+        // the Client-Server API, except for Account Management." Refused for
+        // the asserted ?user_id= and for the implicit sender_localpart
+        // identity alike; GET /account/whoami is the spec's own example.
+        if (appservice::is_account_management_endpoint(req.method, request_path))
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "identity assertion does not apply to account management");
+        }
+        // AUTH-12. Act only as a registered, active user. /register and
+        // /login with m.login.application_service are how the service
+        // creates and signs in the user, and they act as the (always
+        // present) sender user rather than as the asserted one, so they
+        // are exempt; they check namespace ownership themselves.
+        auto const is_appservice_bootstrap = req.method == "POST" && (request_path == "/_matrix/client/v3/register" ||
+                                                                      request_path == "/_matrix/client/v3/login");
+        if (!is_appservice_bootstrap && !asserted_user_is_active(rt.homeserver, masquerade->user_id))
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "the asserted user is not registered or has been deactivated");
+        }
+    }
     // /_merovingian/admin/* — operational admin surface (health, metrics,
     // audit, media moderation). Dispatched to the local router BEFORE the
     // general user-token gate so require_admin() owns the 401/403 split
@@ -10535,8 +10574,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // Spec: "Application services which attempt to create users
                 // ... outside of their defined namespaces ... will receive
                 // an error code M_EXCLUSIVE."
-                return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
+                // Status: the /register response table lists M_EXCLUSIVE under
+                // 400 ("The desired user ID is in the exclusive namespace
+                // claimed by an application service").
+                return dispatch_err(req, rt, 400U, "M_EXCLUSIVE",
                                     "username is outside this appservice's registered namespace");
+            }
+            if (rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, registration->id))
+            {
+                // Spec: "An exclusive namespace prevents humans and other
+                // application services from creating/deleting entities in
+                // that namespace." (AUTH-7)
+                return dispatch_err(req, rt, 400U, "M_EXCLUSIVE",
+                                    "username is reserved by another application service's exclusive namespace");
             }
             auto const result = register_appservice_user(rt.homeserver, *username);
             if (!result.ok)
@@ -10799,6 +10849,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
                                     "user is outside this appservice's registered namespace");
+            }
+            if (rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(body->user_id, registration->id))
+            {
+                // Spec: "An exclusive namespace prevents humans and other
+                // application services from creating/deleting entities in
+                // that namespace." (AUTH-7)
+                return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
+                                    "user is reserved by another application service's exclusive namespace");
             }
             auto const as_result = login_appservice_user(rt.homeserver, body->user_id, body->device_id);
             if (!as_result.ok)
