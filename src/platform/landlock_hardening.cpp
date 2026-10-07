@@ -55,9 +55,6 @@ namespace
     constexpr std::uint64_t k_access_fs_make_sym = 1ULL << 12U;
     constexpr std::uint64_t k_access_fs_refer = 1ULL << 13U;    // ABI 2 (Linux 5.19)
     constexpr std::uint64_t k_access_fs_truncate = 1ULL << 14U; // ABI 3 (Linux 6.2)
-    // Landlock ABI 6 (Linux 6.10) scopes. The kernel headers may not define
-    // these yet, so use local names and let <linux/landlock.h> override when present.
-    constexpr std::uint64_t k_scope_signal = 1ULL << 1U;
 
 } // namespace
 
@@ -205,6 +202,12 @@ namespace
 {
 
 #ifdef __NR_landlock_create_ruleset
+
+    // Landlock ABI 6 (Linux 6.10) scope: signals only within the domain. The
+    // kernel headers may not define it yet, so it is named here. Declared only
+    // where the real ruleset is built, which is the only place it is used; on
+    // other platforms an unused constant is an error under -Werror.
+    constexpr std::uint64_t k_scope_signal = 1ULL << 1U;
 
     [[nodiscard]] auto real_query_abi_version() -> int
     {
