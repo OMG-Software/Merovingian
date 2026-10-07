@@ -303,6 +303,7 @@ shell = find_program('sh')
     sources: files(
       'conformance/test_main.cpp',
       'conformance/test_appservice_conformance.cpp',
+      'conformance/test_appservice_assertion_conformance.cpp',
       'conformance/test_appservice_thirdparty_conformance.cpp',
       'conformance/test_canonicaljson_parser.cpp',
       'conformance/test_canonicaljson_serializer.cpp',

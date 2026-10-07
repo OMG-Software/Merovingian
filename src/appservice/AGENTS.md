@@ -90,6 +90,22 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
 - Identity assertion (`?user_id=`) must be scoped to the asserting
   appservice's own namespaces. An appservice asserting a user outside its
   namespaces is a privilege escalation, not a lookup miss.
+- **Other services' exclusive namespaces are honoured** on `/register`
+  (`400 M_EXCLUSIVE`, the status the `/register` response table lists),
+  `/login` and assertion (`403 M_EXCLUSIVE`) via
+  `AppserviceRegistry::user_namespace_exclusively_owned_by_other(user, own_id)`.
+  `appservice_owns_user` alone is NOT enough for these: it answers "is this in
+  my namespace", and a non-exclusive `@.*` namespace overlaps another
+  service's exclusive one (AUTH-7).
+- **Assertion acts only as a registered, active user** (`403 M_FORBIDDEN`
+  otherwise, AUTH-12). The service creates virtual users with `/register`;
+  `/register` and `/login` themselves are exempt from this check because they
+  act as the always-present `sender_localpart` user.
+- **Assertion never reaches Account Management** (AUTH-8):
+  `is_account_management_endpoint` in `masquerade_token.cpp` classifies every
+  `/account/*` path except `GET /account/whoami` (fail closed on unknown
+  paths under `/account/`). A new `/account/...` endpoint is covered
+  automatically; do not add exceptions.
 
 ## User and room-alias query hooks
 

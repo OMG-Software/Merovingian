@@ -60,4 +60,17 @@ inline constexpr std::string_view masquerade_token_prefix = "appservice-masquera
 // partially resolve an identity.
 [[nodiscard]] auto decode_masquerade_token(std::string_view token) -> std::optional<MasqueradeIdentity>;
 
+// True when `method` + `path` (query string already stripped) names an
+// Account Management endpoint, on which identity assertion MUST NOT be
+// honoured. Spec (Application Service API, Identity assertion): "This applies
+// to all aspects of the Client-Server API, except for Account Management."
+//
+// Covered: every path under `/_matrix/client/<version>/account/` (password
+// change and its requestToken calls, deactivation, and the whole 3PID
+// management family), except `GET .../account/whoami` — the spec's own
+// worked example of identity assertion. An unknown path under `/account/` is
+// treated as covered (fail closed), so a future endpoint cannot silently
+// become assertable.
+[[nodiscard]] auto is_account_management_endpoint(std::string_view method, std::string_view path) noexcept -> bool;
+
 } // namespace merovingian::appservice

@@ -162,7 +162,22 @@ production-gated.
   token-issuance path (`complete_login`) with `m.login.password`. An
   appservice's `exclusive` namespace blocks registration/alias creation by
   anyone else (`M_EXCLUSIVE`) — enforced in the registration and
-  `PUT /directory/room/{roomAlias}` / `POST /createRoom` handlers. Outbound
+  `PUT /directory/room/{roomAlias}` / `POST /createRoom` handlers. The same
+  rule binds **other appservices**: `/register` with
+  `m.login.application_service` into another service's exclusive users
+  namespace is `400 M_EXCLUSIVE` (the `/register` response table's status),
+  `/login` with that type is `403 M_EXCLUSIVE`, and asserting such a user via
+  `?user_id=` is `403 M_EXCLUSIVE` (AUTH-7). Identity assertion also requires
+  the asserted user to be registered and not deactivated — otherwise `403
+  M_FORBIDDEN` (AUTH-12); a service creates its virtual users with
+  `/register` first, and its own `sender_localpart` user is created at
+  startup, so acting as the sender always works. Assertion does not apply to
+  Account Management (AUTH-8): every `/account/*` endpoint except
+  `GET /account/whoami` (password change and its `requestToken` calls,
+  `deactivate`, and the whole 3PID family) answers `403 M_FORBIDDEN` to an
+  `as_token` request, with or without `?user_id=`
+  (`appservice::is_account_management_endpoint`, checked in
+  `handle_client_server_request_impl` under the request lock). Outbound
   delivery to appservices is wired: `appservice::AppserviceClient`
   (`src/appservice/appservice_client.cpp`) implements `send_transaction`
   (`PUT /_matrix/app/v1/transactions/{txnId}`), `query_user`, `query_room_alias`,
