@@ -12,6 +12,7 @@
 
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/tls.hpp"
+#include "merovingian/identity/identity_client.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "temp_directory.hpp"
 
@@ -24,10 +25,14 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <openssl/evp.h>
@@ -449,5 +454,186 @@ inline auto run_stalling_tls_server(merovingian::net::TcpAcceptor& acceptor,
     }
     return flag.load();
 }
+
+// A trusted mock identity server on a real loopback TLS socket, for the tests
+// that exercise the identity-server-delegated 3PID flows (requestToken,
+// getValidated3pid, bind). It serves any number of requests until destroyed;
+// each response is selected by a substring of the request line (method + path),
+// and a request matching none is answered 404 M_UNRECOGNIZED. Responses are
+// reusable, not consumed, so a test need not predict how many times the
+// homeserver calls an endpoint. The server thread makes no assertions (Catch2 is
+// not thread-safe); tests read `requests()` from the main thread.
+//
+// The certificate CN is the IS host: the homeserver verifies the peer name
+// against the URL host, so "localhost" would fail the handshake.
+class MockIdentityServer final
+{
+public:
+    using Responses = std::vector<std::pair<std::string, std::string>>;
+
+    explicit MockIdentityServer(Responses responses, std::string host = "is.localhost.test")
+        : host_{std::move(host)}
+        , responses_{std::move(responses)}
+        , certificate_{write_test_tls_certificate(host_)}
+        , tls_{merovingian::homeserver::make_tls_server_context(certificate_.certificate_file,
+                                                                certificate_.private_key_file)}
+    {
+        REQUIRE(tls_.ok());
+        REQUIRE(acceptor_.bind("127.0.0.1", 0U).ok);
+        REQUIRE(acceptor_.bound_port() > 0U);
+        thread_ = std::thread{[this] {
+            serve();
+        }};
+    }
+
+    ~MockIdentityServer()
+    {
+        stop_.store(true);
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+    }
+
+    MockIdentityServer(MockIdentityServer const&) = delete;
+    auto operator=(MockIdentityServer const&) -> MockIdentityServer& = delete;
+    MockIdentityServer(MockIdentityServer&&) = delete;
+    auto operator=(MockIdentityServer&&) -> MockIdentityServer& = delete;
+
+    // The `id_server` value a client sends: host:port.
+    [[nodiscard]] auto host_port() const -> std::string
+    {
+        return host_ + ":" + std::to_string(acceptor_.bound_port());
+    }
+
+    [[nodiscard]] auto base_url() const -> std::string
+    {
+        return "https://" + host_port();
+    }
+
+    // Marks this server trusted and pins its host to loopback with its
+    // self-signed certificate. `Runtime` is a ClientServerRuntime; it is a
+    // template parameter so this header stays free of the client-server header.
+    template <typename Runtime>
+    auto install(Runtime& runtime) const -> void
+    {
+        auto& identity_server = runtime.homeserver.config.server().identity_server;
+        identity_server.default_server = base_url();
+        identity_server.trusted_servers = {base_url()};
+        runtime.homeserver.test_forced_identity_resolution[host_] =
+            merovingian::identity::TestForcedIdentityResolution{{"127.0.0.1"}, certificate_.certificate_pem};
+    }
+
+    // Raw bytes of every request received so far, in arrival order.
+    [[nodiscard]] auto requests() const -> std::vector<std::string>
+    {
+        auto const lock = std::lock_guard<std::mutex>{mutex_};
+        return captured_;
+    }
+
+    // Number of received requests whose bytes contain `needle`.
+    [[nodiscard]] auto count_requests(std::string_view needle) const -> std::size_t
+    {
+        auto count = std::size_t{0U};
+        for (auto const& request : requests())
+        {
+            if (request.find(needle) != std::string::npos)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    // Makes the server hold any request whose request line contains `needle`
+    // until release_stall() is called (or ten seconds pass, so a failed
+    // assertion cannot wedge the suite). stall_seen() turns true once such a
+    // request has arrived. Call before the traffic starts.
+    auto stall_requests_matching(std::string needle) -> void
+    {
+        auto const lock = std::lock_guard<std::mutex>{mutex_};
+        stall_needle_ = std::move(needle);
+    }
+
+    [[nodiscard]] auto stall_seen() const noexcept -> std::atomic<bool> const&
+    {
+        return stall_seen_;
+    }
+
+    auto release_stall() noexcept -> void
+    {
+        stall_released_.store(true);
+    }
+
+private:
+    auto serve() noexcept -> void
+    {
+        while (!stop_.load())
+        {
+            auto const client_fd = accept_loopback(acceptor_, 50);
+            if (client_fd < 0)
+            {
+                continue;
+            }
+            auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
+            auto tls_result = merovingian::homeserver::accept_tls_connection(*tls_.context, client_fd, 5000);
+            if (!tls_result.connection.has_value())
+            {
+                continue;
+            }
+            auto& connection = *tls_result.connection;
+            auto buffer = std::array<char, 8192>{};
+            auto request_bytes = std::string{};
+            while (request_bytes.find("\r\n\r\n") == std::string::npos)
+            {
+                auto const bytes_read = connection.read(buffer.data(), buffer.size());
+                if (bytes_read <= 0)
+                {
+                    break;
+                }
+                request_bytes.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+            }
+            auto const request_line = request_bytes.substr(0U, request_bytes.find("\r\n"));
+            auto stalls = false;
+            {
+                auto const lock = std::lock_guard<std::mutex>{mutex_};
+                captured_.push_back(request_bytes);
+                stalls = !stall_needle_.empty() && request_line.find(stall_needle_) != std::string::npos;
+            }
+            if (stalls)
+            {
+                stall_seen_.store(true);
+                auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+                while (!stall_released_.load() && !stop_.load() && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+            }
+            auto response = json_http_response("404 Not Found", R"({"errcode":"M_UNRECOGNIZED","error":"no route"})");
+            for (auto const& [needle, canned] : responses_)
+            {
+                if (request_line.find(needle) != std::string::npos)
+                {
+                    response = canned;
+                    break;
+                }
+            }
+            std::ignore = connection.write(response);
+        }
+    }
+
+    std::string host_;
+    Responses responses_;
+    TlsTestCertificate certificate_;
+    merovingian::homeserver::TlsServerContextResult tls_;
+    merovingian::net::TcpAcceptor acceptor_{};
+    std::atomic<bool> stop_{false};
+    mutable std::mutex mutex_{};
+    std::vector<std::string> captured_{};
+    std::string stall_needle_{};
+    std::atomic<bool> stall_seen_{false};
+    std::atomic<bool> stall_released_{false};
+    std::thread thread_{};
+};
 
 } // namespace merovingian::tests::tls_mock
