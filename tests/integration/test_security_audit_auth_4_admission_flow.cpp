@@ -16,6 +16,7 @@
 #include "../support/in_memory_database_config.hpp"
 #include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
+#include "../support/registration_token.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -42,14 +43,13 @@ namespace
 
 namespace hs = merovingian::homeserver;
 
-[[nodiscard]] auto open_registration_config() -> merovingian::config::Config
+[[nodiscard]] auto token_registration_config() -> merovingian::config::Config
 {
     auto server = merovingian::config::ServerConfig{};
     server.server_name = "example.org";
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    security.registration.enabled = true;
-    security.registration.require_token = false;
+    merovingian::tests::enable_token_registration(security);
     return {
         server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
         security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
@@ -96,13 +96,16 @@ auto replace_stored_hash(hs::HomeserverRuntime& runtime, std::string const& user
 
 } // namespace
 
-SCENARIO("Ordinary registration does not hold the runtime mutex while it hashes the password",
+// Registration with a token verifies the token (Argon2id, lock released) before
+// make_user hashes the password, so it cannot tell the two apart; appservice
+// registration reaches the same make_user without a token step.
+SCENARIO("Registration does not hold the runtime mutex while it hashes the password",
          "[integration][auth][security][audit][auth-4]")
 {
-    GIVEN("a runtime with open registration")
+    GIVEN("a runtime")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = hs::start_runtime(open_registration_config());
+        auto started = hs::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -114,7 +117,7 @@ SCENARIO("Ordinary registration does not hold the runtime mutex while it hashes 
             auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
             auto const request_lock = hs::RequestLockScope{guard};
             request_started.release();
-            registration = hs::register_local_user(runtime, "carol", "CarolPass99!x");
+            registration = hs::register_appservice_user(runtime, "bridge_carol");
             registration_done.store(true, std::memory_order_release);
         });
 
@@ -132,7 +135,7 @@ SCENARIO("Ordinary registration does not hold the runtime mutex while it hashes 
             {
                 REQUIRE(overlapped);
                 REQUIRE(registration.ok);
-                REQUIRE(count_users(runtime, "@carol:example.org") == 1U);
+                REQUIRE(count_users(runtime, "@bridge_carol:example.org") == 1U);
             }
         }
     }
@@ -141,10 +144,10 @@ SCENARIO("Ordinary registration does not hold the runtime mutex while it hashes 
 SCENARIO("Two concurrent registrations of one username produce exactly one account",
          "[integration][auth][security][audit][auth-4]")
 {
-    GIVEN("a runtime with open registration and two clients registering the same username with different passwords")
+    GIVEN("a runtime and two clients registering the same username with different passwords")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = hs::start_runtime(open_registration_config());
+        auto started = hs::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -166,7 +169,8 @@ SCENARIO("Two concurrent registrations of one username produce exactly one accou
                 auto guard = std::unique_lock<hs::RuntimeMutex>{runtime.mutex};
                 auto const request_lock = hs::RequestLockScope{guard};
                 results.at(index) =
-                    hs::register_local_user(runtime, "dave", index == 0U ? first_password : second_password);
+                    hs::register_local_user(runtime, "dave", index == 0U ? first_password : second_password,
+                                            std::string{merovingian::tests::registration_token});
             });
         }
 
@@ -205,7 +209,7 @@ SCENARIO("A password change that races another password change is refused, not o
     GIVEN("alice is signed in and a replacement hash is prepared for the competing change")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = hs::start_runtime(open_registration_config());
+        auto started = hs::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -213,7 +217,8 @@ SCENARIO("A password change that races another password change is refused, not o
         auto const competing_password = std::string{"CompetingPass99!y"};
         auto const competing_hash = merovingian::auth::hash_password(competing_password);
         REQUIRE(competing_hash.has_value());
-        auto const registered = hs::register_local_user(runtime, "alice", alice_password);
+        auto const registered = hs::register_local_user(runtime, "alice", alice_password,
+                                                        std::string{merovingian::tests::registration_token});
         REQUIRE(registered.ok);
         auto const signed_in = hs::login_local_user(runtime, registered.value, alice_password, "DEV1");
         REQUIRE(signed_in.ok);
@@ -260,12 +265,13 @@ SCENARIO("A password change races a logout of the session that authorised it",
     GIVEN("alice is signed in on one device")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = hs::start_runtime(open_registration_config());
+        auto started = hs::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
         auto const alice_password = std::string{"AlicePass99!x"};
-        auto const registered = hs::register_local_user(runtime, "alice", alice_password);
+        auto const registered = hs::register_local_user(runtime, "alice", alice_password,
+                                                        std::string{merovingian::tests::registration_token});
         REQUIRE(registered.ok);
         auto const signed_in = hs::login_local_user(runtime, registered.value, alice_password, "DEV1");
         REQUIRE(signed_in.ok);
@@ -307,14 +313,15 @@ SCENARIO("A user-interactive-auth password check is refused when the password ch
     GIVEN("alice is signed in, and a replacement hash is prepared for a competing password change")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = hs::start_runtime(open_registration_config());
+        auto started = hs::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
         auto const alice_password = std::string{"AlicePass99!x"};
         auto const competing_hash = merovingian::auth::hash_password("CompetingPass99!y");
         REQUIRE(competing_hash.has_value());
-        auto const registered = hs::register_local_user(runtime, "alice", alice_password);
+        auto const registered = hs::register_local_user(runtime, "alice", alice_password,
+                                                        std::string{merovingian::tests::registration_token});
         REQUIRE(registered.ok);
         auto const signed_in = hs::login_local_user(runtime, registered.value, alice_password, "DEV1");
         REQUIRE(signed_in.ok);

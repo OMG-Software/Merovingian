@@ -17,6 +17,7 @@
 // ../../docs/matrix-v1.19-spec/client-server-api.md
 
 #include "../support/master_key.hpp"
+#include "../support/registration_token.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -37,16 +38,13 @@ namespace
 
 constexpr auto alice_password = "AlicePass99!x";
 
-// Open registration: no registration token, so make_user's own hashing is the
-// only Argon2id work an ordinary registration does.
-[[nodiscard]] auto open_registration_config() -> merovingian::config::Config
+[[nodiscard]] auto token_registration_config() -> merovingian::config::Config
 {
     auto server = merovingian::config::ServerConfig{};
     server.server_name = "example.org";
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    security.registration.enabled = true;
-    security.registration.require_token = false;
+    merovingian::tests::enable_token_registration(security);
     return {
         server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
         security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
@@ -88,10 +86,10 @@ auto restore_argon2id_admission(merovingian::homeserver::HomeserverRuntime& runt
 SCENARIO("Ordinary registration sheds load when the Argon2id admission budget is spent",
          "[homeserver][auth][security][audit][auth-4]")
 {
-    GIVEN("a runtime with open registration and no Argon2id capacity")
+    GIVEN("a runtime with token registration and no Argon2id capacity")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_client_server(open_registration_config());
+        auto started = merovingian::homeserver::start_client_server(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const users_before = user_count(runtime.homeserver);
@@ -99,8 +97,8 @@ SCENARIO("Ordinary registration sheds load when the Argon2id admission budget is
 
         WHEN("a client registers through the service function")
         {
-            auto const result =
-                merovingian::homeserver::register_local_user(runtime.homeserver, "carol", "CarolPass99!x");
+            auto const result = merovingian::homeserver::register_local_user(
+                runtime.homeserver, "carol", "CarolPass99!x", std::string{merovingian::tests::registration_token});
 
             THEN("it is refused with 429 and a retry delay, and no account exists")
             {
@@ -120,8 +118,10 @@ SCENARIO("Ordinary registration sheds load when the Argon2id admission budget is
         WHEN("a client registers over HTTP")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"carol","password":"CarolPass99!x"})"});
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("carol", "CarolPass99!x")});
 
             THEN("it is answered with M_LIMIT_EXCEEDED carrying retry_after_ms, and no account exists")
             {
@@ -135,8 +135,8 @@ SCENARIO("Ordinary registration sheds load when the Argon2id admission budget is
         WHEN("the budget is available again and the same client retries")
         {
             restore_argon2id_admission(runtime.homeserver);
-            auto const result =
-                merovingian::homeserver::register_local_user(runtime.homeserver, "carol", "CarolPass99!x");
+            auto const result = merovingian::homeserver::register_local_user(
+                runtime.homeserver, "carol", "CarolPass99!x", std::string{merovingian::tests::registration_token});
 
             THEN("the registration succeeds")
             {
@@ -147,16 +147,30 @@ SCENARIO("Ordinary registration sheds load when the Argon2id admission budget is
     }
 }
 
-SCENARIO("Appservice registration shares the Argon2id admission budget", "[homeserver][auth][security][audit][auth-4]")
+SCENARIO("Password hashing in make_user shares the Argon2id admission budget",
+         "[homeserver][auth][security][audit][auth-4]")
 {
     GIVEN("a runtime with no Argon2id capacity")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_runtime(open_registration_config());
+        auto started = merovingian::homeserver::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const users_before = user_count(runtime);
         exhaust_argon2id_admission(runtime);
+
+        WHEN("the bootstrap admin is created")
+        {
+            auto const result = merovingian::homeserver::bootstrap_admin_user(runtime, "root", "RootPass99!x");
+
+            THEN("it is refused with 429 and a retry delay, and no account exists")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 429U);
+                REQUIRE(result.retry_after_ms > 0U);
+                REQUIRE(user_count(runtime) == users_before);
+            }
+        }
 
         WHEN("an appservice registers a user")
         {
@@ -179,10 +193,11 @@ SCENARIO("Password change sheds load when the Argon2id admission budget is spent
     GIVEN("alice is signed in and no Argon2id capacity remains")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_runtime(open_registration_config());
+        auto started = merovingian::homeserver::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const registered = merovingian::homeserver::register_local_user(runtime, "alice", alice_password);
+        auto const registered = merovingian::homeserver::register_local_user(
+            runtime, "alice", alice_password, std::string{merovingian::tests::registration_token});
         REQUIRE(registered.ok);
         auto const signed_in =
             merovingian::homeserver::login_local_user(runtime, registered.value, alice_password, "DEV1");
@@ -213,11 +228,11 @@ SCENARIO("Password change over HTTP reports admission saturation as M_LIMIT_EXCE
     GIVEN("alice is signed in and no Argon2id capacity remains")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_client_server(open_registration_config());
+        auto started = merovingian::homeserver::start_client_server(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const registered =
-            merovingian::homeserver::register_local_user(runtime.homeserver, "alice", alice_password);
+        auto const registered = merovingian::homeserver::register_local_user(
+            runtime.homeserver, "alice", alice_password, std::string{merovingian::tests::registration_token});
         REQUIRE(registered.ok);
         auto const signed_in =
             merovingian::homeserver::login_local_user(runtime.homeserver, registered.value, alice_password, "DEV1");
@@ -254,10 +269,11 @@ SCENARIO("A user-interactive-auth password check sheds load without counting as 
     GIVEN("alice is signed in and no Argon2id capacity remains")
     {
         REQUIRE(sodium_init() >= 0);
-        auto started = merovingian::homeserver::start_runtime(open_registration_config());
+        auto started = merovingian::homeserver::start_runtime(token_registration_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const registered = merovingian::homeserver::register_local_user(runtime, "alice", alice_password);
+        auto const registered = merovingian::homeserver::register_local_user(
+            runtime, "alice", alice_password, std::string{merovingian::tests::registration_token});
         REQUIRE(registered.ok);
         auto const signed_in =
             merovingian::homeserver::login_local_user(runtime, registered.value, alice_password, "DEV1");
