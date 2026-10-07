@@ -9179,7 +9179,7 @@ namespace
                         password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
                     auto response = LocalHttpResponse{
                         429U,
-                        matrix_error("M_LIMIT_EXCEEDED", "Too many failed password attempts. Please try again later.",
+                        matrix_error("M_LIMIT_EXCEEDED", "Too many password attempts. Please try again later.",
                                      retry_after),
                         {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
                     apply_cors_headers(req, response, rt.cors);
@@ -10542,7 +10542,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (!result.ok)
             {
                 return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
-                                    result.reason);
+                                    result.reason, result.retry_after_ms);
             }
             auto const full_user_id = result.value;
             auto const* inhibit_login_value = boolean_member(*registration_object, "inhibit_login");
@@ -10637,7 +10637,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
-                                result.reason);
+                                result.reason, result.retry_after_ms);
         }
         auto const full_user_id = result.value;
         // Spec §5.5.1: inhibit_login suppresses session creation; return only user_id.
@@ -11585,7 +11585,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
                     password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
-                                    "Too many failed password attempts. Please try again later.", retry_after);
+                                    "Too many password attempts. Please try again later.", retry_after);
             }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
@@ -11597,6 +11597,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const result = change_local_user_password(rt.homeserver, req.access_token, *new_password, logout_devices);
         if (!result.ok)
         {
+            // AUTH-4: Argon2id admission saturation, with the delay to retry after.
+            if (result.status == 429U)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", result.reason, result.retry_after_ms);
+            }
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
@@ -11647,7 +11652,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
                     password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
-                                    "Too many failed password attempts. Please try again later.", retry_after);
+                                    "Too many password attempts. Please try again later.", retry_after);
             }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
@@ -11740,7 +11745,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
                     password_verified->retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
-                                    "Too many failed password attempts. Please try again later.", retry_after);
+                                    "Too many password attempts. Please try again later.", retry_after);
             }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
@@ -12772,7 +12777,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
                     password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
-                                    "Too many failed password attempts. Please try again later.", retry_after);
+                                    "Too many password attempts. Please try again later.", retry_after);
             }
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
@@ -12831,7 +12836,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
                     password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
-                                    "Too many failed password attempts. Please try again later.", retry_after);
+                                    "Too many password attempts. Please try again later.", retry_after);
             }
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
