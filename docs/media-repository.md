@@ -63,11 +63,15 @@ current in-process runtime path.
   federation media request (ADR-0119). Memory holds records and blob metadata. The read runs with the
   runtime mutex released, and the record is checked again afterwards, so media removed or quarantined
   during the read is not served.
-- When enabled, a remote fetch takes a slot in the client-outbound budget (4 in flight overall,
-  1 per client address, `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 over it) and every step
-  (discovery, the federation media request, the legacy fallback, a `Location` redirect follow)
-  draws from one 30 s deadline (audit HTTP-2; ADR-0079; `docs/http-transport.md` "Client-triggered
-  outbound proxying"). The deadline replaces the earlier 30 s discovery + 120 s per request budget.
+- When enabled, a remote fetch runs on the media fetch pool, not the main request pool (ADR-0121;
+  `docs/http-transport.md` "Remote media fetch pool"). The refusal, policy and cache checks run first
+  on the main pool; only a cache miss is handed to the pool, which admits at most
+  `server.http.media_fetch_max_in_flight` fetches (64) and `server.http.media_fetch_max_per_client`
+  for one client (8), `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 over either. Concurrent
+  requests for the same remote file share one fetch. Every step (discovery, the federation media
+  request, the legacy fallback, a `Location` redirect follow) draws from one 30 s deadline (audit
+  HTTP-2). Without a media fetch pool (tests, embedded callers) a fetch runs inline under the
+  ADR-0079 client-outbound budget: 1 per client address.
 - Remote media fetches are live: the homeserver resolves the origin server via
   federation server discovery (`.well-known`, SRV, direct), then tries the
   mandatory authenticated endpoint first per spec (changed in v1.11):

@@ -12,6 +12,8 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
+#include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -31,6 +33,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -828,6 +831,82 @@ namespace
                                            parsed.bytes);
     }
 
+    // The answer for a remote file the remote media cache already holds within
+    // its TTL, or nullopt when it must be fetched. A cached copy answers for the
+    // remote file whatever its state (ADR-0119), so quarantined or removed media
+    // is not fetched again. Runs with the runtime mutex held; it is released only
+    // for the byte read.
+    [[nodiscard]] auto serve_cached_remote_media(HomeserverRuntime& runtime, std::string_view origin_server,
+                                                 std::string_view media_id) -> std::optional<OperationResult>
+    {
+        auto const* cached = media::find_cached_remote_media(runtime.media_repository, origin_server, media_id,
+                                                             media::remote_media_cache_now_ms());
+        if (cached == nullptr)
+        {
+            return std::nullopt;
+        }
+        if (cached->state == media::LocalMediaState::quarantined)
+        {
+            return make_operation_result(false, {}, "media is quarantined", 451U);
+        }
+        if (cached->state == media::LocalMediaState::removed)
+        {
+            return make_operation_result(false, {}, "media not found", 404U);
+        }
+        // Copied: the record may move while the mutex is released for the read.
+        auto const local_media_id = cached->media_id;
+        auto const storage_id = cached->storage_id;
+        auto const content_type = cached->content_type;
+        auto const bytes = read_servable_media_bytes(runtime, local_media_id, storage_id, false);
+        if (!bytes.has_value())
+        {
+            return std::nullopt;
+        }
+        log_diagnostic("remote_fetch.cache_hit", {
+                                                     {"origin_server", std::string{origin_server}, false},
+                                                     {"media_id",      std::string{media_id},      false}
+        });
+        return make_operation_result(true, content_type + "|" + *bytes, {}, 200U);
+    }
+
+    // ADR-0121: the right to fetch one remote file, or the answer when it no
+    // longer needs fetching. Storing a second copy of a file would displace the
+    // first from the cache and delete it while another request may still be
+    // reading it, so a request that finds the file being fetched waits for that
+    // fetch, with the runtime mutex released, and then serves the copy it
+    // stored. If that fetch stored nothing, it leads a fetch itself. The wait
+    // ends with `deadline`, as a 502 like any other fetch that runs out of time.
+    [[nodiscard]] auto lead_remote_media_fetch(HomeserverRuntime& runtime, std::string_view origin_server,
+                                               std::string_view media_id, OutboundDeadline const& deadline)
+        -> std::variant<RemoteMediaFetchCoalescer::Lead, OperationResult>
+    {
+        auto const coalesce_key = canonical_media_server_name(origin_server) + '/' + std::string{media_id};
+        auto& coalescer = *runtime.remote_media_fetch_coalescer;
+        while (true)
+        {
+            if (auto lead = coalescer.try_lead(coalesce_key); lead.has_value())
+            {
+                return std::move(*lead);
+            }
+            log_diagnostic("remote_fetch.coalesced", {
+                                                         {"origin_server", std::string{origin_server}, false},
+                                                         {"media_id",      std::string{media_id},      false}
+            });
+            auto const idle = [&] {
+                auto const unlocked = RuntimeLockRelease{};
+                return coalescer.wait_until_idle(coalesce_key, deadline.end());
+            }();
+            if (!idle || deadline.expired())
+            {
+                return remote_media_deadline_exceeded(runtime, origin_server, media_id);
+            }
+            if (auto cached = serve_cached_remote_media(runtime, origin_server, media_id); cached.has_value())
+            {
+                return std::move(*cached);
+            }
+        }
+    }
+
     // Fetch remote media via server discovery, trying the authenticated
     // federation endpoint first and falling back to the deprecated,
     // unauthenticated /_matrix/media/v3/download endpoint per spec. On success
@@ -849,33 +928,9 @@ namespace
         // from the local record. This must come before the outbound budget slot,
         // discovery and the request below; checking after them saves storage
         // but still sends one outbound fetch per client request.
-        if (auto const* cached = media::find_cached_remote_media(runtime.media_repository, origin_server, media_id,
-                                                                 media::remote_media_cache_now_ms());
-            cached != nullptr)
+        if (auto cached = serve_cached_remote_media(runtime, origin_server, media_id); cached.has_value())
         {
-            // ADR-0119: a cached copy answers for the remote file whatever its
-            // state, so quarantined or removed media is not fetched again.
-            if (cached->state == media::LocalMediaState::quarantined)
-            {
-                return make_operation_result(false, {}, "media is quarantined", 451U);
-            }
-            if (cached->state == media::LocalMediaState::removed)
-            {
-                return make_operation_result(false, {}, "media not found", 404U);
-            }
-            // Copied: the record may move while the mutex is released for the read.
-            auto const local_media_id = cached->media_id;
-            auto const storage_id = cached->storage_id;
-            auto const content_type = cached->content_type;
-            if (auto const bytes = read_servable_media_bytes(runtime, local_media_id, storage_id, false);
-                bytes.has_value())
-            {
-                log_diagnostic("remote_fetch.cache_hit", {
-                                                             {"origin_server", std::string{origin_server}, false},
-                                                             {"media_id",      std::string{media_id},      false}
-                });
-                return make_operation_result(true, content_type + "|" + *bytes, {}, 200U);
-            }
+            return std::move(*cached);
         }
         auto* const outbound_client = runtime.outbound_client.get();
         auto* const discovery_network = runtime.discovery_network.get();
@@ -888,12 +943,30 @@ namespace
             return remote_media_fetch_disabled(runtime, origin_server, media_id);
         }
 
-        // ADR-0079: this fetch holds a request-pool thread for as long as the
-        // remote takes, and it is reachable without authentication. Take a slot
-        // in the client-outbound budget before releasing the runtime lock for
-        // discovery, and keep it until the fetch has ended, on every path.
-        auto const proxy_slot = admit_client_outbound_proxy(runtime, remote.client_key);
-        if (!proxy_slot.has_value())
+        // ADR-0121: a main-pool request does not wait on the origin. Everything
+        // quick is done (refusal, policy, cache); record that the fetch is
+        // needed and return, and the transport hands the request to the media
+        // fetch pool, which runs it again in admitted mode. The placeholder
+        // result below never reaches the client.
+        auto const fetch_mode = RemoteMediaFetchScope::current_mode();
+        if (fetch_mode == RemoteMediaFetchMode::defer && RemoteMediaFetchScope::record_deferral())
+        {
+            log_diagnostic("remote_fetch.deferred", {
+                                                        {"origin_server", std::string{origin_server}, false},
+                                                        {"media_id",      std::string{media_id},      false}
+            });
+            return make_operation_result(false, {}, "remote media fetch deferred to the media fetch pool", 503U);
+        }
+
+        // ADR-0079: an inline fetch holds a request-pool thread for as long as
+        // the remote takes, and it is reachable without authentication. Take a
+        // slot in the client-outbound budget before releasing the runtime lock
+        // for discovery, and keep it until the fetch has ended, on every path.
+        // On the media fetch pool the transport's admission replaces it.
+        auto const proxy_slot = fetch_mode == RemoteMediaFetchMode::inline_fetch
+                                    ? admit_client_outbound_proxy(runtime, remote.client_key)
+                                    : std::optional<http::InFlightBudget::Slot>{};
+        if (fetch_mode == RemoteMediaFetchMode::inline_fetch && !proxy_slot.has_value())
         {
             log_diagnostic("remote_fetch.over_budget", {
                                                            {"origin_server", std::string{origin_server}, false}
@@ -904,6 +977,14 @@ namespace
         }
         auto const deadline = OutboundDeadline{
             effective_client_outbound_deadline(runtime, runtime.client_outbound_proxy_policy.media_deadline_seconds)};
+
+        // ADR-0121: one fetch per remote file; held until this fetch has
+        // stored its copy or failed, on every path.
+        auto const lead = lead_remote_media_fetch(runtime, origin_server, media_id, deadline);
+        if (std::holds_alternative<OperationResult>(lead))
+        {
+            return std::get<OperationResult>(lead);
+        }
 
         // Test-only: bypass discover_server() entirely when the destination has a
         // forced resolution wired (see TestOnlyForcedOutboundResolution in

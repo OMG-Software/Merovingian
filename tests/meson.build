@@ -43,6 +43,12 @@ shell = find_program('sh')
   )
 
   test(
+    'catch2-bdd-gate-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_check_catch2_bdd.py'],
+  )
+
+  test(
     'rewrite-merovingian-includes',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_rewrite_merovingian_includes.py'],
@@ -243,6 +249,7 @@ shell = find_program('sh')
       'unit/test_key_signature_cap.cpp',
       'unit/test_filter_cap.cpp',
       'unit/test_key_signature_index.cpp',
+      'unit/test_remote_media_fetch.cpp',
       'unit/test_sync_receipt_visibility.cpp',
       'unit/test_sync_room_access.cpp',
       'unit/test_tcp_acceptor.cpp',
@@ -382,6 +389,7 @@ shell = find_program('sh')
       'integration/test_media_repository_security.cpp',
       'integration/test_media_on_demand_flow.cpp',
       'integration/test_remote_media_cache_flow.cpp',
+      'integration/test_remote_media_fetch_pool_flow.cpp',
       'integration/test_media_thumbnail_flow.cpp',
       'integration/test_security_audit_remote_media.cpp',
       'integration/test_observability_flow.cpp',

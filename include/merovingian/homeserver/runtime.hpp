@@ -13,6 +13,7 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 #include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -389,6 +390,11 @@ struct HomeserverRuntime final
     // through a unique_ptr so the address slots refer to survives a runtime move.
     std::unique_ptr<http::InFlightBudget> client_outbound_budget{std::make_unique<http::InFlightBudget>()};
     ClientOutboundProxyPolicy client_outbound_proxy_policy{default_client_outbound_proxy_policy()};
+    // One fetch from the origin per remote media file at a time (ADR-0121). Its
+    // mutex is a leaf: never waited on with `mutex` held. Held through a
+    // unique_ptr so leads keep a stable address across a runtime move.
+    std::unique_ptr<RemoteMediaFetchCoalescer> remote_media_fetch_coalescer{
+        std::make_unique<RemoteMediaFetchCoalescer>()};
     // Bounded admission semaphore for Argon2id password and registration-token
     // verification (AUTH-4). Stored by unique_ptr so the runtime remains movable
     // while the semaphore itself is not.

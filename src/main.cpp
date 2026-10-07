@@ -51,7 +51,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.20"};
+constexpr auto version = std::string_view{"0.12.21"};
 
 struct BootstrapConfigResult final
 {
@@ -753,13 +753,24 @@ struct ListenerBinding final
     auto const sync_threads = static_cast<std::size_t>(sync_config.sync_threads);
     auto const sync_queue_depth = static_cast<std::size_t>(sync_config.sync_max_in_flight);
     auto sync_pool = merovingian::net::ThreadPool{sync_threads, install_audit_sink_hook, sync_queue_depth};
+    // Dedicated pool for remote media fetches (ADR-0121). A remote media
+    // download or thumbnail that must fetch from the origin waits for that
+    // server here, never on a main-pool worker. Its queue is as deep as the
+    // admission budget, so an admitted fetch is never refused for queue space.
+    auto const media_fetch_threads = static_cast<std::size_t>(sync_config.media_fetch_threads);
+    auto const media_fetch_queue_depth =
+        static_cast<std::size_t>(merovingian::homeserver::media_fetch_admission_caps(sync_config).global);
+    auto media_fetch_pool =
+        merovingian::net::ThreadPool{media_fetch_threads, install_audit_sink_hook, media_fetch_queue_depth};
     // One dispatcher for every listener, so the per-client worker share is
     // process-wide. Its thread starts here, after process hardening (ADR-0082).
-    auto dispatcher = merovingian::homeserver::HttpConnectionDispatcher{runtime, stats, pool, &sync_pool};
+    auto dispatcher = merovingian::homeserver::HttpConnectionDispatcher{
+        runtime, stats, pool, &sync_pool, merovingian::homeserver::HttpServeTuning{}, &media_fetch_pool};
     if (!dispatcher.start())
     {
         LOG_CRITICAL("Connection dispatcher failed to start; refusing to serve");
         pool.request_stop();
+        media_fetch_pool.request_stop();
         sync_pool.request_stop();
         return std::nullopt;
     }
@@ -816,6 +827,9 @@ struct ListenerBinding final
     }
     dispatcher.request_stop();
     pool.request_stop();
+    // Queued media fetches answer 503 without fetching once the pool stops;
+    // fetches already running end within their deadline.
+    media_fetch_pool.request_stop();
     sync_pool.request_stop();
 
     return stats;

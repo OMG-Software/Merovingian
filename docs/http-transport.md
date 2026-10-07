@@ -130,7 +130,8 @@ Dispatch is bounded twice:
   enforce per-client fairness itself — but not from the global bound.
 
 Ownership: a connection is an `HttpConnection` behind a `std::unique_ptr`,
-owned by exactly one of the dispatcher, one pool task or one sync-pool task.
+owned by exactly one of the dispatcher, one pool task, one sync-pool task or one
+media-fetch-pool task.
 Destroying it closes the socket and releases its per-IP slot and any parking
 reservation, on every path. Threads and locks: the dispatcher thread, the pool
 workers, the sync pool and the accept threads share only the parker's internal
@@ -810,8 +811,12 @@ The paths under the budget:
 | `GET /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET /publicRooms` |
 | `POST /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET` or `POST /publicRooms` |
 | `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
-| `GET /_matrix/media/v3/download` and `/thumbnail` for remote media | discovery, federation media, legacy fallback, redirect follow |
-| `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media | as above |
+| `GET /_matrix/media/v3/download` and `/thumbnail` for remote media, without a media fetch pool | discovery, federation media, legacy fallback, redirect follow |
+| `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media, without a media fetch pool | as above |
+
+The server hands remote media to its media fetch pool instead (next section); the
+media rows apply only to callers with no such pool: tests, embedded callers and
+`dispatch_local_http_request`.
 
 Rules:
 
@@ -852,7 +857,50 @@ Rules:
   trip.
 
 The alternative of a separate thread pool or an asynchronous proxy path was
-considered and rejected for now; see ADR-0079.
+considered and rejected for now; see ADR-0079. For remote media it was later
+adopted (next section).
+
+## Remote media fetch pool (ADR-0121)
+
+A browser shows an image and its thumbnail, and every remote image on screen,
+at once. Under the one-per-client budget above every request after the first
+was refused with `429`, and Element does not retry a media `429`, so a federated
+user's attachment stayed broken. Remote media therefore leaves the main pool.
+
+- **Defer.** A main-pool round runs the client-server handler in
+  `RemoteMediaFetchMode::defer` (`RemoteMediaFetchScope`, thread-local like
+  `RequestLockScope`). `fetch_remote_media_live` does everything quick —
+  `remote_fetch_enabled`/`allow_remote`, the trust-and-safety policy, the remote
+  media cache — and on a cache miss records a deferral and returns.
+  `handle_client_server_request` answers `DispatchResult::Status::needs_media_fetch`
+  with no response.
+- **Admit, then hand off.** The round takes a slot in
+  `ClientServerRuntime::media_fetch_budget` keyed by `rate_limit_client_key`:
+  at most `server.http.media_fetch_max_in_flight` fetches running or queued
+  (64) and `server.http.media_fetch_max_per_client` for one client (8). It then
+  submits a `MediaFetchHandoff`, which owns the connection and the slot, to the
+  media fetch pool (`server.http.media_fetch_threads`, 16 workers, queue as deep
+  as the global cap). Over a cap, or if the pool refuses the task, the answer is
+  `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000, at once, and the connection
+  is closed.
+- **Run again.** The pool runs the request again in
+  `RemoteMediaFetchMode::admitted` with `rate_limit_admitted`, so the rate
+  limiter does not count it twice and the fetch takes no ADR-0079 slot. It writes
+  the response and parks a kept-alive connection with the dispatcher; the next
+  request runs on a main-pool worker.
+- **One fetch per file.** `RemoteMediaFetchCoalescer` lets one request fetch a
+  given remote file (canonical origin and media ID). Another request for it waits,
+  with the runtime mutex released and within its own 30 s deadline, then serves
+  the copy the first stored. Without this the second admission displaces the
+  first copy from the cache while it is being read.
+- **Shutdown and abandoned requests.** A handoff that starts after its pool
+  stopped answers `503` without fetching. One whose client has gone is dropped.
+- **Directory lookups** (`publicRooms?server=`, remote aliases) are unchanged:
+  they still run on the main pool under the ADR-0079 budget.
+
+Log events: `media_service` `remote_fetch.deferred` (a main-pool request handed
+to the pool), `remote_fetch.coalesced` (waiting on another request's fetch);
+`http_server` `media_fetch.over_budget`, `media_fetch.client_gone`.
 
 ### `resolve_policy_server_hook` (0.12.1)
 

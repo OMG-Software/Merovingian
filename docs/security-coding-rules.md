@@ -667,7 +667,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
   that has written its response hands the connection back rather than waiting on it. A
   connection is dispatched only when readable, at most one per worker and at most
   `max(1, request_threads / 4)` per client address (trusted proxies exempt), and it is owned
-  by exactly one of the dispatcher, one pool task or one sync-pool task.
+  by exactly one of the dispatcher, one pool task, one sync-pool task or one
+media-fetch-pool task.
   Why: a worker tied to its connection through idle and partial-read phases let one client
   hold the whole pool with eight sockets — kept alive with one request every idle − 1
   seconds, trickled bodies, or connects that never send a byte (audit HTTP-1, ADR-0077).

@@ -135,8 +135,7 @@ SCENARIO("Federation rate changes report their actual startup lifecycle", "[conf
 // CSAZ-10: caps on per-user end-to-end key material and filters. Owner policy
 // is to refuse over-cap uploads, so the caps are operator-tunable and a cap of
 // zero (which would refuse every upload) is invalid.
-SCENARIO("E2EE key and filter caps default to bounded values and can be tuned",
-         "[config][operational-limits][csaz-10]")
+SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", "[config][operational-limits][csaz-10]")
 {
     GIVEN("a configuration that does not mention the caps")
     {
@@ -186,19 +185,96 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned",
     }
 }
 
+// ADR-0121: remote media fetches run on their own pool, so a client loading
+// several remote images at once is not refused by a one-per-client budget that
+// existed only to protect the main request pool.
+SCENARIO("The remote media fetch pool defaults to bounded values and can be tuned",
+         "[config][operational-limits][media-fetch-pool]")
+{
+    GIVEN("a configuration that does not mention the media fetch pool")
+    {
+        auto const parsed = merovingian::config::parse_key_value_config("");
+
+        THEN("the pool and its admission caps have bounded, valid defaults")
+        {
+            REQUIRE(parsed.config.server().http.media_fetch_threads == 16U);
+            REQUIRE(parsed.config.server().http.media_fetch_max_in_flight == 64U);
+            REQUIRE(parsed.config.server().http.media_fetch_max_per_client == 8U);
+            REQUIRE(merovingian::config::validate(parsed.config).empty());
+        }
+    }
+
+    GIVEN("a configuration that overrides all three settings")
+    {
+        auto const parsed = merovingian::config::parse_key_value_config("server.http.media_fetch_threads=4\n"
+                                                                        "server.http.media_fetch_max_in_flight=12\n"
+                                                                        "server.http.media_fetch_max_per_client=3\n");
+
+        WHEN("it is parsed and validated")
+        {
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the overrides are applied without findings")
+            {
+                REQUIRE(parsed.findings.empty());
+                REQUIRE(findings.empty());
+                REQUIRE(parsed.config.server().http.media_fetch_threads == 4U);
+                REQUIRE(parsed.config.server().http.media_fetch_max_in_flight == 12U);
+                REQUIRE(parsed.config.server().http.media_fetch_max_per_client == 3U);
+            }
+        }
+
+        WHEN("a reload plan is built against the defaults")
+        {
+            auto const plan = merovingian::config::build_reload_plan(merovingian::config::Config{}, parsed.config);
+
+            THEN("each setting is a restart-required change, because the pool is sized at startup")
+            {
+                REQUIRE(plan.changes().size() == 3U);
+                REQUIRE(plan.reloadable_change_count() == 0U);
+                REQUIRE(plan.restart_required_change_count() == 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("The remote media fetch pool rejects zero, malformed and excessive values",
+         "[config][operational-limits][media-fetch-pool][boundary]")
+{
+    GIVEN("an invalid media fetch pool override")
+    {
+        auto const input =
+            GENERATE("server.http.media_fetch_threads=0\n", "server.http.media_fetch_threads=257\n",
+                     "server.http.media_fetch_threads=many\n", "server.http.media_fetch_max_in_flight=0\n",
+                     "server.http.media_fetch_max_in_flight=1025\n", "server.http.media_fetch_max_per_client=0\n",
+                     "server.http.media_fetch_max_per_client=257\n", "server.http.media_fetch_max_per_client=-1\n");
+
+        WHEN("the configuration is parsed and validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(input);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the operator gets an error instead of an unusable or unbounded pool")
+            {
+                REQUIRE((!parsed.findings.empty() || !findings.empty()));
+            }
+        }
+    }
+}
+
 SCENARIO("E2EE key and filter caps reject zero, malformed and excessive values",
          "[config][operational-limits][csaz-10][boundary]")
 {
     GIVEN("an invalid cap override")
     {
-        auto const input = GENERATE("server.client_api.max_one_time_keys_per_device=0\n",
-                                    "server.client_api.max_one_time_keys_per_device=100001\n",
-                                    "server.client_api.max_one_time_keys_per_device=many\n",
-                                    "server.client_api.max_key_signatures_per_user=0\n",
-                                    "server.client_api.max_key_signatures_per_user=1000001\n",
-                                    "server.client_api.max_key_signatures_per_user=-1\n",
-                                    "server.client_api.max_filters_per_user=0\n",
-                                    "server.client_api.max_filters_per_user=100001\n");
+        auto const input =
+            GENERATE("server.client_api.max_one_time_keys_per_device=0\n",
+                     "server.client_api.max_one_time_keys_per_device=100001\n",
+                     "server.client_api.max_one_time_keys_per_device=many\n",
+                     "server.client_api.max_key_signatures_per_user=0\n",
+                     "server.client_api.max_key_signatures_per_user=1000001\n",
+                     "server.client_api.max_key_signatures_per_user=-1\n", "server.client_api.max_filters_per_user=0\n",
+                     "server.client_api.max_filters_per_user=100001\n");
 
         WHEN("the configuration is parsed and validated")
         {

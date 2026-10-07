@@ -678,6 +678,18 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.http.sync_max_per_device");
     }
+    if (current.server().http.media_fetch_threads != next.server().http.media_fetch_threads)
+    {
+        add_change(plan, "server.http.media_fetch_threads");
+    }
+    if (current.server().http.media_fetch_max_in_flight != next.server().http.media_fetch_max_in_flight)
+    {
+        add_change(plan, "server.http.media_fetch_max_in_flight");
+    }
+    if (current.server().http.media_fetch_max_per_client != next.server().http.media_fetch_max_per_client)
+    {
+        add_change(plan, "server.http.media_fetch_max_per_client");
+    }
     if (current.server().http.max_start_line_bytes != next.server().http.max_start_line_bytes)
     {
         add_change(plan, "server.http.max_start_line_bytes");

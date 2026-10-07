@@ -80,6 +80,16 @@ struct HttpTransportConfig final
     std::uint32_t sync_max_in_flight{128U};
     std::uint32_t sync_max_per_user{4U};
     std::uint32_t sync_max_per_device{2U};
+    // Remote media fetch pool (ADR-0121). A remote media download or
+    // thumbnail that must fetch from the origin is handed to this pool, so no
+    // main-pool thread waits on a remote server. media_fetch_threads: workers,
+    // 1..256. media_fetch_max_in_flight: fetches running or queued, 1..1024.
+    // media_fetch_max_per_client: of those, for one client (the rate-limit
+    // key, trusted_proxies honoured), 1..256, never more than the in-flight
+    // cap. Over either cap a request gets 429 at once. Restart required.
+    std::uint32_t media_fetch_threads{16U};
+    std::uint32_t media_fetch_max_in_flight{64U};
+    std::uint32_t media_fetch_max_per_client{8U};
     std::uint32_t max_start_line_bytes{8192U};
     std::uint32_t max_header_bytes{32768U};
     std::uint32_t max_header_count{100U};

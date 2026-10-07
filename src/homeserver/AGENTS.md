@@ -123,6 +123,15 @@ own. A new
 route that proxies to a remote server without one of these three is the defect. See ADR-0079 and
 `docs/http-transport.md` "Client-triggered outbound proxying".
 
+Remote media is the exception (ADR-0121): the server runs it on the media fetch pool, not the main
+pool. On the main pool `fetch_remote_media_live` runs in `RemoteMediaFetchMode::defer` and, after the
+refusal, policy and cache checks, records a deferral instead of fetching; the transport admits the
+request to `media_fetch_budget` and hands it to the pool, which runs it again in `admitted` mode
+(no ADR-0079 slot, rate limiter not consulted again). Keep every check that can answer without the
+network before the deferral, so a refusal or cache hit never costs a pool slot. Fetches of one remote
+file are coalesced (`RemoteMediaFetchCoalescer`): never wait on the coalescer with `runtime.mutex`
+held, and never take `runtime.mutex` while holding its mutex.
+
 ## Federation worker relays are untrusted input
 
 A frame from the federation worker is input from the process most exposed to
@@ -169,8 +178,9 @@ add another.
 every connection that is not being served and hands it to the main pool only once it is readable,
 at most `max(1, pool / 4)` per client address. Code in a request round must therefore not wait for
 the *next* request or for a client that has gone quiet; return the connection (`continue_keep_alive`)
-and let the dispatcher wait. A connection is owned by exactly one of the dispatcher, one pool task or
-one sync-pool task (`std::unique_ptr<HttpConnection>`); pass it on by moving it, never by sharing it.
+and let the dispatcher wait. A connection is owned by exactly one of the dispatcher, one pool task,
+one sync-pool task or one media-fetch-pool task (`std::unique_ptr<HttpConnection>`); pass it on by
+moving it, never by sharing it.
 
 ## Media upload boundary
 

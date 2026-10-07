@@ -1,6 +1,6 @@
 # Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool
 
-* Status: accepted
+* Status: accepted; superseded for remote media by [ADR-0121](0121-remote-media-fetches-run-on-their-own-pool.md) (2026-10-07)
 * Date: 2026-09-30
 
 Technical Story: 2026-09-29 security audit, findings HTTP-2 (unauthenticated

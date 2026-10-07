@@ -93,11 +93,25 @@ struct SyncAdmissionCaps final
     std::uint32_t per_device{0U};
 };
 
+// Admission for remote media fetches handed to the media fetch pool (ADR-0121):
+// running and queued fetches together, and of those, for one client.
+struct MediaFetchAdmissionCaps final
+{
+    std::uint32_t global{0U};
+    std::uint32_t per_client{0U};
+};
+
 // Resolve the configured long-poll admission budgets against the actual pool
 // size. The global cap includes queued and active waits and cannot exceed the
 // number of sync workers available to serve them.
 [[nodiscard]] auto sync_admission_caps(config::HttpTransportConfig const& settings,
                                        std::size_t pool_worker_count) noexcept -> SyncAdmissionCaps;
+
+// Resolve the configured media fetch admission (ADR-0121). One client is never
+// promised more than the whole budget. The media fetch pool's queue is as deep
+// as the global cap, so an admitted handoff is never refused for queue space.
+[[nodiscard]] auto media_fetch_admission_caps(config::HttpTransportConfig const& settings) noexcept
+    -> MediaFetchAdmissionCaps;
 
 // Construct the request limits from the startup config snapshot. Federation
 // /send has its own configured body cap; all other request bodies use the
@@ -124,8 +138,11 @@ struct SyncAdmissionCaps final
 class HttpConnectionDispatcher final
 {
 public:
+    // `media_fetch_pool`: remote media requests that must fetch from the origin
+    // are handed to it (ADR-0121); null fetches them inline under ADR-0079.
     HttpConnectionDispatcher(ClientServerRuntime& runtime, HttpServeStats& stats, net::ThreadPool& pool,
-                             net::ThreadPool* sync_pool = nullptr, HttpServeTuning tuning = {});
+                             net::ThreadPool* sync_pool = nullptr, HttpServeTuning tuning = {},
+                             net::ThreadPool* media_fetch_pool = nullptr);
     HttpConnectionDispatcher(HttpConnectionDispatcher const&) = delete;
     auto operator=(HttpConnectionDispatcher const&) -> HttpConnectionDispatcher& = delete;
     HttpConnectionDispatcher(HttpConnectionDispatcher&&) = delete;
@@ -150,8 +167,9 @@ private:
 // the selected runtime router, and write a single response. When sync_pool is
 // provided and the request is a long-polling /sync that needs to wait, the fd
 // is handed off to sync_pool (the main thread is freed immediately) and this
-// function returns true. In all other cases it returns false and the caller
-// closes the fd normally.
+// function returns true; likewise to media_fetch_pool for a remote media
+// request that must fetch from the origin (ADR-0121). In all other cases it
+// returns false and the caller closes the fd normally.
 //
 // The acceptor's fd is taken by value (already-accepted client socket).
 // `peer_addr` is the dotted-decimal or colon-separated peer IP captured at
@@ -163,7 +181,8 @@ private:
 // dispatcher to park the connection on, so it is never kept alive.
 [[nodiscard]] auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
                                              HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool = nullptr,
-                                             std::string_view peer_addr = {}) -> bool;
+                                             std::string_view peer_addr = {},
+                                             net::ThreadPool* media_fetch_pool = nullptr) -> bool;
 
 // Block until `shutdown` fires, accepting connections from `acceptor` and
 // parking them on `dispatcher`, which hands each to a worker once it is

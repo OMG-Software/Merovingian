@@ -646,6 +646,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("server.http.sync_max_in_flight", config.server().http.sync_max_in_flight, 512U);
     validate_count("server.http.sync_max_per_user", config.server().http.sync_max_per_user, 64U);
     validate_count("server.http.sync_max_per_device", config.server().http.sync_max_per_device, 16U);
+    validate_count("server.http.media_fetch_threads", config.server().http.media_fetch_threads, 256U);
+    validate_count("server.http.media_fetch_max_in_flight", config.server().http.media_fetch_max_in_flight, 1024U);
+    validate_count("server.http.media_fetch_max_per_client", config.server().http.media_fetch_max_per_client, 256U);
     validate_count("server.http.max_start_line_bytes", config.server().http.max_start_line_bytes, 8192U);
     validate_count("server.http.max_header_bytes", config.server().http.max_header_bytes, 65536U);
     validate_count("server.http.max_header_count", config.server().http.max_header_count, 200U);

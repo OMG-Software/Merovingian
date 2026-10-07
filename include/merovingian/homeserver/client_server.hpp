@@ -167,6 +167,10 @@ struct ClientServerRuntime final
     // initial dispatch and are released on completion, disconnect or failed handoff.
     std::unique_ptr<http::InFlightBudget> sync_user_budget{std::make_unique<http::InFlightBudget>()};
     std::unique_ptr<http::InFlightBudget> sync_device_budget{std::make_unique<http::InFlightBudget>()};
+    // ADR-0121: admission for remote media fetches handed to the media fetch
+    // pool, running or queued, keyed by the rate-limit client key. A slot is
+    // taken before the handoff and released when the pool's task ends.
+    std::unique_ptr<http::InFlightBudget> media_fetch_budget{std::make_unique<http::InFlightBudget>()};
     // Enabled only by the server's --debug startup argument. When enabled,
     // Sliding Sync emits request-shape diagnostics without request bodies,
     // connection IDs, tokens, or event content.
@@ -221,6 +225,11 @@ struct ClientServerStartOptions final
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                 bool can_wait = true) -> DispatchResult;
+// The same, with every option (ADR-0121). The transport uses this to run a
+// main-pool request in RemoteMediaFetchMode::defer and to run a deferred one
+// again on the media fetch pool.
+[[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                                ClientServerDispatchOptions const& options) -> DispatchResult;
 // HTTP-1 / HTTP-6 (ADR-0077): decides from the request head alone whether a
 // media upload may have its body read under the raised
 // security.media.max_upload_size cap. `head` is the request with an empty

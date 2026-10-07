@@ -18,7 +18,7 @@ called by it rather than directly.
 | `build-rhel-rpm.sh` | Builds an `.rpm` for RHEL 10 / AlmaLinux 10 from `packaging/rhel/merovingian.spec`, which omits `catch-devel` (unreliable in EPEL 10 and unneeded with `-Dbuild_tests=false`) |
 | `build-freebsd-pkg.sh` / `build-netbsd-pkg.sh` / `build-openbsd-pkg.sh` | BSD package builds |
 | `format_code.py` | Runs `clang-format` over all C++ source and headers |
-| `check-catch2-bdd-tests.sh` | Verifies every `SCENARIO` is registered and has at least one `REQUIRE` |
+| `check-catch2-bdd-tests.sh` | Rejects unit test files that use `TEST_CASE`, use comment-only Given/When/Then markers, or lack any of `SCENARIO`/`GIVEN`/`WHEN`/`THEN` (`test_main.cpp` exempt). One `awk` pass over all files: run per file it timed out on the OpenBSD VM. Covered by `tests/tooling/test_check_catch2_bdd.py` |
 | `check-conformance-gate.sh` | Fails if any conformance test has been removed or commented out |
 | `check-elf-hardening.sh` | Build-time hardening gate: inspects a built ELF binary's headers with `readelf` and fails if PIE (`ET_DYN`), `PT_GNU_RELRO`, `DT_BIND_NOW`, or a non-executable stack (`PT_GNU_STACK` without `E`) is missing; the CI-time counterpart to the runtime self-check in `src/platform/`, since that check can only run inside a live, correctly-privileged `merovingian-server` process. Pass `--static` for the static-PIE binary, which has no `PT_DYNAMIC` section to apply `BIND_NOW` to |
 | `check-staged-changelog-docs.sh` | Pre-commit guard requiring staged project changes to include `CHANGELOG.md` and relevant `docs/*.md` updates |
