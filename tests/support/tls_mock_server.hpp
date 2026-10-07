@@ -188,7 +188,10 @@ struct FileDeleter final
     auto certificate = std::unique_ptr<X509, X509Deleter>{X509_new()};
     REQUIRE(certificate != nullptr);
     REQUIRE(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1L) == 1);
-    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0L) != nullptr);
+    // Backdated: a notBefore of exactly now made verification fail as "not yet
+    // valid" whenever the wall clock stepped back a moment between issuing and
+    // verifying (WSL steps its clock), failing whichever scenario was unlucky.
+    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -3600L) != nullptr);
     REQUIRE(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600L) != nullptr);
     REQUIRE(X509_set_pubkey(certificate.get(), key.get()) == 1);
 

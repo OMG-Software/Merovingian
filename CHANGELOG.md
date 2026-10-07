@@ -30,6 +30,15 @@
   backpressure; one rate-limit count per request) and `tests/unit/test_remote_media_fetch.cpp`
   (coalescer, fetch scope, admission caps); config scenarios in
   `tests/unit/test_config_operational_limits.cpp`.
+- **TESTS:** a remote media download answered by the media pool keeps its connection alive and
+  hands it back to the dispatcher, which serves the next request on it
+  (`[media-fetch-pool][keep-alive]`, through a real `HttpConnectionDispatcher` and listener).
+- **TESTS:** the mock HTTPS server's certificate (`tests/support/tls_mock_server.hpp`) is backdated
+  an hour. Its `notBefore` was the moment it was issued, so a wall clock stepping back a moment
+  (WSL does) made verification fail as "not yet valid" in whichever scenario was unlucky.
+- **TESTS:** the logger thread-count scenario (`[logger][iso1]`) waits for its calibration helper
+  thread to leave `/proc/self/task` before counting. A joined thread can stay listed for a moment
+  after `join()` returns, which charged it to the logger (Ubuntu CI: `before=1 after_use=2`).
 - Docs: ADR-0121 (ADR-0079 superseded for remote media), `docs/http-transport.md` "Remote media
   fetch pool", media repository, threat model, user manual, example config, security coding
   rules, `src/homeserver/AGENTS.md`.

@@ -17,6 +17,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -145,7 +146,18 @@ SCENARIO("The logger starts no thread until its writers are explicitly started",
                 auto const with_helper = merovingian::tests::count_process_tasks();
                 release.store(true);
                 helper.join();
-                if (baseline == 0U || with_helper != baseline + 1U)
+                // A joined thread can stay listed in /proc/self/task for a
+                // moment after join() returns. Counting before it is gone
+                // charged the helper to the logger (CI: before=1 after_use=2),
+                // so wait, bounded, for the count to return to the baseline.
+                auto const settle_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+                while (merovingian::tests::count_process_tasks() != baseline &&
+                       std::chrono::steady_clock::now() < settle_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+                if (baseline == 0U || with_helper != baseline + 1U ||
+                    merovingian::tests::count_process_tasks() != baseline)
                 {
                     write_report(report_fd, "SKIP");
                     return;

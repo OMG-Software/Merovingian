@@ -17,6 +17,7 @@
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
+#include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
 
@@ -33,6 +34,9 @@
 #include <utility>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 
@@ -162,6 +166,116 @@ struct ServedRequest final
 }
 
 constexpr auto client_peer = std::string_view{"203.0.113.7"};
+
+// Reads one Content-Length framed response from a kept-alive connection,
+// leaving the connection open. Returns what arrived (possibly partial) when
+// the peer closes or 30 s pass.
+[[nodiscard]] auto receive_one_response(int fd) -> std::string
+{
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    auto pending = std::string{};
+    auto buffer = std::array<char, 4096U>{};
+    while (true)
+    {
+        auto const head_end = pending.find("\r\n\r\n");
+        auto const header = pending.find("\r\nContent-Length: ");
+        if (head_end != std::string::npos && header != std::string::npos && header < head_end)
+        {
+            auto length = std::size_t{0U};
+            for (auto index = header + 18U; index < pending.size() && pending[index] >= '0' && pending[index] <= '9';
+                 ++index)
+            {
+                length = (length * 10U) + static_cast<std::size_t>(pending[index] - '0');
+            }
+            if (pending.size() >= head_end + 4U + length)
+            {
+                return pending.substr(0U, head_end + 4U + length);
+            }
+        }
+        auto const remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        auto entry = ::pollfd{};
+        entry.fd = fd;
+        entry.events = POLLIN;
+        if (remaining.count() <= 0 || ::poll(&entry, 1U, static_cast<int>(remaining.count())) <= 0)
+        {
+            return pending;
+        }
+        auto const received = ::recv(fd, buffer.data(), buffer.size(), 0);
+        if (received <= 0)
+        {
+            return pending;
+        }
+        pending.append(buffer.data(), static_cast<std::size_t>(received));
+    }
+}
+
+[[nodiscard]] auto connect_loopback(std::uint16_t port) -> merovingian::core::FileDescriptor
+{
+    auto socket = merovingian::core::FileDescriptor{::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)};
+    REQUIRE(socket.get() >= 0);
+    auto remote = ::sockaddr_in{};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons(port);
+    remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    REQUIRE(::connect(socket.get(), reinterpret_cast<::sockaddr const*>(&remote), sizeof(remote)) == 0);
+    return socket;
+}
+
+// The production serving path: one listener on an ephemeral loopback port, a
+// connection dispatcher over a main pool, and a media fetch pool behind it.
+// Stops the listener, the dispatcher and both pools on every exit path,
+// including a failed REQUIRE.
+class DispatchedListener final
+{
+public:
+    explicit DispatchedListener(merovingian::homeserver::ClientServerRuntime& runtime)
+        : m_dispatcher{runtime, m_stats, m_pool, nullptr, merovingian::homeserver::HttpServeTuning{}, &m_media_pool}
+    {
+        REQUIRE(m_acceptor.bind("127.0.0.1", 0U).ok);
+        REQUIRE(m_dispatcher.start());
+        m_thread = std::thread{[this] {
+            merovingian::homeserver::serve_http(m_acceptor, m_dispatcher, m_shutdown,
+                                                merovingian::homeserver::HttpDispatchMode::client_server);
+        }};
+    }
+    DispatchedListener(DispatchedListener const&) = delete;
+    auto operator=(DispatchedListener const&) -> DispatchedListener& = delete;
+    DispatchedListener(DispatchedListener&&) = delete;
+    auto operator=(DispatchedListener&&) -> DispatchedListener& = delete;
+    ~DispatchedListener()
+    {
+        stop();
+    }
+
+    [[nodiscard]] auto port() const noexcept -> std::uint16_t
+    {
+        return m_acceptor.bound_port();
+    }
+
+    // The order main.cpp stops them in.
+    auto stop() -> void
+    {
+        m_shutdown.fire();
+        if (m_thread.joinable())
+        {
+            m_thread.join();
+        }
+        m_dispatcher.request_stop();
+        m_pool.request_stop();
+        m_media_pool.request_stop();
+    }
+
+private:
+    merovingian::net::TcpAcceptor m_acceptor{};
+    merovingian::net::ShutdownSignal m_shutdown{};
+    merovingian::homeserver::HttpServeStats m_stats{};
+    merovingian::net::ThreadPool m_pool{2U};
+    merovingian::net::ThreadPool m_media_pool{2U};
+    merovingian::homeserver::HttpConnectionDispatcher m_dispatcher;
+    std::thread m_thread{};
+};
 } // namespace
 
 SCENARIO("A remote media download that is still being fetched does not hold a request thread",
@@ -419,6 +533,8 @@ SCENARIO("Remote media fetches beyond the media pool's admission get immediate b
 
             THEN("the first fetch and another client's request are unaffected")
             {
+                INFO("first: " << first_response.substr(0U, 300U));
+                INFO("other: " << other_response.substr(0U, 300U));
                 REQUIRE(first_response.starts_with("HTTP/1.1 200"));
                 REQUIRE(other.transferred);
                 REQUIRE(other_response.starts_with("HTTP/1.1 200"));
@@ -491,6 +607,70 @@ SCENARIO("A remote media download handed to the media pool is counted against th
                 INFO(response.substr(0U, 200U));
                 REQUIRE(response.starts_with("HTTP/1.1 200"));
                 REQUIRE(response.ends_with(image));
+            }
+        }
+    }
+}
+
+SCENARIO("A kept-alive connection serves its next request after a remote media download on the media pool",
+         "[media-fetch-pool][media][remote][http][keep-alive]")
+{
+    GIVEN("a server with a connection dispatcher and a media fetch pool, and a remote origin serving one image")
+    {
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto origin_acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(origin_acceptor.bind("127.0.0.1", 0U).ok);
+        auto started = merovingian::homeserver::start_client_server(media_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.rate_limit_engine.reset();
+        auto const token = login_media_user(runtime, origin_acceptor.bound_port(), certificate.certificate_pem);
+        auto const image = sample_png();
+        auto origin = std::thread{[&]() {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(
+                origin_acceptor, *tls.context,
+                {
+                    {"/media/download/kept", multipart_png_response(image)}
+            });
+        }};
+        auto const joined = merovingian::tests::tls_mock::ScopedThreadJoin{origin};
+        auto listener = DispatchedListener{runtime};
+
+        WHEN("one connection downloads the remote image and then makes another request")
+        {
+            auto const socket = connect_loopback(listener.port());
+            auto const keep_alive_request = [&token](std::string_view target) {
+                return "GET " + std::string{target} + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer " + token +
+                       "\r\n\r\n";
+            };
+            REQUIRE(
+                send_all(socket.get(), keep_alive_request("/_matrix/client/v1/media/download/peer.example.org/kept")));
+            auto const download = receive_one_response(socket.get());
+            REQUIRE(send_all(socket.get(), keep_alive_request("/_matrix/client/versions")));
+            auto const versions = receive_one_response(socket.get());
+            listener.stop();
+
+            THEN("the download, answered by the media pool, kept the connection open")
+            {
+                INFO(download.substr(0U, 300U));
+                REQUIRE(download.starts_with("HTTP/1.1 200"));
+                REQUIRE(download.find("\r\nConnection: keep-alive") != std::string::npos);
+                REQUIRE(download.ends_with(image));
+            }
+
+            THEN("the connection went back to the dispatcher and its next request was served on it")
+            {
+                INFO(versions.substr(0U, 300U));
+                REQUIRE(versions.starts_with("HTTP/1.1 200"));
+                REQUIRE(versions.find("\"versions\"") != std::string::npos);
+            }
+
+            THEN("the media fetch admission was released")
+            {
+                REQUIRE(runtime.media_fetch_budget->active() == 0U);
             }
         }
     }
