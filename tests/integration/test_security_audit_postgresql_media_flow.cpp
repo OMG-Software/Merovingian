@@ -44,16 +44,16 @@ namespace
     });
 }
 
-[[nodiscard]] auto admin_action_count(merovingian::database::PersistentStore const& store,
-                                      std::string_view media_id) -> std::size_t
+[[nodiscard]] auto admin_action_count(merovingian::database::PersistentStore const& store, std::string_view media_id)
+    -> std::size_t
 {
     return static_cast<std::size_t>(std::ranges::count_if(store.admin_actions, [media_id](auto const& action) {
         return action.action == "media.remove" && action.target == media_id;
     }));
 }
 
-[[nodiscard]] auto audit_event_count(merovingian::database::PersistentStore const& store,
-                                     std::string_view media_id) -> std::size_t
+[[nodiscard]] auto audit_event_count(merovingian::database::PersistentStore const& store, std::string_view media_id)
+    -> std::size_t
 {
     return static_cast<std::size_t>(std::ranges::count_if(store.audit_log, [media_id](auto const& event) {
         return event.event_type == "media.removed" && event.target == media_id;
@@ -113,7 +113,10 @@ SCENARIO("PostgreSQL media moderation commits shared-blob references and audit r
                 auto const first_blob = find_blob(opened_b.store, storage_id);
                 REQUIRE(first_blob != opened_b.store.media_blobs.end());
                 CHECK(first_blob->ref_count == 1U);
-                CHECK(first_blob->bytes == bytes);
+                // MED-6 (ADR-0113): the in-memory mirror holds blob metadata
+                // only; the retained bytes are checked after the restart below.
+                CHECK(first_blob->size_bytes == bytes.size());
+                CHECK(first_blob->bytes.empty());
                 CHECK(admin_action_count(opened_b.store, first_media_id) == 1U);
                 CHECK(audit_event_count(opened_b.store, first_media_id) == 1U);
 
