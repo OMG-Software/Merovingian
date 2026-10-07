@@ -107,6 +107,10 @@ struct AdminAuthResult
 // budget is spent (its own counter, keyed (account, device): /login failures never
 // touch it); callers MUST return 429 M_LIMIT_EXCEEDED in that case rather than
 // 401 UIA, because further guesses are pointless until the window expires.
+// It is also non-zero when the Argon2id admission budget has no free slot (AUTH-4):
+// the password was not checked, nothing was counted, and the same 429 applies.
+// `ok` is false, with no delay, when the password changed or the session ended
+// while it was being verified.
 struct PasswordVerificationResult final
 {
     bool ok{false};

@@ -788,6 +788,19 @@ namespace
         return secret;
     }
 
+    // AUTH-4: the answer when the Argon2id admission budget has no free slot.
+    // 429 M_LIMIT_EXCEEDED with a delay to retry after, given before any hash work
+    // starts. It changes nothing and is never a failed attempt: it must not be
+    // counted by the login or the user-interactive-auth throttle.
+    constexpr auto argon2id_admission_retry_after_ms = std::uint32_t{1000U};
+
+    [[nodiscard]] auto argon2id_admission_refusal() -> OperationResult
+    {
+        auto throttled = make_operation_result(false, {}, "too many concurrent authentication attempts", 429U);
+        throttled.retry_after_ms = argon2id_admission_retry_after_ms;
+        return throttled;
+    }
+
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
                                  bool admin, std::string_view audit_outcome, bool enforce_password_policy = true)
         -> OperationResult
@@ -815,10 +828,30 @@ namespace
             return make_operation_result(false, {}, "user already exists");
         }
 
-        auto const password_hash = auth::hash_password(password);
+        // AUTH-4: Argon2id is bounded by the shared admission budget and runs with
+        // runtime.mutex released, so a burst of registrations cannot stall every
+        // other request. Nothing in runtime state is read or written inside the
+        // released region.
+        auto const argon_slot = runtime.argon2id_admission->try_acquire();
+        if (!argon_slot)
+        {
+            return argon2id_admission_refusal();
+        }
+        auto const password_hash = [&]() {
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            return auth::hash_password(password);
+        }();
         if (!password_hash.has_value())
         {
             return make_operation_result(false, {}, "password hashing failed");
+        }
+        // The lock is held again. Another request may have registered this
+        // username while it was released; the check above no longer holds, so make
+        // it again and refuse with the same error rather than overwrite or
+        // duplicate the account.
+        if (find_user(runtime.database, user_id) != nullptr)
+        {
+            return make_operation_result(false, {}, "user already exists");
         }
         if (!database::store_user(runtime.database.persistent_store, {user_id, *password_hash, false, false, admin}))
         {
@@ -1116,9 +1149,7 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
         auto const argon_slot = runtime.argon2id_admission->try_acquire();
         if (!argon_slot)
         {
-            auto throttled = make_operation_result(false, {}, "too many concurrent authentication attempts", 429U);
-            throttled.retry_after_ms = 1000U;
-            return throttled;
+            return argon2id_admission_refusal();
         }
         auto const expected_hash = load_hashed_registration_token(registration);
         auto const token_ok = [expected_hash = expected_hash.value_or(std::string{}), registration_token]() {
@@ -1230,9 +1261,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     auto const argon_slot = runtime.argon2id_admission->try_acquire();
     if (!argon_slot)
     {
-        auto throttled = make_operation_result(false, {}, "too many concurrent authentication attempts", 429U);
-        throttled.retry_after_ms = 1000U;
-        return throttled;
+        return argon2id_admission_refusal();
     }
     // AUTH-4: release the runtime mutex around Argon2id verification so a pile
     // of login attempts cannot serialise every other request. Snapshot the hash
@@ -2067,10 +2096,45 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     {
         return make_operation_result(false, {}, "password rejected", 400U);
     }
-    auto const new_hash = auth::hash_password(new_password);
+    // AUTH-4: snapshot what this change is replacing, then hash with
+    // runtime.mutex released and the shared Argon2id budget held. The user
+    // pointer must not outlive the release (the vector may be reallocated while
+    // the lock is dropped), so only the hash is copied out.
+    auto const* const initial_user = find_user(runtime.database, user_id);
+    if (initial_user == nullptr)
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    auto const hash_replaced = initial_user->password_hash;
+    auto const argon_slot = runtime.argon2id_admission->try_acquire();
+    if (!argon_slot)
+    {
+        return argon2id_admission_refusal();
+    }
+    auto const new_hash = [&]() {
+        auto const released = merovingian::homeserver::RuntimeLockRelease{};
+        return auth::hash_password(new_password);
+    }();
     if (!new_hash.has_value())
     {
         return make_operation_result(false, {}, "password hashing failed", 500U);
+    }
+    // The lock is held again. This change was authorised by an access token and
+    // by the old password; refuse, and write nothing, unless both still stand: the
+    // session must still be valid (a logout or device deletion during the hash
+    // revokes it) and the stored hash must still be the one this change set out to
+    // replace (a concurrent password change or deactivation altered it). A refusal
+    // here is 403, not 401, which the handler would map to M_UNKNOWN_TOKEN and
+    // sign the client out.
+    auto const session_now = authenticated_session(runtime, access_token);
+    if (!session_now.has_value() || session_now->user_id != user_id || session_now->device_id != session->device_id)
+    {
+        return make_operation_result(false, {}, "session ended during password change", 403U);
+    }
+    auto const* const user_now = find_user(runtime.database, user_id);
+    if (user_now == nullptr || user_now->password_hash != hash_replaced)
+    {
+        return make_operation_result(false, {}, "password changed concurrently", 403U);
     }
     if (!database::update_user_password(runtime.database.persistent_store, user_id, *new_hash))
     {
@@ -2129,6 +2193,9 @@ auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     {
         return {false, 0U};
     }
+    // AUTH-4: copy the hash now. The user pointer must not outlive the lock
+    // release around Argon2id below.
+    auto const hash_verified_against = user->password_hash;
 
     // M-02, AUTH-2: a re-authentication (UIA) password check has its own failure
     // counter, keyed (account, device) with the per-source limit. An attacker with
@@ -2147,10 +2214,32 @@ auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         return {false, retry_after_ms};
     }
 
-    auto const valid = auth::password_matches(user->password_hash, password);
+    // AUTH-4: bound concurrent Argon2id work before it starts. Saturation is
+    // reported as a retry delay, which every caller already renders as 429
+    // M_LIMIT_EXCEEDED, and is not a failed attempt.
+    auto const argon_slot = runtime.argon2id_admission->try_acquire();
+    if (!argon_slot)
+    {
+        return {false, argon2id_admission_retry_after_ms};
+    }
+    auto const valid = [&]() {
+        auto const released = merovingian::homeserver::RuntimeLockRelease{};
+        return auth::password_matches(hash_verified_against, password);
+    }();
     if (!valid)
     {
         record_failed_uia(runtime, *user_id, device_id);
+        return {false, 0U};
+    }
+    // The lock is held again. The password was right for the hash it was checked
+    // against; accept it only if that is still the account's hash and the same
+    // session is still valid. A password change, deactivation or logout during
+    // the verification must not let the old credential through. This is not a
+    // wrong guess, so it is not counted against the device.
+    auto const* const user_now = find_user(runtime.database, *user_id);
+    auto const user_id_now = authenticated_user(runtime, access_token);
+    if (user_now == nullptr || user_now->password_hash != hash_verified_against || user_id_now != user_id)
+    {
         return {false, 0U};
     }
 
