@@ -552,6 +552,17 @@ quickly finding everything a given `AGENTS.md` file contributed.
   them to a party the Matrix trust model never intended to hold them.
   Source: `src/identity/AGENTS.md`.
 
+- **A 3PID is proven to belong to the caller only by a trusted Identity Service
+  saying so (`getValidated3pid`); this server never marks a validation session
+  validated itself.** A `requestToken` with no trusted `id_server` is refused, a
+  delegated session starts unvalidated, and `/account/3pid/add`, `/bind` and
+  `/account/3pid` bind nothing until the identity server reports the same medium
+  and address validated.
+  Why: the server cannot send email or SMS, so a session it validated itself
+  would let a user bind an address they do not own (AUTH-5), after which the
+  real owner is refused `M_THREEPID_IN_USE`.
+  Source: `src/identity/AGENTS.md`, `docs/auth-identity.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.

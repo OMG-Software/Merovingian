@@ -74,12 +74,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1794,12 +1796,6 @@ namespace
         return !phone_number.empty() && phone_number.size() <= 32U;
     }
 
-    [[nodiscard]] auto generate_registration_session_id() -> std::string
-    {
-        auto const id = crypto::secure_random_hex(16U);
-        return id.value_or("merovingian-fallback-registration-session");
-    }
-
     auto constexpr registration_validation_session_ttl_ms = std::uint64_t{15U * 60U * 1000U};
 
     [[nodiscard]] auto wall_clock_milliseconds() -> std::uint64_t
@@ -1809,11 +1805,26 @@ namespace
                 .count());
     }
 
+    // Overwrites the identity-server access token a session holds before the
+    // session is dropped, so a freed validation session does not leave a usable
+    // bearer token behind in the heap.
+    auto scrub_session_credentials(RegistrationValidationSession& session) noexcept -> void
+    {
+        core::secure_zero(std::as_writable_bytes(
+            std::span{session.identity_access_token.data(), session.identity_access_token.size()}));
+        session.identity_access_token.clear();
+    }
+
     auto prune_registration_validation_sessions(ClientServerRuntime& rt, std::uint64_t now_ms) -> void
     {
-        std::erase_if(rt.registration_validation_sessions, [now_ms](RegistrationValidationSession const& session) {
-            return now_ms > session.updated_at_ms &&
-                   now_ms - session.updated_at_ms > registration_validation_session_ttl_ms;
+        std::erase_if(rt.registration_validation_sessions, [now_ms](RegistrationValidationSession& session) {
+            auto const expired = now_ms > session.updated_at_ms &&
+                                 now_ms - session.updated_at_ms > registration_validation_session_ttl_ms;
+            if (expired)
+            {
+                scrub_session_credentials(session);
+            }
+            return expired;
         });
     }
 
@@ -1886,36 +1897,6 @@ namespace
         return std::string{address};
     }
 
-    [[nodiscard]] auto find_registration_validation_session(ClientServerRuntime& rt, std::string_view purpose,
-                                                            std::string_view medium, std::string_view address,
-                                                            std::string_view client_secret,
-                                                            std::optional<std::string_view> country = std::nullopt,
-                                                            std::optional<std::string_view> user_id = std::nullopt)
-        -> RegistrationValidationSession*
-    {
-        auto const iterator = std::ranges::find_if(
-            rt.registration_validation_sessions, [&](RegistrationValidationSession const& session) {
-                if (session.purpose != purpose || session.medium != medium || session.address != address ||
-                    session.client_secret != client_secret)
-                {
-                    return false;
-                }
-                if (user_id.has_value())
-                {
-                    if (!session.user_id.has_value() || *session.user_id != *user_id)
-                    {
-                        return false;
-                    }
-                }
-                if (country.has_value())
-                {
-                    return session.country.has_value() && *session.country == *country;
-                }
-                return !session.country.has_value();
-            });
-        return iterator == rt.registration_validation_sessions.end() ? nullptr : &(*iterator);
-    }
-
     [[nodiscard]] auto find_registration_validation_session_by_sid(
         ClientServerRuntime& rt, std::string_view purpose, std::string_view sid, std::string_view client_secret,
         std::optional<std::string_view> user_id = std::nullopt) -> RegistrationValidationSession*
@@ -1935,49 +1916,24 @@ namespace
         return iterator == rt.registration_validation_sessions.end() ? nullptr : &(*iterator);
     }
 
-    [[nodiscard]] auto ensure_registration_validation_session(
+    // Records the validation session for a requestToken the identity server
+    // accepted. The identity server issued `sid` and is the only authority that
+    // can say the 3PID's owner completed validation (AUTH-5: this server sends no
+    // email or SMS), so the session starts unvalidated and keeps the trusted
+    // identity server's base URL and the caller's access token for it, in memory,
+    // to ask that server later. Every call creates a fresh session: a retry makes
+    // the identity server issue a fresh sid, and de-duplicating against an older
+    // session would surface a stale one. Returns nullptr when the per-remote or
+    // global session cap is reached.
+    [[nodiscard]] auto record_identity_validation_session(
         ClientServerRuntime& rt, std::string_view purpose, std::string_view medium, std::string_view address,
-        std::string_view client_secret, std::string_view client_ip, std::uint64_t send_attempt,
-        std::optional<std::string> next_link = std::nullopt, std::optional<std::string> country = std::nullopt,
-        std::optional<std::string> user_id = std::nullopt, std::optional<std::string> sid_override = std::nullopt)
+        std::string_view client_secret, std::string_view client_ip, std::uint64_t send_attempt, std::string_view sid,
+        std::string_view identity_server_base_url, std::string_view identity_access_token,
+        std::optional<std::string> next_link = std::nullopt, std::optional<std::string> country = std::nullopt)
         -> RegistrationValidationSession*
     {
         auto const now_ms = wall_clock_milliseconds();
         prune_registration_validation_sessions(rt, now_ms);
-        // IS-delegated requestToken: the identity server issues its own sid and is
-        // the validation authority, so retries yield fresh sids — never de-dup against
-        // an existing local session (which would surface a stale sid). Always create a
-        // fresh session keyed by the IS-issued sid, still bound by the per-remote/global caps.
-        if (sid_override.has_value())
-        {
-            auto const per_remote_sessions = static_cast<std::size_t>(std::ranges::count_if(
-                rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
-                    return session.client_ip == client_ip;
-                }));
-            if (per_remote_sessions >= rt.limits.max_registration_validation_sessions_per_remote ||
-                rt.registration_validation_sessions.size() >= rt.limits.max_registration_validation_sessions)
-            {
-                return nullptr;
-            }
-            rt.registration_validation_sessions.push_back(
-                {*sid_override, std::string{purpose}, std::string{medium}, std::string{address},
-                 std::string{client_secret}, std::string{client_ip}, std::move(user_id), std::move(country),
-                 std::move(next_link), send_attempt, now_ms, now_ms, now_ms});
-            return &rt.registration_validation_sessions.back();
-        }
-        auto* existing = find_registration_validation_session(
-            rt, purpose, medium, address, client_secret,
-            country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt,
-            user_id.has_value() ? std::optional<std::string_view>{*user_id} : std::nullopt);
-        if (existing != nullptr)
-        {
-            existing->send_attempt = std::max(existing->send_attempt, send_attempt);
-            existing->next_link = next_link;
-            existing->client_ip = std::string{client_ip};
-            existing->updated_at_ms = now_ms;
-            return existing;
-        }
-
         auto const per_remote_sessions = static_cast<std::size_t>(std::ranges::count_if(
             rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
                 return session.client_ip == client_ip;
@@ -1987,12 +1943,165 @@ namespace
         {
             return nullptr;
         }
-
         rt.registration_validation_sessions.push_back(
-            {generate_registration_session_id(), std::string{purpose}, std::string{medium}, std::string{address},
-             std::string{client_secret}, std::string{client_ip}, std::move(user_id), std::move(country),
-             std::move(next_link), send_attempt, now_ms, now_ms, now_ms});
+            {std::string{sid}, std::string{purpose}, std::string{medium}, std::string{address},
+             std::string{client_secret}, std::string{client_ip}, std::nullopt, std::move(country), std::move(next_link),
+             send_attempt, now_ms, now_ms, 0U, std::string{identity_server_base_url},
+             std::string{identity_access_token}});
         return &rt.registration_validation_sessions.back();
+    }
+
+    // Drops a validation session once its 3PID has been added or bound, so the
+    // sid cannot be replayed and the identity-server token it held is wiped.
+    auto consume_registration_validation_session(ClientServerRuntime& rt, std::string_view purpose,
+                                                 std::string_view sid, std::string_view client_secret) -> void
+    {
+        std::erase_if(rt.registration_validation_sessions, [&](RegistrationValidationSession& session) {
+            auto const matches =
+                session.purpose == purpose && session.sid == sid && session.client_secret == client_secret;
+            if (matches)
+            {
+                scrub_session_credentials(session);
+            }
+            return matches;
+        });
+    }
+
+    // A comparison form of a 3PID address. An email address is compared
+    // case-insensitively (the form it is stored in); an MSISDN by its numerals
+    // alone, since an identity server may report a number with or without a
+    // leading '+' or separators.
+    [[nodiscard]] auto canonical_threepid_address(std::string_view medium, std::string_view address) -> std::string
+    {
+        if (medium == "msisdn")
+        {
+            auto numerals = std::string{};
+            std::ranges::copy_if(address, std::back_inserter(numerals), [](char const value) {
+                return value >= '0' && value <= '9';
+            });
+            return numerals;
+        }
+        return normalize_threepid_address(medium, address);
+    }
+
+    // What a successfully confirmed validation session says about the 3PID.
+    struct ConfirmedValidationSession final
+    {
+        std::string medium{};
+        std::string address{};
+        std::optional<std::string> country{};
+        std::uint64_t validated_at_ms{0U};
+    };
+
+    // The outcome of asking whether a validation session was validated: the
+    // confirmed session, or the Matrix error to answer the client with.
+    struct SessionConfirmation final
+    {
+        std::optional<ConfirmedValidationSession> session{};
+        std::uint16_t refusal_status{0U};
+        std::string_view refusal_errcode{};
+        std::string_view refusal_message{};
+    };
+
+    [[nodiscard]] auto refuse_session(std::uint16_t status, std::string_view errcode, std::string_view message)
+        -> SessionConfirmation
+    {
+        return SessionConfirmation{std::nullopt, status, errcode, message};
+    }
+
+    // AUTH-5. Proves the owner of the 3PID in validation session `sid` completed
+    // validation, by asking the trusted identity server that issued the session
+    // (Identity Service API getValidated3pid). Nothing else proves ownership:
+    // this server cannot send email or SMS. Only when the identity server says
+    // the session was validated, for the same medium and address the session was
+    // opened for, is the session marked validated and returned; every other
+    // outcome refuses and leaves the session unvalidated.
+    //
+    // The identity-server call runs with runtime.mutex released, so nothing the
+    // caller read from the runtime before this call may be used after it, and the
+    // session is looked up again afterwards: it may have expired or been consumed
+    // while the lock was down. Call it with the request's lock published (every
+    // client-server handler has it).
+    [[nodiscard]] auto confirm_validation_session(ClientServerRuntime& rt, std::string_view purpose,
+                                                  std::string_view sid, std::string_view client_secret)
+        -> SessionConfirmation
+    {
+        auto const confirmed = [](RegistrationValidationSession const& session) {
+            return SessionConfirmation{
+                ConfirmedValidationSession{session.medium, session.address, session.country, session.validated_at_ms},
+                0U,
+                {},
+                {}
+            };
+        };
+        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto const* session = find_registration_validation_session_by_sid(rt, purpose, sid, client_secret);
+        if (session == nullptr)
+        {
+            return refuse_session(400U, "M_SESSION_NOT_VALIDATED", "validation session not found");
+        }
+        if (session->validated_at_ms != 0U)
+        {
+            return confirmed(*session);
+        }
+        if (session->identity_server_base_url.empty())
+        {
+            return refuse_session(400U, "M_SESSION_NOT_VALIDATED",
+                                  "validation session has no identity server that could validate it");
+        }
+        if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+        {
+            return refuse_session(502U, "M_UNREACHABLE", "identity server is not reachable");
+        }
+        // Snapshot under the lock: `session` points into a vector another thread
+        // may reallocate while the lock is down.
+        auto const base_url = session->identity_server_base_url;
+        auto const id_access_token = session->identity_access_token;
+        auto const session_medium = session->medium;
+        auto const sid_copy = std::string{sid};
+        auto const secret_copy = std::string{client_secret};
+        auto const is_result = [&] {
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            return id_client.get_validated_3pid(base_url, id_access_token, secret_copy, sid_copy);
+        }();
+
+        // The lock is held again: re-validate the session before acting on the answer.
+        prune_registration_validation_sessions(rt, wall_clock_milliseconds());
+        auto* current = find_registration_validation_session_by_sid(rt, purpose, sid, client_secret);
+        if (current == nullptr)
+        {
+            return refuse_session(400U, "M_SESSION_NOT_VALIDATED", "validation session expired or was consumed");
+        }
+        if (!is_result.ok)
+        {
+            return refuse_session(502U, "M_UNREACHABLE", "identity server is not reachable");
+        }
+        if (is_result.status == 400U || is_result.status == 404U)
+        {
+            return refuse_session(400U, "M_SESSION_NOT_VALIDATED",
+                                  "the identity server has not validated this session");
+        }
+        if (is_result.status != 200U)
+        {
+            return refuse_session(502U, "M_UNREACHABLE", "identity server could not confirm the validation");
+        }
+        auto const validated = merovingian::identity::parse_validated_3pid_response(is_result.body);
+        if (!validated.has_value())
+        {
+            return refuse_session(502U, "M_UNRECOGNIZED", "identity server returned a malformed validation response");
+        }
+        if (validated->medium != session_medium || validated->medium != current->medium ||
+            canonical_threepid_address(validated->medium, validated->address) !=
+                canonical_threepid_address(current->medium, current->address))
+        {
+            return refuse_session(400U, "M_SESSION_NOT_VALIDATED",
+                                  "the identity server validated a different third-party identifier");
+        }
+        current->validated_at_ms = validated->validated_at_ms;
+        return confirmed(*current);
     }
 
     [[nodiscard]] auto find_account_threepid(ClientServerRuntime& rt, std::string_view user_id, std::string_view medium,
@@ -2101,6 +2210,76 @@ namespace
             return std::nullopt;
         }
         return std::optional<std::string>{*match};
+    }
+
+    // Binds the 3PID of validation session `sid` to `user_id` at the trusted
+    // identity server `id_server`, for POST /account/3pid/bind and the deprecated
+    // POST /account/3pid. The identity server must first confirm the session was
+    // validated (AUTH-5) and the bind itself must succeed there before anything is
+    // recorded locally; any failure leaves the account untouched. A bind to an
+    // identity server this server does not trust is refused rather than recorded:
+    // no identity server was asked, so nothing was bound.
+    [[nodiscard]] auto bind_validated_threepid(LocalHttpRequest const& req, ClientServerRuntime& rt,
+                                               std::string const& user_id, std::string_view sid,
+                                               std::string_view client_secret, std::string_view id_server,
+                                               std::string_view id_access_token) -> DispatchResult
+    {
+        auto const confirmation = confirm_validation_session(rt, "account-3pid", sid, client_secret);
+        if (!confirmation.session.has_value())
+        {
+            return dispatch_err(req, rt, confirmation.refusal_status, confirmation.refusal_errcode,
+                                confirmation.refusal_message);
+        }
+        auto const& validated = *confirmation.session;
+        if (threepid_in_use(rt, validated.medium, validated.address, user_id))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
+                                "third-party identifier is already associated with an account");
+        }
+        auto const trusted_base =
+            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, id_server);
+        if (!trusted_base.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_SERVER_NOT_TRUSTED", "identity server is not trusted");
+        }
+        if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+        {
+            return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+        }
+        auto const base_url = std::string{*trusted_base};
+        auto const token = std::string{id_access_token};
+        auto const secret = std::string{client_secret};
+        auto const session_id = std::string{sid};
+        // Network-bound call: runtime.mutex is released for its duration, via RAII
+        // (0.12.5 audit, finding 14), so everything it uses is copied above.
+        auto const is_result = [&] {
+            auto const released = merovingian::homeserver::RuntimeLockRelease{};
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            return id_client.bind(base_url, token, secret, session_id, user_id);
+        }();
+        if (!is_result.ok)
+        {
+            return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+        }
+        if (is_result.status != 200U)
+        {
+            return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the bind");
+        }
+        auto& record = ensure_account_threepid(
+            rt, user_id, validated.medium, validated.address,
+            validated.country.has_value() ? std::optional<std::string_view>{*validated.country} : std::nullopt,
+            validated.validated_at_ms);
+        record.id_server = std::string{id_server};
+        record.bound = true;
+        // Persist the IS validation pair so a later unbind can drive IS auth
+        // mode 2 (sid + client_secret) without a homeserver-signed request.
+        record.client_secret = secret;
+        record.sid = session_id;
+        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
+        consume_registration_validation_session(rt, "account-3pid", session_id, secret);
+        return dispatch_resp(req, rt, 200U, "{}");
     }
 
     // Unbinds one 3PID from its identity server as part of account deactivation,
@@ -10189,13 +10368,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 502U, "M_UNRECOGNIZED",
                                     "identity server returned a malformed requestToken response");
             }
-            // Record a local session keyed by the IS-issued sid so the later bind
-            // can recover the medium/address. The IS is the validation authority;
-            // Merovingian has no client-facing submitToken, so the session completes
-            // when the client later binds with the same sid + client_secret.
-            auto* session = ensure_registration_validation_session(rt, "register", "email", normalized_address,
-                                                                   client_secret, req.remote_addr, body->send_attempt,
-                                                                   next_link, std::nullopt, std::nullopt, *is_sid);
+            // Record a local session keyed by the IS-issued sid so the later add or
+            // bind can recover the medium/address. The IS is the validation
+            // authority: the session starts unvalidated and add/bind ask the IS
+            // (getValidated3pid) whether its owner completed validation (AUTH-5).
+            auto* session = record_identity_validation_session(rt, "register", "email", normalized_address,
+                                                               client_secret, req.remote_addr, body->send_attempt,
+                                                               *is_sid, base_url, id_access_token, next_link);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -10203,17 +10382,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
         }
-        auto* session = ensure_registration_validation_session(
-            rt, "register", "email", normalize_threepid_address("email", body->email), body->client_secret,
-            req.remote_addr, body->send_attempt, body->next_link);
-        if (session == nullptr)
-        {
-            // Validation-session back-pressure: limit the number of concurrent
-            // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.19.
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
-        }
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+        // AUTH-5: this server cannot send email or SMS, so it cannot validate email addresses
+        // itself, and a session nobody can validate is worse than none: it let a caller
+        // claim an address they never proved they own. Ownership is proven only through a
+        // trusted identity server (id_server + id_access_token).
+        return dispatch_err(
+            req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+            "this server cannot validate email addresses itself; request the token through a trusted identity server "
+            "(id_server and id_access_token)");
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register/msisdn/requestToken")
@@ -10293,9 +10469,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // Key the local session by the IS-issued sid (see register/email). The
             // country is preserved so the later bind can recover the MSISDN locale.
-            auto* session = ensure_registration_validation_session(rt, "register", "msisdn", normalized_address,
-                                                                   client_secret, req.remote_addr, body->send_attempt,
-                                                                   next_link, country, std::nullopt, *is_sid);
+            auto* session = record_identity_validation_session(rt, "register", "msisdn", normalized_address,
+                                                               client_secret, req.remote_addr, body->send_attempt,
+                                                               *is_sid, base_url, id_access_token, next_link, country);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -10303,17 +10479,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
         }
-        auto* session = ensure_registration_validation_session(
-            rt, "register", "msisdn", normalize_threepid_address("msisdn", body->phone_number), body->client_secret,
-            req.remote_addr, body->send_attempt, body->next_link, body->country);
-        if (session == nullptr)
-        {
-            // Validation-session back-pressure: limit the number of concurrent
-            // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.19.
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
-        }
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+        // AUTH-5: this server cannot send email or SMS, so it cannot validate phone numbers
+        // itself, and a session nobody can validate is worse than none: it let a caller
+        // claim an address they never proved they own. Ownership is proven only through a
+        // trusted identity server (id_server + id_access_token).
+        return dispatch_err(
+            req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+            "this server cannot validate phone numbers itself; request the token through a trusted identity server "
+            "(id_server and id_access_token)");
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")
@@ -10957,9 +11130,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "identity server returned a malformed requestToken response");
             }
             // Key the local session by the IS-issued sid (see register/email).
-            auto* session = ensure_registration_validation_session(rt, "account-3pid", "email", normalized_address,
-                                                                   client_secret, req.remote_addr, body->send_attempt,
-                                                                   next_link, std::nullopt, std::nullopt, *is_sid);
+            auto* session = record_identity_validation_session(rt, "account-3pid", "email", normalized_address,
+                                                               client_secret, req.remote_addr, body->send_attempt,
+                                                               *is_sid, base_url, id_access_token, next_link);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -10967,17 +11140,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
         }
-        auto* session =
-            ensure_registration_validation_session(rt, "account-3pid", "email", normalized_address, body->client_secret,
-                                                   req.remote_addr, body->send_attempt, body->next_link);
-        if (session == nullptr)
-        {
-            // Validation-session back-pressure: limit the number of concurrent
-            // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.19.
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
-        }
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+        // AUTH-5: this server cannot send email or SMS, so it cannot validate email addresses
+        // itself, and a session nobody can validate is worse than none: it let a caller
+        // claim an address they never proved they own. Ownership is proven only through a
+        // trusted identity server (id_server + id_access_token).
+        return dispatch_err(
+            req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+            "this server cannot validate email addresses itself; request the token through a trusted identity server "
+            "(id_server and id_access_token)");
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/msisdn/requestToken")
@@ -11060,9 +11230,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     "identity server returned a malformed requestToken response");
             }
             // Key the local session by the IS-issued sid (see register/email).
-            auto* session = ensure_registration_validation_session(rt, "account-3pid", "msisdn", normalized_address,
-                                                                   client_secret, req.remote_addr, body->send_attempt,
-                                                                   next_link, country, std::nullopt, *is_sid);
+            auto* session = record_identity_validation_session(rt, "account-3pid", "msisdn", normalized_address,
+                                                               client_secret, req.remote_addr, body->send_attempt,
+                                                               *is_sid, base_url, id_access_token, next_link, country);
             if (session == nullptr)
             {
                 return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
@@ -11070,17 +11240,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
         }
-        auto* session = ensure_registration_validation_session(rt, "account-3pid", "msisdn", normalized_address,
-                                                               body->client_secret, req.remote_addr, body->send_attempt,
-                                                               body->next_link, body->country);
-        if (session == nullptr)
-        {
-            // Validation-session back-pressure: limit the number of concurrent
-            // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.19.
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
-        }
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+        // AUTH-5: this server cannot send email or SMS, so it cannot validate phone numbers
+        // itself, and a session nobody can validate is worse than none: it let a caller
+        // claim an address they never proved they own. Ownership is proven only through a
+        // trusted identity server (id_server + id_access_token).
+        return dispatch_err(
+            req, rt, 400U, "M_THREEPID_MEDIUM_NOT_SUPPORTED",
+            "this server cannot validate phone numbers itself; request the token through a trusted identity server "
+            "(id_server and id_access_token)");
     }
 
     auto const user = auth(rt, req.access_token);
@@ -11577,20 +11744,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
-        auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", body->sid, body->client_secret);
-        if (session == nullptr)
+        // AUTH-5: the 3PID is added only once the identity server that issued the
+        // session confirms its owner validated it.
+        auto const confirmation = confirm_validation_session(rt, "account-3pid", body->sid, body->client_secret);
+        if (!confirmation.session.has_value())
         {
-            return dispatch_err(req, rt, 400U, "M_SESSION_NOT_VALIDATED", "validation session not found");
+            return dispatch_err(req, rt, confirmation.refusal_status, confirmation.refusal_errcode,
+                                confirmation.refusal_message);
         }
-        if (threepid_in_use(rt, session->medium, session->address, *user))
+        auto const& validated = *confirmation.session;
+        if (threepid_in_use(rt, validated.medium, validated.address, *user))
         {
             return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
                                 "third-party identifier is already associated with an account");
         }
         std::ignore = ensure_account_threepid(
-            rt, *user, session->medium, session->address,
-            session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
-            session->validated_at_ms);
+            rt, *user, validated.medium, validated.address,
+            validated.country.has_value() ? std::optional<std::string_view>{*validated.country} : std::nullopt,
+            validated.validated_at_ms);
+        consume_registration_validation_session(rt, "account-3pid", body->sid, body->client_secret);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/bind")
@@ -11601,85 +11773,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                 "3PID bind body must contain client_secret, sid, id_server, and id_access_token");
         }
-        auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", body->sid, body->client_secret);
-        if (session == nullptr)
-        {
-            return dispatch_err(req, rt, 400U, "M_SESSION_NOT_VALIDATED", "validation session not found");
-        }
-        if (threepid_in_use(rt, session->medium, session->address, *user))
-        {
-            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
-                                "third-party identifier is already associated with an account");
-        }
-        // IS delegation: when the named id_server is operator-trusted, bind at the
-        // IS first (the IS is the authority for the 3PID) and fail closed on any
-        // transport/IS error before recording locally. When untrusted, fall back to
-        // the historical local-only bind so existing deployments without a trusted
-        // IS keep working. Spec: identity-service-api.md §3pid/bind.
-        auto const trusted_base =
-            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, body->id_server);
-        auto is_delegated = trusted_base.has_value();
-        if (is_delegated)
-        {
-            // Snapshot under the lock; the session pointer borrows the sessions
-            // vector which another thread could reallocate while the lock is dropped.
-            auto const medium = std::string{session->medium};
-            auto const address = std::string{session->address};
-            auto const country = session->country;
-            auto const validated_at_ms = session->validated_at_ms;
-            auto const client_secret = std::string{body->client_secret};
-            auto const sid = std::string{body->sid};
-            auto const id_access_token = std::string{body->id_access_token};
-            auto const mxid = std::string{*user};
-            auto const base_url = std::string{*trusted_base};
-            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
-            {
-                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
-            }
-            // IS call is network-bound: drop runtime.mutex for the duration (same
-            // convention as the call_local lambda above and room_service.cpp).
-            // Network-bound call: runtime.mutex is released for its duration, via
-            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
-            // mutex unlocked if the outbound call threw between them, which
-            // serialises every client request and inbound federation transaction
-            // behind a lock nobody holds.
-            auto const is_result = [&] {
-                auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                auto id_client = merovingian::identity::IdentityServerClient{
-                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-                return id_client.bind(base_url, id_access_token, client_secret, sid, mxid);
-            }();
-            if (!is_result.ok)
-            {
-                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
-            }
-            if (is_result.status != 200U)
-            {
-                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the bind");
-            }
-            auto& record = ensure_account_threepid(
-                rt, mxid, medium, address,
-                country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt, validated_at_ms);
-            record.id_server = body->id_server;
-            record.bound = true;
-            // Persist the IS validation pair so a later unbind can drive IS auth
-            // mode 2 (sid + client_secret) without a homeserver-signed request.
-            record.client_secret = client_secret;
-            record.sid = sid;
-            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
-            return dispatch_resp(req, rt, 200U, "{}");
-        }
-        auto& record = ensure_account_threepid(
-            rt, *user, session->medium, session->address,
-            session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
-            session->validated_at_ms);
-        record.id_server = body->id_server;
-        record.bound = true;
-        // ensure_account_threepid persisted the binding before id_server/bound were
-        // set; re-persist so the bound marker and identity-server reference survive.
-        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
-        return dispatch_resp(req, rt, 200U, "{}");
+        // Spec: identity-service-api.md section 3pid/bind. The identity server is
+        // the authority for the 3PID: it must report the session validated, and
+        // then bind it, before anything is recorded locally (AUTH-5).
+        return bind_validated_threepid(req, rt, *user, body->sid, body->client_secret, body->id_server,
+                                       body->id_access_token);
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid")
     {
@@ -11698,75 +11796,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "three_pid_creds must be complete");
         }
-        auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", *sid, *client_secret);
-        if (session == nullptr)
-        {
-            return dispatch_err(req, rt, 400U, "M_SESSION_NOT_VALIDATED", "validation session not found");
-        }
-        if (threepid_in_use(rt, session->medium, session->address, *user))
-        {
-            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
-                                "third-party identifier is already associated with an account");
-        }
-        // IS delegation for the legacy /account/3pid endpoint: same trust gate and
-        // fail-closed contract as /account/3pid/bind above.
-        auto const trusted_base =
-            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *id_server);
-        if (trusted_base.has_value())
-        {
-            auto const medium = std::string{session->medium};
-            auto const address = std::string{session->address};
-            auto const country = session->country;
-            auto const validated_at_ms = session->validated_at_ms;
-            auto const client_secret_str = std::string{*client_secret};
-            auto const sid_str = std::string{*sid};
-            auto const id_access_token_str = std::string{*id_access_token};
-            auto const mxid = std::string{*user};
-            auto const base_url = std::string{*trusted_base};
-            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
-            {
-                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
-            }
-            // Network-bound call: runtime.mutex is released for its duration, via
-            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
-            // mutex unlocked if the outbound call threw between them, which
-            // serialises every client request and inbound federation transaction
-            // behind a lock nobody holds.
-            auto const is_result = [&] {
-                auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
-                auto id_client = merovingian::identity::IdentityServerClient{
-                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-                return id_client.bind(base_url, id_access_token_str, client_secret_str, sid_str, mxid);
-            }();
-            if (!is_result.ok)
-            {
-                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
-            }
-            if (is_result.status != 200U)
-            {
-                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the bind");
-            }
-            auto& record = ensure_account_threepid(
-                rt, mxid, medium, address,
-                country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt, validated_at_ms);
-            record.id_server = *id_server;
-            record.bound = true;
-            record.client_secret = client_secret_str;
-            record.sid = sid_str;
-            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
-            return dispatch_resp(req, rt, 200U, "{}");
-        }
-        auto& record = ensure_account_threepid(
-            rt, *user, session->medium, session->address,
-            session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
-            session->validated_at_ms);
-        record.id_server = *id_server;
-        record.bound = true;
-        // ensure_account_threepid persisted the binding before id_server/bound were
-        // set; re-persist so the bound marker and identity-server reference survive.
-        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
-        return dispatch_resp(req, rt, 200U, "{}");
+        // The deprecated route carries the same contract as /account/3pid/bind.
+        return bind_validated_threepid(req, rt, *user, *sid, *client_secret, *id_server, *id_access_token);
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/unbind")
     {

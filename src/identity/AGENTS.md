@@ -8,7 +8,7 @@ endpoints, only calls them.
 
 | File | Responsibility |
 |---|---|
-| `identity_client.cpp` | `IdentityServerClient`: `store-invite`, `lookup`, `bind`, `unbind`, `request_email_token`, `request_msisdn_token`; pure URL/body/response helpers |
+| `identity_client.cpp` | `IdentityServerClient`: `store-invite`, `lookup`, `bind`, `unbind`, `request_email_token`, `request_msisdn_token`, `get_validated_3pid`; pure URL/body/response helpers |
 
 ## Security rules (non-negotiable)
 
@@ -36,7 +36,8 @@ endpoints, only calls them.
   peer + hostname certificates; redirects are refused.
 - **Bearer auth, not X-Matrix.** The IS API uses the client's `id_access_token`
   (from `/_matrix/client/v3/user/{userId}/openid/request_token`) as a bearer
-  token for authenticated endpoints (`store-invite`, `bind`, `requestToken`).
+  token for authenticated endpoints (`store-invite`, `bind`, `requestToken`,
+  `getValidated3pid`).
   `lookup` is unauthenticated. Never send the homeserver's signing key or
   `Authorization: X-Matrix` to an IS. **Exception — `unbind` auth mode 2:** when
   the HS replays a stored `client_secret` + `sid` (no bearer), `unbind` sends an
@@ -50,6 +51,19 @@ endpoints, only calls them.
   `m.room.third_party_invite` event so joining servers can verify the invite
   signature against the IS. The HS must not mint its own token/key for a remote
   3PID invite.
+- **The identity server is the only proof of 3PID ownership (AUTH-5).** The
+  homeserver cannot send email or SMS, so it never validates an address itself.
+  A `requestToken` without a trusted `id_server` is refused
+  (`M_THREEPID_MEDIUM_NOT_SUPPORTED`); a delegated session starts unvalidated;
+  and a 3PID is added or bound only after `get_validated_3pid` returns a 200
+  that `parse_validated_3pid_response` accepts for the same medium and address
+  as the session. `parse_validated_3pid_response` must keep failing closed
+  (missing or mistyped field, empty value, non-positive `validated_at`): a
+  response that does not positively say "validated" must never be read as
+  validated. The call site (`confirm_validation_session` in
+  `src/homeserver/client_server.cpp`) releases `runtime.mutex` for the call and
+  re-checks the session after re-taking it. `build_get_validated_3pid_path`
+  percent-encodes both query values: the sid is chosen by the identity server.
 - **Trusted-server allowlist.** Call sites must confirm `base_url` is in
   `config.server().identity_server.trusted_servers` before calling. An
   untrusted IS URL is a configuration/programming error, not a fallback path.

@@ -32,18 +32,24 @@ production-gated.
   endpoint does not require authentication via an access token. Authentication
   is provided via the refresh token." `client_auth_endpoint_requires_access_token`
   excludes `login`, `register_account`, and `refresh_token`.
-- Account 3PID email and MSISDN flows are implemented across both the local and
-  the IS-delegated surface. `POST /account/3pid/email/requestToken` and
-  `POST /account/3pid/msisdn/requestToken` issue local validation sessions when no
-  `id_server` is supplied (spec-conformant local validation), and delegate to a
-  trusted remote identity server when both `id_server` and `id_access_token` are
-  supplied — storing a `RegistrationValidationSession` keyed by the IS-issued
-  `sid` so a later `bind` with the same `sid` + `client_secret` completes the
-  association. `POST /account/3pid/add` enforces password UIA, the deprecated
-  `POST /account/3pid` association route is accepted, and the bind/list/unbind/
-  delete endpoints maintain per-account 3PID records including `added_at` /
-  `validated_at` metadata plus, for IS-bound 3PIDs, the stored `client_secret` and
-  `sid` (migration `007`) needed to drive a mode-2 remote unbind.
+- Account 3PID email and MSISDN flows are implemented only through a trusted
+  identity server (AUTH-5). This server cannot send email or SMS, so it cannot
+  validate an address itself and never claims to: the four `requestToken`
+  endpoints (`/account/3pid/{email,msisdn}/requestToken`,
+  `/register/{email,msisdn}/requestToken`) answer `400
+  M_THREEPID_MEDIUM_NOT_SUPPORTED` and create no session unless both `id_server`
+  (operator-trusted) and `id_access_token` are supplied, in which case the
+  request is delegated to that identity server and a `RegistrationValidationSession`
+  keyed by the IS-issued `sid` is stored. That session starts **unvalidated**.
+  `POST /account/3pid/add`, `POST /account/3pid/bind` and the deprecated
+  `POST /account/3pid` ask the identity server whether the session was validated
+  (`getValidated3pid`) and refuse `400 M_SESSION_NOT_VALIDATED` unless it reports
+  the same medium and address; see "3PID ownership is proven by the identity
+  server" below. `POST /account/3pid/add` also enforces password UIA, and the
+  bind/list/unbind/delete endpoints maintain per-account 3PID records including
+  `added_at` / `validated_at` metadata plus, for IS-bound 3PIDs, the stored
+  `client_secret` and `sid` (migration `007`) needed to drive a mode-2 remote
+  unbind.
 - Access-token hashes are durable and hydrate back into runtime sessions after
   restart, with their expiry (before 0.12.13 hydration dropped `expires_at`,
   so every access token was valid forever after a restart).
@@ -287,19 +293,50 @@ trusted `id_server` is supplied, not just persist locally:
   a 200 with an IS-issued `sid` stores a `RegistrationValidationSession` keyed by
   that `sid` (purpose `register` / `account-3pid`). The IS is the validation
   authority: it contacts the user by email/SMS and (optionally) redirects via
-  `next_link`, so Merovingian has no client-facing `submitToken` for IS-delegated
-  flows — the session completes when the client later calls `bind` with the same
-  `sid` + `client_secret`. Absent `id_server` / `id_access_token`, the existing
-  local-validation path is unchanged. Fail closed with `502` on transport error
-  or a malformed IS response; `403` when `id_server` is not trusted.
+  `next_link`, so Merovingian has no client-facing `submitToken`. Absent
+  `id_server` / `id_access_token` the request is refused `400
+  M_THREEPID_MEDIUM_NOT_SUPPORTED` (before AUTH-5 it minted a local session
+  that was already marked validated and sent nothing). Fail closed with `502` on
+  transport error or a malformed IS response; `403` when `id_server` is not
+  trusted; `400 M_BAD_JSON` when only one of the pair is supplied.
 
-- **`bind`** (`/account/3pid/add`, plus the deprecated `/account/3pid`) — after
-  password UIA and the validation-session lookup, when `id_server` /
-  `id_access_token` are supplied and trusted, the HS calls
-  `IdentityServerClient::bind` over the held runtime mutex released for the
-  network call, then persists `bound=true`, `id_server`, `client_secret`, and
-  `sid`. The legacy `/account/3pid` route is extended to carry optional
-  `id_server` / `id_access_token`; when absent it stays local-only for back-compat.
+- **`bind`** (`/account/3pid/bind`, plus the deprecated `/account/3pid`) - after
+  the identity server has confirmed the session validated (below) and the
+  `id_server` is trusted, the HS calls `IdentityServerClient::bind` with the
+  runtime mutex released for the network call, then persists `bound=true`,
+  `id_server`, `client_secret`, and `sid`. A bind that names an `id_server` this
+  server does not trust is refused `400 M_SERVER_NOT_TRUSTED`; before AUTH-5 it
+  was recorded locally as bound although no identity server had been asked.
+  `/account/3pid/add` adds the 3PID to the account without an identity-server
+  bind, but needs the same confirmation.
+
+- **3PID ownership is proven by the identity server (AUTH-5).**
+  `confirm_validation_session` (`client_server.cpp`) is the single gate for
+  `/account/3pid/add`, `/account/3pid/bind` and `/account/3pid`. It calls
+  `IdentityServerClient::get_validated_3pid`
+  (`GET /_matrix/identity/v2/3pid/getValidated3pid?sid=&client_secret=`, bearer
+  `id_access_token`) against the trusted identity server stored with the session,
+  with `runtime.mutex` released, and only marks the session validated (and
+  records the IS-reported `validated_at`) when the answer is a 200 whose
+  `medium` equals the session's and whose `address` matches the session's
+  (emails case-insensitively, MSISDNs by their digits). Everything else refuses
+  and binds nothing: IS 400/404 -> `400 M_SESSION_NOT_VALIDATED`; a different
+  address or medium -> `400 M_SESSION_NOT_VALIDATED`; a transport failure or
+  non-200 -> `502 M_UNREACHABLE`; a 200 that does not parse -> `502
+  M_UNRECOGNIZED`. The session is looked up again once the lock is re-taken
+  (it may have expired or been consumed meanwhile). A validated 3PID is added
+  or bound, and the session is then erased, so a sid cannot be replayed. The
+  session holds the identity server's base URL and the caller's
+  `id_access_token` in memory only, for the session's lifetime (the 15-minute
+  validation TTL, or until it is consumed); the token is overwritten when the
+  session is dropped and is never persisted or logged. A MSISDN the identity
+  server reports in a different numeral form than the client sent (for example
+  with the country code expanded) does not match and is refused; that fails
+  closed rather than guessing.
+
+  The registration flow has no identity stage: `/register` advertises only
+  `m.login.registration_token`, so the `register/*/requestToken` sessions are
+  recorded unvalidated and nothing consumes them.
 
 - **`unbind`** (`/account/3pid/delete`, `/account/3pid`) — the client sends no
   secret (spec-correct), so the HS recovers `client_secret` + `sid` from the
