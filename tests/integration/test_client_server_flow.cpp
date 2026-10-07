@@ -121,8 +121,8 @@ auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, 
     return response_string_field(body, "next_batch");
 }
 
-[[nodiscard]] auto typing_user_ids_from_sync(std::string const& body,
-                                             std::string const& room_id) -> std::vector<std::string>
+[[nodiscard]] auto typing_user_ids_from_sync(std::string const& body, std::string const& room_id)
+    -> std::vector<std::string>
 {
     auto const root = parse_object(body);
     auto const* rooms = object_member_as_object(root, "rooms");
@@ -220,9 +220,10 @@ SCENARIO("Integrated client-server flow covers account 3PID request add list and
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_3PID");
-        auto identity_server =
-            merovingian::tests::tls_mock::MockIdentityServer{merovingian::tests::tls_mock::MockIdentityServer::cooperative_responses(
-                {{"email", "user@example.org"}})};
+        auto identity_server = merovingian::tests::tls_mock::MockIdentityServer{
+            merovingian::tests::tls_mock::MockIdentityServer::cooperative_responses({{"email", "user@example.org"}}
+            )
+        };
         identity_server.install(runtime);
 
         WHEN("an email address is requested and then associated with the account")
@@ -275,9 +276,10 @@ SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3P
         auto& runtime = started.runtime;
         auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_3PID_NEG");
         auto const bob = register_and_login(runtime, "bob", "CorrectHorse8!", "BOB_3PID_NEG");
-        auto identity_server =
-            merovingian::tests::tls_mock::MockIdentityServer{merovingian::tests::tls_mock::MockIdentityServer::cooperative_responses(
-                {{"email", "user@example.org"}})};
+        auto identity_server = merovingian::tests::tls_mock::MockIdentityServer{
+            merovingian::tests::tls_mock::MockIdentityServer::cooperative_responses({{"email", "user@example.org"}}
+            )
+        };
         identity_server.install(runtime);
 
         auto const email_response = merovingian::homeserver::handle_client_server_request(

@@ -3636,7 +3636,9 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
         REQUIRE(registration.response.status == 200U);
         auto const token = login_token(registration.response.body);
         auto identity_server = MockIdentityServer{
-            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}, {"msisdn", "07700000000"}})};
+            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}, {"msisdn", "07700000000"}}
+            )
+        };
         identity_server.install(runtime);
 
         WHEN("email and phone identifiers are requested and associated with the account")
@@ -3769,7 +3771,10 @@ SCENARIO("Account 3PID request tokens reject identifiers already in use", "[home
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE"})"});
         REQUIRE(alice_login.response.status == 200U);
         auto const alice_token = login_token(alice_login.response.body);
-        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({{"email", "user@example.org"}})};
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}}
+            )
+        };
         identity_server.install(runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
@@ -3832,7 +3837,10 @@ SCENARIO("Account 3PID email handling treats addresses case-insensitively for du
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_CASE"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
-        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({{"email", "User@Example.org"}})};
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "User@Example.org"}}
+            )
+        };
         identity_server.install(runtime);
         auto const initial_request = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
@@ -3919,7 +3927,10 @@ SCENARIO("Account 3PID unbind and delete report no-support for mismatched identi
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(registration.response.status == 200U);
         auto const token = login_token(registration.response.body);
-        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({{"email", "user@example.org"}})};
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}}
+            )
+        };
         identity_server.install(runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
@@ -3931,9 +3942,8 @@ SCENARIO("Account 3PID unbind and delete report no-support for mismatched identi
         auto const token_request_body = parse_object(token_request.response.body);
         auto const* sid = string_member(token_request_body, "sid");
         REQUIRE(sid != nullptr);
-        auto const bind_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
-                               R"(","id_server":")" + identity_server.host_port() +
-                               R"(","id_access_token":"opaque"})";
+        auto const bind_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid + R"(","id_server":")" +
+                               identity_server.host_port() + R"(","id_access_token":"opaque"})";
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_body})
                     .response.status == 200U);
@@ -4104,8 +4114,12 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
                 body += std::to_string(index);
                 body += R"(@example.org","send_attempt":1})";
                 denied = merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register/email/requestToken", {},
-                              identity_server.with_identity_server(body), {}, "203.0.113.10"});
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register/email/requestToken",
+                              {},
+                              identity_server.with_identity_server(body),
+                              {},
+                              "203.0.113.10"});
             }
 
             THEN("the configured cap returns retry_after_ms=60000 and Retry-After: 60")

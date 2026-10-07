@@ -4887,7 +4887,10 @@ SCENARIO("GET /account/3pid returns associated identifiers with required fields"
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
-        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({{"email", "user@example.org"}})};
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}}
+            )
+        };
         identity_server.install(started.runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"POST",
@@ -4941,7 +4944,10 @@ SCENARIO("POST /account/3pid/add enforces UIA and accepts the validated identifi
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
-        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({{"email", "add@example.org"}})};
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "add@example.org"}}
+            )
+        };
         identity_server.install(started.runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"POST",

@@ -13,7 +13,7 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `room_history_fixture.hpp` | `record_joined_state_for_room()`: for a fixture that writes events straight into a `PersistentStore`, records one state group in which a user is joined and maps the room's events to it, so the history-visibility filter (CSAZ-3) lets that user read them |
 | `registration_token.hpp` | Generates registration tokens for test users without going through the full UIAA flow |
 | `temp_directory.hpp` | Fallback-aware temporary-directory helper for test scratch files |
-| `tls_mock_server.hpp` | Self-signed certificate generation plus one-shot and path-dispatching local TLS servers, for tests that need a real HTTPS peer (e.g. a mock identity server) |
+| `tls_mock_server.hpp` | Self-signed certificate generation plus one-shot and path-dispatching local TLS servers, for tests that need a real HTTPS peer. Also `MockIdentityServer`: a trusted loopback identity server serving any number of requests (responses chosen by request-line substring, requests captured, optional stall), with `cooperative_responses()` for tests that just need a 3PID validated and `install(runtime)` to trust it |
 
 Note: `tests/federation_signing_test_support.hpp` — a deterministic Ed25519
 federation-signing helper (`merovingian::federation::test`, seed-derived
