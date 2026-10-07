@@ -11,7 +11,7 @@ namespace merovingian::observability
 auto audit_event_is_rate_capped(std::string_view event_type) noexcept -> bool
 {
     return event_type == "access_token.rejected" || event_type == "rate_limit.exceeded" ||
-           event_type == "request.rejected";
+           event_type == "request.rejected" || event_type == "login.rejected" || event_type == "login.throttled";
 }
 
 auto AuditRateGate::admit(std::string_view event_type) -> AuditRateDecision

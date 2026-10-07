@@ -186,6 +186,17 @@ security.registration.enabled=false
 security.registration.require_token=true
 security.registration.token_file=/etc/merovingian/registration-token
 
+# Failed-login throttle. A password login for an account is refused (429
+# M_LIMIT_EXCEEDED) once it has max_failures_per_source failures from one client
+# source inside the window: that source only, so a stranger cannot lock the
+# owner out from the owner's own address. max_failures_per_account is the ceiling
+# across all sources and stops guessing spread over many addresses. Set
+# server.trusted_proxies behind a reverse proxy, or every client shares one
+# source. Window is a number with an s or m suffix (1s to 1440m). Reloadable.
+security.login_throttle.max_failures_per_source=5
+security.login_throttle.max_failures_per_account=50
+security.login_throttle.window=15m
+
 # Token lifetimes. Values are in milliseconds; 0 disables expiry for that token
 # kind. The advertised expires_in_ms matches access_token_lifetime_ms so the
 # TTL the client receives equals the TTL the server enforces.

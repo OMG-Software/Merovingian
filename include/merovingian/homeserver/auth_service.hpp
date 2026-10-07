@@ -19,8 +19,15 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart,
                                         std::string_view password) -> OperationResult;
+// `client_source` is the rate-limit client key of the caller
+// (`rate_limit_client_key`, which honours server.trusted_proxies). Failed
+// password logins are counted per (account, client_source) and per account;
+// see docs/auth-identity.md "Failed-login throttle". An empty source is one
+// shared bucket, which is what a caller with no transport (a test, the
+// registration auto-login) gets.
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
-                                    std::string_view device_id, bool with_ttl = false) -> OperationResult;
+                                    std::string_view device_id, bool with_ttl = false,
+                                    std::string_view client_source = {}) -> OperationResult;
 // Grants a session for an already-authenticated `user_id` -- the second
 // half of login_local_user (device-id validation, account lock/suspend
 // gate, token issuance/persistence, session bookkeeping) without a password
@@ -90,8 +97,9 @@ struct AdminAuthResult
     -> OperationResult;
 // Result of verifying a password during re-authentication (UIA). `ok` is true
 // only when the password is correct AND the account is not currently locked
-// out. `retry_after_ms` is non-zero when the per-account failed-login lockout
-// is active; callers MUST return 429 M_LIMIT_EXCEEDED in that case rather than
+// out. `retry_after_ms` is non-zero when this device's UIA password-failure
+// budget is spent (its own counter, keyed (account, device): /login failures never
+// touch it); callers MUST return 429 M_LIMIT_EXCEEDED in that case rather than
 // 401 UIA, because further guesses are pointless until the window expires.
 struct PasswordVerificationResult final
 {

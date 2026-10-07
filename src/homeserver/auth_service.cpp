@@ -4,10 +4,12 @@
 #include "merovingian/homeserver/auth_service.hpp"
 
 #include "merovingian/appservice/masquerade_token.hpp"
+#include "merovingian/auth/failure_window_table.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/auth/session.hpp"
 #include "merovingian/auth/token.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
@@ -257,81 +259,147 @@ namespace
         return token_hmac_keys(runtime).v4;
     }
 
-    // Per-account failed-login throttle (#487).
+    // Failed-login throttle (#487, AUTH-2, AUTH-10). Policy: docs/auth-identity.md
+    // "Failed-login throttle".
     //
-    // The HTTP rate limiter buckets /login per source IP, and its per-user tier is
-    // keyed on the authenticated user — which, before a login succeeds, is nobody.
-    // Guesses against a single account distributed over many source IPs therefore
-    // accumulated against nothing at all. This tracks failures against the claimed
-    // user_id instead, which is the identity an attacker is actually attacking.
+    // The HTTP rate limiter buckets /login per source IP only, and its per-user
+    // tier is keyed on the authenticated user, which before a login succeeds is
+    // nobody. Failures are therefore counted against the *claimed* user ID, which
+    // is the identity an attacker is attacking, in two places:
+    //   * per (account, client source): five failures refuse that account from
+    //     that source only, so a stranger cannot lock the owner out from the
+    //     owner's own address;
+    //   * per account: a higher ceiling across all sources, which stops guessing
+    //     spread over many addresses.
+    // User-interactive-auth password checks are made with a valid access token, so
+    // they get a third counter keyed (account, device) that login failures never
+    // touch and that never feeds the other two.
     //
-    // Tracking a claimed identity does mean a third party can deliberately trip an
-    // account's lockout — the standard account-lockout trade-off. It is bounded
-    // rather than eliminated: the lockout is a fixed short window (not escalating,
-    // not sticky), any successful login clears the history, and the window is
-    // deliberately short enough to be an inconvenience rather than a denial of
-    // service. Operators who want different numbers currently need a rebuild;
-    // exposing these as configuration is tracked in docs/todos/capability-gaps.md.
-    constexpr auto max_failed_login_attempts = std::size_t{5U};
-    constexpr auto failed_login_window = std::chrono::minutes{15};
-    constexpr auto failed_login_lockout = std::chrono::minutes{15};
-
-    // Drops records whose window has fully elapsed. Caller holds runtime.mutex.
-    auto expire_failed_logins(std::unordered_map<std::string, FailedLoginRecord>& records,
-                              std::chrono::steady_clock::time_point now) -> void
+    // All three are FailureWindowTables on the runtime: bounded, fixed-size keys,
+    // expired from a time-ordered queue. Callers hold runtime.mutex while using them.
+    struct LoginThrottleSettings final
     {
-        for (auto it = records.begin(); it != records.end();)
+        std::uint32_t max_per_source{5U};
+        std::uint32_t max_per_account{50U};
+        auth::FailureWindowTable::Clock::duration window{std::chrono::minutes{15}};
+    };
+
+    // What a caller refuses for when a key cannot be built. libsodium failing to
+    // hash a few bytes does not happen in practice; refusing is the safe answer
+    // if it ever did.
+    constexpr auto throttle_fail_closed_retry = std::chrono::milliseconds{1000};
+
+    [[nodiscard]] auto login_throttle_settings(HomeserverRuntime const& runtime) -> LoginThrottleSettings
+    {
+        auto const& configured = runtime.config.security().login_throttle;
+        auto settings = LoginThrottleSettings{};
+        settings.max_per_source = std::max(configured.max_failures_per_source, 1U);
+        settings.max_per_account = std::max(configured.max_failures_per_account, 1U);
+        if (auto const window = config::parse_duration_seconds(configured.window); window.valid)
         {
-            auto const idle = now - it->second.last_failure;
-            it = (idle > failed_login_window && idle > failed_login_lockout) ? records.erase(it) : std::next(it);
+            settings.window = std::chrono::seconds{window.seconds};
         }
+        return settings;
     }
 
-    // Milliseconds remaining before this account may attempt a login again, or 0
-    // when it is not locked out.
-    [[nodiscard]] auto failed_login_lockout_remaining_ms(HomeserverRuntime& runtime, std::string_view user_id)
-        -> std::uint64_t
+    [[nodiscard]] auto remaining_to_ms(auth::FailureWindowTable::Clock::duration remaining) -> std::uint64_t
     {
-        auto const now = std::chrono::steady_clock::now();
-        auto guard = std::lock_guard{runtime.mutex};
-        auto const it = runtime.failed_logins.find(std::string{user_id});
-        if (it == runtime.failed_logins.end() || it->second.count < max_failed_login_attempts)
+        if (remaining <= auth::FailureWindowTable::Clock::duration::zero())
         {
             return 0U;
         }
-        auto const unlock_at = it->second.last_failure + failed_login_lockout;
-        if (now >= unlock_at)
-        {
-            // The lockout has expired; clear it so the next failure starts a fresh
-            // window rather than immediately re-locking on the stale count.
-            runtime.failed_logins.erase(it);
-            return 0U;
-        }
-        return static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(unlock_at - now).count());
+        return static_cast<std::uint64_t>(std::chrono::ceil<std::chrono::milliseconds>(remaining).count());
     }
 
-    auto record_failed_login(HomeserverRuntime& runtime, std::string_view user_id) -> void
+    // Milliseconds before a password login for `user_id` from `client_source` may
+    // be attempted, or 0 when it may.
+    [[nodiscard]] auto login_lockout_remaining_ms(HomeserverRuntime& runtime, std::string_view user_id,
+                                                  std::string_view client_source) -> std::uint64_t
     {
-        auto const now = std::chrono::steady_clock::now();
-        auto guard = std::lock_guard{runtime.mutex};
-        expire_failed_logins(runtime.failed_logins, now);
-        auto& record = runtime.failed_logins[std::string{user_id}];
-        // Failures older than the whole window do not count toward the threshold:
-        // a slow trickle over days must not eventually lock a real user out.
-        if (record.count == 0U || (now - record.first_failure) > failed_login_window)
+        auto const now = auth::FailureWindowTable::Clock::now();
+        auto const source_key = auth::make_failure_key("login-source", user_id, client_source);
+        auto const account_key = auth::make_failure_key("login-account", user_id, {});
+        if (!source_key.has_value() || !account_key.has_value())
         {
-            record.count = 0U;
-            record.first_failure = now;
+            return static_cast<std::uint64_t>(throttle_fail_closed_retry.count());
         }
-        ++record.count;
-        record.last_failure = now;
+        auto guard = std::lock_guard{runtime.mutex};
+        auto const settings = login_throttle_settings(runtime);
+        auto const remaining = std::max(runtime.login_failures_by_source.lockout_remaining(
+                                            *source_key, now, settings.window, settings.max_per_source),
+                                        runtime.login_failures_by_account.lockout_remaining(
+                                            *account_key, now, settings.window, settings.max_per_account));
+        return remaining_to_ms(remaining);
     }
 
-    auto clear_failed_logins(HomeserverRuntime& runtime, std::string_view user_id) -> void
+    auto record_failed_login(HomeserverRuntime& runtime, std::string_view user_id, std::string_view client_source)
+        -> void
     {
+        auto const now = auth::FailureWindowTable::Clock::now();
+        auto const source_key = auth::make_failure_key("login-source", user_id, client_source);
+        auto const account_key = auth::make_failure_key("login-account", user_id, {});
+        if (!source_key.has_value() || !account_key.has_value())
+        {
+            return;
+        }
         auto guard = std::lock_guard{runtime.mutex};
-        std::ignore = runtime.failed_logins.erase(std::string{user_id});
+        auto const settings = login_throttle_settings(runtime);
+        runtime.login_failures_by_source.record_failure(*source_key, now, settings.window, settings.max_per_source);
+        runtime.login_failures_by_account.record_failure(*account_key, now, settings.window, settings.max_per_account);
+    }
+
+    // A correct password clears the failures from that source only. It must not
+    // clear the per-account ceiling: otherwise an attacker could spend almost the
+    // whole ceiling, wait for the owner to log in, and start over.
+    auto clear_failed_logins(HomeserverRuntime& runtime, std::string_view user_id, std::string_view client_source)
+        -> void
+    {
+        auto const source_key = auth::make_failure_key("login-source", user_id, client_source);
+        if (!source_key.has_value())
+        {
+            return;
+        }
+        auto guard = std::lock_guard{runtime.mutex};
+        runtime.login_failures_by_source.clear(*source_key);
+    }
+
+    [[nodiscard]] auto uia_lockout_remaining_ms(HomeserverRuntime& runtime, std::string_view user_id,
+                                                std::string_view device_id) -> std::uint64_t
+    {
+        auto const now = auth::FailureWindowTable::Clock::now();
+        auto const key = auth::make_failure_key("uia-device", user_id, device_id);
+        if (!key.has_value())
+        {
+            return static_cast<std::uint64_t>(throttle_fail_closed_retry.count());
+        }
+        auto guard = std::lock_guard{runtime.mutex};
+        auto const settings = login_throttle_settings(runtime);
+        return remaining_to_ms(
+            runtime.uia_failures_by_device.lockout_remaining(*key, now, settings.window, settings.max_per_source));
+    }
+
+    auto record_failed_uia(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id) -> void
+    {
+        auto const now = auth::FailureWindowTable::Clock::now();
+        auto const key = auth::make_failure_key("uia-device", user_id, device_id);
+        if (!key.has_value())
+        {
+            return;
+        }
+        auto guard = std::lock_guard{runtime.mutex};
+        auto const settings = login_throttle_settings(runtime);
+        runtime.uia_failures_by_device.record_failure(*key, now, settings.window, settings.max_per_source);
+    }
+
+    auto clear_failed_uia(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id) -> void
+    {
+        auto const key = auth::make_failure_key("uia-device", user_id, device_id);
+        if (!key.has_value())
+        {
+            return;
+        }
+        auto guard = std::lock_guard{runtime.mutex};
+        runtime.uia_failures_by_device.clear(*key);
     }
 
     constexpr auto token_secret_bytes = std::size_t{32U};
@@ -1106,7 +1174,7 @@ auto register_appservice_user(HomeserverRuntime& runtime, std::string_view local
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
-                      std::string_view device_id, bool with_ttl) -> OperationResult
+                      std::string_view device_id, bool with_ttl, std::string_view client_source) -> OperationResult
 {
     log_diagnostic("login.started",
                    {
@@ -1114,10 +1182,10 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                        {"device_id", std::string{device_id}, false}
     });
 
-    // #487: /login was throttled per source IP only. The per-user rate-limit tier
-    // is keyed on the authenticated user, which pre-login is nobody, so guesses
-    // against one account spread across many source IPs accumulated nowhere.
-    if (auto const retry_after_ms = failed_login_lockout_remaining_ms(runtime, user_id); retry_after_ms > 0U)
+    // #487, AUTH-2: failures are counted per (account, client source) and per
+    // account. A refusal here is before the password is looked at, so it neither
+    // counts as a failure nor costs any Argon2id work.
+    if (auto const retry_after_ms = login_lockout_remaining_ms(runtime, user_id, client_source); retry_after_ms > 0U)
     {
         log_diagnostic_audit(runtime.database, "auth", "login.throttled",
                              {
@@ -1183,7 +1251,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     {
         // Counted against the *claimed* user_id whether or not it exists, so the
         // lockout cannot be used to probe which accounts are real.
-        record_failed_login(runtime, verified_user_id);
+        record_failed_login(runtime, verified_user_id, client_source);
         auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
         // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
@@ -1198,9 +1266,10 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                              std::string{"403:"} + audit_reason);
         return make_operation_result(false, {}, "invalid login", 403U);
     }
-    // A correct password clears the account's failure history, so an interrupted
-    // legitimate login attempt cannot accumulate toward a lockout.
-    clear_failed_logins(runtime, user->user_id);
+    // A correct password clears this source's failure history, so an interrupted
+    // legitimate login attempt cannot accumulate toward a lockout. The
+    // per-account ceiling is deliberately left alone.
+    clear_failed_logins(runtime, user->user_id, client_source);
     return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -2036,11 +2105,19 @@ auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         return {false, 0U};
     }
 
-    // M-02: re-authentication (UIA) password checks share the /login failed-login
-    // counter. An attacker with a stolen access token but not the password gets
-    // the same guessing budget as a direct /login attacker, not a separate,
-    // unbounded one.
-    if (auto const retry_after_ms = failed_login_lockout_remaining_ms(runtime, *user_id); retry_after_ms > 0U)
+    // M-02, AUTH-2: a re-authentication (UIA) password check has its own failure
+    // counter, keyed (account, device) with the per-source limit. An attacker with
+    // a stolen access token but not the password still gets a bounded guessing
+    // budget, but the counter is not the /login one: a stranger failing logins as
+    // this user must not be able to stop the signed-in owner changing their
+    // password or deleting a device, and the owner's own UIA mistakes must not
+    // lock them out of logging in. Appservice masquerade has no device; it falls
+    // under the empty-device key.
+    auto const device_id = [&]() -> std::string {
+        auto const session = authenticated_session(runtime, access_token);
+        return session.has_value() ? session->device_id : std::string{};
+    }();
+    if (auto const retry_after_ms = uia_lockout_remaining_ms(runtime, *user_id, device_id); retry_after_ms > 0U)
     {
         return {false, retry_after_ms};
     }
@@ -2048,11 +2125,11 @@ auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     auto const valid = auth::password_matches(user->password_hash, password);
     if (!valid)
     {
-        record_failed_login(runtime, *user_id);
+        record_failed_uia(runtime, *user_id, device_id);
         return {false, 0U};
     }
 
-    clear_failed_logins(runtime, *user_id);
+    clear_failed_uia(runtime, *user_id, device_id);
     return {true, 0U};
 }
 

@@ -21,8 +21,8 @@ namespace
 using merovingian::observability::AuditRateGate;
 using Clock = AuditRateGate::Clock;
 
-[[nodiscard]] auto count_admitted(AuditRateGate& gate, std::string const& kind, Clock::time_point now,
-                                  int attempts) -> int
+[[nodiscard]] auto count_admitted(AuditRateGate& gate, std::string const& kind, Clock::time_point now, int attempts)
+    -> int
 {
     auto admitted = 0;
     for (auto i = 0; i < attempts; ++i)
@@ -112,17 +112,15 @@ SCENARIO("The audit rate gate never limits audit events that are not per-request
         auto gate = AuditRateGate{};
         auto const start = Clock::time_point{} + std::chrono::hours{1};
 
-        WHEN("a thousand login successes, admin actions and login rejections arrive")
+        WHEN("a thousand login successes and admin actions arrive")
         {
             auto const logins = count_admitted(gate, "auth.login", start, 1000);
             auto const admin = count_admitted(gate, "admin.action", start, 1000);
-            auto const rejected = count_admitted(gate, "login.rejected", start, 1000);
 
             THEN("every one is admitted with nothing suppressed")
             {
                 REQUIRE(logins == 1000);
                 REQUIRE(admin == 1000);
-                REQUIRE(rejected == 1000);
                 REQUIRE(gate.admit("auth.login", start).suppressed == 0U);
             }
         }
@@ -135,9 +133,10 @@ SCENARIO("The audit rate gate never limits audit events that are not per-request
             REQUIRE(merovingian::observability::audit_event_is_rate_capped("access_token.rejected"));
             REQUIRE(merovingian::observability::audit_event_is_rate_capped("rate_limit.exceeded"));
             REQUIRE(merovingian::observability::audit_event_is_rate_capped("request.rejected"));
+            REQUIRE(merovingian::observability::audit_event_is_rate_capped("login.rejected"));
+            REQUIRE(merovingian::observability::audit_event_is_rate_capped("login.throttled"));
             REQUIRE_FALSE(merovingian::observability::audit_event_is_rate_capped("auth.login"));
             REQUIRE_FALSE(merovingian::observability::audit_event_is_rate_capped("auth.logout"));
-            REQUIRE_FALSE(merovingian::observability::audit_event_is_rate_capped("login.rejected"));
             REQUIRE_FALSE(merovingian::observability::audit_event_is_rate_capped(""));
         }
     }

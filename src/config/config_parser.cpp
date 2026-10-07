@@ -1151,6 +1151,24 @@ namespace
         {
             security.registration.token_file = std::string{value};
         }
+        else if (key == "security.login_throttle.max_failures_per_source")
+        {
+            if (!parse_u32_value(value, security.login_throttle.max_failures_per_source))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.login_throttle.max_failures_per_account")
+        {
+            if (!parse_u32_value(value, security.login_throttle.max_failures_per_account))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.login_throttle.window")
+        {
+            security.login_throttle.window = std::string{value};
+        }
         else if (key == "security.access_token_lifetime_ms")
         {
             if (!parse_i64_value(value, security.access_token_lifetime_ms))

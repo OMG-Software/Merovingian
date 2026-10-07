@@ -691,6 +691,21 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"security.federation.backfill.timeout", "must be between 1s and 300s"});
     }
+    validate_count("security.login_throttle.max_failures_per_source",
+                   config.security().login_throttle.max_failures_per_source, 1000U);
+    validate_count("security.login_throttle.max_failures_per_account",
+                   config.security().login_throttle.max_failures_per_account, 100000U);
+    if (config.security().login_throttle.max_failures_per_account <
+        config.security().login_throttle.max_failures_per_source)
+    {
+        findings.push_back({"security.login_throttle.max_failures_per_account",
+                            "must be at least security.login_throttle.max_failures_per_source"});
+    }
+    auto const login_throttle_window = parse_duration_seconds(config.security().login_throttle.window);
+    if (!login_throttle_window.valid || login_throttle_window.seconds == 0U || login_throttle_window.seconds > 86400U)
+    {
+        findings.push_back({"security.login_throttle.window", "must be between 1s and 1440m"});
+    }
     validate_count("server.client_api.max_registration_validation_sessions",
                    config.server().client_api.max_registration_validation_sessions, 65536U);
     validate_count("server.client_api.max_registration_validation_sessions_per_remote",

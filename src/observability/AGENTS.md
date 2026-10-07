@@ -74,8 +74,8 @@ durability distinction:
   which buckets token length into coarse size classes instead of disclosing length or bytes.
 - Log the `user_id` and `device_id` (not the token) for authenticated request traces.
 - **An audit event that an unauthenticated client can trigger on every request must not write one
-  durable row per request.** `access_token.rejected`, `rate_limit.exceeded` and `request.rejected`
-  pass through `AuditRateGate` (10 rows per kind per 60 s, the rest counted and reported as
+  durable row per request.** `access_token.rejected`, `rate_limit.exceeded`, `request.rejected`,
+  `login.rejected` and `login.throttled` pass through `AuditRateGate` (10 rows per kind per 60 s, the rest counted and reported as
   `suppressed=<n>` on the next row). A new per-request rejection audit event of that kind must be
   added to `audit_event_is_rate_capped` (ADR-0080). Never gate authenticated or administrative
   events.
