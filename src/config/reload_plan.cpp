@@ -391,6 +391,22 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.remote_media_cache_ttl_seconds");
     }
+    if (current.security().media.max_total_size != next.security().media.max_total_size)
+    {
+        add_change(plan, "security.media.max_total_size");
+    }
+    if (current.security().media.max_size_per_user != next.security().media.max_size_per_user)
+    {
+        add_change(plan, "security.media.max_size_per_user");
+    }
+    if (current.security().media.max_records != next.security().media.max_records)
+    {
+        add_change(plan, "security.media.max_records");
+    }
+    if (current.security().media.remote_media_cache_max_size != next.security().media.remote_media_cache_max_size)
+    {
+        add_change(plan, "security.media.remote_media_cache_max_size");
+    }
     if (current.security().media.remote_media_cache_max_entries != next.security().media.remote_media_cache_max_entries)
     {
         add_change(plan, "security.media.remote_media_cache_max_entries");
@@ -848,7 +864,8 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_notifications_retained_per_user");
     }
-    if (current.server().client_api.max_one_time_keys_per_device != next.server().client_api.max_one_time_keys_per_device)
+    if (current.server().client_api.max_one_time_keys_per_device !=
+        next.server().client_api.max_one_time_keys_per_device)
     {
         add_change(plan, "server.client_api.max_one_time_keys_per_device");
     }

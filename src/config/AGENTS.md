@@ -26,7 +26,11 @@ Parses, validates, and hot-reloads the server configuration.
 
 ## Size limit parsing
 
-`config::parse_size_limit()` converts strings like `"100M"`, `"1G"` into byte counts.
+`config::parse_size_limit()` converts strings like `"100MiB"`, `"1GiB"` into byte counts. It
+accepts a positive integer with the suffix `B`, `KiB`, `MiB` or `GiB` (or none); `100M` and
+`1G` are rejected. An optional size limit is empty for "no limit"; `validate()` must reject
+any other value that fails to parse, because a size that parses as invalid reads as 0, which
+callers treat as no limit (OPS-3).
 Use this helper everywhere a config value represents a byte limit — do not parse inline.
 
 ## Key doc

@@ -31,6 +31,24 @@
   scenarios rewritten for the plan/apply admission; moderation-during-read guard tested.
   Tests that asserted bytes in memory now assert them through the database read path, or
   directly against the SQLite file where removal must clear the durable bytes.
+- **CHANGED: media quota defaults sized for on-disk storage.** Now that media bytes live in
+  the database, the defaults are `max_total_size=250GiB`, `max_size_per_user=10GiB` and
+  `max_records=1000000` (chosen by the project owner; record metadata is still held in
+  memory, roughly 400 MB at the cap). `remote_media_cache_max_entries` defaults to 50,000.
+- **NEW: `security.media.remote_media_cache_max_size` (default `25GiB`, ADR-0120).** Cached
+  remote media has its own byte budget: least recently used remote files are deleted to
+  stay within it, and a single file larger than it is refused with `507`. Remote media no
+  longer counts toward `max_total_size` or `max_records`, so caching other servers' media
+  cannot make a local upload fail. A local upload of bytes already stored only for remote
+  media is charged to the local total.
+- **FIXED (OPS-3): malformed media size limits are rejected.** `max_total_size`,
+  `max_size_per_user` and `remote_media_cache_max_size` must be empty (no limit) or parse;
+  a value such as `10G` used to parse as 0, which meant no limit. The effective limits are
+  logged at startup, the reload plan reports changes to them, and `src/config/AGENTS.md`
+  names the accepted suffixes (`B`, `KiB`, `MiB`, `GiB`).
+- **TESTS:** `[med-6]` pins the new defaults and checks that remote media is charged only to
+  its own budget and evicted by bytes; `[ops-3]` checks that malformed sizes are rejected
+  and empty ones accepted.
 - Version bumped to 0.12.20 for the media-on-demand branch (stacked on 0.12.19).
 
 ## 0.12.19

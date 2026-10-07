@@ -81,8 +81,13 @@ Each correction has a regression test that failed against the first fix:
 - **CSAZ-10:** the caps on one-time keys, signatures and filters, and the signature
   index, were missing.
 
+**Update:** 7 October 2026, branch `feature/media-blobs-on-demand` (0.12.20) — media
+bytes moved out of memory into the database (ADR-0119), which changes how MED-6 and
+OUT-4 are resolved (rows below); the remote media cache has its own storage budget
+(ADR-0120); OPS-3 is fixed and MED-4 partly fixed.
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 3 are fixed, 2 are partly fixed and 41 are open.
+fixed. Of the 46 low findings, 4 are fixed, 3 are partly fixed and 39 are open.
 
 ### Fixed
 
@@ -92,9 +97,11 @@ fixed. Of the 46 low findings, 3 are fixed, 2 are partly fixed and 41 are open.
 - **Medium:** all 31 — AUTH-3, AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, CSAZ-10, HTTP-3,
   HTTP-4, HTTP-8, FED-6, FED-8, FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, OUT-4,
   CRY-2, ISO-2, ISO-3, MED-1, MED-2, MED-3, MED-5, MED-6, DB-2, DB-3, DB-5.
-- **Low:** AUTH-9, HTTP-6, OUT-5. AUTH-9: the control-character escaping is done; the
-  field-length cap from its fix is not. OUT-5: `CURLOPT_PROXY` is set to `""` on the
-  only curl handle, but there is no regression test with `https_proxy` set.
+- **Low:** AUTH-9, HTTP-6, OUT-5, OPS-3. AUTH-9: the control-character escaping is done;
+  the field-length cap from its fix is not. OUT-5: `CURLOPT_PROXY` is set to `""` on the
+  only curl handle, but there is no regression test with `https_proxy` set. OPS-3: media
+  size limits that do not parse are rejected by `validate()`, the effective limits are
+  logged at startup, and `src/config/AGENTS.md` names the accepted suffixes.
 
 Residual notes on fixed findings:
 
@@ -130,8 +137,8 @@ Residual notes on fixed findings:
 | FED-6 | `handle_make_membership` rejects a `{userId}` that is not on the requesting server. |
 | ISO-2 | The worker filter denies `kill`, `tkill` and `setrlimit`, allows `tgkill` only on the worker's own thread group and `prlimit64` only to read its own limits; Landlock ABI 6 kernels also scope signals. The worker's `start_runtime()` no longer re-applies the main-process profile. Tested by installing the real filter in a forked child (`[iso2]`) and by starting a real hardened worker (`[federation-worker][seccomp]`). ADR-0112. |
 | MED-5 | Media `serverName` comparisons lowercase the name and drop only a trailing `:8448`. ADR-0115. |
-| MED-6 | Quota defaults are `2GiB` total, `256MiB` per user and `100000` records (all media is held in memory, so the total is a memory budget); remote media is exempt from the per-user quota only. Blob bytes are held once in memory. ADR-0113. |
-| OUT-4 | Remote media admitted within the TTL is served from the stored copy before any outbound slot, discovery or request; expired and stale entries are erased and a zero entry cap disables the cache. ADR-0114. |
+| MED-6 | Media bytes are no longer held in memory at all; they are read from the database per request (0.12.20, ADR-0119). Local quota defaults are `250GiB` total, `10GiB` per user and `1000000` records, and cached remote media has its own `25GiB` / 50,000-file budget instead of counting toward local quotas (ADR-0113, ADR-0120). |
+| OUT-4 | Remote media admitted within the TTL is served from the stored copy before any outbound slot, discovery or request. Since 0.12.20 the cache and its copies are durable and survive restarts; a re-fetch after the TTL replaces the stored copy, eviction deletes it, and quarantined or removed copies answer 451/404 without a re-fetch (ADR-0114, ADR-0119). |
 
 ### Outstanding — medium
 
@@ -143,12 +150,13 @@ None.
 |----|-------|--------------|
 | EVT-12 | Partial | (b) the creator-without-member-event fallback is removed. (a) there is still no v3–v5 `m.room.aliases` rule, and (c) rejected events are still accepted as auth events. |
 | OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
+| MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). There is no thumbnail cache, no per-user concurrency cap, and no test with a slow decoder stub. |
 
 Open, with no code, test or documentation change found: AUTH-2, AUTH-5, AUTH-7, AUTH-8,
 AUTH-10, AUTH-12, CSAZ-6, CSAZ-9, CSAZ-11, CSAZ-12 (all four endpoints), HTTP-7, FED-9,
 FED-10, FED-12, EVT-10, EVT-11, OUT-6, OUT-8, CRY-3, CRY-4, CRY-5, CRY-6, ISO-4, ISO-5,
-ISO-6, ISO-7, ISO-8, MED-4, MED-7, MED-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2,
-OPS-3, OPS-4, OPS-5, OPS-6.
+ISO-6, ISO-7, ISO-8, MED-7, MED-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2, OPS-4,
+OPS-5, OPS-6.
 
 The documentation corrections listed under "Documentation found to be wrong about the
 code" for AUTH-2, CRY-6, ISO-4, OPS-2, OUT-8 (`deny_ip_ranges`) and CSAZ-11 have not

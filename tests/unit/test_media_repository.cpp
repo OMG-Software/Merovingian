@@ -312,8 +312,8 @@ namespace
     auto const result = merovingian::media::fetch_remote_media(repository, request, now);
     if (result.admitted_new_record)
     {
-        auto const displaced =
-            merovingian::media::plan_remote_media_admission(repository, request.origin_server, request.media_id);
+        auto const displaced = merovingian::media::plan_remote_media_admission(repository, request.origin_server,
+                                                                               request.media_id, result.size_bytes);
         merovingian::media::apply_remote_media_admission(repository, request.origin_server, request.media_id,
                                                          result.local_media_id, now, displaced);
     }
@@ -515,7 +515,7 @@ SCENARIO("Remote media cache evicts the least-recently-used entry when it "
             auto const* touched =
                 merovingian::media::find_cached_remote_media(repository, "remote.example.org", "mediaA", t0 + 2U);
             auto const displaced =
-                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaC");
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaC", 9U);
             auto const c =
                 admit(repository, remote_png_request("mediaC", std::string{"\x89PNG\r\n\x1a\x0a\x02", 9U}), t0 + 3U);
 
@@ -852,8 +852,7 @@ SCENARIO("Deduplicated uploads do not consume repository capacity twice", "[medi
 // MED-6 (security-audit-report-2026-09-29.md): media quotas defaulted to
 // unlimited. Every blob is held in memory, so the server-wide cap is a memory
 // budget and the defaults are sized for a small host (ADR-0113).
-SCENARIO("Default media repository capacity limits bound memory without "
-         "refusing a normal upload",
+SCENARIO("Default media repository capacity limits suit a community server's disk",
          "[media][repository][security][med-6]")
 {
     GIVEN("a runtime media config built from the default configuration")
@@ -862,22 +861,27 @@ SCENARIO("Default media repository capacity limits bound memory without "
 
         WHEN("the default capacity limits are inspected")
         {
-            constexpr auto mib = std::uint64_t{1024U} * 1024U;
+            constexpr auto gib = std::uint64_t{1024U} * 1024U * 1024U;
 
-            THEN("the server holds at most 2 GiB in 100000 records, and one user at "
-                 "most 256 MiB")
+            THEN("local media is capped at 250 GiB in 1,000,000 records, and 10 GiB per user")
             {
-                REQUIRE(config.max_total_bytes == 2048U * mib);
-                REQUIRE(config.max_bytes_per_user == 256U * mib);
-                REQUIRE(config.max_records == 100000U);
+                REQUIRE(config.max_total_bytes == 250U * gib);
+                REQUIRE(config.max_bytes_per_user == 10U * gib);
+                REQUIRE(config.max_records == 1000000U);
             }
 
-            THEN("one upload of the maximum size fits within a user's quota, and a "
-                 "user's quota within the total")
+            THEN("cached remote media has its own budget of 25 GiB in 50,000 files")
+            {
+                REQUIRE(config.remote_media_cache_max_bytes == 25U * gib);
+                REQUIRE(config.remote_media_cache_max_entries == 50000U);
+            }
+
+            THEN("one upload of the maximum size fits a user's quota, and one remote file fits the remote budget")
             {
                 REQUIRE(config.max_upload_bytes > 0U);
                 REQUIRE(config.max_bytes_per_user >= config.max_upload_bytes);
                 REQUIRE(config.max_total_bytes >= config.max_bytes_per_user);
+                REQUIRE(config.remote_media_cache_max_bytes >= config.max_upload_bytes);
             }
         }
     }
@@ -920,16 +924,19 @@ SCENARIO("A user past the default per-user media quota is refused with 507", "[m
     }
 }
 
-SCENARIO("Remote media is not charged to a per-user quota, but still counts "
-         "toward the server total",
+// ADR-0120: cached remote media has its own byte and entry budget and is not
+// charged to local quotas, so it can never make a local upload fail.
+SCENARIO("Remote media is charged to its own budget, not to local quotas",
          "[media][repository][remote][security][med-6]")
 {
-    GIVEN("remote fetching enabled with a per-user quota of eight bytes")
+    GIVEN("remote fetching enabled with a per-user quota of eight bytes and a local total of eight bytes")
     {
         auto repository = test_repository();
         repository.config.remote_fetch_enabled = true;
         repository.config.remote_fetch_media_policy = merovingian::media::MediaAcceptancePolicy::allow_after_scan;
         repository.config.max_bytes_per_user = 8U;
+        repository.config.max_total_bytes = 8U;
+        repository.config.remote_media_cache_max_bytes = 1024U;
         auto const fetch = [&repository](std::string media_id, std::string bytes) {
             return merovingian::media::fetch_remote_media(repository,
                                                           {"remote.example.org",
@@ -951,30 +958,73 @@ SCENARIO("Remote media is not charged to a per-user quota, but still counts "
             auto const first = fetch("first", std::string{"\x89PNG\r\n\x1a\n", 8U});
             auto const second = fetch("second", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
 
-            THEN("both are admitted: every remote file shares one owner per origin, "
-                 "so a per-user quota "
-                 "would cut that origin off after its first files")
+            THEN("both are admitted: neither the per-user quota nor the local total applies to remote media")
             {
                 REQUIRE(first.ok);
                 REQUIRE(second.ok);
             }
+
+            AND_WHEN("a local user then uploads up to the local total")
+            {
+                auto const local = merovingian::media::upload_local_media(
+                    repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+
+                THEN("the upload succeeds: cached remote media does not use up local capacity")
+                {
+                    REQUIRE(local.ok);
+                }
+            }
         }
 
-        AND_GIVEN("a server-wide cap of twelve bytes")
+        AND_GIVEN("a remote budget of eight bytes")
         {
-            repository.config.max_total_bytes = 12U;
+            repository.config.remote_media_cache_max_bytes = 8U;
 
-            WHEN("remote media would cross it")
+            WHEN("a single remote file is larger than the whole remote budget")
             {
-                auto const first = fetch("first", std::string{"\x89PNG\r\n\x1a\n", 8U});
-                auto const second = fetch("second", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
+                auto const oversized = fetch("big", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
 
-                THEN("the media that crosses the server total is refused with 507")
+                THEN("it is refused with 507")
                 {
-                    REQUIRE(first.ok);
-                    REQUIRE_FALSE(second.ok);
-                    REQUIRE(second.status == 507U);
+                    REQUIRE_FALSE(oversized.ok);
+                    REQUIRE(oversized.status == 507U);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media cache evicts least-recently-used files to stay within its byte budget",
+         "[media][repository][remote][security][med-6]")
+{
+    GIVEN("a remote media cache with room for many entries but only sixteen bytes, holding an eight-byte file")
+    {
+        auto repository = remote_cache_repository(1024U, 3600U);
+        repository.config.remote_media_cache_max_bytes = 16U;
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        auto const a = admit(repository, remote_png_request("mediaA"), t0);
+        REQUIRE(a.ok);
+
+        WHEN("a nine-byte file is planned for admission")
+        {
+            auto const displaced =
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 9U);
+
+            THEN("the eight-byte file is displaced, because together they would exceed the budget")
+            {
+                REQUIRE(displaced.size() == 1U);
+                REQUIRE(displaced.front().media_id == "mediaA");
+            }
+        }
+
+        WHEN("a four-byte file is planned for admission")
+        {
+            auto const displaced =
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 4U);
+
+            THEN("nothing is displaced: both fit")
+            {
+                REQUIRE(displaced.empty());
             }
         }
     }

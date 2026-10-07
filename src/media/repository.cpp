@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -369,17 +370,45 @@ namespace
     // deduplicate onto one blob occupy one blob's worth of memory, so charging
     // both would refuse uploads long before the repository was actually full.
 
-    [[nodiscard]] auto live_blob_bytes(LocalMediaRepository const& repository) noexcept -> std::uint64_t
+    // ADR-0120: remote media is stored under one system owner per origin and
+    // is accounted against the remote media cache's own budget, never against
+    // local quotas, so cached remote files cannot make a local upload fail.
+    [[nodiscard]] auto is_remote_media_owner(std::string_view owner_user_id) noexcept -> bool
     {
+        return owner_user_id.starts_with("@remote-media:");
+    }
+
+    // Bytes of local media, counting each stored file once however many local
+    // records share it. A record's size is its blob's size.
+    [[nodiscard]] auto local_media_bytes(LocalMediaRepository const& repository) -> std::uint64_t
+    {
+        auto counted = std::unordered_set<std::string_view>{};
         auto total = std::uint64_t{0U};
-        for (auto const& blob : repository.blobs)
+        for (auto const& record : repository.records)
         {
-            if (blob.ref_count > 0U)
+            if (record.state != LocalMediaState::removed && !is_remote_media_owner(record.owner_user_id) &&
+                counted.insert(record.storage_id).second)
             {
-                total += blob.size_bytes;
+                total += record.size_bytes;
             }
         }
         return total;
+    }
+
+    [[nodiscard]] auto local_media_holds(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
+        -> bool
+    {
+        return std::ranges::any_of(repository.records, [storage_id](LocalMediaRecord const& record) {
+            return record.storage_id == storage_id && record.state != LocalMediaState::removed &&
+                   !is_remote_media_owner(record.owner_user_id);
+        });
+    }
+
+    [[nodiscard]] auto local_record_count(LocalMediaRepository const& repository) noexcept -> std::uint64_t
+    {
+        return static_cast<std::uint64_t>(std::ranges::count_if(repository.records, [](LocalMediaRecord const& record) {
+            return !is_remote_media_owner(record.owner_user_id);
+        }));
     }
 
     [[nodiscard]] auto live_bytes_for_owner(LocalMediaRepository const& repository,
@@ -401,22 +430,32 @@ namespace
     // existing blob, which adds a record but no bytes.
     [[nodiscard]] auto capacity_rejection_reason(LocalMediaRepository const& repository,
                                                  LocalMediaUploadRequest const& request, std::uint64_t size_bytes,
-                                                 bool stores_new_blob) -> std::string
+                                                 std::string_view storage_id, bool stores_new_blob) -> std::string
     {
         auto const& limits = repository.config;
-        if (limits.max_records != 0U && repository.records.size() >= limits.max_records)
+        if (request.from_remote_fetch)
+        {
+            // ADR-0120: the remote cache makes room by evicting least recently
+            // used files (plan_remote_media_admission), so the only refusal is a
+            // single file larger than the whole remote budget.
+            if (limits.remote_media_cache_max_bytes != 0U && size_bytes > limits.remote_media_cache_max_bytes)
+            {
+                return "remote media is larger than the remote media cache";
+            }
+            return {};
+        }
+        if (limits.max_records != 0U && local_record_count(repository) >= limits.max_records)
         {
             return "media repository record limit reached";
         }
-        if (stores_new_blob && limits.max_total_bytes != 0U &&
-            live_blob_bytes(repository) + size_bytes > limits.max_total_bytes)
+        // A file already held for local media adds nothing; one held only for
+        // cached remote media becomes local usage now.
+        if (limits.max_total_bytes != 0U && !local_media_holds(repository, storage_id) &&
+            local_media_bytes(repository) + size_bytes > limits.max_total_bytes)
         {
             return "media repository storage limit reached";
         }
-        // Remote media is owned by one system user per origin, so a per-user
-        // quota would cut off an origin after its first few files (MED-6). It
-        // is still bounded by the record and total-byte caps above.
-        if (stores_new_blob && !request.from_remote_fetch && limits.max_bytes_per_user != 0U &&
+        if (stores_new_blob && limits.max_bytes_per_user != 0U &&
             live_bytes_for_owner(repository, request.owner_user_id) + size_bytes > limits.max_bytes_per_user)
         {
             return "media quota for this user is exhausted";
@@ -649,7 +688,8 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     // existing links rather than shed load.
     auto deduplicated = false;
     auto* blob = find_live_blob(repository, "blake2b", digest, size_bytes);
-    if (auto const capacity_reason = capacity_rejection_reason(repository, request, size_bytes, blob == nullptr);
+    if (auto const capacity_reason = capacity_rejection_reason(repository, request, size_bytes,
+                                                               make_storage_id(digest, size_bytes), blob == nullptr);
         !capacity_reason.empty())
     {
         ++repository.metrics.uploads_rejected;
@@ -1094,7 +1134,8 @@ auto find_cached_remote_media(LocalMediaRepository& repository, std::string_view
 }
 
 auto plan_remote_media_admission(LocalMediaRepository const& repository, std::string_view origin_server,
-                                 std::string_view media_id) -> std::vector<RemoteMediaCacheEntry>
+                                 std::string_view media_id, std::uint64_t incoming_size_bytes)
+    -> std::vector<RemoteMediaCacheEntry>
 {
     auto displaced = std::vector<RemoteMediaCacheEntry>{};
     auto others = std::vector<RemoteMediaCacheEntry const*>{};
@@ -1110,12 +1151,35 @@ auto plan_remote_media_admission(LocalMediaRepository const& repository, std::st
         }
     }
     // The cache is kept in recency order, least recently used first, so the
-    // entries to evict are at the front. With a cap of 0 every other entry goes.
+    // entries to evict are at the front: enough to leave room for one more
+    // entry and, under the byte budget (ADR-0120), for the incoming file. With
+    // an entry cap of 0 every other entry goes.
     auto const max_entries = repository.config.remote_media_cache_max_entries;
+    auto const max_bytes = repository.config.remote_media_cache_max_bytes;
     auto const keep = max_entries == 0U ? std::size_t{0U} : static_cast<std::size_t>(max_entries - 1U);
-    for (auto index = std::size_t{0U}; others.size() > keep && index < others.size() - keep; ++index)
+    auto kept_bytes = std::uint64_t{0U};
+    auto sizes = std::vector<std::uint64_t>{};
+    sizes.reserve(others.size());
+    for (auto const* entry : others)
     {
+        auto const record = std::ranges::find_if(repository.records, [entry](LocalMediaRecord const& candidate) {
+            return candidate.media_id == entry->local_media_id;
+        });
+        sizes.push_back(record == repository.records.end() ? 0U : record->size_bytes);
+        kept_bytes += sizes.back();
+    }
+    auto kept = others.size();
+    for (auto index = std::size_t{0U}; index < others.size(); ++index)
+    {
+        auto const over_entries = kept > keep;
+        auto const over_bytes = max_bytes != 0U && kept_bytes + incoming_size_bytes > max_bytes;
+        if (!over_entries && !over_bytes)
+        {
+            break;
+        }
         displaced.push_back(*others[index]);
+        --kept;
+        kept_bytes -= sizes[index];
     }
     return displaced;
 }

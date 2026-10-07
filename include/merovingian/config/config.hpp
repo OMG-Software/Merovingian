@@ -517,14 +517,15 @@ struct MediaSecurityConfig final
     // evicting an older blob: clients hold mxc:// URIs for what is already
     // stored, and eviction would break them. Empty explicitly means no limit;
     // the defaults below are non-zero so an unconfigured server is bounded.
-    // Every blob is held in memory, so max_total_size is a memory budget and
-    // the default suits a small host (ADR-0113). max_size_per_user must stay at
-    // or above max_upload_size, or one legitimate upload is refused. Remote
-    // media is stored under one owner per origin and is exempt from the
-    // per-user quota, but counts toward max_total_size and max_records.
-    std::string max_total_size{"2GiB"};
-    std::string max_size_per_user{"256MiB"};
-    std::uint64_t max_records{100000U};
+    // Media bytes live in the database (ADR-0119), so these bound storage; the
+    // defaults suit a community server (ADR-0113). max_size_per_user must stay
+    // at or above max_upload_size, or one legitimate upload is refused. These
+    // apply to local media only: cached remote media has its own budget below
+    // (ADR-0120). Each record's metadata is still held in memory, so
+    // max_records also bounds memory (roughly 300-500 bytes per record).
+    std::string max_total_size{"250GiB"};
+    std::string max_size_per_user{"10GiB"};
+    std::uint64_t max_records{1000000U};
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
@@ -549,7 +550,11 @@ struct MediaSecurityConfig final
     // bytes were first admitted. TTL is in seconds; max_entries caps in-memory
     // mappings. A max_entries of 0 disables caching.
     std::uint32_t remote_media_cache_ttl_seconds{86400U};
-    std::uint64_t remote_media_cache_max_entries{1024U};
+    std::uint64_t remote_media_cache_max_entries{50000U};
+    // ADR-0120: bytes of cached remote media. The least recently used remote
+    // files are deleted to stay within it, so remote caching never takes
+    // capacity from local uploads. Empty means no limit.
+    std::string remote_media_cache_max_size{"25GiB"};
 };
 
 struct TrustSafetySecurityConfig final

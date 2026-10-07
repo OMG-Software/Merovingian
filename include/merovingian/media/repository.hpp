@@ -276,8 +276,11 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 // every other entry is displaced and the new one is stored already expired, so
 // at most one remote copy is kept. Changes nothing; see
 // apply_remote_media_admission.
+// `incoming_size_bytes` is the new file's size: least recently used entries are
+// also displaced until it fits remote_media_cache_max_bytes (ADR-0120).
 [[nodiscard]] auto plan_remote_media_admission(LocalMediaRepository const& repository, std::string_view origin_server,
-                                               std::string_view media_id) -> std::vector<RemoteMediaCacheEntry>;
+                                               std::string_view media_id, std::uint64_t incoming_size_bytes)
+    -> std::vector<RemoteMediaCacheEntry>;
 // Applies an admission the database has committed: forgets the displaced
 // entries' records and blob references, and records the new entry.
 auto apply_remote_media_admission(LocalMediaRepository& repository, std::string_view origin_server,

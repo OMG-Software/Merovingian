@@ -34,6 +34,7 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
     // Empty (the default) parses as invalid, which maps to 0 — no limit.
     auto const total_limit = config::parse_size_limit(config.security().media.max_total_size);
     auto const per_user_limit = config::parse_size_limit(config.security().media.max_size_per_user);
+    auto const remote_cache_limit = config::parse_size_limit(config.security().media.remote_media_cache_max_size);
     auto const remote_timeout = config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
     auto const& configured_types = config.security().media.allowed_mime_types;
     auto allowed_types =
@@ -61,6 +62,7 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         true,
         config.security().media.remote_media_cache_max_entries,
         config.security().media.remote_media_cache_ttl_seconds,
+        remote_cache_limit.valid ? remote_cache_limit.bytes : 0U,
         std::string{MEROVINGIAN_THUMBNAIL_WORKER_PATH},
         10U,
     };
@@ -68,7 +70,14 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
 
 auto media_summary(RuntimeMediaConfig const& config) -> std::string
 {
+    // OPS-3: the effective quotas, so an operator can see what a size limit
+    // was read as; 0 means no limit.
     return "Media runtime config: max_upload_bytes=" + std::to_string(config.max_upload_bytes) +
+           " max_total_bytes=" + std::to_string(config.max_total_bytes) +
+           " max_bytes_per_user=" + std::to_string(config.max_bytes_per_user) +
+           " max_records=" + std::to_string(config.max_records) +
+           " remote_media_cache_max_bytes=" + std::to_string(config.remote_media_cache_max_bytes) +
+           " remote_media_cache_max_entries=" + std::to_string(config.remote_media_cache_max_entries) +
            " allowed_mime_types=" + std::to_string(config.allowed_mime_types.size()) +
            " remote_fetch_timeout_seconds=" + std::to_string(config.remote_fetch_timeout_seconds) +
            " remote_fetch_enabled=" + std::string{config.remote_fetch_enabled ? "true" : "false"} +

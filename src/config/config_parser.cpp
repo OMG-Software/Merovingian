@@ -1409,6 +1409,10 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        else if (key == "security.media.remote_media_cache_max_size")
+        {
+            security.media.remote_media_cache_max_size = std::string{value};
+        }
         else if (key == "security.media.remote_media_cache_max_entries")
         {
             if (!parse_u64_value(value, security.media.remote_media_cache_max_entries))

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 SCENARIO("Config provides secure server and listener defaults", "[config]")
 {
@@ -860,6 +861,56 @@ SCENARIO("Config validation rejects a server name that does not match the Matrix
             THEN("no server.server_name finding is reported")
             {
                 REQUIRE_FALSE(has_server_name_finding(config_with_server_name("[2001:db8::1]:8448")));
+            }
+        }
+    }
+}
+
+// OPS-3 (security-audit-report-2026-09-29.md): a malformed media quota used to
+// parse as 0, which means no limit, so a typo silently removed the cap.
+SCENARIO("Config validation rejects malformed media size limits", "[config][validation][security][ops-3]")
+{
+    GIVEN("a config whose media size limits use a suffix the parser does not accept")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        security.media.max_size_per_user = "1G";
+        security.media.max_total_size = "lots";
+        security.media.remote_media_cache_max_size = "25GB";
+
+        WHEN("the config is validated")
+        {
+            auto const config = merovingian::config::Config{{}, {}, {}, security, {}, {}};
+            auto const findings = merovingian::config::validate(config);
+            auto const reported = [&findings](std::string_view field) {
+                return std::ranges::any_of(findings, [field](auto const& finding) {
+                    return finding.field == field;
+                });
+            };
+
+            THEN("each is rejected rather than read as unlimited")
+            {
+                REQUIRE_FALSE(merovingian::config::is_valid(config));
+                REQUIRE(reported("security.media.max_size_per_user"));
+                REQUIRE(reported("security.media.max_total_size"));
+                REQUIRE(reported("security.media.remote_media_cache_max_size"));
+            }
+        }
+    }
+
+    GIVEN("a config whose media size limits are empty")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        security.media.max_size_per_user.clear();
+        security.media.max_total_size.clear();
+        security.media.remote_media_cache_max_size.clear();
+
+        WHEN("the config is validated")
+        {
+            auto const config = merovingian::config::Config{{}, {}, {}, security, {}, {}};
+
+            THEN("it is valid: empty explicitly means no limit")
+            {
+                REQUIRE(merovingian::config::is_valid(config));
             }
         }
     }
