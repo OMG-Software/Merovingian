@@ -1171,8 +1171,8 @@ auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDo
     return {false, 501U, "remote media fetch is not implemented in this milestone"};
 }
 
-auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request,
-                        std::uint64_t now) -> RemoteMediaDownloadResult
+auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request, std::uint64_t now)
+    -> RemoteMediaDownloadResult
 {
     if (!repository.config.remote_fetch_enabled)
     {
