@@ -1,5 +1,14 @@
 ## 0.12.19
 
+- **FIXED: BSD builds failed on an unused Landlock constant.** `k_scope_signal` (ISO-2) was
+  declared on every platform but used only where the Linux ruleset is built; under
+  `-Werror` the FreeBSD, NetBSD and OpenBSD package builds failed. It is now declared in
+  the Linux-only block that uses it.
+- **TESTS:** the logger thread-count scenario (`[logger][iso1]`) runs in a forked child that
+  starts with one thread, and first proves thread counting works by starting a helper
+  thread. In the shared test process it skipped unless another test's thread happened to
+  be lingering, which is exactly when the count was flaky (ASan CI: `3 == 4`).
+
 - **FIXED: SQLite room snapshot no longer binds one parameter per event (DB-2).** Federation
   worker room-snapshot relation queries now scope reads by `room_id` via a JOIN instead
   of building an `IN (...)` parameter list, so large rooms avoid the 128-parameter limit.
