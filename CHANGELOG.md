@@ -61,6 +61,10 @@
   starts with one thread, and first proves thread counting works by starting a helper
   thread. In the shared test process it skipped unless another test's thread happened to
   be lingering, which is exactly when the count was flaky (ASan CI: `3 == 4`).
+- **TESTS:** two PostgreSQL-only scenarios (`[postgresql][media]`) still expected the
+  in-memory blob mirror to carry bytes after a write, which MED-6 removed; they failed only
+  in the `coverage` and `postgres-integration` CI jobs. They now assert the mirror records
+  the size with no bytes, and check the bytes after a reopen reads them from PostgreSQL.
 
 - **FIXED: SQLite room snapshot no longer binds one parameter per event (DB-2).** Federation
   worker room-snapshot relation queries now scope reads by `room_id` via a JOIN instead

@@ -425,11 +425,13 @@ SCENARIO("PostgreSQL media blob bytes round-trip exactly through a real BYTEA co
             };
             auto const* found_immediately = find_blob(opened.store, storage_id);
 
-            THEN("the in-memory mirror already carries every byte exactly")
+            // MED-6 (ADR-0113): a write records the blob's metadata in the
+            // in-memory mirror but not its bytes, so the bytes are held once.
+            THEN("the in-memory mirror records the blob's size but holds none of its bytes")
             {
                 REQUIRE(found_immediately != nullptr);
-                REQUIRE(found_immediately->bytes.size() == payload.size());
-                REQUIRE(found_immediately->bytes == payload);
+                REQUIRE(found_immediately->size_bytes == payload.size());
+                REQUIRE(found_immediately->bytes.empty());
             }
 
             AND_WHEN("the store is closed and reopened, forcing a real round trip through PostgreSQL")
