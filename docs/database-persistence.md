@@ -119,6 +119,16 @@ value. Test fixtures that do not exercise persistence select it through
   through `store_server_signing_key`, `find_server_signing_key` and
   `snapshot_server_signing_keys` (a copy for callers that iterate). The lock is
   never held across the database write or a network call.
+- Media bytes are not hydrated (ADR-0119). The SQLite and PostgreSQL loaders read
+  `media_blobs` without its `bytes` column; `prepare_media_blob_read` (under the
+  runtime mutex) and `read_media_blob` (without it) fetch one blob's bytes per
+  request. A media upload writes its bytes in `commit_local_media_upload`; a
+  deduplicated upload writes only `ref_count` (`update_media_blob_ref_count`).
+  Remote media is admitted by `commit_remote_media_admission`, which in one
+  transaction deletes the media and `remote_media` rows of the cache entries the
+  admission displaces, sets those blobs' reference counts (clearing bytes at zero),
+  and inserts the new media, blob and `remote_media` rows. `remote_media` carries
+  `local_media_id` and `fetched_at_ms` since schema version 20.
 - Binary payload columns are `BLOB` (#448): `media_blobs.bytes` holds raw media
   content and `server_signing_keys.secret_key` holds encrypted key material
   (`BLOB NOT NULL DEFAULT ''`, empty = no secret persisted). Both were folded

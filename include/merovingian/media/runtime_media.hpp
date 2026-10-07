@@ -57,8 +57,10 @@ struct RuntimeMediaConfig final
     // keyed by (origin_server, media_id) so repeated requests within the TTL serve
     // the already-stored local record instead of re-fetching and re-storing.
     // The cache is bounded by max_entries with LRU eviction when it is full.
-    std::uint64_t remote_media_cache_max_entries{1024U};
+    std::uint64_t remote_media_cache_max_entries{50000U};
     std::uint32_t remote_media_cache_ttl_seconds{86400U};
+    // ADR-0120: the remote cache's own byte budget; 0 means no limit.
+    std::uint64_t remote_media_cache_max_bytes{0U};
     // Absolute path to the out-of-process thumbnail worker. Empty disables
     // resampling (the original media bytes are served instead). Defaults to the
     // build-time install location; see make_runtime_media_config.

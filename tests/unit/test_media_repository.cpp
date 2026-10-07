@@ -41,7 +41,7 @@ SCENARIO("Local media repository uploads, downloads, and deduplicates safe media
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
             auto const second = merovingian::media::upload_local_media(
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
-            auto const downloaded = merovingian::media::download_local_media(repository, "example.org", first.media_id);
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, first.media_id);
 
             THEN("two media records reference one stored blob and bytes are served safely")
             {
@@ -58,7 +58,9 @@ SCENARIO("Local media repository uploads, downloads, and deduplicates safe media
                 REQUIRE(repository.metrics.deduplicated_uploads == 1U);
                 REQUIRE(downloaded.ok);
                 REQUIRE(downloaded.content_type == "text/plain");
-                REQUIRE(downloaded.bytes == "hello");
+                // ADR-0119: the repository resolves the blob; its bytes are read
+                // from the database by the media service.
+                REQUIRE(downloaded.storage_id == repository.blobs.front().storage_id);
             }
         }
     }
@@ -75,10 +77,9 @@ SCENARIO("Local media repository quarantines scanner failures and blocks downloa
         {
             auto const uploaded = merovingian::media::upload_local_media(
                 repository, "example.org", {"@alice:example.org", "image/png", "image/png", "png-bytes", false});
-            auto const blocked = merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
+            auto const blocked = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
             auto const released = merovingian::media::release_local_media(repository, uploaded.media_id);
-            auto const downloaded =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
 
             THEN("quarantined media cannot be served until an admin release")
             {
@@ -90,7 +91,7 @@ SCENARIO("Local media repository quarantines scanner failures and blocks downloa
                 REQUIRE(blocked.status == 451U);
                 REQUIRE(released.ok);
                 REQUIRE(downloaded.ok);
-                REQUIRE(downloaded.bytes == "png-bytes");
+                REQUIRE(downloaded.storage_id == repository.records.front().storage_id);
             }
         }
     }
@@ -111,8 +112,7 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "small", true});
             auto const removed =
                 merovingian::media::remove_local_media(repository, uploaded.media_id, "retention expired");
-            auto const after_remove =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
+            auto const after_remove = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
 
             THEN("oversized uploads fail closed and removed bytes are no longer served")
             {
@@ -122,7 +122,8 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
                 REQUIRE(uploaded.ok);
                 REQUIRE(removed.ok);
                 REQUIRE(repository.blobs.front().ref_count == 0U);
-                REQUIRE(repository.blobs.front().bytes.empty());
+                REQUIRE(merovingian::media::find_local_media_blob(repository, repository.blobs.front().storage_id) ==
+                        nullptr);
                 REQUIRE_FALSE(after_remove.ok);
                 REQUIRE(after_remove.status == 404U);
             }
@@ -145,8 +146,7 @@ SCENARIO("Local media repository revives removed storage without duplicate blob 
                 merovingian::media::remove_local_media(repository, first.media_id, "retention expired");
             auto const second = merovingian::media::upload_local_media(
                 repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "reupload", true});
-            auto const downloaded =
-                merovingian::media::download_local_media(repository, "example.org", second.media_id);
+            auto const downloaded = merovingian::media::resolve_local_media_download(repository, second.media_id);
 
             THEN("one live blob holds the re-upload and its final removal erases the bytes")
             {
@@ -157,13 +157,13 @@ SCENARIO("Local media repository revives removed storage without duplicate blob 
                 CHECK(repository.blobs.size() == 1U);
                 CHECK(repository.blobs.front().ref_count == 1U);
                 CHECK(downloaded.ok);
-                CHECK(downloaded.bytes == "reupload");
+                CHECK(downloaded.storage_id == repository.records.back().storage_id);
                 auto const* stored =
                     merovingian::media::find_local_media_blob(repository, repository.records.back().storage_id);
                 CHECK(stored != nullptr);
                 if (stored != nullptr)
                 {
-                    CHECK(stored->bytes == "reupload");
+                    CHECK(stored->size_bytes == 8U);
                 }
                 auto const removed_again =
                     merovingian::media::remove_local_media(repository, second.media_id, "removed again");
@@ -171,7 +171,7 @@ SCENARIO("Local media repository revives removed storage without duplicate blob 
                 for (auto const& blob : repository.blobs)
                 {
                     CHECK(blob.ref_count == 0U);
-                    CHECK(blob.bytes.empty());
+                    CHECK(merovingian::media::find_local_media_blob(repository, blob.storage_id) == nullptr);
                 }
             }
         }
@@ -223,28 +223,34 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
             // Kept to the PNG signature alone (8 bytes) — test_repository() caps
             // max_upload_bytes at 16, and any trailing payload counts against it.
             auto const png_bytes = std::string{"\x89PNG\r\n\x1a\n", 8U};
-            auto const fetched = merovingian::media::fetch_remote_media(repository, {"remote.example.org",
-                                                                                     "media123",
-                                                                                     "remote.example.org",
-                                                                                     {"203.0.113.20"},
-                                                                                     "image/png",
-                                                                                     png_bytes,
-                                                                                     true,
-                                                                                     16U,
-                                                                                     64U,
-                                                                                     1U,
-                                                                                     true});
-            auto const unsafe_decoder = merovingian::media::fetch_remote_media(repository, {"remote.example.org",
-                                                                                            "media124",
-                                                                                            "remote.example.org",
-                                                                                            {"203.0.113.20"},
-                                                                                            "image/png",
-                                                                                            png_bytes,
-                                                                                            true,
-                                                                                            2048U,
-                                                                                            64U,
-                                                                                            1U,
-                                                                                            false});
+            auto const fetched =
+                merovingian::media::fetch_remote_media(repository,
+                                                       {"remote.example.org",
+                                                        "media123",
+                                                        "remote.example.org",
+                                                        {"203.0.113.20"},
+                                                        "image/png",
+                                                        png_bytes,
+                                                        true,
+                                                        16U,
+                                                        64U,
+                                                        1U,
+                                                        true},
+                                                       merovingian::media::remote_media_cache_now_ms());
+            auto const unsafe_decoder =
+                merovingian::media::fetch_remote_media(repository,
+                                                       {"remote.example.org",
+                                                        "media124",
+                                                        "remote.example.org",
+                                                        {"203.0.113.20"},
+                                                        "image/png",
+                                                        png_bytes,
+                                                        true,
+                                                        2048U,
+                                                        64U,
+                                                        1U,
+                                                        false},
+                                                       merovingian::media::remote_media_cache_now_ms());
 
             THEN("accepted remote media is durable-repository ready and unsafe processing fails closed")
             {
@@ -270,21 +276,20 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
 namespace
 {
 
-[[nodiscard]] auto remote_png_request(std::string media_id) -> merovingian::media::RemoteMediaDownloadRequest
+[[nodiscard]] auto remote_png_request(std::string media_id, std::string bytes = std::string{"\x89PNG\r\n\x1a\n", 8U})
+    -> merovingian::media::RemoteMediaDownloadRequest
 {
-    return {
-        "remote.example.org",
-        std::move(media_id),
-        "remote.example.org",
-        {"203.0.113.20"},
-        "image/png",
-        std::string{"\x89PNG\r\n\x1a\n", 8U},
-        true,
-        16U,
-        64U,
-        1U,
-        true
-    };
+    return {"remote.example.org",
+            std::move(media_id),
+            "remote.example.org",
+            {"203.0.113.20"},
+            "image/png",
+            std::move(bytes),
+            true,
+            16U,
+            64U,
+            1U,
+            true};
 }
 
 [[nodiscard]] auto remote_cache_repository(std::uint64_t max_entries, std::uint32_t ttl_seconds)
@@ -296,6 +301,23 @@ namespace
     repository.config.remote_media_cache_max_entries = max_entries;
     repository.config.remote_media_cache_ttl_seconds = ttl_seconds;
     return repository;
+}
+
+// What the media service does around its database commit (ADR-0119): admit,
+// plan the displacement, then apply it.
+[[nodiscard]] auto admit(merovingian::media::LocalMediaRepository& repository,
+                         merovingian::media::RemoteMediaDownloadRequest const& request, std::uint64_t now)
+    -> merovingian::media::RemoteMediaDownloadResult
+{
+    auto const result = merovingian::media::fetch_remote_media(repository, request, now);
+    if (result.admitted_new_record)
+    {
+        auto const displaced = merovingian::media::plan_remote_media_admission(repository, request.origin_server,
+                                                                               request.media_id, result.size_bytes);
+        merovingian::media::apply_remote_media_admission(repository, request.origin_server, request.media_id,
+                                                         result.local_media_id, now, displaced);
+    }
+    return result;
 }
 
 [[nodiscard]] auto cached_media_ids(merovingian::media::LocalMediaRepository const& repository)
@@ -311,24 +333,24 @@ namespace
 
 } // namespace
 
-// OUT-4 (security-audit-report-2026-09-29.md): remote media was re-fetched and
-// re-stored on every request. The cache must be consulted before the network,
-// so these scenarios drive the lookup the media service makes ahead of
-// discovery, not the post-fetch admission step.
+// OUT-4 / ADR-0119: remote media is stored like local media and the cache maps
+// a remote (origin, media_id) to that stored copy. The media service looks the
+// cache up before the network, so these scenarios drive that lookup and the
+// admission's plan/apply steps rather than the network fetch.
 SCENARIO("Admitted remote media is found in the cache by origin server and media ID",
          "[media][repository][remote][security][out-4]")
 {
     GIVEN("remote media that has been fetched and admitted once")
     {
         auto repository = remote_cache_repository(1024U, 3600U);
-        auto const admitted = merovingian::media::fetch_remote_media(repository, remote_png_request("media123"));
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        auto const admitted = admit(repository, remote_png_request("media123"), t0);
         REQUIRE(admitted.ok);
-        auto const now = repository.remote_media_cache.front().last_access_ms;
 
         WHEN("the same remote mxc:// URI is looked up within the TTL")
         {
             auto const* cached =
-                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "media123", now);
+                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "media123", t0 + 1U);
 
             THEN("the admitted local record is returned, so no network fetch is "
                  "needed")
@@ -341,9 +363,9 @@ SCENARIO("Admitted remote media is found in the cache by origin server and media
         WHEN("a different media ID or a different origin is looked up")
         {
             auto const* other_media =
-                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "other", now);
+                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "other", t0 + 1U);
             auto const* other_origin =
-                merovingian::media::find_cached_remote_media(repository, "other.example.org", "media123", now);
+                merovingian::media::find_cached_remote_media(repository, "other.example.org", "media123", t0 + 1U);
 
             THEN("neither is a hit")
             {
@@ -352,30 +374,33 @@ SCENARIO("Admitted remote media is found in the cache by origin server and media
             }
         }
 
-        WHEN("the same remote media is admitted a second time, as two concurrent "
-             "cache misses would")
+        WHEN("the same remote media is fetched again before the cache entry was "
+             "consulted, as two concurrent "
+             "misses would")
         {
-            auto const second = merovingian::media::fetch_remote_media(repository, remote_png_request("media123"));
+            auto const second =
+                merovingian::media::fetch_remote_media(repository, remote_png_request("media123"), t0 + 2U);
 
-            THEN("the existing record is reused rather than stored again")
+            THEN("the existing record is reused rather than admitted again")
             {
                 REQUIRE(second.ok);
+                REQUIRE_FALSE(second.admitted_new_record);
                 REQUIRE(second.local_media_id == admitted.local_media_id);
                 REQUIRE(repository.records.size() == 1U);
-                REQUIRE(repository.remote_media_cache.size() == 1U);
             }
         }
     }
 }
 
-SCENARIO("An expired remote media cache entry is dropped, and re-admitted "
-         "media is cached again",
+SCENARIO("Re-admitting remote media after its TTL displaces the expired copy",
          "[media][repository][remote][security][out-4]")
 {
     GIVEN("remote media admitted with a one-second cache TTL")
     {
         auto repository = remote_cache_repository(1024U, 1U);
-        REQUIRE(merovingian::media::fetch_remote_media(repository, remote_png_request("media123")).ok);
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        auto const first = admit(repository, remote_png_request("media123"), t0);
+        REQUIRE(first.ok);
         auto const expiry = repository.remote_media_cache.front().expires_at_ms;
 
         WHEN("it is looked up at its expiry time")
@@ -383,76 +408,87 @@ SCENARIO("An expired remote media cache entry is dropped, and re-admitted "
             auto const* cached =
                 merovingian::media::find_cached_remote_media(repository, "remote.example.org", "media123", expiry);
 
-            THEN("it is a miss and the expired entry is removed")
+            THEN("it is a miss, but the entry is kept so its stored copy can be "
+                 "released")
             {
                 REQUIRE(cached == nullptr);
-                REQUIRE(repository.remote_media_cache.empty());
+                REQUIRE(repository.remote_media_cache.size() == 1U);
             }
 
             AND_WHEN("the media is fetched and admitted again")
             {
-                auto const readmitted =
-                    merovingian::media::fetch_remote_media(repository, remote_png_request("media123"));
-                REQUIRE(readmitted.ok);
-                REQUIRE(repository.remote_media_cache.size() == 1U);
-                auto const fresh = repository.remote_media_cache.front().last_access_ms;
-                auto const* found =
-                    merovingian::media::find_cached_remote_media(repository, "remote.example.org", "media123", fresh);
+                auto const second = admit(repository, remote_png_request("media123"), expiry);
+                auto const* found = merovingian::media::find_cached_remote_media(repository, "remote.example.org",
+                                                                                 "media123", expiry + 1U);
 
-                THEN("the new entry is found, instead of an expired one shadowing it")
+                THEN("the new copy replaces the old one instead of being added beside "
+                     "it")
                 {
+                    REQUIRE(second.ok);
+                    REQUIRE(second.admitted_new_record);
+                    REQUIRE(repository.remote_media_cache.size() == 1U);
+                    REQUIRE(repository.records.size() == 1U);
                     REQUIRE(found != nullptr);
+                    REQUIRE(found->media_id == second.local_media_id);
+                    REQUIRE(merovingian::media::find_local_media_record(repository, first.local_media_id) == nullptr);
                 }
             }
         }
     }
 }
 
-SCENARIO("A remote media cache whose entry cap is zero caches nothing", "[media][repository][remote][security][out-4]")
+SCENARIO("A remote media cache whose entry cap is zero keeps at most one "
+         "stored copy",
+         "[media][repository][remote][security][out-4]")
 {
     GIVEN("remote media fetching enabled with remote_media_cache_max_entries = 0")
     {
         auto repository = remote_cache_repository(0U, 3600U);
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
 
         WHEN("several distinct remote media are admitted")
         {
-            auto const a = merovingian::media::fetch_remote_media(repository, remote_png_request("mediaA"));
-            auto const b = merovingian::media::fetch_remote_media(repository, remote_png_request("mediaB"));
-            auto const c = merovingian::media::fetch_remote_media(repository, remote_png_request("mediaC"));
+            auto const a = admit(repository, remote_png_request("mediaA"), t0);
+            auto const b = admit(repository, remote_png_request("mediaB"), t0 + 1U);
+            auto const c = admit(repository, remote_png_request("mediaC"), t0 + 2U);
+            auto const* hit =
+                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "mediaC", t0 + 2U);
 
-            THEN("the cache stays empty: zero disables it rather than removing its "
-                 "bound")
+            THEN("each admission displaces the last, and nothing is served from the "
+                 "cache")
             {
                 REQUIRE(a.ok);
                 REQUIRE(b.ok);
                 REQUIRE(c.ok);
-                REQUIRE(repository.remote_media_cache.empty());
+                REQUIRE(repository.remote_media_cache.size() == 1U);
+                REQUIRE(repository.records.size() == 1U);
+                REQUIRE(hit == nullptr);
             }
         }
     }
 }
 
-SCENARIO("A remote media cache entry whose record is no longer available is dropped",
+SCENARIO("A cached remote media record is returned in its moderation state",
          "[media][repository][remote][security][out-4]")
 {
     GIVEN("cached remote media that an administrator then removes")
     {
         auto repository = remote_cache_repository(1024U, 3600U);
-        auto const admitted = merovingian::media::fetch_remote_media(repository, remote_png_request("media123"));
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        auto const admitted = admit(repository, remote_png_request("media123"), t0);
         REQUIRE(admitted.ok);
-        auto const now = repository.remote_media_cache.front().last_access_ms;
         REQUIRE(merovingian::media::remove_local_media(repository, admitted.local_media_id, "abuse").ok);
 
-        WHEN("it is looked up")
+        WHEN("it is looked up within its TTL")
         {
             auto const* cached =
-                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "media123", now);
+                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "media123", t0 + 1U);
 
-            THEN("it is a miss and the entry is removed, so removed content is never "
-                 "served from the cache")
+            THEN("the removed record is returned, so the caller refuses it rather "
+                 "than fetching it again")
             {
-                REQUIRE(cached == nullptr);
-                REQUIRE(repository.remote_media_cache.empty());
+                REQUIRE(cached != nullptr);
+                REQUIRE(cached->state == merovingian::media::LocalMediaState::removed);
             }
         }
     }
@@ -466,26 +502,39 @@ SCENARIO("Remote media cache evicts the least-recently-used entry when it "
           "then B")
     {
         auto repository = remote_cache_repository(2U, 3600U);
-        REQUIRE(merovingian::media::fetch_remote_media(repository, remote_png_request("mediaA")).ok);
-        REQUIRE(merovingian::media::fetch_remote_media(repository, remote_png_request("mediaB")).ok);
-        auto const now = repository.remote_media_cache.back().last_access_ms;
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        auto const a = admit(repository, remote_png_request("mediaA"), t0);
+        auto const b =
+            admit(repository, remote_png_request("mediaB", std::string{"\x89PNG\r\n\x1a\x0a\x01", 9U}), t0 + 1U);
+        REQUIRE(a.ok);
+        REQUIRE(b.ok);
 
         WHEN("A is looked up, making B the least recently used, and then C is "
              "admitted")
         {
             auto const* touched =
-                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "mediaA", now);
-            auto const c = merovingian::media::fetch_remote_media(repository, remote_png_request("mediaC"));
+                merovingian::media::find_cached_remote_media(repository, "remote.example.org", "mediaA", t0 + 2U);
+            auto const displaced =
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaC", 9U);
+            auto const c =
+                admit(repository, remote_png_request("mediaC", std::string{"\x89PNG\r\n\x1a\x0a\x02", 9U}), t0 + 3U);
 
-            THEN("the cache stays within its cap, keeps A and C, and evicts B")
+            THEN("the plan names B, and the cache keeps A and C")
             {
                 REQUIRE(touched != nullptr);
                 REQUIRE(c.ok);
+                REQUIRE(displaced.size() == 1U);
+                REQUIRE(displaced.front().media_id == "mediaB");
                 auto const ids = cached_media_ids(repository);
                 REQUIRE(ids.size() == 2U);
                 REQUIRE(std::ranges::find(ids, "mediaA") != ids.end());
                 REQUIRE(std::ranges::find(ids, "mediaC") != ids.end());
-                REQUIRE(std::ranges::find(ids, "mediaB") == ids.end());
+            }
+
+            THEN("B's stored copy is forgotten, not left behind")
+            {
+                REQUIRE(merovingian::media::find_local_media_record(repository, b.local_media_id) == nullptr);
+                REQUIRE(repository.records.size() == 2U);
             }
         }
     }
@@ -511,19 +560,21 @@ SCENARIO("Remote-fetched media is quarantined by the default acceptance policy e
              "fabricated the verdict")
         {
             auto const fetched =
-                merovingian::media::fetch_remote_media(repository, {
-                                                                       "remote.example.org",
-                                                                       "media999",
-                                                                       "remote.example.org",
-                                                                       {"203.0.113.20"},
-                                                                       "image/png",
-                                                                       std::string{"\x89PNG\r\n\x1a\n", 8U},
-                                                                       true,
-                                                                       16U,
-                                                                       64U,
-                                                                       1U,
-                                                                       true
-            });
+                merovingian::media::fetch_remote_media(repository,
+                                                       {
+                                                           "remote.example.org",
+                                                           "media999",
+                                                           "remote.example.org",
+                                                           {"203.0.113.20"},
+                                                           "image/png",
+                                                           std::string{"\x89PNG\r\n\x1a\n", 8U},
+                                                           true,
+                                                           16U,
+                                                           64U,
+                                                           1U,
+                                                           true
+            },
+                                                       merovingian::media::remote_media_cache_now_ms());
 
             THEN("the bytes are still quarantined rather than served, because the acceptance policy overrides it")
             {
@@ -801,8 +852,7 @@ SCENARIO("Deduplicated uploads do not consume repository capacity twice", "[medi
 // MED-6 (security-audit-report-2026-09-29.md): media quotas defaulted to
 // unlimited. Every blob is held in memory, so the server-wide cap is a memory
 // budget and the defaults are sized for a small host (ADR-0113).
-SCENARIO("Default media repository capacity limits bound memory without "
-         "refusing a normal upload",
+SCENARIO("Default media repository capacity limits suit a community server's disk",
          "[media][repository][security][med-6]")
 {
     GIVEN("a runtime media config built from the default configuration")
@@ -811,22 +861,27 @@ SCENARIO("Default media repository capacity limits bound memory without "
 
         WHEN("the default capacity limits are inspected")
         {
-            constexpr auto mib = std::uint64_t{1024U} * 1024U;
+            constexpr auto gib = std::uint64_t{1024U} * 1024U * 1024U;
 
-            THEN("the server holds at most 2 GiB in 100000 records, and one user at "
-                 "most 256 MiB")
+            THEN("local media is capped at 250 GiB in 1,000,000 records, and 10 GiB per user")
             {
-                REQUIRE(config.max_total_bytes == 2048U * mib);
-                REQUIRE(config.max_bytes_per_user == 256U * mib);
-                REQUIRE(config.max_records == 100000U);
+                REQUIRE(config.max_total_bytes == 250U * gib);
+                REQUIRE(config.max_bytes_per_user == 10U * gib);
+                REQUIRE(config.max_records == 1000000U);
             }
 
-            THEN("one upload of the maximum size fits within a user's quota, and a "
-                 "user's quota within the total")
+            THEN("cached remote media has its own budget of 25 GiB in 50,000 files")
+            {
+                REQUIRE(config.remote_media_cache_max_bytes == 25U * gib);
+                REQUIRE(config.remote_media_cache_max_entries == 50000U);
+            }
+
+            THEN("one upload of the maximum size fits a user's quota, and one remote file fits the remote budget")
             {
                 REQUIRE(config.max_upload_bytes > 0U);
                 REQUIRE(config.max_bytes_per_user >= config.max_upload_bytes);
                 REQUIRE(config.max_total_bytes >= config.max_bytes_per_user);
+                REQUIRE(config.remote_media_cache_max_bytes >= config.max_upload_bytes);
             }
         }
     }
@@ -869,28 +924,33 @@ SCENARIO("A user past the default per-user media quota is refused with 507", "[m
     }
 }
 
-SCENARIO("Remote media is not charged to a per-user quota, but still counts "
-         "toward the server total",
+// ADR-0120: cached remote media has its own byte and entry budget and is not
+// charged to local quotas, so it can never make a local upload fail.
+SCENARIO("Remote media is charged to its own budget, not to local quotas",
          "[media][repository][remote][security][med-6]")
 {
-    GIVEN("remote fetching enabled with a per-user quota of eight bytes")
+    GIVEN("remote fetching enabled with a per-user quota of eight bytes and a local total of eight bytes")
     {
         auto repository = test_repository();
         repository.config.remote_fetch_enabled = true;
         repository.config.remote_fetch_media_policy = merovingian::media::MediaAcceptancePolicy::allow_after_scan;
         repository.config.max_bytes_per_user = 8U;
+        repository.config.max_total_bytes = 8U;
+        repository.config.remote_media_cache_max_bytes = 1024U;
         auto const fetch = [&repository](std::string media_id, std::string bytes) {
-            return merovingian::media::fetch_remote_media(repository, {"remote.example.org",
-                                                                       std::move(media_id),
-                                                                       "remote.example.org",
-                                                                       {"203.0.113.20"},
-                                                                       "image/png",
-                                                                       std::move(bytes),
-                                                                       true,
-                                                                       16U,
-                                                                       64U,
-                                                                       1U,
-                                                                       true});
+            return merovingian::media::fetch_remote_media(repository,
+                                                          {"remote.example.org",
+                                                           std::move(media_id),
+                                                           "remote.example.org",
+                                                           {"203.0.113.20"},
+                                                           "image/png",
+                                                           std::move(bytes),
+                                                           true,
+                                                           16U,
+                                                           64U,
+                                                           1U,
+                                                           true},
+                                                          merovingian::media::remote_media_cache_now_ms());
         };
 
         WHEN("one origin serves more than eight bytes of distinct media")
@@ -898,30 +958,73 @@ SCENARIO("Remote media is not charged to a per-user quota, but still counts "
             auto const first = fetch("first", std::string{"\x89PNG\r\n\x1a\n", 8U});
             auto const second = fetch("second", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
 
-            THEN("both are admitted: every remote file shares one owner per origin, "
-                 "so a per-user quota "
-                 "would cut that origin off after its first files")
+            THEN("both are admitted: neither the per-user quota nor the local total applies to remote media")
             {
                 REQUIRE(first.ok);
                 REQUIRE(second.ok);
             }
+
+            AND_WHEN("a local user then uploads up to the local total")
+            {
+                auto const local = merovingian::media::upload_local_media(
+                    repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+
+                THEN("the upload succeeds: cached remote media does not use up local capacity")
+                {
+                    REQUIRE(local.ok);
+                }
+            }
         }
 
-        AND_GIVEN("a server-wide cap of twelve bytes")
+        AND_GIVEN("a remote budget of eight bytes")
         {
-            repository.config.max_total_bytes = 12U;
+            repository.config.remote_media_cache_max_bytes = 8U;
 
-            WHEN("remote media would cross it")
+            WHEN("a single remote file is larger than the whole remote budget")
             {
-                auto const first = fetch("first", std::string{"\x89PNG\r\n\x1a\n", 8U});
-                auto const second = fetch("second", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
+                auto const oversized = fetch("big", std::string{"\x89PNG\r\n\x1a\x0a\x00", 9U});
 
-                THEN("the media that crosses the server total is refused with 507")
+                THEN("it is refused with 507")
                 {
-                    REQUIRE(first.ok);
-                    REQUIRE_FALSE(second.ok);
-                    REQUIRE(second.status == 507U);
+                    REQUIRE_FALSE(oversized.ok);
+                    REQUIRE(oversized.status == 507U);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media cache evicts least-recently-used files to stay within its byte budget",
+         "[media][repository][remote][security][med-6]")
+{
+    GIVEN("a remote media cache with room for many entries but only sixteen bytes, holding an eight-byte file")
+    {
+        auto repository = remote_cache_repository(1024U, 3600U);
+        repository.config.remote_media_cache_max_bytes = 16U;
+        auto const t0 = merovingian::media::remote_media_cache_now_ms();
+        auto const a = admit(repository, remote_png_request("mediaA"), t0);
+        REQUIRE(a.ok);
+
+        WHEN("a nine-byte file is planned for admission")
+        {
+            auto const displaced =
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 9U);
+
+            THEN("the eight-byte file is displaced, because together they would exceed the budget")
+            {
+                REQUIRE(displaced.size() == 1U);
+                REQUIRE(displaced.front().media_id == "mediaA");
+            }
+        }
+
+        WHEN("a four-byte file is planned for admission")
+        {
+            auto const displaced =
+                merovingian::media::plan_remote_media_admission(repository, "remote.example.org", "mediaB", 4U);
+
+            THEN("nothing is displaced: both fit")
+            {
+                REQUIRE(displaced.empty());
             }
         }
     }
@@ -1034,7 +1137,7 @@ SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads", "[
         WHEN("the authenticated v1 endpoint requests the media")
         {
             auto const authenticated =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, false);
+                merovingian::media::resolve_local_media_download(repository, uploaded.media_id, false);
 
             THEN("the bytes are served")
             {
@@ -1045,8 +1148,7 @@ SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads", "[
 
         WHEN("the legacy unauthenticated v3 endpoint requests the same media")
         {
-            auto const legacy =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, true);
+            auto const legacy = merovingian::media::resolve_local_media_download(repository, uploaded.media_id, true);
 
             THEN("the endpoint is frozen and returns a 404")
             {
@@ -1060,13 +1162,68 @@ SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads", "[
         {
             REQUIRE(!repository.records.empty());
             repository.records.front().legacy_endpoint_visible = true;
-            auto const legacy =
-                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, true);
+            auto const legacy = merovingian::media::resolve_local_media_download(repository, uploaded.media_id, true);
 
             THEN("the legacy endpoint serves it, preserving backward compatibility for old uploads")
             {
                 REQUIRE(legacy.ok);
                 REQUIRE(legacy.status == 200U);
+            }
+        }
+    }
+}
+
+// ADR-0119: bytes are read with the runtime mutex released, so moderation can
+// land between resolving a download and serving it. The re-check must refuse.
+SCENARIO("Media resolved for download is refused if moderation lands before it is served",
+         "[media][repository][media-on-demand]")
+{
+    GIVEN("an uploaded file resolved for download")
+    {
+        auto repository = test_repository();
+        auto const uploaded = merovingian::media::upload_local_media(
+            repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+        REQUIRE(uploaded.ok);
+        auto const target = merovingian::media::resolve_local_media_download(repository, uploaded.media_id);
+        REQUIRE(target.ok);
+
+        WHEN("nothing changes before it is served")
+        {
+            THEN("it may still be served")
+            {
+                REQUIRE(
+                    merovingian::media::local_media_still_servable(repository, uploaded.media_id, target.storage_id));
+            }
+        }
+
+        WHEN("it is quarantined before it is served")
+        {
+            REQUIRE(merovingian::media::quarantine_local_media(repository, uploaded.media_id, "reported").ok);
+
+            THEN("it may no longer be served")
+            {
+                REQUIRE_FALSE(
+                    merovingian::media::local_media_still_servable(repository, uploaded.media_id, target.storage_id));
+            }
+        }
+
+        WHEN("it is removed before it is served")
+        {
+            REQUIRE(merovingian::media::remove_local_media(repository, uploaded.media_id, "abuse").ok);
+
+            THEN("it may no longer be served")
+            {
+                REQUIRE_FALSE(
+                    merovingian::media::local_media_still_servable(repository, uploaded.media_id, target.storage_id));
+            }
+        }
+
+        WHEN("it was resolved for the authenticated endpoint and is checked for the legacy one")
+        {
+            THEN("the legacy freeze still applies")
+            {
+                REQUIRE_FALSE(merovingian::media::local_media_still_servable(repository, uploaded.media_id,
+                                                                             target.storage_id, true));
             }
         }
     }

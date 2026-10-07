@@ -2826,21 +2826,60 @@ namespace
         return !blob.storage_id.empty() && !blob.hash_algorithm.empty() && !blob.digest.empty();
     }
 
-    // MED-6: the runtime repository is the single in-memory copy of the blob
-    // bytes. Once the row is durable the store keeps only its metadata.
-    auto remember_media_blob_metadata(PersistentStore& store, PersistentMediaBlob const& blob) -> void
+    // ADR-0119: once a blob row is durable the store mirrors only its
+    // metadata; its bytes are read from the database on demand. The memory
+    // backend is the exception, because its mirror is the database: there the
+    // bytes are kept when written and left alone when only the reference count
+    // changes.
+    auto remember_media_blob(PersistentStore& store, PersistentMediaBlob const& blob, bool bytes_written) -> void
     {
-        auto metadata_only =
-            PersistentMediaBlob{blob.storage_id, blob.hash_algorithm, blob.digest, blob.size_bytes, {}, blob.ref_count};
+        auto const keep_bytes = store.backend == PersistentStoreBackend::memory && bytes_written;
         auto existing = std::ranges::find_if(store.media_blobs, [&blob](PersistentMediaBlob const& current) {
             return current.storage_id == blob.storage_id;
         });
-        if (existing != store.media_blobs.end())
+        if (existing == store.media_blobs.end())
         {
-            *existing = std::move(metadata_only);
+            store.media_blobs.push_back({blob.storage_id, blob.hash_algorithm, blob.digest, blob.size_bytes,
+                                         keep_bytes ? blob.bytes : std::string{}, blob.ref_count});
             return;
         }
-        store.media_blobs.push_back(std::move(metadata_only));
+        existing->hash_algorithm = blob.hash_algorithm;
+        existing->digest = blob.digest;
+        existing->size_bytes = blob.size_bytes;
+        existing->ref_count = blob.ref_count;
+        if (bytes_written)
+        {
+            existing->bytes = keep_bytes ? blob.bytes : std::string{};
+        }
+    }
+
+    [[nodiscard]] auto upsert_remote_media_statement(PersistentRemoteMedia const& media) -> PreparedStatement
+    {
+        return record_statement(
+            "upsert_remote_media",
+            "INSERT INTO remote_media (server_name, media_id, content_type, size_bytes, quarantined, "
+            "local_media_id, fetched_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (server_name, media_id) "
+            "DO UPDATE SET content_type = $3, size_bytes = $4, quarantined = $5, local_media_id = $6, "
+            "fetched_at_ms = $7",
+            {
+                {media.server_name,                    false},
+                {media.media_id,                       false},
+                {media.content_type,                   false},
+                {std::to_string(media.size_bytes),     false},
+                {media.quarantined ? "true" : "false", false},
+                {media.local_media_id,                 false},
+                {std::to_string(media.fetched_at_ms),  false}
+        });
+    }
+
+    [[nodiscard]] auto update_media_blob_ref_count_statement(PersistentMediaBlob const& blob) -> PreparedStatement
+    {
+        return record_statement("update_media_blob_ref_count",
+                                "UPDATE media_blobs SET ref_count = $2 WHERE storage_id = $1",
+                                {
+                                    {blob.storage_id,                false},
+                                    {std::to_string(blob.ref_count), false}
+        });
     }
 
 } // namespace
@@ -2856,23 +2895,63 @@ namespace
 }
 
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
-                                             PersistentMediaBlob const& blob) -> bool
+                                             PersistentMediaBlob const& blob, bool new_blob) -> bool
 {
-    if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.storage_id.empty() ||
-        blob.ref_count == 0U)
+    if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.ref_count == 0U ||
+        (new_blob && blob.bytes.size() != blob.size_bytes))
     {
         return false;
     }
     // DB-5: the record and the blob it points at are durable together or not at
     // all. A record without its blob would survive a restart as unservable
     // media, and a blob without its record as an orphaned reference count.
-    if (!commit_persistent_transaction(store, {insert_local_media_statement(media), upsert_media_blob_statement(blob)}))
+    // ADR-0119: a deduplicated upload's bytes are already durable, so only its
+    // reference count is written; re-binding them would copy the whole file.
+    auto const blob_statement =
+        new_blob ? upsert_media_blob_statement(blob) : update_media_blob_ref_count_statement(blob);
+    if (!commit_persistent_transaction(store, {insert_local_media_statement(media), blob_statement}))
     {
         return false;
     }
     store.local_media.push_back(std::move(media));
-    remember_media_blob_metadata(store, blob);
+    remember_media_blob(store, blob, new_blob);
     return true;
+}
+
+auto prepare_media_blob_read(PersistentStore const& store, std::string_view storage_id) -> MediaBlobRead
+{
+    auto read = MediaBlobRead{};
+    read.backend = store.backend;
+    read.storage_id = std::string{storage_id};
+    read.sqlite_path = store.sqlite_path;
+    read.postgresql_conninfo = store.postgresql_conninfo;
+    read.postgresql_runtime_role = store.postgresql_runtime_role;
+    if (store.backend == PersistentStoreBackend::memory)
+    {
+        auto const blob = std::ranges::find_if(store.media_blobs, [storage_id](PersistentMediaBlob const& row) {
+            return row.storage_id == storage_id && row.ref_count > 0U;
+        });
+        if (blob != store.media_blobs.end())
+        {
+            read.memory_bytes = blob->bytes;
+        }
+    }
+    return read;
+}
+
+auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
+{
+    switch (read.backend)
+    {
+    case PersistentStoreBackend::memory:
+        return read.memory_bytes;
+    case PersistentStoreBackend::sqlite:
+        return detail::read_media_blob_from_sqlite(read.sqlite_path, read.storage_id);
+    case PersistentStoreBackend::postgresql:
+        return detail::read_media_blob_from_postgresql(read.postgresql_conninfo, read.postgresql_runtime_role,
+                                                       read.storage_id);
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
@@ -2979,19 +3058,107 @@ namespace
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_remote_media",
-                                                    "INSERT INTO remote_media VALUES ($1, $2, $3, $4, $5)",
-                                                    {
-                                                        {media.server_name,                    false},
-                                                        {media.media_id,                       false},
-                                                        {media.content_type,                   false},
-                                                        {std::to_string(media.size_bytes),     false},
-                                                        {media.quarantined ? "true" : "false", false}
+    // Insert-only, as before migration 020; the columns are named so the
+    // statement survives columns being added.
+    if (!record_and_persist(
+            store, record_statement("insert_remote_media",
+                                    "INSERT INTO remote_media (server_name, media_id, content_type, size_bytes, "
+                                    "quarantined, local_media_id, fetched_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                                    {
+                                        {media.server_name,                    false},
+                                        {media.media_id,                       false},
+                                        {media.content_type,                   false},
+                                        {std::to_string(media.size_bytes),     false},
+                                        {media.quarantined ? "true" : "false", false},
+                                        {media.local_media_id,                 false},
+                                        {std::to_string(media.fetched_at_ms),  false}
     })))
     {
         return false;
     }
     store.remote_media.push_back(std::move(media));
+    return true;
+}
+
+[[nodiscard]] auto commit_remote_media_admission(PersistentStore& store, PersistentLocalMedia media,
+                                                 PersistentMediaBlob const& blob, bool new_blob,
+                                                 PersistentRemoteMedia mapping,
+                                                 std::vector<PersistentRemoteMediaRelease> const& releases,
+                                                 std::vector<PersistentBlobReferenceCount> const& released_blobs)
+    -> bool
+{
+    if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.ref_count == 0U ||
+        (new_blob && blob.bytes.size() != blob.size_bytes) || mapping.server_name.empty() || mapping.media_id.empty() ||
+        mapping.local_media_id != media.media_id)
+    {
+        return false;
+    }
+    // Releases first: a release of this same (server_name, media_id) deletes the
+    // old cache row, which the upsert at the end then replaces.
+    auto statements = std::vector<PreparedStatement>{};
+    for (auto const& release : releases)
+    {
+        statements.push_back(record_statement("delete_released_remote_local_media",
+                                              "DELETE FROM media WHERE media_id = $1",
+                                              {
+                                                  {release.local_media_id, false}
+        }));
+        statements.push_back(record_statement("delete_released_remote_media",
+                                              "DELETE FROM remote_media WHERE server_name = $1 AND media_id = $2",
+                                              {
+                                                  {release.server_name, false},
+                                                  {release.media_id,    false}
+        }));
+    }
+    for (auto const& released : released_blobs)
+    {
+        statements.push_back(
+            record_statement("release_remote_media_blob",
+                             "UPDATE media_blobs SET ref_count = $2, bytes = CASE WHEN $2 = '0' THEN $3 ELSE bytes END "
+                             "WHERE storage_id = $1",
+                             {
+                                 {released.storage_id, false},
+                                 {std::to_string(released.ref_count), false},
+                                 {std::string{}, true, true}
+        }));
+    }
+    statements.push_back(insert_local_media_statement(media));
+    statements.push_back(new_blob ? upsert_media_blob_statement(blob) : update_media_blob_ref_count_statement(blob));
+    statements.push_back(upsert_remote_media_statement(mapping));
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+
+    for (auto const& release : releases)
+    {
+        std::erase_if(store.local_media, [&release](PersistentLocalMedia const& row) {
+            return row.media_id == release.local_media_id;
+        });
+        std::erase_if(store.remote_media, [&release](PersistentRemoteMedia const& row) {
+            return row.server_name == release.server_name && row.media_id == release.media_id;
+        });
+    }
+    for (auto const& released : released_blobs)
+    {
+        auto const row = std::ranges::find_if(store.media_blobs, [&released](PersistentMediaBlob const& candidate) {
+            return candidate.storage_id == released.storage_id;
+        });
+        if (row != store.media_blobs.end())
+        {
+            row->ref_count = released.ref_count;
+            if (released.ref_count == 0U)
+            {
+                row->bytes.clear();
+            }
+        }
+    }
+    store.local_media.push_back(std::move(media));
+    remember_media_blob(store, blob, new_blob);
+    std::erase_if(store.remote_media, [&mapping](PersistentRemoteMedia const& row) {
+        return row.server_name == mapping.server_name && row.media_id == mapping.media_id;
+    });
+    store.remote_media.push_back(std::move(mapping));
     return true;
 }
 
@@ -3001,7 +3168,7 @@ namespace
     {
         return false;
     }
-    remember_media_blob_metadata(store, blob);
+    remember_media_blob(store, blob, true);
     return true;
 }
 

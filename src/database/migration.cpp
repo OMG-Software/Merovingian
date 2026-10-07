@@ -607,6 +607,33 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {18U, "drop_to_device_queue_age_bound", std::move(statements), MigrationDirection::downgrade};
 }
 
+// ADR-0119: remote media is stored like local media, so the cache that maps a
+// remote (server_name, media_id) to its stored local record must survive a
+// restart. remote_media gains the local record's ID and the fetch time.
+[[nodiscard]] auto upgrade_remote_media_cache_mapping_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"add_remote_media_local_media_id_column",
+                          "ALTER TABLE remote_media ADD COLUMN local_media_id TEXT NOT NULL DEFAULT ''",
+                          {}});
+    statements.push_back(
+        PreparedStatement{"add_remote_media_fetched_at_ms_column",
+                          "ALTER TABLE remote_media ADD COLUMN fetched_at_ms TEXT NOT NULL DEFAULT '0'",
+                          {}});
+    return {20U, "remote_media_cache_mapping", std::move(statements), MigrationDirection::upgrade};
+}
+
+[[nodiscard]] auto downgrade_remote_media_cache_mapping_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "drop_remote_media_fetched_at_ms_column", "ALTER TABLE remote_media DROP COLUMN fetched_at_ms", {}});
+    statements.push_back(PreparedStatement{
+        "drop_remote_media_local_media_id_column", "ALTER TABLE remote_media DROP COLUMN local_media_id", {}});
+    return {19U, "drop_remote_media_cache_mapping", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -627,7 +654,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_media_legacy_endpoint_visibility_migration(),
             upgrade_token_rotation_lineage_migration(),
             upgrade_room_directory_visibility_migration(),
-            upgrade_to_device_queue_age_bound_migration()};
+            upgrade_to_device_queue_age_bound_migration(),
+            upgrade_remote_media_cache_mapping_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -778,7 +806,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_to_device_queue_age_bound_migration(),
+    return {downgrade_remote_media_cache_mapping_migration(),
+            downgrade_to_device_queue_age_bound_migration(),
             downgrade_room_directory_visibility_migration(),
             downgrade_token_rotation_lineage_migration(),
             downgrade_media_legacy_endpoint_visibility_migration(),

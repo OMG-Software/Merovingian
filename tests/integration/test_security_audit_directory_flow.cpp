@@ -548,7 +548,7 @@ SCENARIO("schema version 17 rooms migrate to private directory visibility",
             THEN("the legacy room remains private and is absent from the public directory")
             {
                 REQUIRE(started.started);
-                REQUIRE(started.runtime.homeserver.database.schema_version == 19U);
+                REQUIRE(started.runtime.homeserver.database.schema_version == 20U);
                 auto const persisted_room = std::ranges::find_if(
                     started.runtime.homeserver.database.persistent_store.rooms, [&legacy_room_id](auto const& room) {
                         return room.room_id == legacy_room_id;

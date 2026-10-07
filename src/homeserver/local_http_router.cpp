@@ -2719,7 +2719,7 @@ namespace
         // federation_request_routing.cpp.
         runtime.federation.media_download_provider =
             [rt](std::string_view media_id) -> media::LocalMediaDownloadResult {
-            return media::download_local_media(rt->media_repository, rt->config.server().server_name, media_id);
+            return download_local_media_for_federation(*rt, media_id);
         };
 
         // Resolve the room version from the stored m.room.create state event so

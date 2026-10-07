@@ -119,6 +119,8 @@
 * [0116 - Verify token revocation state in the auth service](0116-verify-token-revocation-state-in-auth-service.md)
 * [0117 - Bound to-device queues by recipient count and age](0117-bound-to-device-queues-by-recipient-count-and-age.md)
 * [0118 - Refuse E2EE key and filter uploads at per-user caps; store filters canonically](0118-refuse-e2ee-and-filter-uploads-at-per-user-caps.md)
+* [0119 - Media bytes live in the database and are read on demand](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md)
+* [0120 - Cached remote media has its own storage budget](0120-cached-remote-media-has-its-own-storage-budget.md)
 
 ## Rejected Records
 

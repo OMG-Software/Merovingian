@@ -50,12 +50,19 @@ current in-process runtime path.
   routes, and so to the federation-media fallback inside `fetch_remote_media_live`. Previously the
   flag was consulted only in `media::fetch_remote_media`, after the bytes had been downloaded
   (audit OUT-7). The refusal is counted (`remote_fetch_rejections`) and audited
-  (`media.remote_fetch_rejected`). Accepted remote media is cached under a system owner keyed by
-  `(origin_server, media_id)`. Repeated requests within `security.media.remote_media_cache_ttl_seconds`
-  serve the already-stored local record; the cache is bounded by
-  `security.media.remote_media_cache_max_entries` and evicts least-recently-used entries when full.
-  A TTL of 0 disables caching; when fetching is off, downloads of a remote `serverName` answer 404
-  before any outbound work.
+  (`media.remote_fetch_rejected`). Accepted remote media is stored in the database under a system
+  owner (`@remote-media:<origin>`), and the cache entry mapping `(origin_server, media_id)` to it is
+  stored in `remote_media`, so both survive a restart (ADR-0119). Requests within
+  `security.media.remote_media_cache_ttl_seconds` are answered from the stored record without
+  contacting the origin: its bytes when available, `451` when quarantined, `404` when removed. A
+  re-fetch after the TTL replaces the stored copy, and when `security.media.remote_media_cache_max_entries`
+  is reached the least recently used remote copy is deleted, so stored remote media stays bounded.
+  `remote_media_cache_max_entries = 0` disables the cache and keeps only the latest fetched copy;
+  when fetching is off, downloads of a remote `serverName` answer 404 before any outbound work.
+- Media bytes are stored only in `media_blobs.bytes` and read for each download, thumbnail or
+  federation media request (ADR-0119). Memory holds records and blob metadata. The read runs with the
+  runtime mutex released, and the record is checked again afterwards, so media removed or quarantined
+  during the read is not served.
 - When enabled, a remote fetch takes a slot in the client-outbound budget (4 in flight overall,
   1 per client address, `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000 over it) and every step
   (discovery, the federation media request, the legacy fallback, a `Location` redirect follow)

@@ -424,6 +424,8 @@ struct PersistentLocalMedia final
     bool legacy_endpoint_visible{true};
 };
 
+// A remote (server_name, media_id) and the local record holding its stored
+// copy: the durable form of the remote media cache (ADR-0119, migration 020).
 struct PersistentRemoteMedia final
 {
     std::string server_name{};
@@ -431,6 +433,26 @@ struct PersistentRemoteMedia final
     std::string content_type{};
     std::uint64_t size_bytes{0U};
     bool quarantined{false};
+    std::string local_media_id{};
+    // Milliseconds since the Unix epoch.
+    std::uint64_t fetched_at_ms{0U};
+};
+
+// A stored remote copy the remote media cache no longer holds: its local
+// media row and cache row are deleted (ADR-0119).
+struct PersistentRemoteMediaRelease final
+{
+    std::string local_media_id{};
+    std::string server_name{};
+    std::string media_id{};
+};
+
+// A blob's reference count after a change, and whether its bytes are cleared
+// because nothing references it any more.
+struct PersistentBlobReferenceCount final
+{
+    std::string storage_id{};
+    std::uint64_t ref_count{0U};
 };
 
 struct PersistentMediaBlob final
@@ -1328,8 +1350,29 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 // DB-5: writes a new upload's media row and its blob (inserted, or updated with the
 // new reference count when deduplicated) in one transaction. The in-memory mirror
 // changes only after the commit succeeds; on failure nothing is written.
+// When `new_blob` is true the blob row is written with `blob.bytes` (a new
+// blob, or a removed one revived by a re-upload); otherwise the bytes are
+// already durable and only the reference count is updated (ADR-0119).
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
-                                             PersistentMediaBlob const& blob) -> bool;
+                                             PersistentMediaBlob const& blob, bool new_blob) -> bool;
+
+// ADR-0119: media bytes live only in the database and are read per request.
+// prepare_media_blob_read runs under the runtime mutex and captures where to
+// read from; read_media_blob then runs with the mutex released. The SQLite
+// path and PostgreSQL connection details are fixed once the store is open.
+// The memory backend has no other copy of the bytes, so they are copied here.
+struct MediaBlobRead final
+{
+    PersistentStoreBackend backend{PersistentStoreBackend::memory};
+    std::string storage_id{};
+    std::string sqlite_path{};
+    std::string_view postgresql_conninfo{};
+    std::string_view postgresql_runtime_role{};
+    std::optional<std::string> memory_bytes{};
+};
+[[nodiscard]] auto prepare_media_blob_read(PersistentStore const& store, std::string_view storage_id) -> MediaBlobRead;
+// The blob's bytes, or nullopt when it is not referenced or cannot be read.
+[[nodiscard]] auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
 // Commit moderation metadata, optional blob removal and both audit records
@@ -1338,6 +1381,18 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
                                                  bool removed, PersistentAdminAction action, PersistentAuditEvent audit)
     -> bool;
 [[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool;
+// ADR-0119: admits fetched remote media in one transaction. Deletes the media
+// and cache rows of `releases`, sets each of `released_blobs` to its new
+// reference count (clearing the bytes at zero), inserts `media`, writes `blob`
+// (its bytes when `new_blob`, otherwise only its reference count, which must
+// already account for `releases`), and upserts `mapping`. The in-memory
+// mirror changes only after the commit succeeds.
+[[nodiscard]] auto commit_remote_media_admission(PersistentStore& store, PersistentLocalMedia media,
+                                                 PersistentMediaBlob const& blob, bool new_blob,
+                                                 PersistentRemoteMedia mapping,
+                                                 std::vector<PersistentRemoteMediaRelease> const& releases,
+                                                 std::vector<PersistentBlobReferenceCount> const& released_blobs)
+    -> bool;
 [[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob const& blob) -> bool;
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool;
 // Adds `event` to the bounded in-memory audit window without persisting it,
@@ -1555,6 +1610,12 @@ namespace detail
         -> std::optional<std::vector<PersistentAuditEvent>>;
     [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
+    // ADR-0119: one referenced media blob's bytes. nullopt on a missing or
+    // unreferenced blob and on a connection or query failure.
+    [[nodiscard]] auto read_media_blob_from_sqlite(std::string const& path, std::string_view storage_id)
+        -> std::optional<std::string>;
+    [[nodiscard]] auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                                       std::string_view storage_id) -> std::optional<std::string>;
     [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                           std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;

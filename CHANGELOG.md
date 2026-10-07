@@ -1,3 +1,60 @@
+## 0.12.20
+
+- **TESTS:** the PostgreSQL-only media scenarios (`[postgresql][media]`) read blob bytes
+  after a reopen through `read_media_blob`, since hydration no longer loads them, and the
+  released-blob scenario checks the `bytes` column directly, because `read_media_blob`
+  skips unreferenced blobs and would pass whether or not the bytes were cleared.
+- **CHANGED: media bytes live in the database and are read on demand (ADR-0119).** Every
+  stored media file used to be loaded into memory at startup and served from there, so
+  memory grew with stored media. Hydration now reads blob metadata only; downloads,
+  thumbnails, remote-cache hits and the federation media endpoint read the bytes per
+  request with the runtime mutex released, then re-check that the media may still be
+  served, so media removed or quarantined during the read is refused. `LocalMediaBlob` has
+  no bytes member. Uploads write bytes straight from the request; a deduplicated upload
+  updates only the reference count instead of rewriting the file. `max_total_size` now
+  bounds storage, not memory; the defaults are unchanged.
+- **FIXED: the federation media download read the media repository without the runtime
+  mutex.** Its lookups rebuild the repository's indices, so it raced with uploads and
+  moderation. It now takes the mutex for the lookups (`download_local_media_for_federation`).
+- **FIXED: remote media was never written to the database.** It is now stored like an
+  upload, and the remote media cache is durable (migration 020 adds `local_media_id` and
+  `fetched_at_ms` to the previously unused `remote_media` table). Admission is planned,
+  committed in one transaction (`commit_remote_media_admission`) and then applied, so each
+  stored remote copy stays reachable from one cache entry: a re-fetch after the TTL
+  replaces the old copy, eviction at `remote_media_cache_max_entries` deletes it, the cache
+  survives restarts, and quarantined or removed remote media is answered `451`/`404` from
+  the cache instead of being fetched and stored again on every request.
+  `remote_media_cache_max_entries = 0` now keeps at most one remote copy.
+- **CHANGED: thumbnails are decoded with the runtime mutex released** (low audit finding
+  MED-4, decode part); the per-user thumbnail cap from that finding is not done.
+- **TESTS:** new `tests/integration/test_media_on_demand_flow.cpp` and
+  `tests/integration/test_remote_media_cache_flow.cpp` (`[media-on-demand]`): bytes served
+  from the database after they change underneath the server, a deduplicated upload writing
+  no bytes, federation downloads alongside uploads (for ThreadSanitizer), the remote cache
+  across a restart, TTL replacement, quarantine caching and eviction. `[out-4]` unit
+  scenarios rewritten for the plan/apply admission; moderation-during-read guard tested.
+  Tests that asserted bytes in memory now assert them through the database read path, or
+  directly against the SQLite file where removal must clear the durable bytes.
+- **CHANGED: media quota defaults sized for on-disk storage.** Now that media bytes live in
+  the database, the defaults are `max_total_size=250GiB`, `max_size_per_user=10GiB` and
+  `max_records=1000000` (chosen by the project owner; record metadata is still held in
+  memory, roughly 400 MB at the cap). `remote_media_cache_max_entries` defaults to 50,000.
+- **NEW: `security.media.remote_media_cache_max_size` (default `25GiB`, ADR-0120).** Cached
+  remote media has its own byte budget: least recently used remote files are deleted to
+  stay within it, and a single file larger than it is refused with `507`. Remote media no
+  longer counts toward `max_total_size` or `max_records`, so caching other servers' media
+  cannot make a local upload fail. A local upload of bytes already stored only for remote
+  media is charged to the local total.
+- **FIXED (OPS-3): malformed media size limits are rejected.** `max_total_size`,
+  `max_size_per_user` and `remote_media_cache_max_size` must be empty (no limit) or parse;
+  a value such as `10G` used to parse as 0, which meant no limit. The effective limits are
+  logged at startup, the reload plan reports changes to them, and `src/config/AGENTS.md`
+  names the accepted suffixes (`B`, `KiB`, `MiB`, `GiB`).
+- **TESTS:** `[med-6]` pins the new defaults and checks that remote media is charged only to
+  its own budget and evicted by bytes; `[ops-3]` checks that malformed sizes are rejected
+  and empty ones accepted.
+- Version bumped to 0.12.20 for the media-on-demand branch (stacked on 0.12.19).
+
 ## 0.12.19
 
 - **FIXED: BSD builds failed on an unused Landlock constant.** `k_scope_signal` (ISO-2) was

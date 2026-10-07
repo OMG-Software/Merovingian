@@ -620,8 +620,12 @@ SCENARIO("media download canonicalises the local server name before routing", "[
                                                  merovingian::media::LocalMediaState::available,
                                                  {},
                                                  false});
+        // ADR-0119: the repository holds metadata; the bytes are in the store,
+        // which for this memory-backed runtime is the database.
         runtime.media_repository.blobs.push_back(
-            merovingian::media::LocalMediaBlob{storage_id, "sha256", "digest", 12U, "local-bytes-here", 1U});
+            merovingian::media::LocalMediaBlob{storage_id, "sha256", "digest", 12U, 1U});
+        runtime.database.persistent_store.media_blobs.push_back(
+            merovingian::database::PersistentMediaBlob{storage_id, "sha256", "digest", 12U, "local-bytes-here", 1U});
 
         WHEN("download is requested with a case-variant of the local server name")
         {

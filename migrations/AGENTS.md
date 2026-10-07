@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `018`.
+Current highest: `020`.
 
 - Schema version `16` (`016_media_legacy_endpoint_visibility.sql`) ALTERs
   `legacy_endpoint_visible` onto `media` (ADR-0068).
@@ -22,8 +22,15 @@ Current highest: `018`.
 - Schema version `18` (`018_room_directory_visibility.sql`) ALTERs
   `directory_public` onto `rooms`, defaulting existing rooms to private
   (ADR-0099).
+- Schema version `19` (`019_to_device_queue_age_bound.sql`) ALTERs
+  `created_at_ms` onto `to_device_messages` and indexes it by recipient
+  (CSAZ-10, ADR-0117). Rows written before it have `created_at_ms = 0`, an
+  unknown age, which the queue's TTL never treats as expired.
+- Schema version `20` (`020_remote_media_cache_mapping.sql`) ALTERs
+  `local_media_id` and `fetched_at_ms` onto `remote_media`, which had no reader
+  or writer until then, making the remote media cache durable (ADR-0119).
 
-None of the three adds a table, so the federation worker allowlist
+None of these adds a table, so the federation worker allowlist
 classification is unchanged.
 
 Schema version `2` introduced the `sync_stream_watermark` table via

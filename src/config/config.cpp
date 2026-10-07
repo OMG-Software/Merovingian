@@ -1245,6 +1245,21 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                             "federation join response max size must be a positive bounded byte size"});
     }
 
+    // OPS-3: an optional media size limit is empty for "no limit"; anything
+    // else must parse, because a value that fails to parse used to mean no limit.
+    for (auto const& [field, value] : {
+             std::pair{"security.media.max_total_size",              &config.security().media.max_total_size   },
+             std::pair{"security.media.max_size_per_user",           &config.security().media.max_size_per_user},
+             std::pair{"security.media.remote_media_cache_max_size",
+                       &config.security().media.remote_media_cache_max_size                                    },
+    })
+    {
+        if (!value->empty() && !parse_size_limit(*value).valid)
+        {
+            findings.push_back({field, "media size limit must be empty (no limit) or a positive size such as "
+                                       "250GiB; accepted suffixes are B, KiB, MiB and GiB"});
+        }
+    }
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)
     {

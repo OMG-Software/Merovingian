@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/media/repository.hpp"
 #include "merovingian/media/thumbnailer.hpp"
 
 #include <cstdint>
@@ -39,6 +40,12 @@ struct RemoteMediaRequestContext final
                                                   std::string_view media_id, std::uint32_t width, std::uint32_t height,
                                                   media::ThumbnailMethod method, bool legacy_endpoint = false,
                                                   RemoteMediaRequestContext const& remote = {}) -> OperationResult;
+// GET /_matrix/federation/v1/media/download/{mediaId}: local media only. The
+// federation core calls its providers without the runtime mutex, so this takes
+// it for the repository lookups and releases it for the byte read (ADR-0119).
+// Never call it with the mutex held by another frame of this thread.
+[[nodiscard]] auto download_local_media_for_federation(HomeserverRuntime& runtime, std::string_view media_id)
+    -> media::LocalMediaDownloadResult;
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                                 std::string_view media_id, std::string_view reason) -> OperationResult;
 [[nodiscard]] auto admin_release_local_media(HomeserverRuntime& runtime, std::string_view access_token,
@@ -88,8 +95,8 @@ struct FederationMediaPart final
 // 200 response. `content_type_header` is the outer response's Content-Type header
 // value (used to extract the boundary parameter); `body` is the raw response body.
 // Pure function; performs no I/O. Exposed for unit testing.
-[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header,
-                                                    std::string_view body) -> FederationMediaPart;
+[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
+    -> FederationMediaPart;
 
 // Result of resolving a `Location` redirect URL from the authenticated
 // federation media download endpoint. `ok` is true when the URL uses HTTPS,
@@ -107,8 +114,9 @@ struct MediaRedirectResolutionResult final
 // Resolves a media redirect URL in an SSRF-safe way so the caller can fetch
 // it with pinned addresses. `location_url` must be an absolute https:// URL;
 // relative redirects are rejected. Exposed for unit testing.
-[[nodiscard]] auto resolve_media_redirect_url(
-    std::string_view location_url, federation::ServerDiscoveryNetwork& network) -> MediaRedirectResolutionResult;
+[[nodiscard]] auto resolve_media_redirect_url(std::string_view location_url,
+                                              federation::ServerDiscoveryNetwork& network)
+    -> MediaRedirectResolutionResult;
 [[nodiscard]] auto media_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
 
 } // namespace merovingian::homeserver

@@ -6,6 +6,7 @@
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/media/repository.hpp"
@@ -14,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -134,6 +136,16 @@ SCENARIO("A repeated remote media download is served from the cache without cont
             {
                 REQUIRE(captured.size() == 1U);
                 REQUIRE(runtime.homeserver.media_repository.records.size() == 1U);
+            }
+
+            THEN("the fetched media is stored in the database, not only in memory (ADR-0119)")
+            {
+                auto const& store = runtime.homeserver.database.persistent_store;
+                REQUIRE(store.local_media.size() == 1U);
+                REQUIRE(store.local_media.front().owner_user_id == "@remote-media:peer.example.org");
+                auto const& record = runtime.homeserver.media_repository.records.front();
+                REQUIRE(merovingian::database::read_media_blob(merovingian::database::prepare_media_blob_read(
+                            store, record.storage_id)) == std::optional<std::string>{image});
             }
         }
     }
