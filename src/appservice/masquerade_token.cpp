@@ -42,6 +42,11 @@ namespace
 
 } // namespace
 
+auto is_account_management_endpoint(std::string_view /*method*/, std::string_view /*path*/) noexcept -> bool
+{
+    return false;
+}
+
 auto is_masquerade_token(std::string_view token) noexcept -> bool
 {
     return token.starts_with(masquerade_token_prefix);
