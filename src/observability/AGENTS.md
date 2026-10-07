@@ -6,7 +6,7 @@ Structured logging and audit trail for the server.
 
 | File | Responsibility |
 |---|---|
-| `observability.cpp` | Audit event types and category enum, admin route matching (`admin_routes`/`match_admin_route`), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`) |
+| `observability.cpp` | Audit event types and category enum, admin route matching (`admin_routes`/`match_admin_route`), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
 | `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
 
 ## Writer threads (ADR-0082)
@@ -66,6 +66,12 @@ durability distinction:
   data to `std::cout`/`std::cerr` directly, never remove that escaping, and do not pre-escape
   values at call sites. `redact_log_message` must keep treating every whitespace character as a
   token boundary, or a sensitive last field swallows the record's `\n`.
+- **Every structured field value is capped at `max_log_field_value_bytes` (2048) of emitted
+  bytes** (AUTH-9). `render_log_field_value` (redact, then `cap_log_field_value`) is the only
+  way a field value may be put on a line; `diagnostic_message` and `structured_log_summary`
+  use it. A new place that renders `StructuredLogField` values must call it too, never
+  `redact_log_value` alone. The cap is measured after escaping, cuts on a code-point or whole
+  escape boundary, and appends `...[truncated N bytes]`. Keep redaction before the cap.
 - **Never log secret material.** No tokens, passwords, private keys, or full request bodies. Do
   not truncate a secret to a "safe prefix" for logging — a prefix of the real secret is still
   live secret material. Use automatic redaction (fields flagged sensitive, or matched by

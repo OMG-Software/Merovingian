@@ -162,7 +162,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
   `escape_log_controls`, so `\n`, `\r`, other C0 controls, DEL and UTF-8 C1 controls in a
   logged value appear as printable escapes and the record's own `\n` is its only line break.
   Do not write log data to `std::cout`/`std::cerr` directly, and do not pre-escape a value
-  yourself (it would be escaped twice).
+  yourself (it would be escaped twice). Render structured field values with
+  `render_log_field_value`, which redacts and then caps each value at 2048 emitted bytes
+  (`...[truncated N bytes]`); never emit a client-controlled value uncapped.
   Why: logged values such as a login `identifier.user` or `device_id` are client-controlled;
   an unescaped newline forges a whole extra log record that downstream parsers and operators
   trust, and an escape sequence reaches the operator's terminal (CWE-117 Improper Output

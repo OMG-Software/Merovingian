@@ -833,7 +833,7 @@ private:
     auto msg = std::string{"event="} + std::string{event};
     for (auto const& field : fields)
     {
-        msg += " " + field.key + "=" + redact_log_value(field);
+        msg += " " + field.key + "=" + render_log_field_value(field);
     }
     return msg;
 }

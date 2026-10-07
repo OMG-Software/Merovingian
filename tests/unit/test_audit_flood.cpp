@@ -16,6 +16,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
+#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -328,6 +329,31 @@ private:
     std::streambuf* m_previous{nullptr};
 };
 
+// Lowers the process-wide logger to debug for its lifetime and puts it back to
+// its documented default (info) afterwards.
+class VerboseProcessLogger final
+{
+public:
+    VerboseProcessLogger()
+    {
+        auto& logger = merovingian::observability::SingleLog::instance();
+        logger.set_console_log_level(merovingian::observability::LogLevel::debug);
+        logger.set_default_log_level(merovingian::observability::LogLevel::debug);
+    }
+
+    ~VerboseProcessLogger()
+    {
+        auto& logger = merovingian::observability::SingleLog::instance();
+        logger.set_console_log_level(merovingian::observability::LogLevel::info);
+        logger.set_default_log_level(merovingian::observability::LogLevel::info);
+    }
+
+    VerboseProcessLogger(VerboseProcessLogger const&) = delete;
+    auto operator=(VerboseProcessLogger const&) -> VerboseProcessLogger& = delete;
+    VerboseProcessLogger(VerboseProcessLogger&&) = delete;
+    auto operator=(VerboseProcessLogger&&) -> VerboseProcessLogger& = delete;
+};
+
 [[nodiscard]] auto split_lines(std::string const& text) -> std::vector<std::string>
 {
     auto lines = std::vector<std::string>{};
@@ -359,6 +385,10 @@ SCENARIO("A login with a huge identifier containing line feeds logs bounded "
         auto started = merovingian::homeserver::start_client_server(flood_test_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        // login.started is logged at debug with the raw, uncapped user_id and
+        // device_id (the audit helper's 255-byte cut applies only to the
+        // login.rejected path), so the process-wide logger is lowered to debug.
+        auto const verbose = VerboseProcessLogger{};
         auto capture = ConsoleCapture{};
 
         WHEN("a password login names a 30 KiB user and device id that start with a "

@@ -472,6 +472,80 @@ auto escape_log_controls(std::string_view text) -> std::string
     return escaped;
 }
 
+namespace
+{
+
+    // The number of bytes of `text`, starting at `index`, that `escape_log_controls`
+    // treats as one unit: a whole UTF-8 sequence, or a single byte for ASCII and
+    // for bytes that are not valid UTF-8. U+0080-U+009F is one two-byte unit, so
+    // the C1 escape is never split.
+    [[nodiscard]] auto log_unit_length(std::string_view text, std::size_t index) -> std::size_t
+    {
+        auto const lead = static_cast<unsigned char>(text[index]);
+        auto length = std::size_t{1U};
+        if (lead >= 0xf0U && lead <= 0xf4U)
+        {
+            length = 4U;
+        }
+        else if (lead >= 0xe0U && lead <= 0xefU)
+        {
+            length = 3U;
+        }
+        else if (lead >= 0xc2U && lead <= 0xdfU)
+        {
+            length = 2U;
+        }
+        if (index + length > text.size())
+        {
+            return 1U;
+        }
+        for (auto offset = std::size_t{1U}; offset < length; ++offset)
+        {
+            if ((static_cast<unsigned char>(text[index + offset]) & 0xc0U) != 0x80U)
+            {
+                return 1U;
+            }
+        }
+        return length;
+    }
+
+} // namespace
+
+// AUTH-9: the width of a unit is the length of what `escape_log_controls`
+// emits for it, taken from that function itself so the two cannot drift apart.
+auto cap_log_field_value(std::string_view value) -> std::string
+{
+    auto kept = std::size_t{0U};
+    auto escaped_width = std::size_t{0U};
+    while (kept < value.size())
+    {
+        auto const length = log_unit_length(value, kept);
+        auto const width = escape_log_controls(value.substr(kept, length)).size();
+        if (escaped_width + width > max_log_field_value_bytes)
+        {
+            break;
+        }
+        escaped_width += width;
+        kept += length;
+    }
+
+    if (kept == value.size())
+    {
+        return std::string{value};
+    }
+
+    auto capped = std::string{value.substr(0U, kept)};
+    capped.append("...[truncated ");
+    capped.append(std::to_string(value.size() - kept));
+    capped.append(" bytes]");
+    return capped;
+}
+
+auto render_log_field_value(StructuredLogField const& field) -> std::string
+{
+    return cap_log_field_value(redact_log_value(field));
+}
+
 // M-11: applies the same sensitivity rule as `log_field_is_sensitive` to a
 // freeform message, so the legacy LOG_*/LOGF_* macros (which build a plain
 // std::string rather than a std::vector<StructuredLogField>) cannot bypass
@@ -527,7 +601,7 @@ auto structured_log_summary(StructuredLogEvent const& event) -> std::string
     auto summary = event.level + " " + event.logger;
     for (auto const& field : event.fields)
     {
-        summary += " " + field.key + "=" + redact_log_value(field);
+        summary += " " + field.key + "=" + render_log_field_value(field);
     }
     return summary;
 }
