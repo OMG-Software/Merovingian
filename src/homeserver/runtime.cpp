@@ -159,6 +159,23 @@ namespace
                              blob_row.ref_count});
         }
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
+
+        // ADR-0119: the remote media cache is durable, so its entries come
+        // back with the records they point at.
+        auto const ttl_ms = repository.config.remote_media_cache_max_entries == 0U
+                                ? std::uint64_t{0U}
+                                : static_cast<std::uint64_t>(repository.config.remote_media_cache_ttl_seconds) * 1000U;
+        auto entries = std::vector<media::RemoteMediaCacheEntry>{};
+        entries.reserve(persistent_store.remote_media.size());
+        for (auto const& row : persistent_store.remote_media)
+        {
+            if (!row.local_media_id.empty())
+            {
+                entries.push_back(
+                    {row.server_name, row.media_id, row.local_media_id, row.fetched_at_ms + ttl_ms, row.fetched_at_ms});
+            }
+        }
+        media::restore_remote_media_cache(repository, std::move(entries));
     }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept

@@ -1,6 +1,8 @@
 # Default media quotas and a single in-memory blob copy
 
-* Status: accepted
+* Status: accepted; since [ADR-0119](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md)
+  media bytes are no longer held in memory, so `max_total_size` limits stored bytes, not
+  memory. The defaults are unchanged.
 * Deciders: James Chapman
 * Date: 2026-10-06
 

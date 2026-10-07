@@ -258,20 +258,40 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
     -> LocalMediaAdminResult;
 [[nodiscard]] auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                       std::string_view reason) -> LocalMediaAdminResult;
-// OUT-4: the local record admitted for remote media (origin_server, media_id),
-// or nullptr. Callers consult this before discovery and the network, so a hit
-// costs no outbound request. An expired entry, or one whose record is no longer
-// available (quarantined or removed), is erased and reported as a miss; a hit
-// becomes the most recently used entry. `now_ms` is on the steady clock that
-// fetch_remote_media() stamps entries with.
+// OUT-4 / ADR-0119: the stored local record for remote media (origin_server,
+// media_id) whose cache entry has not expired, in whatever state moderation
+// has left it, or nullptr. Callers consult this before discovery and the
+// network: an available record is served, a quarantined or removed one is
+// refused, and neither costs an outbound request. A hit becomes the most
+// recently used entry. An expired entry is kept, so the admission that
+// replaces it can release its stored copy.
 [[nodiscard]] auto find_cached_remote_media(LocalMediaRepository& repository, std::string_view origin_server,
                                             std::string_view media_id, std::uint64_t now_ms) -> LocalMediaRecord const*;
-// The steady-clock time, in milliseconds, used for remote media cache entries.
+// Wall-clock milliseconds since the Unix epoch: cache entries are persisted, so
+// their times must mean the same thing after a restart.
 [[nodiscard]] auto remote_media_cache_now_ms() noexcept -> std::uint64_t;
+// ADR-0119: the cache entries admitting new media for (origin_server,
+// media_id) displaces: any entry for the same key, and the least recently used
+// entries beyond remote_media_cache_max_entries. A cap of 0 disables caching:
+// every other entry is displaced and the new one is stored already expired, so
+// at most one remote copy is kept. Changes nothing; see
+// apply_remote_media_admission.
+[[nodiscard]] auto plan_remote_media_admission(LocalMediaRepository const& repository, std::string_view origin_server,
+                                               std::string_view media_id) -> std::vector<RemoteMediaCacheEntry>;
+// Applies an admission the database has committed: forgets the displaced
+// entries' records and blob references, and records the new entry.
+auto apply_remote_media_admission(LocalMediaRepository& repository, std::string_view origin_server,
+                                  std::string_view media_id, std::string_view local_media_id, std::uint64_t now_ms,
+                                  std::vector<RemoteMediaCacheEntry> const& displaced) -> void;
+// Hydration: replaces the cache with `entries` whose records exist, ordered
+// from least to most recently used.
+auto restore_remote_media_cache(LocalMediaRepository& repository, std::vector<RemoteMediaCacheEntry> entries) -> void;
 [[nodiscard]] auto fetch_remote_media_disabled(LocalMediaRepository& repository,
                                                RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
-[[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
-    -> RemoteMediaDownloadResult;
+// `now_ms` is the remote media cache's clock (remote_media_cache_now_ms); the
+// caller passes it so one admission uses one timestamp throughout.
+[[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request,
+                                      std::uint64_t now_ms) -> RemoteMediaDownloadResult;
 
 // Body and outer Content-Type for a v1.19 federation media download response.
 // The body is a multipart/mixed envelope with an empty JSON metadata part and

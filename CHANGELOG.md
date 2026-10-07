@@ -1,5 +1,36 @@
 ## 0.12.20
 
+- **CHANGED: media bytes live in the database and are read on demand (ADR-0119).** Every
+  stored media file used to be loaded into memory at startup and served from there, so
+  memory grew with stored media. Hydration now reads blob metadata only; downloads,
+  thumbnails, remote-cache hits and the federation media endpoint read the bytes per
+  request with the runtime mutex released, then re-check that the media may still be
+  served, so media removed or quarantined during the read is refused. `LocalMediaBlob` has
+  no bytes member. Uploads write bytes straight from the request; a deduplicated upload
+  updates only the reference count instead of rewriting the file. `max_total_size` now
+  bounds storage, not memory; the defaults are unchanged.
+- **FIXED: the federation media download read the media repository without the runtime
+  mutex.** Its lookups rebuild the repository's indices, so it raced with uploads and
+  moderation. It now takes the mutex for the lookups (`download_local_media_for_federation`).
+- **FIXED: remote media was never written to the database.** It is now stored like an
+  upload, and the remote media cache is durable (migration 020 adds `local_media_id` and
+  `fetched_at_ms` to the previously unused `remote_media` table). Admission is planned,
+  committed in one transaction (`commit_remote_media_admission`) and then applied, so each
+  stored remote copy stays reachable from one cache entry: a re-fetch after the TTL
+  replaces the old copy, eviction at `remote_media_cache_max_entries` deletes it, the cache
+  survives restarts, and quarantined or removed remote media is answered `451`/`404` from
+  the cache instead of being fetched and stored again on every request.
+  `remote_media_cache_max_entries = 0` now keeps at most one remote copy.
+- **CHANGED: thumbnails are decoded with the runtime mutex released** (low audit finding
+  MED-4, decode part); the per-user thumbnail cap from that finding is not done.
+- **TESTS:** new `tests/integration/test_media_on_demand_flow.cpp` and
+  `tests/integration/test_remote_media_cache_flow.cpp` (`[media-on-demand]`): bytes served
+  from the database after they change underneath the server, a deduplicated upload writing
+  no bytes, federation downloads alongside uploads (for ThreadSanitizer), the remote cache
+  across a restart, TTL replacement, quarantine caching and eviction. `[out-4]` unit
+  scenarios rewritten for the plan/apply admission; moderation-during-read guard tested.
+  Tests that asserted bytes in memory now assert them through the database read path, or
+  directly against the SQLite file where removal must clear the durable bytes.
 - Version bumped to 0.12.20 for the media-on-demand branch (stacked on 0.12.19).
 
 ## 0.12.19

@@ -25,6 +25,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -490,6 +491,72 @@ namespace
         return persisted;
     }
 
+    // ADR-0119: makes freshly admitted remote media durable together with its
+    // cache entry, and releases the stored copies the admission displaces (an
+    // expired copy of the same file, and least recently used copies beyond
+    // the cache cap), all in one transaction. Memory changes only after the
+    // commit; on failure the admission is undone.
+    [[nodiscard]] auto persist_remote_media_admission(HomeserverRuntime& runtime, std::string_view origin_server,
+                                                      std::string_view remote_media_id,
+                                                      media::RemoteMediaDownloadResult const& admitted,
+                                                      std::string_view bytes, std::uint64_t now) -> bool
+    {
+        auto& repository = runtime.media_repository;
+        auto const* record = media::find_local_media_record(repository, admitted.local_media_id);
+        auto const* blob = record == nullptr ? nullptr : media::find_local_media_blob(repository, record->storage_id);
+        auto persisted = false;
+        auto const displaced = media::plan_remote_media_admission(repository, origin_server, remote_media_id);
+        if (blob != nullptr)
+        {
+            // Each blob's reference count once the displaced records are gone.
+            auto released_per_blob = std::map<std::string, std::uint64_t>{};
+            auto releases = std::vector<database::PersistentRemoteMediaRelease>{};
+            for (auto const& gone : displaced)
+            {
+                releases.push_back({gone.local_media_id, gone.origin_server, gone.media_id});
+                if (auto const* gone_record = media::find_local_media_record(repository, gone.local_media_id);
+                    gone_record != nullptr)
+                {
+                    ++released_per_blob[gone_record->storage_id];
+                }
+            }
+            auto released_blobs = std::vector<database::PersistentBlobReferenceCount>{};
+            for (auto const& [storage_id, released] : released_per_blob)
+            {
+                auto const* released_blob = media::find_local_media_blob(repository, storage_id);
+                if (storage_id != blob->storage_id && released_blob != nullptr)
+                {
+                    released_blobs.push_back({storage_id, released_blob->ref_count - released});
+                }
+            }
+            auto const own_released = released_per_blob[blob->storage_id];
+            persisted = database::commit_remote_media_admission(
+                runtime.database.persistent_store,
+                {record->media_id, "@remote-media:" + std::string{origin_server}, record->content_type,
+                 record->size_bytes, record->hash_algorithm, record->digest, admitted.quarantined, false, false},
+                {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes,
+                 admitted.stored_new_blob ? std::string{bytes} : std::string{}, blob->ref_count - own_released},
+                admitted.stored_new_blob,
+                {std::string{origin_server}, std::string{remote_media_id}, record->content_type, record->size_bytes,
+                 admitted.quarantined, record->media_id, now},
+                releases, released_blobs);
+        }
+        if (!persisted)
+        {
+            std::ignore = media::rollback_local_media_upload(repository, admitted.local_media_id);
+            log_diagnostic("remote_fetch.persist_failed",
+                           {
+                               {"origin_server", std::string{origin_server},   false},
+                               {"media_id",      std::string{remote_media_id}, false}
+            },
+                           observability::LogEventSeverity::error);
+            return false;
+        }
+        media::apply_remote_media_admission(repository, origin_server, remote_media_id, admitted.local_media_id, now,
+                                            displaced);
+        return true;
+    }
+
     [[nodiscard]] auto finalize_remote_media_fetch(HomeserverRuntime& runtime, std::string_view origin_server,
                                                    std::string_view media_id,
                                                    federation::ServerDiscoveryResult const& resolution,
@@ -512,12 +579,12 @@ namespace
         remote_req.scanner_clean = false;
         remote_req.decoder_marked_safe = true;
 
-        auto const fetch_result = media::fetch_remote_media(runtime.media_repository, remote_req);
+        auto const now = media::remote_media_cache_now_ms();
+        auto const fetch_result = media::fetch_remote_media(runtime.media_repository, remote_req, now);
         // ADR-0119: an admitted remote file, quarantined or not, is made durable
         // like an upload; its bytes are not kept in memory.
         if (fetch_result.admitted_new_record &&
-            !persist_admitted_media(runtime, fetch_result.local_media_id, "@remote-media:" + std::string{origin_server},
-                                    fetch_result.quarantined, remote_req.bytes, fetch_result.stored_new_blob))
+            !persist_remote_media_admission(runtime, origin_server, media_id, fetch_result, remote_req.bytes, now))
         {
             return make_operation_result(false, {}, "remote media could not be stored", 500U);
         }
@@ -785,6 +852,16 @@ namespace
                                                                  media::remote_media_cache_now_ms());
             cached != nullptr)
         {
+            // ADR-0119: a cached copy answers for the remote file whatever its
+            // state, so quarantined or removed media is not fetched again.
+            if (cached->state == media::LocalMediaState::quarantined)
+            {
+                return make_operation_result(false, {}, "media is quarantined", 451U);
+            }
+            if (cached->state == media::LocalMediaState::removed)
+            {
+                return make_operation_result(false, {}, "media not found", 404U);
+            }
             // Copied: the record may move while the mutex is released for the read.
             auto const local_media_id = cached->media_id;
             auto const storage_id = cached->storage_id;

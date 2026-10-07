@@ -624,12 +624,13 @@ namespace
                                                           parse_u64(column_text(row, 4))});
                          }) &&
                load_rows(connection,
-                         "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
-                         "remote_media",
+                         "SELECT server_name, media_id, content_type, size_bytes, quarantined, local_media_id, "
+                         "fetched_at_ms FROM remote_media",
                          [&store](sqlite3_stmt& row) {
                              store.remote_media.push_back({column_text(row, 0), column_text(row, 1),
                                                            column_text(row, 2), parse_u64(column_text(row, 3)),
-                                                           text_is_true(column_text(row, 4))});
+                                                           text_is_true(column_text(row, 4)), column_text(row, 5),
+                                                           parse_u64(column_text(row, 6))});
                          }) &&
                // AUTH-1: stream rows in insertion order into the bounded in-memory
                // window, so hydrating a long-lived audit_log keeps only the newest rows.

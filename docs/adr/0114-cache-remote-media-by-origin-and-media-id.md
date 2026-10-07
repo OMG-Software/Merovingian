@@ -1,6 +1,7 @@
 # Cache remote media by origin server and media ID
 
-* Status: accepted
+* Status: accepted; the cache is made durable, and its lookup, expiry and cap-0 rules are
+  restated, by [ADR-0119](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md)
 * Deciders: James Chapman
 * Date: 2026-10-05
 

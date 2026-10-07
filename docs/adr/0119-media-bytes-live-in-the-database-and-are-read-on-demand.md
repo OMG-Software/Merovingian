@@ -54,10 +54,28 @@ Chosen option 3.
   (`commit_local_media_upload`, DB-5); a deduplicated upload updates only the reference
   count.
 * **Remote media is persisted like local media**, and its `(origin, media_id)` mapping is
-  stored in `remote_media`, so the OUT-4 cache survives a restart. A re-fetch after the
-  TTL replaces the previous record instead of adding one, and evicting a cache entry
-  releases its record and blob reference durably. Remote media is a cache: clients only
-  ever hold the origin's `mxc://` URI, so eviction breaks no link.
+  stored in `remote_media` (migration 020: `local_media_id`, `fetched_at_ms`), so the
+  OUT-4 cache survives a restart. Every stored remote copy is reachable from exactly one
+  cache entry, or it would never be released:
+  * admission is planned, committed and then applied. `plan_remote_media_admission` names
+    the entries the new copy displaces (an older entry for the same key, and least
+    recently used entries beyond `remote_media_cache_max_entries`);
+    `commit_remote_media_admission` deletes their media and cache rows, adjusts blob
+    reference counts and inserts the new rows in one transaction; only then does
+    `apply_remote_media_admission` change memory;
+  * an expired entry is a cache miss but is kept until the re-admission that displaces it,
+    so its stored copy is released rather than stranded;
+  * an entry is kept whatever moderation does to its record. A quarantined record answers
+    451 and a removed one 404 without contacting the origin; quarantined admissions are
+    cached too, so the default `quarantine` policy stores one held copy, not one per
+    request;
+  * `remote_media_cache_max_entries = 0` disables the cache: each admission displaces every
+    other entry and is stored already expired, so at most one remote copy is kept and none
+    is served from the cache.
+
+  Remote media is a cache: clients only ever hold the origin's `mxc://` URI, so eviction
+  breaks no link. Cache times are wall-clock epoch milliseconds, because they are
+  persisted.
 * **The memory backend is a database.** For `PersistentStoreBackend::memory` the store's
   `media_blobs` rows keep their bytes, because there is no other copy; for SQLite and
   PostgreSQL they hold metadata only.
@@ -66,6 +84,11 @@ Chosen option 3.
 
 Option 4 is rejected for now: it would add a second durable store whose consistency with
 the media rows the database transaction currently guarantees.
+
+Removing the in-memory copy made two defects visible, and the decision depends on fixing
+them: remote media had never been written to the database, and with an in-memory cache
+mapping every restart, TTL expiry, eviction and quarantined request left a stored record
+behind, so records would have accumulated until `max_records` refused every upload.
 
 ### Positive Consequences
 

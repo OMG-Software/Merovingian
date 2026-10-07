@@ -364,8 +364,8 @@ federation.worker.apply_hardening=true
 # rooms (and, for enable_av_scanner specifically, only once a real scanner is
 # integrated — see below).
 security.media.max_upload_size=50MiB
-# Repository capacity. Every stored media blob is held in memory, so
-# max_total_size is a memory budget: size it to the host's RAM. An upload past
+# Repository capacity, in the database: media bytes are read per request and
+# are not held in memory, so these bound storage. An upload past
 # any limit is refused with 507 M_LIMIT_EXCEEDED. Keep max_size_per_user at or
 # above max_upload_size. Remote media is not charged to max_size_per_user (it
 # has one owner per origin) but counts toward the other two. Empty (or 0 for
@@ -374,7 +374,9 @@ security.media.max_upload_size=50MiB
 # security.media.max_size_per_user=256MiB
 # security.media.max_records=100000
 # Remote media admitted within the TTL is served from the stored copy without
-# contacting the origin again. max_entries=0 disables the cache.
+# contacting the origin again, also after a restart. When max_entries is
+# reached the least recently used remote file is deleted. max_entries=0
+# disables the cache and keeps only the latest fetched remote file.
 # security.media.remote_media_cache_ttl_seconds=86400
 # security.media.remote_media_cache_max_entries=1024
 # allowed_mime_types is a comma-separated allow-list. When empty (the default),

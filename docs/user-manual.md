@@ -1064,7 +1064,7 @@ Service API".
 | Key | Default | When to change |
 |---|---|---|
 | `security.media.max_upload_size` | `50MiB` | Maximum local upload size. Match your reverse-proxy body-size limit. |
-| `security.media.max_total_size` | `2GiB` | Cap on total stored media bytes. All media is held in memory, so this is a memory budget: raise it only as far as the host's RAM allows. Empty means no limit. |
+| `security.media.max_total_size` | `2GiB` | Cap on total stored media bytes, in the database. Media is read from the database per request, so this bounds storage, not memory. Empty means no limit. |
 | `security.media.max_size_per_user` | `256MiB` | Per-user media quota in bytes. Keep it at or above `max_upload_size`. Remote media is exempt (see below). Empty means no limit. |
 | `security.media.max_records` | `100000` | Cap on stored media records. `0` means no limit. |
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
@@ -1077,11 +1077,11 @@ Service API".
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |
 | `security.media.remote_fetch_media_policy` | `quarantine` | Same values; defaults to `quarantine` because federated origins are unaccountable. |
 | `security.media.remote_media_cache_ttl_seconds` | `86400` | How long admitted remote media is served from the local copy before it is fetched again. |
-| `security.media.remote_media_cache_max_entries` | `1024` | Maximum remote-media cache entries; the least recently used is evicted when full. `0` disables the cache, so every request for remote media goes to the origin. |
+| `security.media.remote_media_cache_max_entries` | `1024` | Maximum remote media files kept; when full, the least recently used one is deleted to make room. `0` disables the cache: every request for remote media goes to the origin, and only the latest fetched file is kept. |
 
-The three capacity limits bound the in-memory media index, which would otherwise be
+The three capacity limits bound stored media, which would otherwise be
 unbounded: upload spam, or a large cache of remote media, grows it until the
-process runs out of memory. An upload that would cross any limit is refused with
+database fills. An upload that would cross any limit is refused with
 `507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
 for what is already stored and eviction would break those links rather than shed
 load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
@@ -1091,7 +1091,10 @@ Remote media is stored under one `@remote-media:<origin>` owner per origin, so i
 is not charged to `max_size_per_user`; it counts toward `max_total_size` and
 `max_records` like everything else. Repeated requests for the same remote media
 within `remote_media_cache_ttl_seconds` are served from the stored copy without
-contacting the origin.
+contacting the origin, including after a restart; remote media held in quarantine
+is answered `451` from the cache rather than fetched again. Media bytes live only in
+the database and are read for each request, so memory use does not grow with stored
+media.
 
 > **Encrypted-room media can never be scanned, under any configuration, by
 > design.** Matrix E2EE attachments are encrypted client-side before upload;

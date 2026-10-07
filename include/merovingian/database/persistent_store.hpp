@@ -424,6 +424,8 @@ struct PersistentLocalMedia final
     bool legacy_endpoint_visible{true};
 };
 
+// A remote (server_name, media_id) and the local record holding its stored
+// copy: the durable form of the remote media cache (ADR-0119, migration 020).
 struct PersistentRemoteMedia final
 {
     std::string server_name{};
@@ -431,6 +433,26 @@ struct PersistentRemoteMedia final
     std::string content_type{};
     std::uint64_t size_bytes{0U};
     bool quarantined{false};
+    std::string local_media_id{};
+    // Milliseconds since the Unix epoch.
+    std::uint64_t fetched_at_ms{0U};
+};
+
+// A stored remote copy the remote media cache no longer holds: its local
+// media row and cache row are deleted (ADR-0119).
+struct PersistentRemoteMediaRelease final
+{
+    std::string local_media_id{};
+    std::string server_name{};
+    std::string media_id{};
+};
+
+// A blob's reference count after a change, and whether its bytes are cleared
+// because nothing references it any more.
+struct PersistentBlobReferenceCount final
+{
+    std::string storage_id{};
+    std::uint64_t ref_count{0U};
 };
 
 struct PersistentMediaBlob final
@@ -1359,6 +1381,18 @@ struct MediaBlobRead final
                                                  bool removed, PersistentAdminAction action, PersistentAuditEvent audit)
     -> bool;
 [[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool;
+// ADR-0119: admits fetched remote media in one transaction. Deletes the media
+// and cache rows of `releases`, sets each of `released_blobs` to its new
+// reference count (clearing the bytes at zero), inserts `media`, writes `blob`
+// (its bytes when `new_blob`, otherwise only its reference count, which must
+// already account for `releases`), and upserts `mapping`. The in-memory
+// mirror changes only after the commit succeeds.
+[[nodiscard]] auto commit_remote_media_admission(PersistentStore& store, PersistentLocalMedia media,
+                                                 PersistentMediaBlob const& blob, bool new_blob,
+                                                 PersistentRemoteMedia mapping,
+                                                 std::vector<PersistentRemoteMediaRelease> const& releases,
+                                                 std::vector<PersistentBlobReferenceCount> const& released_blobs)
+    -> bool;
 [[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob const& blob) -> bool;
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool;
 // Adds `event` to the bounded in-memory audit window without persisting it,

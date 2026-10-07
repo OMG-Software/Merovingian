@@ -1084,17 +1084,19 @@ namespace
         if (table_load_profile_includes("remote_media", profile))
         {
             auto remote_media = query_rows(connection, "postgresql_load_remote_media",
-                                           "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
-                                           "remote_media ORDER BY server_name, media_id");
+                                           "SELECT server_name, media_id, content_type, size_bytes, quarantined, "
+                                           "local_media_id, fetched_at_ms FROM remote_media ORDER BY server_name, "
+                                           "media_id");
             if (!remote_media.ok)
             {
                 return false;
             }
             for (auto const& row : remote_media.rows)
             {
-                if (row.size() >= 5U)
+                if (row.size() >= 7U)
                 {
-                    store.remote_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), text_is_true(row[4])});
+                    store.remote_media.push_back(
+                        {row[0], row[1], row[2], parse_u64(row[3]), text_is_true(row[4]), row[5], parse_u64(row[6])});
                 }
             }
         }
