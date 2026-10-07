@@ -78,6 +78,11 @@ Local HTTP router diagnostics now also include `request_id`, `trace_id`, and
 operator can join an admin scrape or audit query to the log lines that handled
 it, and they must not be repurposed to carry user payloads or secret material.
 
+Every diagnostic field value is also length-capped: a value whose escaped form
+exceeds 2048 bytes is cut on a character boundary and followed by
+`...[truncated N bytes]`, so a client-supplied identifier cannot inflate a log
+line (see `docs/observability-audit.md`).
+
 Do not add raw request bodies, Matrix event `content`, media bytes, passwords, or
 token values to diagnostic fields. Prefer metadata such as `body_bytes`,
 `event_type`, `room_id`, `event_id`, `status`, and failure `reason`.

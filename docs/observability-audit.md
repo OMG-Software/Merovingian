@@ -324,6 +324,38 @@ an escaped line feed; the record boundary is still unforgeable. Redaction runs
 on the escaped line and treats every whitespace character as a token boundary,
 so a sensitive field at the end of a line keeps the record terminator.
 
+**Structured field values are length-capped (AUTH-9).** A client can also put a
+very long value into a logged field, which would inflate every line that
+mentions it. Every structured field value is rendered by
+`render_log_field_value` (`src/observability/observability.cpp`), the single
+function `diagnostic_message` (the `log_diagnostic*` family, and so every
+console and file line built from fields) and `structured_log_summary` use. It
+redacts first (`redact_log_value`), then caps (`cap_log_field_value`), so a
+truncated value can never reveal part of a secret and a redacted value (the
+fixed text `<redacted>`) is already under the cap.
+
+- **Cap:** `max_log_field_value_bytes` = 2048. The cap bounds the bytes that
+  reach the log, that is the value **after** control-character escaping: the
+  cap is measured in escaped width (a `\n` counts 2, a `\x1b` counts 4, a
+  `\u009b` counts 6), so a value full of control characters cannot expand past
+  it. Escaping itself still happens once, at the sink, on the whole line.
+- **Boundary:** the cut never splits a multi-byte UTF-8 character or an escape
+  sequence; a unit that does not fit is dropped whole. A value that fits (exactly
+  2048 escaped bytes) is emitted unchanged; one byte more is truncated.
+- **Marker:** `...[truncated N bytes]`, appended directly after the kept prefix,
+  where `N` is the number of bytes of the original value that were dropped
+  (decimal, no separators). It is plain ASCII with nothing for the escaper to
+  change, so a capped value is at most 2048 bytes plus about 40 bytes of marker.
+  Example: a 1 MiB value of `a` is logged as 2048 `a` followed by
+  `...[truncated 1046528 bytes]`.
+- **Not capped:** field keys, event names, and module names (developer chosen,
+  never client text), and the plain `LOG_*` message strings that do not go
+  through `StructuredLogField`. Audit database rows are separate bound
+  parameters, already cut to 255 bytes by `append_local_audit`.
+- There is no JSON or other structured output sink: the console and the log
+  file are the only destinations of a log record, and both receive the line
+  composed by `SingleLog::make_log_line`.
+
 The event signer no longer logs the canonical signing payload or the signed
 event JSON. It emits each one's byte count and SHA-256 digest instead, which is
 still enough to compare byte-for-byte with a federation peer when triaging a

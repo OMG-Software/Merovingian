@@ -6,6 +6,7 @@
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -206,6 +207,30 @@ private:
 // bytes, including the rest of UTF-8, pass through unchanged. `SingleLog`
 // applies it to every line it writes (see logger.hpp).
 [[nodiscard]] auto escape_log_controls(std::string_view text) -> std::string;
+// AUTH-9 (security-audit-report-2026-09-29.md): the longest a single structured
+// log field value may be in the emitted line. A client controls values such as a
+// login `identifier.user` or `device_id`; without a cap one request could write
+// a megabyte into every log line that mentions it. The bound is on the bytes
+// that reach the log, that is the value AFTER `escape_log_controls`, so a value
+// full of control characters (each up to four bytes escaped) cannot expand past
+// it. Keys and event names are chosen by developers, never by a client, so they
+// are not capped.
+inline constexpr auto max_log_field_value_bytes = std::size_t{2048U};
+// Cuts `value` so its escaped form is at most `max_log_field_value_bytes`, on a
+// code-point boundary (a multi-byte UTF-8 sequence, and a whole escape such as
+// `\x1b`, is kept or dropped as a unit) and appends the ASCII marker
+// `...[truncated N bytes]`, where N is the number of bytes of `value` dropped.
+// A value whose escaped form fits is returned unchanged. The result is still
+// unescaped text: `SingleLog` escapes it once at the sink, and the marker holds
+// nothing the escaper changes, so the emitted value is the bounded prefix plus
+// the marker (at most the cap plus about 40 bytes).
+[[nodiscard]] auto cap_log_field_value(std::string_view value) -> std::string;
+// The text a structured field contributes after `key=`: its value redacted when
+// the field is sensitive (`redact_log_value`), then capped (`cap_log_field_value`).
+// Redaction runs first so a truncated value can never expose part of a secret,
+// and a redacted value is already shorter than the cap. Every code path that
+// renders structured fields into a log line goes through this one function.
+[[nodiscard]] auto render_log_field_value(StructuredLogField const& field) -> std::string;
 [[nodiscard]] auto structured_log_summary(StructuredLogEvent const& event) -> std::string;
 [[nodiscard]] auto diagnostic_log_summary(std::string_view logger, std::string_view event,
                                           std::vector<StructuredLogField> fields) -> std::string;

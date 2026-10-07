@@ -16,6 +16,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
+#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -24,8 +25,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
+#include <sstream>
+#include <streambuf>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <sodium.h>
 
@@ -57,8 +62,8 @@ using AuditClock = merovingian::observability::AuditRateGate::Clock;
     return store.audit_log.size() + static_cast<std::size_t>(store.audit_log_evicted);
 }
 
-[[nodiscard]] auto count_rows(merovingian::database::PersistentStore const& store,
-                              std::string_view event_type) -> std::size_t
+[[nodiscard]] auto count_rows(merovingian::database::PersistentStore const& store, std::string_view event_type)
+    -> std::size_t
 {
     return static_cast<std::size_t>(std::ranges::count_if(store.audit_log, [event_type](auto const& event) {
         return event.event_type == event_type;
@@ -72,8 +77,8 @@ struct FrozenAuditClock final
     AuditClock::time_point now{AuditClock::time_point{} + std::chrono::hours{1}};
 };
 
-[[nodiscard]] auto request_with_bad_token(std::string const& token,
-                                          std::string const& source) -> merovingian::homeserver::LocalHttpRequest
+[[nodiscard]] auto request_with_bad_token(std::string const& token, std::string const& source)
+    -> merovingian::homeserver::LocalHttpRequest
 {
     return {"GET", "/_matrix/client/v3/account/whoami", token, {}, {}, source};
 }
@@ -286,6 +291,131 @@ SCENARIO("Audit events that are not per-request rejections are neither sampled n
                         merovingian::database::max_in_memory_audit_events);
                 REQUIRE(database.audit_events.back().target == std::to_string(total - 1U));
                 REQUIRE(database.persistent_store.audit_log.back().target == std::to_string(total - 1U));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Redirects std::cout into a string for the lifetime of the object. Warnings
+// are written to the console by the process-wide logger at its default level.
+class ConsoleCapture final
+{
+public:
+    ConsoleCapture()
+        : m_previous{std::cout.rdbuf(m_buffer.rdbuf())}
+    {
+    }
+
+    ~ConsoleCapture()
+    {
+        std::cout.rdbuf(m_previous);
+    }
+
+    ConsoleCapture(ConsoleCapture const&) = delete;
+    auto operator=(ConsoleCapture const&) -> ConsoleCapture& = delete;
+    ConsoleCapture(ConsoleCapture&&) = delete;
+    auto operator=(ConsoleCapture&&) -> ConsoleCapture& = delete;
+
+    [[nodiscard]] auto text() const -> std::string
+    {
+        return m_buffer.str();
+    }
+
+private:
+    std::ostringstream m_buffer{};
+    std::streambuf* m_previous{nullptr};
+};
+
+// Lowers the process-wide logger to debug for its lifetime and puts it back to
+// its documented default (info) afterwards.
+class VerboseProcessLogger final
+{
+public:
+    VerboseProcessLogger()
+    {
+        auto& logger = merovingian::observability::SingleLog::instance();
+        logger.set_console_log_level(merovingian::observability::LogLevel::debug);
+        logger.set_default_log_level(merovingian::observability::LogLevel::debug);
+    }
+
+    ~VerboseProcessLogger()
+    {
+        auto& logger = merovingian::observability::SingleLog::instance();
+        logger.set_console_log_level(merovingian::observability::LogLevel::info);
+        logger.set_default_log_level(merovingian::observability::LogLevel::info);
+    }
+
+    VerboseProcessLogger(VerboseProcessLogger const&) = delete;
+    auto operator=(VerboseProcessLogger const&) -> VerboseProcessLogger& = delete;
+    VerboseProcessLogger(VerboseProcessLogger&&) = delete;
+    auto operator=(VerboseProcessLogger&&) -> VerboseProcessLogger& = delete;
+};
+
+[[nodiscard]] auto split_lines(std::string const& text) -> std::vector<std::string>
+{
+    auto lines = std::vector<std::string>{};
+    auto start = std::size_t{0U};
+    while (start < text.size())
+    {
+        auto const end = text.find('\n', start);
+        lines.push_back(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        if (end == std::string::npos)
+        {
+            break;
+        }
+        start = end + 1U;
+    }
+    return lines;
+}
+
+} // namespace
+
+// AUTH-9 (security-audit-report-2026-09-29.md): the whole path, from a hostile
+// login body to the console, must produce bounded single-line records.
+SCENARIO("A login with a huge identifier containing line feeds logs bounded "
+         "single-line records",
+         "[homeserver][observability][logger][auth-9]")
+{
+    GIVEN("a started runtime and a captured console")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_client_server(flood_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // login.started is logged at debug with the raw, uncapped user_id and
+        // device_id (the audit helper's 255-byte cut applies only to the
+        // login.rejected path), so the process-wide logger is lowered to debug.
+        auto const verbose = VerboseProcessLogger{};
+        auto capture = ConsoleCapture{};
+
+        WHEN("a password login names a 30 KiB user and device id that start with a "
+             "forged log line")
+        {
+            // The JSON \n escapes decode to real line feeds in the logged values.
+            auto const hostile = std::string{R"(a\nFORGED forged-record)"} + std::string(30U * 1024U, 'u');
+            auto const body = R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" + hostile +
+                              R"("},"password":"irrelevant","device_id":")" + hostile + R"("})";
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/login", {}, body, {}, "203.0.113.79"});
+            auto const output = capture.text();
+            auto const lines = split_lines(output);
+
+            THEN("the login is refused and every record is one physical line of "
+                 "bounded length")
+            {
+                REQUIRE(result.response.status == 403U);
+                REQUIRE_FALSE(lines.empty());
+                CHECK(output.find("[truncated ") != std::string::npos);
+                for (auto const& line : lines)
+                {
+                    CHECK(line.size() < 8U * 1024U);
+                    CHECK_FALSE(line.starts_with("FORGED"));
+                }
+                CHECK(output.find("a\\nFORGED forged-record") != std::string::npos);
+                CHECK(output.size() < 32U * 1024U);
             }
         }
     }
