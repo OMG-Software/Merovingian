@@ -91,8 +91,14 @@ is now fixed: the low findings AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-10 and AUTH-
 field-length cap left over from AUTH-9, and the residual gaps noted under AUTH-1 and AUTH-4
 (ADR-0122, ADR-0123, ADR-0124; rows below).
 
+**Update:** 8 October 2026, branch `fix/csaz-low-findings` (0.12.25) — CSAZ-6, CSAZ-9,
+CSAZ-11 and CSAZ-12 are fixed (ADR-0125, ADR-0126, ADR-0127; rows below). Two of the
+audit's expectations did not match the spec and were not implemented as written: a user
+banned through the state API still reads the room's history up to the ban (CSAZ-6), and a
+report from a non-member answers 404, not 403 (CSAZ-12).
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 10 are fixed, 3 are partly fixed and 33 are open.
+fixed. Of the 46 low findings, 14 are fixed, 3 are partly fixed and 29 are open.
 
 ### Fixed
 
@@ -161,6 +167,15 @@ Residual notes on fixed findings:
 | AUTH-10 | The failure tables store fixed-size digests, hold at most 100,000 entries each, and expire from a time-ordered list, so no operation scans the table (`auth::FailureWindowTable`). |
 | AUTH-12 | Asserting a user that is not registered or is deactivated answers `403 M_FORBIDDEN`; `/register` and `/login` are exempt. ADR-0124. |
 
+### Fixed — low, CSAZ, 8 October 2026
+
+| ID | Resolution |
+|----|------------|
+| CSAZ-6 | Every locally composed `m.room.member` event that becomes current state is projected (the `memberships` row, `LocalRoom.members`, device-list share changes, invite metadata) in `persist_composed_event`, whichever endpoint sent it; the membership APIs no longer project on their own. A ban through `PUT /state/m.room.member` removes the user from `/joined_members` and `/joined_rooms` and stops them rejoining. The audit's expected test outcome was wrong: a banned user's `/messages` answers `200` with the events they could see before the ban and none after, as the spec's history visibility rules require ("may see any events which they were allowed to see before they left") and ADR-0084 implements. ADR-0126. |
+| CSAZ-9 | `compose_signed_event` refuses an event whose signed canonical JSON is over 65536 bytes, or whose `type` or `state_key` is over 255 bytes, with `400 M_TOO_LARGE` on `/send`, `/state`, the membership endpoints and `createRoom` (which refuses oversized client content before storing the room). The errcode reaches the client through `OperationResult::errcode` and `LocalHttpResponse::errcode`. |
+| CSAZ-11 | Redactions are judged by the room version's "Handling redactions" rule against the power levels in the redaction's own `auth_events`, applied by overwriting the target's stored JSON (the original is deleted), and withheld from clients until they apply; `PUT /redact` is routed. The capability-gaps row is corrected. ADR-0125. |
+| CSAZ-12 | (a) `/report/{eventId}` answers `404 M_NOT_FOUND` unless the reporter is joined and the event is in the room and visible to them (the spec's 404, not a 403), and a repeat report writes no second audit row. (b) `/upgrade` refuses with `403` before creating anything unless the user may send `m.room.tombstone`. (c) directory visibility needs canonical-alias power or a server administrator. (d) alias `PUT` validates the grammar and this server's domain (`400 M_INVALID_PARAM`) and needs canonical-alias power or an administrator; aliases record their creator (migration 021); `DELETE` is implemented for the creator, a user with canonical-alias power, or an administrator. ADR-0127. |
+
 ### Outstanding — medium
 
 None.
@@ -173,14 +188,14 @@ None.
 | OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
 | MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). There is no thumbnail cache, no per-user concurrency cap, and no test with a slow decoder stub. |
 
-Open, with no code, test or documentation change found: CSAZ-6, CSAZ-9, CSAZ-11, CSAZ-12 (all four endpoints), HTTP-7, FED-9,
+Open, with no code, test or documentation change found: HTTP-7, FED-9,
 FED-10, FED-12, EVT-10, EVT-11, OUT-6, OUT-8, CRY-3, CRY-4, CRY-5, CRY-6, ISO-4, ISO-5,
 ISO-6, ISO-7, ISO-8, MED-7, MED-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2, OPS-4,
 OPS-5, OPS-6.
 
 The documentation corrections listed under "Documentation found to be wrong about the
-code" for CRY-6, ISO-4, OPS-2, OUT-8 (`deny_ip_ranges`) and CSAZ-11 have not been made;
-the AUTH-2 correction was made in 0.12.23.
+code" for CRY-6, ISO-4, OPS-2 and OUT-8 (`deny_ip_ranges`) have not been made;
+the AUTH-2 correction was made in 0.12.23 and the CSAZ-11 correction in 0.12.25.
 
 ---
 

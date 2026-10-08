@@ -596,6 +596,24 @@ sender is on our own server (verified against this server's own current and
 retired keys). Auth-chain events are stored as outliers with no
 `current_state` row.
 
+### Locally composed events: size limits and membership (CSAZ-9, CSAZ-6)
+
+`compose_signed_event` (`src/homeserver/room_service.cpp`) returns a `ComposeResult` whose `failure` says why
+no event was composed. `too_large` is the spec's "Size limits": an event `type` or `state_key` over 255 bytes
+(`events::max_event_type_length_bytes`, `events::max_state_key_length_bytes`), checked before anything is
+composed, or a signed event over 65536 bytes (`events::max_event_size_bytes`), measured on the signed canonical
+JSON, which is the federation format the spec measures, so a request body under the limit can still be refused
+once the envelope, hashes and signature are added. Every caller answers it with `400 M_TOO_LARGE`, carried to the
+client as `OperationResult::errcode` and `LocalHttpResponse::errcode`. `createRoom` also refuses client content
+that cannot fit in any event (`name`, `topic`, `creation_content`, `power_level_content_override`,
+`initial_state`) before it stores the room; content that fits alone but not once signed is refused after the
+room exists, with the same error.
+
+`persist_composed_event` projects every `m.room.member` event it stores that is now the current state for its
+user (`project_local_membership`, ADR-0126): the `memberships` row, `LocalRoom.members`, device-list share
+changes and invite metadata. That covers the membership APIs and `PUT /state/m.room.member` alike; callers do
+not project on their own.
+
 ### Phase B2: the receipt-order auth checks themselves (ADR-0064)
 
 Phase B1 made the state model correct; `ingest_pdu_event` still authorised

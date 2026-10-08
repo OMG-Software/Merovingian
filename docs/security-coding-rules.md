@@ -392,6 +392,20 @@ quickly finding everything a given `AGENTS.md` file contributed.
   accidentally bypass.
   Source: `src/rooms/AGENTS.md`.
 
+- **A client action that is, or advertises, a state event is refused up front unless the user
+  may send that state event (`homeserver::may_send_state_event`); joining the room is not
+  enough.**
+  Why: `/upgrade`, directory visibility and room aliases used to check membership only, so a
+  power-level-0 member could create a replacement room, publish a room against its
+  moderators' wishes, or take any alias on the server (audit CSAZ-12, ADR-0127).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A locally created `m.room.member` event is projected into the membership tables only by
+  `persist_composed_event`, and only when it became current state.**
+  Why: when each endpoint projected for itself, a ban sent through the state API changed room
+  state but left the user listed as joined, able to rejoin (audit CSAZ-6, ADR-0126).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## Federation (the highest-risk surface — all input comes from untrusted remote servers)
 
 - **Authenticate every inbound request with X-Matrix auth before touching any body data.**
@@ -1059,7 +1073,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
-| `src/homeserver/AGENTS.md` | HTTP and network boundary; Federation; Sync |
+| `src/homeserver/AGENTS.md` | Authentication and authorization; HTTP and network boundary; Federation; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |
 | `migrations/AGENTS.md` | Database |

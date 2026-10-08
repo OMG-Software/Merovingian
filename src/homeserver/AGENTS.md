@@ -18,6 +18,7 @@ This is the largest and most complex module — read this file carefully before 
 | `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
+| `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
 | `default_push_ruleset.cpp` | The server-default push ruleset returned by `/pushrules/` |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -208,3 +209,30 @@ local user's event) before storing it, and `compose_signed_event` puts `redacts`
 stores, so a new ingest path needs no extra call. It overwrites the target's JSON with the redacted form; do not add a
 copy of the original content anywhere. A suspended user may redact only their own events (the handler enforces it, the
 suspension gate lets the route through).
+
+## Errcodes the status cannot name (CSAZ-9)
+
+`error_code_for_status` maps a status to one errcode (400 is `M_UNKNOWN`). When a room operation refuses with a
+specific Matrix errcode, set `OperationResult::errcode` (as `event_too_large_result()` does for `M_TOO_LARGE`);
+`response_from_operation` / `response_from_room_operation` copy it into `LocalHttpResponse::errcode`, and the client
+API's `error_code_for()` and `wrap()` return it. Do not encode an errcode into the reason text or a header.
+
+## Event size limits (CSAZ-9)
+
+`compose_signed_event` returns a `ComposeResult`. A caller that gets `ComposeFailure::too_large` answers
+`event_too_large_result()` (`400 M_TOO_LARGE`), never the 403 or 500 it uses for other failures. The limits are
+checked on the signed canonical JSON, so do not add a cheaper pre-check on the request body in their place.
+
+## Membership projection (CSAZ-6, ADR-0126)
+
+`persist_composed_event` projects every `m.room.member` event it stores that became current state
+(`project_local_membership`: the `memberships` row, `LocalRoom.members`, device-list share changes, invite
+metadata). A new membership path stores its event through `persist_composed_event` and does not touch those
+itself; projecting twice allocates a second stream ordering and duplicates device-list changes.
+
+## Gates that stand for a state event (CSAZ-12, ADR-0127)
+
+When a client endpoint's action is, or advertises, a state event (`/upgrade` sends `m.room.tombstone`; directory
+visibility and aliases stand for `m.room.canonical_alias`), refuse it up front with `may_send_state_event()` for that
+event type, before anything is created. Membership alone is not enough. Alias `PUT` validates with
+`auth::room_alias_is_valid` and requires this server's domain; `DELETE` allows the alias's recorded creator.
