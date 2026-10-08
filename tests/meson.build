@@ -329,6 +329,7 @@ shell = find_program('sh')
       'conformance/test_identifier_grammar.cpp',
       'conformance/test_ignoring_users_conformance.cpp',
       'conformance/test_key_publication_conformance.cpp',
+      'conformance/test_membership_projection_conformance.cpp',
       'conformance/test_pdu_format_conformance.cpp',
       'conformance/test_pdu_ingestion_conformance.cpp',
       'conformance/test_pdu_signature_conformance.cpp',
