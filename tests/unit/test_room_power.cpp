@@ -101,6 +101,46 @@ SCENARIO("may_send_state_event refuses when the room's version cannot be establi
     }
 }
 
+SCENARIO("may_send_state_event refuses when the room's create event cannot be read", "[homeserver][power][csaz-12]")
+{
+    GIVEN("a room whose current create state names an event the store does not hold")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.state.push_back({"!room:example.org", "m.room.create", "", "$missing"});
+
+        WHEN("the creator asks to send a state event")
+        {
+            auto const allowed = may_send(store, "@alice:example.org", "m.room.name");
+
+            THEN("it is refused")
+            {
+                REQUIRE_FALSE(allowed);
+            }
+        }
+    }
+    GIVEN("a room whose create event content is not an object, and one whose create event has no content")
+    {
+        auto bad_content = merovingian::database::PersistentStore{};
+        add_state_event(bad_content, "$create", "m.room.create",
+                        R"({"type":"m.room.create","state_key":"","sender":"@alice:example.org","content":"10"})");
+        auto no_content = merovingian::database::PersistentStore{};
+        add_state_event(no_content, "$create", "m.room.create",
+                        R"({"type":"m.room.create","state_key":"","sender":"@alice:example.org"})");
+
+        WHEN("the creator asks to send a state event in each")
+        {
+            auto const with_bad_content = may_send(bad_content, "@alice:example.org", "m.room.name");
+            auto const with_no_content = may_send(no_content, "@alice:example.org", "m.room.name");
+
+            THEN("both are refused")
+            {
+                REQUIRE_FALSE(with_bad_content);
+                REQUIRE_FALSE(with_no_content);
+            }
+        }
+    }
+}
+
 SCENARIO("may_send_state_event compares the user's power with the event's required level",
          "[homeserver][power][csaz-12]")
 {

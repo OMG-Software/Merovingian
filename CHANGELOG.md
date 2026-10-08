@@ -58,6 +58,8 @@ CSAZ-6, CSAZ-9, CSAZ-11 and CSAZ-12 of the 29 September 2026 security audit are 
 - **TESTS:** refused membership actions (`/invite` by a non-member, `/ban` and `/unban` without power,
   `/forget` while joined, `/knock` on a non-knock room) answer the spec's 403 or 400 and change nothing;
   malformed redactions name no target and never apply (`tests/unit/test_redaction_validity.cpp`).
+  `may_send_state_event` refuses when the room's create event is missing or has no readable content, and
+  `PUT /redact` with a body that is not a JSON object answers `400 M_BAD_JSON` and redacts nothing.
 - **BUILD:** `merovingian-auth` links `merovingian-canonicaljson` (`auth::room_alias_is_valid` and
   `oidc_discovery.cpp` use it); `src/meson.build` configures canonicaljson first. The fuzz config-parser
   target, which links auth without canonicaljson, failed to link.

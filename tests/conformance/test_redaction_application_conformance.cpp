@@ -1010,3 +1010,39 @@ SCENARIO("In a room v12 the creator may redact another user's event and others o
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19, PUT /rooms/{roomId}/redact/{eventId}/{txnId}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidredacteventidtxnid
+//
+// The request body is a JSON object (optionally carrying `reason`); anything else is malformed and
+// redacts nothing.
+SCENARIO("PUT /redact with a body that is not a JSON object is refused and redacts nothing",
+         "[conformance][client-server][redaction][csaz-11]")
+{
+    GIVEN("alice's message in her room")
+    {
+        auto started = merovingian::homeserver::start_client_server(redaction_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const room_id = create_room(rt, alice, "10");
+        auto const message = send_text(rt, alice, room_id, "keep me");
+
+        WHEN("she redacts it with a JSON array as the body")
+        {
+            auto const reply = call(rt, "PUT",
+                                    "/_matrix/client/v3/rooms/" + room_id + "/redact/" + message + "/bad-body", alice,
+                                    R"(["spam"])");
+
+            THEN("the server answers 400 M_BAD_JSON and the message keeps its content")
+            {
+                REQUIRE(reply.status == 400U);
+                REQUIRE(string_member(parse_object(reply.body), "errcode") != nullptr);
+                REQUIRE(*string_member(parse_object(reply.body), "errcode") == "M_BAD_JSON");
+                auto const event = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + message, alice);
+                REQUIRE(event.status == 200U);
+                REQUIRE(event.body.find("keep me") != std::string::npos);
+            }
+        }
+    }
+}
