@@ -49,6 +49,8 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_read_markers_conformance.cpp` | [CS API § Read and unread markers](../../docs/matrix-v1.19-spec/client-server-api.md#read-and-unread-markers) |
 | `test_receipt_conformance.cpp` | [CS API § Receipts](../../docs/matrix-v1.19-spec/client-server-api.md#receipts) |
 | `test_redaction_conformance.cpp` | [SS API § Redaction](../../docs/matrix-v1.19-spec/client-server-api.md#redactions) |
+| `test_redaction_application_conformance.cpp` | [CS API § Redactions](../../docs/matrix-v1.19-spec/client-server-api.md#redactions) (`PUT /rooms/{roomId}/redact/{eventId}/{txnId}`, `redacted_because` on every read path, `redacts` per room version) |
+| `test_redaction_federation_conformance.cpp` | [Room versions § Handling redactions](../../docs/matrix-v1.19-spec/rooms/v10.md#handling-redactions) (a federated redaction is applied only when the sender has power or the original sender is on the same server) |
 | `test_room_version_table_conformance.cpp` | [Room Versions](../../docs/matrix-v1.19-spec/rooms/index.md) |
 | `test_safety_report_conformance.cpp` | [CS API § Reporting Content](../../docs/matrix-v1.19-spec/client-server-api.md#reporting-content) |
 | `test_search_conformance.cpp` | [CS API § Server Side Search](../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search) |

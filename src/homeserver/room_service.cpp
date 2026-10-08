@@ -16,6 +16,7 @@
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/redaction_view.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -32,6 +33,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
@@ -1435,7 +1437,37 @@ namespace
         event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(depth)}));
         event.push_back(canonicaljson::make_member("prev_events", string_array(prev_events)));
         event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
-        event.push_back(canonicaljson::make_member("content", copy_member_or_empty_object(*input, "content")));
+        auto event_content = copy_member_or_empty_object(*input, "content");
+        // Spec (Client-Server API, PUT /send): "In rooms with a version older than 11 they MUST move
+        // the `redacts` property inside the `content` to the top level of the event." From room
+        // version 11 it stays in `content` (rooms/v11.md).
+        auto redacts_for_top_level = std::optional<std::string>{};
+        if (event_type == "m.room.redaction" && policy->redaction_rules != rooms::RedactionRules::room_v11_plus)
+        {
+            if (auto const* content_object = std::get_if<canonicaljson::Object>(&event_content.storage());
+                content_object != nullptr)
+            {
+                auto remaining = canonicaljson::Object{};
+                for (auto const& member : *content_object)
+                {
+                    if (member.key != "redacts")
+                    {
+                        remaining.push_back(member);
+                    }
+                    else if (auto const* redacts = std::get_if<std::string>(&member.value->storage());
+                             redacts != nullptr)
+                    {
+                        redacts_for_top_level = *redacts;
+                    }
+                }
+                event_content = canonicaljson::Value{std::move(remaining)};
+            }
+        }
+        event.push_back(canonicaljson::make_member("content", std::move(event_content)));
+        if (redacts_for_top_level.has_value())
+        {
+            event.push_back(canonicaljson::make_member("redacts", canonicaljson::Value{*redacts_for_top_level}));
+        }
         auto state_key = std::optional<std::string>{};
         if (event_state_key.has_value())
         {
@@ -6320,6 +6352,32 @@ namespace
 
 } // namespace
 
+namespace
+{
+
+    // True for a client request to send an m.room.redaction whose content has no string `redacts`.
+    [[nodiscard]] auto request_is_redaction_without_target(std::string_view event_json) -> bool
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || input == nullptr)
+        {
+            return false;
+        }
+        auto const* type = string_member(*input, "type");
+        if (type == nullptr || *type != "m.room.redaction")
+        {
+            return false;
+        }
+        auto const* content = object_member(*input, "content");
+        auto const* content_object =
+            content == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content->storage());
+        auto const* redacts = content_object == nullptr ? nullptr : string_member(*content_object, "redacts");
+        return redacts == nullptr || redacts->empty();
+    }
+
+} // namespace
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json) -> OperationResult
@@ -6359,7 +6417,7 @@ namespace
                 {"room_id", std::string{room_id}, false},
                 {"reason",  "not joined",         false}
         });
-        return make_operation_result(false, {}, "not joined");
+        return make_operation_result(false, {}, "not joined", 403U);
     }
     if (event_json.empty())
     {
@@ -6369,6 +6427,18 @@ namespace
                                                   {"reason",  "empty event",        false}
         });
         return make_operation_result(false, {}, "empty event");
+    }
+
+    // CSAZ-11: a redaction must name the event it redacts. Without it there is nothing to compose.
+    if (request_is_redaction_without_target(event_json))
+    {
+        log_diagnostic("room.event.rejected", {
+                                                  {"actor",   *user_id,                   false},
+                                                  {"room_id", std::string{room_id},       false},
+                                                  {"status",  "400",                      false},
+                                                  {"reason",  "redaction names no event", false}
+        });
+        return make_operation_result(false, {}, "m.room.redaction content must name the event in redacts", 400U);
     }
 
     auto const composed = compose_signed_event(runtime, room_id, *user_id, event_json);
@@ -6381,6 +6451,28 @@ namespace
                                                   {"reason",  "event authorization or signing failed", false}
         });
         return make_operation_result(false, {}, "event authorization or signing failed", 403U);
+    }
+    // CSAZ-11. Spec (Client-Server API, PUT /redact): a user may redact their own events, another
+    // user's only with the `redact` level, and a server administrator any event sent by a user on
+    // their server. Refusing here keeps a redaction that would not be applied out of the room.
+    if (composed->event_type == "m.room.redaction")
+    {
+        auto const check = check_local_redaction(runtime.database.persistent_store, room_id, composed->json,
+                                                 authenticated_admin_user(runtime, access_token).has_value(),
+                                                 runtime.config.server().server_name);
+        if (check != LocalRedactionCheck::permitted)
+        {
+            auto const missing = check == LocalRedactionCheck::target_unknown;
+            log_diagnostic("room.event.rejected",
+                           {
+                               {"actor",   *user_id,                                                         false},
+                               {"room_id", std::string{room_id},                                             false},
+                               {"status",  missing ? "404" : "403",                                          false},
+                               {"reason",  missing ? "redaction target unknown" : "redaction not permitted", false}
+            });
+            return missing ? make_operation_result(false, {}, "the event to redact was not found in this room", 404U)
+                           : make_operation_result(false, {}, "you may not redact that event", 403U);
+        }
     }
     // ADR-0064 phase B1: route through the same choke point every other
     // local event path uses, rather than duplicating the raw store call —
@@ -6679,6 +6771,10 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
             }
         }
     }
+    // CSAZ-11: a redacted event carries unsigned.redacted_because (the stored JSON is already the
+    // redacted form); a redaction event carries `redacts` where older and newer clients look for it.
+    database::add_redaction_compat(client_obj);
+    database::attach_redacted_because(store, event.event_id, client_obj);
     return canonicaljson::Value{std::move(client_obj)};
 }
 

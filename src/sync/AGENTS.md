@@ -133,3 +133,13 @@ both changed and left to whichever came last. Do not walk
 - [Syncing](../../docs/matrix-v1.19-spec/client-server-api.md#syncing)
 - [Filtering](../../docs/matrix-v1.19-spec/client-server-api.md#filtering)
 - [MSC4186 Simplified Sliding Sync](../../docs/matrix-v1.19-spec/client-server-api.md)
+
+## Redactions are withheld until they apply (CSAZ-11)
+
+`HistoryVisibility::can_see` returns false for an `m.room.redaction` event that has not been applied
+(`database::redaction_is_withheld`): rooms/v3.md "Handling redactions" says a redaction is not sent to clients
+until both it and its target have been received and it would be applied. Every read path that returns events
+already goes through `can_see`, so a new one gets this for free; do not add a path that bypasses it. Events a
+redaction has been applied to are stored in their redacted form, and the serializers add
+`unsigned.redacted_because` with `database::attach_redacted_because` (a new client-facing event serializer must
+call it, and `database::add_redaction_compat`).

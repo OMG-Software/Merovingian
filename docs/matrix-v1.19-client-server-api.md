@@ -270,7 +270,7 @@ the restrictive allowlist is our policy (ADR-0088), not a protocol prohibition.
 | `GET` | `/_matrix/client/v3/rooms/{roomId}/members` | `getMembersByRoom` | access token | - | 200, 403 |
 | `GET` | `/_matrix/client/v3/rooms/{roomId}/messages` | `getRoomEvents` | access token | - | 200, 403 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `postReceipt` | access token | required application/json | 200, 400, 429 |
-| `PUT` | `/_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId}` | `redactEvent` | access token | required application/json | 200 |
+| `PUT` | `/_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId}` | `redactEvent` | access token | required application/json | 200, 400, 403, 404 |
 | `PUT` | `/_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}` | `sendMessage` | access token | required application/json | 200, 400 |
 | `GET` | `/_matrix/client/v3/rooms/{roomId}/state` | `getRoomState` | access token | - | 200, 403 |
 | `GET` | `/_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey}` | `getRoomStateWithKey` | access token | - | 200, 403, 404 |

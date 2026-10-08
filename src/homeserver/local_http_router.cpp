@@ -1536,7 +1536,16 @@ namespace
                 // request for a local recipient — the normal federated-room
                 // case. See room_service.hpp's deliver_federation_push_
                 // notifications doc comment.
-                deliver_federation_push_notifications(*rt, envelope, result.accepted_stream_ordering);
+                // CSAZ-11: a redaction that has not been applied is not sent to clients
+                // (rooms/v3.md "Handling redactions"), so it raises no notification either.
+                auto const redaction_withheld = [&]() {
+                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                    return database::redaction_is_withheld(rt->database.persistent_store, envelope.event_id);
+                }();
+                if (!redaction_withheld)
+                {
+                    deliver_federation_push_notifications(*rt, envelope, result.accepted_stream_ordering);
+                }
             }
             return result;
         };

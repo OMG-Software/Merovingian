@@ -2056,6 +2056,20 @@ instead of repeated path enumeration (ADR-0095). A legal shared DAG therefore
 does not exhaust the budget merely by having many paths. Over-budget graphs
 still fail closed and require operational handling of the rejected resolution.
 
+### Redactions accepted but never applied (audit CSAZ-11)
+
+Threat: content a moderator redacted stayed readable, because an `m.room.redaction` was relayed and never applied
+(`/event`, `/messages`, `/sync` and federation kept serving the original), and a redaction from a sender with no
+authority could be shown to clients as if it had applied (clients apply a redaction they are sent). Mitigation: a
+redaction is judged by the room version's "Handling redactions" rule using the power levels among its own
+`auth_events` (so every server decides alike), applied by overwriting the target's stored JSON with the redacted
+form (the original is deleted, not kept aside), and withheld from clients, push and sync wake-ups until it applies.
+One that does not apply stays withheld; one whose target is unknown waits. A redaction of the room's
+`m.room.create` event is never applied, so a moderator cannot make the server forget the room version. Residual risk:
+the verdict is made once, so a redaction that applied stays applied if the sender later loses power (as the spec has
+it: events are not un-redacted), and redacting a redaction event in room versions before 11 strips its `redacts`, so
+the target no longer shows `unsigned.redacted_because` after the next restart.
+
 ## Security principles
 
 - Fail closed.

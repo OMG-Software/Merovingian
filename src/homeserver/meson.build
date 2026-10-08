@@ -11,6 +11,7 @@ homeserver_sources = files(
   'local_services.cpp',
   'media_service.cpp',
   'remote_media_fetch_coalescer.cpp',
+  'redaction_service.cpp',
   'remote_media_fetch_scope.cpp',
   'request_lock.cpp',
   'room_service.cpp',

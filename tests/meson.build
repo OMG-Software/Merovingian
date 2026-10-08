@@ -118,6 +118,7 @@ shell = find_program('sh')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'unit/test_redaction_validity.cpp',
       'unit/test_appservice_client.cpp',
       'unit/test_appservice_masquerade_token.cpp',
       'unit/test_appservice_registration.cpp',
@@ -334,6 +335,8 @@ shell = find_program('sh')
       'conformance/test_push_notifications_conformance.cpp',
       'conformance/test_notifications_conformance.cpp',
       'conformance/test_redaction_conformance.cpp',
+      'conformance/test_redaction_application_conformance.cpp',
+      'conformance/test_redaction_federation_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
       'conformance/test_receipt_conformance.cpp',

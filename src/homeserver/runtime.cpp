@@ -18,6 +18,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/media/repository.hpp"
@@ -660,6 +661,14 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;
     hydrate_local_database(database);
+    // CSAZ-11: the main process applies redactions as events are stored, and once now for any
+    // that were stored but never applied. The federation worker only reads; it serves the redacted
+    // JSON the main process wrote.
+    if (profile == database::TableLoadProfile::full)
+    {
+        install_redaction_reconciler(database.persistent_store);
+        std::ignore = reconcile_all_redactions(database.persistent_store);
+    }
     return database;
 }
 

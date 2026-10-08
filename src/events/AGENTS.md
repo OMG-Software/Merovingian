@@ -13,6 +13,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 | `authorization.cpp` | Authorization rules — room-version-aware; called before persisting any PDU |
 | `state_resolution.cpp` | State resolution v2 algorithm — do not inline resolution elsewhere |
 | `redaction.cpp` | Strip non-essential keys per room-version redaction algorithm |
+| `redaction_validity.cpp` | Where a room version keeps `redacts`, and whether a redaction applies to its target ("Handling redactions") |
 
 ## Event IDs are room-version dependent
 
@@ -76,6 +77,14 @@ the whole resolution, matching its behaviour before the fallback existed.
 
 `redaction.hpp` applies the room-version-specific redaction algorithm.
 Do not trim event fields manually — the algorithm determines what survives.
+
+`redaction_validity.hpp` decides whether a redaction applies: `redaction_target` reads `redacts` from the
+location the room version uses (top level before v11, `content` from v11), and `judge_redaction` applies the
+two conditions of "Handling redactions" (sender's power level at least the redact level, or the sender's
+domain equals the original sender's). Callers pass the power levels from the redaction's own `auth_events`, not
+the room's current state, so every server reaches the same verdict. It never applies a redaction of
+`m.room.create`: the server reads the room version from that event and, before v11, the algorithm strips it.
+Applying a redaction is `homeserver/redaction_service.cpp`, not this module.
 
 ## Key spec sections
 
