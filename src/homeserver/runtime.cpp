@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/redaction_service.hpp"
 
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/auth/password.hpp"
@@ -660,6 +661,14 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;
     hydrate_local_database(database);
+    // CSAZ-11: the main process applies redactions as events are stored, and once now for any
+    // that were stored but never applied. The federation worker only reads; it serves the redacted
+    // JSON the main process wrote.
+    if (profile == database::TableLoadProfile::full)
+    {
+        install_redaction_reconciler(database.persistent_store);
+        std::ignore = reconcile_all_redactions(database.persistent_store);
+    }
     return database;
 }
 

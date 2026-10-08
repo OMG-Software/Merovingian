@@ -4,6 +4,7 @@ database_sources = files(
   'migration_files.cpp',
   'migration.cpp',
   'persistent_store.cpp',
+  'redaction_view.cpp',
   'postgresql_store.cpp',
   'runtime_database.cpp',
   'schema.cpp',

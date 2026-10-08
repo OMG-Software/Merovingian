@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/database/redaction_view.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
@@ -58,7 +59,8 @@ namespace
     // reference hash), but every client-facing event — timeline and
     // required_state alike — must include it per the Matrix spec's Room
     // Event Format. Mirrors client_server.cpp's client_event_value().
-    [[nodiscard]] auto client_event_json(std::string_view event_id, std::string_view stored_json) -> std::string
+    [[nodiscard]] auto client_event_json(database::PersistentStore const& store, std::string_view event_id,
+                                         std::string_view stored_json) -> std::string
     {
         auto const parsed = canonicaljson::parse_lossless(stored_json);
         if (parsed.error == canonicaljson::ParseError::none)
@@ -74,6 +76,10 @@ namespace
                 });
                 client_obj.push_back(
                     canonicaljson::make_member("event_id", canonicaljson::Value{std::string{event_id}}));
+                // CSAZ-11: a redacted event carries unsigned.redacted_because; a redaction event
+                // carries `redacts` where older and newer clients look for it.
+                database::add_redaction_compat(client_obj);
+                database::attach_redacted_because(store, event_id, client_obj);
                 auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(client_obj)});
                 if (serialized.error == canonicaljson::CanonicalJsonError::none)
                 {
@@ -721,7 +727,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         {
             continue;
         }
-        timeline_events.emplace_back(ev.stream_ordering, client_event_json(ev.event_id, ev.json));
+        timeline_events.emplace_back(ev.stream_ordering, client_event_json(store, ev.event_id, ev.json));
     }
     std::sort(timeline_events.begin(), timeline_events.end(), [](auto const& a, auto const& b) {
         return a.first < b.first;
@@ -802,7 +808,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                 {
                     break; // spec: invites from ignored users are not sent
                 }
-                resp.required_state_json.push_back(client_event_json(ev.event_id, ev.json));
+                resp.required_state_json.push_back(client_event_json(store, ev.event_id, ev.json));
                 if (lazy_load_room_members && se.event_type == "m.room.member" &&
                     timeline_membership.contains(se.state_key))
                 {

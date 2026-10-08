@@ -416,6 +416,13 @@ auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
     {
         return false;
     }
+    // CSAZ-11. rooms/v3.md "Handling redactions": a redaction is not sent to clients until it has
+    // been applied, so a redaction that is waiting for its target, or that does not apply, is
+    // never returned by any read path that goes through this check.
+    if (database::redaction_is_withheld(store_, event.event_id))
+    {
+        return false;
+    }
     auto const group_id = state_group_of(event.event_id);
     if (!group_id.has_value())
     {

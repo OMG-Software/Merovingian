@@ -81,6 +81,22 @@ auto redaction_target(canonicaljson::Value const& redaction_event, rooms::RoomVe
     return *target;
 }
 
+auto sender_meets_redact_level(canonicaljson::Value const& redaction_event, RedactionContext const& context,
+                               rooms::RoomVersionPolicy const& policy) -> bool
+{
+    auto const* redaction = object_of(redaction_event);
+    auto const* sender = redaction == nullptr ? nullptr : string_of(*redaction, "sender");
+    if (sender == nullptr)
+    {
+        return false;
+    }
+    auto const redact_level = has_content(context.power_levels)
+                                  ? extract_power_level_key(context.power_levels, "redact", default_redact_level,
+                                                            !policy.power_levels_require_integers)
+                                  : default_redact_level;
+    return effective_sender_power(context.power_levels, *sender, context.create, policy) >= redact_level;
+}
+
 auto judge_redaction(canonicaljson::Value const& redaction_event, canonicaljson::Value const& target_event,
                      RedactionContext const& context, rooms::RoomVersionPolicy const& policy) -> RedactionVerdict
 {
@@ -104,11 +120,7 @@ auto judge_redaction(canonicaljson::Value const& redaction_event, canonicaljson:
     }
 
     // Condition 1: the sender's power level is at least the redact level.
-    auto const redact_level = has_content(context.power_levels)
-                                  ? extract_power_level_key(context.power_levels, "redact", default_redact_level,
-                                                            !policy.power_levels_require_integers)
-                                  : default_redact_level;
-    if (effective_sender_power(context.power_levels, *redaction_sender, context.create, policy) >= redact_level)
+    if (sender_meets_redact_level(redaction_event, context, policy))
     {
         return RedactionVerdict::applies;
     }

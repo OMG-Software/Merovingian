@@ -36,6 +36,13 @@ enum class RedactionVerdict
 [[nodiscard]] auto redaction_target(canonicaljson::Value const& redaction_event, rooms::RoomVersionPolicy const& policy)
     -> std::optional<std::string>;
 
+// Condition 1 of "Handling redactions" on its own: the redaction event's sender has a power level
+// at least the room's redact level (default 50). This is also the level the Client-Server API
+// requires to redact another user's event.
+[[nodiscard]] auto sender_meets_redact_level(canonicaljson::Value const& redaction_event,
+                                             RedactionContext const& context, rooms::RoomVersionPolicy const& policy)
+    -> bool;
+
 // Spec, "Handling redactions" (rooms/v3.md to rooms/v12.md): the server applies a redaction if
 //   1. the redaction event's sender has a power level at least the redact level, or
 //   2. the redaction event's sender's domain matches the original event's sender's domain.

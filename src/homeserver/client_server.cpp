@@ -789,6 +789,13 @@ namespace
         std::string txn_id{};
     };
 
+    struct RoomRedactPathParts final
+    {
+        std::string room_id{};
+        std::string event_id{};
+        std::string txn_id{};
+    };
+
     struct RoomStatePathParts final
     {
         std::string room_id{};
@@ -970,9 +977,8 @@ namespace
             // PUT /rooms/{roomId}/redact/{eventId}/{txnId} — redaction. The
             // spec permits a suspended user to redact *their own* events; this
             // gate cannot see the target event's sender, so the handler must
-            // enforce ownership itself. That endpoint is not routed today (it
-            // answers 404 M_UNRECOGNIZED); whoever implements it owns that
-            // check.
+            // enforce ownership itself: the PUT /redact handler below refuses a
+            // suspended user's redaction of anyone else's event.
             if (method == "PUT" && action == "redact")
             {
                 return true;
@@ -7127,6 +7133,66 @@ namespace
         return RoomSendPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
                                  core::percent_decode_path_component(event_and_txn.substr(0U, separator)),
                                  core::percent_decode_path_component(event_and_txn.substr(separator + 1U))};
+    }
+
+    // PUT /_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId}
+    [[nodiscard]] auto room_redact_path_parts(std::string_view target) -> std::optional<RoomRedactPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/redact/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const marker_pos = suffix.find(marker);
+        // The room ID is the first segment: "/redact/" inside a state key or an event type must not match.
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            suffix.substr(0U, marker_pos).find('/') != std::string_view::npos ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const event_and_txn = suffix.substr(marker_pos + marker.size());
+        auto const separator = event_and_txn.find('/');
+        if (separator == std::string_view::npos || separator == 0U || separator + 1U >= event_and_txn.size() ||
+            event_and_txn.find('/', separator + 1U) != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return RoomRedactPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                   core::percent_decode_path_component(event_and_txn.substr(0U, separator)),
+                                   core::percent_decode_path_component(event_and_txn.substr(separator + 1U))};
+    }
+
+    // The request body of PUT /redact is `{"reason": "..."}`, with `reason` optional. An empty body
+    // is accepted as `{}`. nullopt means the body is not a JSON object or `reason` is not a string;
+    // otherwise the content of the m.room.redaction event to send, with `redacts` set.
+    [[nodiscard]] auto redaction_content_from_body(std::string_view body, std::string_view event_id)
+        -> std::optional<canonicaljson::Value>
+    {
+        auto content = canonicaljson::Object{};
+        if (!body.empty())
+        {
+            auto const parsed = canonicaljson::parse_lossless(body);
+            auto const* request = parsed.error == canonicaljson::ParseError::none
+                                      ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                      : nullptr;
+            if (request == nullptr)
+            {
+                return std::nullopt;
+            }
+            for (auto const& member : *request)
+            {
+                if (member.key != "reason")
+                {
+                    continue;
+                }
+                if (std::get_if<std::string>(&member.value->storage()) == nullptr)
+                {
+                    return std::nullopt;
+                }
+                content.push_back(member);
+            }
+        }
+        content.push_back(json_member("redacts", json_str(event_id)));
+        return canonicaljson::Value{std::move(content)};
     }
 
     [[nodiscard]] auto room_state_path_parts(std::string_view target) -> std::optional<RoomStatePathParts>
@@ -13328,6 +13394,80 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const suffix = std::string_view{req.target}.substr(room_prefix.size());
         if (req.method == "PUT")
         {
+            // Spec: PUT /_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId}
+            // ../../docs/matrix-v1.19-spec/client-server-api.md#redactions
+            if (auto const redact = room_redact_path_parts(req.target); redact.has_value())
+            {
+                // The transaction ID is scoped to this endpoint and target, so the same txnId used
+                // on /send, or to redact another event, is a different request.
+                auto const txn_scope = std::string{"redact/"} + redact->event_id;
+                if (auto const cached = database::find_client_txn_event_id(
+                        rt.homeserver.database.persistent_store, *user, redact->room_id, txn_scope, redact->txn_id);
+                    cached.has_value())
+                {
+                    return complete({200U, json_serialize(json_obj({json_member("event_id", json_str(*cached))}))});
+                }
+                auto const content = redaction_content_from_body(req.body, redact->event_id);
+                if (!content.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "the request body must be a JSON object");
+                }
+                // Spec (account suspension): a suspended user may redact their own events only. The
+                // suspension gate lets the whole endpoint through because it cannot see the target.
+                auto const suspended = std::ranges::any_of(rt.homeserver.database.persistent_store.users,
+                                                           [&user](database::PersistentUser const& account) {
+                                                               return account.user_id == *user && account.suspended;
+                                                           });
+                if (suspended)
+                {
+                    auto const target_event = std::ranges::find_if(rt.homeserver.database.persistent_store.events,
+                                                                   [&redact](database::PersistentEvent const& event) {
+                                                                       return event.event_id == redact->event_id;
+                                                                   });
+                    if (target_event == rt.homeserver.database.persistent_store.events.end() ||
+                        target_event->sender_user_id != *user)
+                    {
+                        return dispatch_err(req, rt, 403U, "M_USER_SUSPENDED",
+                                            "You cannot perform this action while suspended.");
+                    }
+                }
+                auto rewritten = req;
+                rewritten.method = "POST";
+                rewritten.target = "/_matrix/client/v3/rooms/" + redact->room_id + "/send";
+                rewritten.body = json_serialize(json_obj({
+                    json_member("type", json_str("m.room.redaction")),
+                    json_member("content", *content),
+                }));
+                auto const result = wrap(call_local(rewritten), "event_id");
+                log_diagnostic(result.status == 200U ? "room.redact.accepted" : "room.redact.rejected",
+                               {
+                                   {"actor",    *user,                                                   false},
+                                   {"room_id",  redact->room_id,                                         false},
+                                   {"event_id", redact->event_id,                                        false},
+                                   {"status",   std::to_string(result.status),                           false},
+                                   {"reason",   result.status == 200U ? std::string{"ok"} : result.body, false}
+                });
+                if (result.status == 200U)
+                {
+                    auto const parsed = canonicaljson::parse_lossless(result.body);
+                    if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
+                    {
+                        auto const eid_it = std::ranges::find_if(*obj, [](canonicaljson::ObjectMember const& m) {
+                            return m.key == "event_id";
+                        });
+                        if (eid_it != obj->end() && eid_it->value != nullptr)
+                        {
+                            if (auto const* s = std::get_if<std::string>(&eid_it->value->storage()))
+                            {
+                                std::ignore =
+                                    database::store_client_txn(rt.homeserver.database.persistent_store,
+                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s});
+                            }
+                        }
+                    }
+                }
+                return complete(result);
+            }
             if (auto const path = room_send_path_parts(req.target); path.has_value())
             {
                 // CS API §10.5.1: idempotent send — replay the original response.
