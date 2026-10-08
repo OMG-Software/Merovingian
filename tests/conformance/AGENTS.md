@@ -30,6 +30,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_event_auth_rules.cpp` | [Auth Rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
 | `test_event_graph_conformance.cpp` | [SS API § Retrieving events](../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-events) (`/state/{roomId}`, `/state_ids/{roomId}`) · [§ Backfilling and retrieving missing events](../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) (`/backfill/{roomId}`) |
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.19-spec/client-server-api.md#forming-relationships-between-events) |
+| `test_event_size_limits_conformance.cpp` | [CS API � Size limits](../../docs/matrix-v1.19-spec/client-server-api.md#size-limits) (locally composed events over 65536 bytes, or with a `type` or `state_key` over 255 bytes, are refused with 400 `M_TOO_LARGE` on `/send`, `/state`, membership and `createRoom`) |
 | `test_events.cpp` | [SS API § Event Signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events) · [§ Content Hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | `test_federation_conformance.cpp` | [Server-Server API](../../docs/matrix-v1.19-spec/server-server-api.md) |
 | `test_federation_media_conformance.cpp` | [SS API § Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}](../../docs/matrix-v1.19-spec/server-server-api.md#content-repository) |

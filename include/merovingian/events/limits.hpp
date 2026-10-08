@@ -108,4 +108,8 @@ inline constexpr std::size_t max_id_length_bytes = 255U;
 // "Size limits": state_key MUST NOT exceed 255 bytes.
 inline constexpr std::size_t max_state_key_length_bytes = 255U;
 
+// Maximum byte length for an event's `type`. Spec v1.19 client-server-api.md
+// "Size limits": type MUST NOT exceed 255 bytes.
+inline constexpr std::size_t max_event_type_length_bytes = 255U;
+
 } // namespace merovingian::events

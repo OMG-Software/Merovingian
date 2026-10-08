@@ -316,6 +316,7 @@ shell = find_program('sh')
       'conformance/test_security_audit_state_resolution.cpp',
       'conformance/test_event_graph_conformance.cpp',
       'conformance/test_event_relationships_conformance.cpp',
+      'conformance/test_event_size_limits_conformance.cpp',
       'conformance/test_events.cpp',
       'conformance/test_federation_conformance.cpp',
       'conformance/test_federation_media_conformance.cpp',

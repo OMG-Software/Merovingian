@@ -5728,11 +5728,23 @@ namespace
         return "M_UNKNOWN";
     }
 
+    // The errcode a failed operation named (for example M_TOO_LARGE, CSAZ-9),
+    // or the usual one for its status when it named none.
+    [[nodiscard]] auto error_code_for(OperationResult const& result) -> std::string_view
+    {
+        return result.errcode.empty() ? error_code_for_status(result.status) : std::string_view{result.errcode};
+    }
+
+    [[nodiscard]] auto error_code_for(LocalHttpResponse const& response) -> std::string_view
+    {
+        return response.errcode.empty() ? error_code_for_status(response.status) : std::string_view{response.errcode};
+    }
+
     [[nodiscard]] auto wrap(LocalHttpResponse const& r, std::string_view key) -> LocalHttpResponse
     {
         if (r.status != 200U)
         {
-            return err(r.status, error_code_for_status(r.status), r.body);
+            return err(r.status, error_code_for(r), r.body);
         }
         return resp(200U, json_serialize(json_obj({json_member(std::string{key}, json_str(r.body))})));
     }
@@ -13116,7 +13128,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }();
         if (!create_result.ok)
         {
-            auto errcode = error_code_for_status(create_result.status);
+            auto errcode = error_code_for(create_result);
             if (create_result.status == 400U && create_result.reason == "room alias in use")
             {
                 errcode = "M_ROOM_IN_USE";
@@ -13336,8 +13348,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 // A rejected include/limit/from is a malformed parameter, which
                 // M_UNKNOWN would not tell the client anything useful about.
-                auto const code =
-                    result.status == 400U ? std::string_view{"M_INVALID_PARAM"} : error_code_for_status(result.status);
+                auto const code = result.status == 400U ? std::string_view{"M_INVALID_PARAM"} : error_code_for(result);
                 return dispatch_err(req, rt, result.status, code, result.reason);
             }
             return complete({200U, result.value});
@@ -13368,8 +13379,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const result = fetch_relations(rt.homeserver, req.access_token, request);
             if (!result.ok)
             {
-                auto const code =
-                    result.status == 404U ? std::string_view{"M_NOT_FOUND"} : error_code_for_status(result.status);
+                auto const code = result.status == 404U ? std::string_view{"M_NOT_FOUND"} : error_code_for(result);
                 return dispatch_err(req, rt, result.status, code, result.reason);
             }
             return complete({200U, result.value});
@@ -13861,7 +13871,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             });
             if (result.status != 200U)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.body);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.body);
             }
             return complete(result);
         }
@@ -14403,7 +14413,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                          body->user_id, body->reason);
                 if (!result.ok)
                 {
-                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                    return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
                 }
                 // For remote invitees dispatch the federation invite so the remote server
                 // learns about the event and can deliver it to the invitee's client.
@@ -14441,7 +14451,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     body->id_access_token.value_or(""));
                 if (!result.ok)
                 {
-                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                    return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
                 }
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
@@ -14459,7 +14469,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                   body->user_id, body->reason);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14476,7 +14486,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                    body->user_id, body->reason);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14493,7 +14503,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 merovingian::homeserver::unban_user(rt.homeserver, req.access_token, room_id, body->user_id);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14505,7 +14515,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const result = merovingian::homeserver::forget_room(rt.homeserver, req.access_token, room_id);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14534,8 +14544,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
                                    {"reason",  result.reason,                                              false}
                 });
-                return dispatch_err(req, rt, result.status != 0U ? result.status : 403U,
-                                    error_code_for_status(result.status != 0U ? result.status : 403U), result.reason);
+                auto refused = result;
+                refused.status = result.status != 0U ? result.status : 403U;
+                return dispatch_err(req, rt, refused.status, error_code_for(refused), result.reason);
             }
             log_diagnostic("room.leave.accepted", {
                                                       {"actor",   *user,   false},
@@ -14813,8 +14824,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }();
             if (!create_result.ok)
             {
-                return dispatch_err(req, rt, create_result.status, error_code_for_status(create_result.status),
-                                    create_result.reason);
+                return dispatch_err(req, rt, create_result.status, error_code_for(create_result), create_result.reason);
             }
             auto const& new_room_id = create_result.value;
             auto const tombstone_content = json_serialize(json_obj({
@@ -15127,7 +15137,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const result = merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id);
         if (!result.ok)
         {
-            return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("room_id", json_str(result.value))})));
     }

@@ -522,6 +522,10 @@ struct OperationResult final
     // into the generic failure mapping, which would drop the delay this server
     // has already computed. Zero for every other outcome.
     std::uint32_t retry_after_ms{0U};
+    // The Matrix errcode for a refusal the status alone cannot name, such as
+    // 400 M_TOO_LARGE for an event over the spec's size limits (CSAZ-9). Empty
+    // means the caller maps the status to its usual errcode.
+    std::string errcode{};
 };
 
 struct SessionRefreshResult final

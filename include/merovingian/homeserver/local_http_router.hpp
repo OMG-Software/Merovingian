@@ -51,6 +51,10 @@ struct LocalHttpResponse final
     // `Content-Length` / `Content-Type` / `Connection: close` lines emitted
     // automatically.
     std::vector<std::pair<std::string, std::string>> headers{};
+    // The Matrix errcode for a failure, carried from OperationResult::errcode so
+    // the client API can return it rather than one guessed from the status.
+    // Internal only: never written to the wire by format_response.
+    std::string errcode{};
 };
 
 // Resolves the client address to attribute a request to, honouring
