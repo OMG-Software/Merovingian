@@ -1782,8 +1782,7 @@ namespace
             {
                 continue;
             }
-            if (auto const* content = std::get_if<canonicaljson::Object>(&member.value->storage());
-                content != nullptr)
+            if (auto const* content = std::get_if<canonicaljson::Object>(&member.value->storage()); content != nullptr)
             {
                 if (auto const* in_content = string_in(*content, "redacts");
                     in_content != nullptr && !in_content->empty() &&
@@ -2476,9 +2475,11 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("update_event_json",
-                                                    "UPDATE events SET json = $2 WHERE event_id = $1",
-                                                    {public_value(event_id), {json, true}})))
+    if (!record_and_persist(store,
+                            record_statement("update_event_json", "UPDATE events SET json = $2 WHERE event_id = $1",
+                                             {
+                                                 public_value(event_id), {json, true}
+    })))
     {
         return false;
     }

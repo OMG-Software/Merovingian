@@ -618,8 +618,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,
                          std::unordered_set<std::string> const& lazy_members_already_sent,
-                         std::unordered_set<std::string> const& ignored_senders,
-                         HistoryVisibility& visibility) -> SlidingSyncRoomResponse
+                         std::unordered_set<std::string> const& ignored_senders, HistoryVisibility& visibility)
+    -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 

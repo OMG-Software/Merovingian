@@ -797,3 +797,216 @@ SCENARIO("An applied redaction survives a restart and the original content is go
         std::filesystem::remove(sqlite_path);
     }
 }
+
+// Spec: Client-Server API "Redactions": "Redacting an event cannot be undone". A server upgraded from
+// a version that accepted redactions but never applied them holds redactions whose targets are still
+// whole; starting up applies them.
+SCENARIO("A redaction stored but never applied is applied when the server starts",
+         "[csaz-11][redaction][conformance][sqlite][restart][upgrade]")
+{
+    GIVEN("a SQLite-backed homeserver where a redaction was accepted without being applied")
+    {
+        auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+        auto const sqlite_path = merovingian::tests::temporary_directory() /
+                                 ("merovingian-redaction-upgrade-" + std::to_string(now) + ".sqlite3");
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_redaction_config(sqlite_path);
+
+        auto alice = std::string{};
+        auto room_id = std::string{};
+        auto message_id = std::string{};
+        auto redaction_id = std::string{};
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+            REQUIRE(started.started);
+            auto& rt = started.runtime;
+            alice = register_and_login(rt, "alice");
+            room_id = create_room(rt, alice, "10");
+            message_id = send_text(rt, alice, room_id, "upgrade secret");
+            // The previous version stored the redaction and did nothing else with it.
+            rt.homeserver.database.persistent_store.redaction_observer = nullptr;
+            redaction_id = event_id_of(redact(rt, alice, room_id, message_id, "upgrade-1"));
+            auto const unapplied = fetch_event(rt, alice, room_id, message_id);
+            REQUIRE(unapplied.status == 200U);
+            require_unredacted(parse_object(unapplied.body), "upgrade secret");
+        }
+
+        WHEN("the server is started again")
+        {
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            auto& rt = restarted.runtime;
+
+            THEN("the message is redacted and the redaction event is delivered")
+            {
+                auto const reply = fetch_event(rt, alice, room_id, message_id);
+                REQUIRE(reply.status == 200U);
+                require_redacted_form(parse_object(reply.body), redaction_id);
+                REQUIRE(fetch_event(rt, alice, room_id, redaction_id).status == 200U);
+            }
+
+            THEN("the original text is gone from the stored events")
+            {
+                for (auto const& event : rt.homeserver.database.persistent_store.events)
+                {
+                    REQUIRE(event.json.find("upgrade secret") == std::string::npos);
+                }
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+// Spec: the suspension rules allow "redact their own events" while suspended.
+SCENARIO("A suspended user may redact their own events but not anyone else's",
+         "[csaz-11][redaction][conformance][suspension]")
+{
+    GIVEN("a room v10 where bob is suspended, with messages from alice and bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(redaction_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room_id = create_room(rt, alice, "10");
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        set_power_levels(rt, alice, room_id, "alice", "bob");
+        auto const alice_message = send_text(rt, alice, room_id, "alice words");
+        auto const bob_message = send_text(rt, bob, room_id, "bob words");
+        for (auto& account : rt.homeserver.database.persistent_store.users)
+        {
+            if (account.user_id == user_id("bob"))
+            {
+                account.suspended = true;
+            }
+        }
+
+        WHEN("bob, who has the redact level, redacts alice's message")
+        {
+            auto const reply = redact(rt, bob, room_id, alice_message, "susp-1");
+
+            THEN("it is refused with M_USER_SUSPENDED and nothing is redacted")
+            {
+                REQUIRE(reply.status == 403U);
+                REQUIRE(*string_member(parse_object(reply.body), "errcode") == "M_USER_SUSPENDED");
+                require_unredacted(parse_object(fetch_event(rt, alice, room_id, alice_message).body), "alice words");
+            }
+        }
+
+        WHEN("bob redacts his own message")
+        {
+            auto const reply = redact(rt, bob, room_id, bob_message, "susp-2");
+
+            THEN("it applies")
+            {
+                REQUIRE(reply.status == 200U);
+                require_redacted_form(parse_object(fetch_event(rt, alice, room_id, bob_message).body),
+                                      event_id_of(reply));
+            }
+        }
+    }
+}
+
+// Spec (PUT /redact): "Server administrators may redact events sent by users on their server."
+SCENARIO("A server administrator may redact an event sent by a user on their server",
+         "[csaz-11][redaction][conformance][admin]")
+{
+    GIVEN("a room v10 where bob, a server administrator, has level 0, and a message from alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(redaction_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const carol = register_and_login(rt, "carol");
+        auto const room_id = create_room(rt, alice, "10");
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        invite_and_join(rt, alice, room_id, "carol", carol);
+        auto const alice_message = send_text(rt, alice, room_id, "alice words");
+        for (auto& account : rt.homeserver.database.persistent_store.users)
+        {
+            if (account.user_id == user_id("bob"))
+            {
+                account.admin = true;
+            }
+        }
+        for (auto& account : rt.homeserver.database.users)
+        {
+            if (account.user_id == user_id("bob"))
+            {
+                account.admin = true;
+            }
+        }
+
+        WHEN("the administrator redacts alice's message")
+        {
+            auto const reply = redact(rt, bob, room_id, alice_message, "admin-1");
+
+            THEN("it applies although bob's power level is below the redact level")
+            {
+                REQUIRE(reply.status == 200U);
+                require_redacted_form(parse_object(fetch_event(rt, alice, room_id, alice_message).body),
+                                      event_id_of(reply));
+            }
+        }
+
+        WHEN("a user who is not an administrator redacts alice's message")
+        {
+            auto const reply = redact(rt, carol, room_id, alice_message, "admin-2");
+
+            THEN("it is refused")
+            {
+                REQUIRE(reply.status == 403U);
+            }
+        }
+    }
+}
+
+// Spec: rooms/v12.md "Handling redactions" and MSC4289: a room creator's power level is infinite, so it
+// is at least the redact level.
+SCENARIO("In a room v12 the creator may redact another user's event and others only their own",
+         "[csaz-11][redaction][conformance][room-versions][v12]")
+{
+    GIVEN("a room v12 created by alice, with a message from bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(redaction_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const carol = register_and_login(rt, "carol");
+        auto const room_id = create_room(rt, alice, "12");
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        invite_and_join(rt, alice, room_id, "carol", carol);
+        auto const bob_message = send_text(rt, bob, room_id, "bob words");
+
+        WHEN("carol, who has level 0, tries to redact bob's message")
+        {
+            auto const reply = redact(rt, carol, room_id, bob_message, "v12-1");
+
+            THEN("it is refused and the message is unchanged")
+            {
+                REQUIRE(reply.status == 403U);
+                require_unredacted(parse_object(fetch_event(rt, alice, room_id, bob_message).body), "bob words");
+            }
+        }
+
+        WHEN("alice, the creator, redacts bob's message")
+        {
+            auto const reply = redact(rt, alice, room_id, bob_message, "v12-2");
+
+            THEN("it applies, with redacts in content")
+            {
+                REQUIRE(reply.status == 200U);
+                auto const redaction_id = event_id_of(reply);
+                require_redacted_form(parse_object(fetch_event(rt, bob, room_id, bob_message).body), redaction_id);
+                auto const stored = stored_event(rt, redaction_id);
+                REQUIRE(stored.has_value());
+                REQUIRE(object_member(*stored, "redacts") == nullptr);
+                auto const* content = object_member_as_object(*stored, "content");
+                REQUIRE(content != nullptr);
+                REQUIRE(string_member(*content, "redacts") != nullptr);
+            }
+        }
+    }
+}
