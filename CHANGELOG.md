@@ -47,7 +47,8 @@ CSAZ-6, CSAZ-9, CSAZ-11 and CSAZ-12 of the 29 September 2026 security audit are 
   CSAZ-11 in `tests/conformance/test_redaction_application_conformance.cpp`,
   `tests/conformance/test_redaction_federation_conformance.cpp` and `tests/unit/test_redaction_validity.cpp`.
   The two `DELETE /directory/room` "implementation gap" conformance scenarios now expect the spec's
-  `404 M_NOT_FOUND`; the trust-and-safety unit scenario reports a real event; the migration-count
+  `404 M_NOT_FOUND`; the trust-and-safety unit scenario and the AUTH-1 safety-report listing scenario
+  (`tests/integration/test_persistent_homeserver_flow.cpp`) report real events; the migration-count
   assertions count 21 steps.
 - Docs: the audit report's status (14 lows fixed), `docs/event-engine.md`, `docs/threat-model.md`,
   `docs/trust-safety.md`, `docs/database-persistence.md`, `docs/security-coding-rules.md`,
