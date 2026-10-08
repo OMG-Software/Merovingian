@@ -239,3 +239,45 @@ SCENARIO("A to-device publish does not unblock a waiter whose since-token alread
         }
     }
 }
+SCENARIO("SyncNotifier counts the callers blocked in a wait", "[sync][notifier][concurrency]")
+{
+    GIVEN("a notifier with nothing published past the since-values")
+    {
+        auto notifier = merovingian::sync::SyncNotifier{};
+
+        WHEN("one caller waits on another thread until a publish wakes it")
+        {
+            auto woke = std::atomic<bool>{false};
+            auto waiter = std::thread{[&notifier, &woke] {
+                woke.store(notifier.wait_for_change(0U, 0U, std::chrono::seconds{10}));
+            }};
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (notifier.waiting() == 0U && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+            auto const while_waiting = notifier.waiting();
+            notifier.publish(1U, 0U);
+            waiter.join();
+
+            THEN("it is counted while blocked and no longer once it has returned")
+            {
+                REQUIRE(while_waiting == 1U);
+                REQUIRE(woke.load());
+                REQUIRE(notifier.waiting() == 0U);
+            }
+        }
+
+        WHEN("a caller's wait returns at once because the counter already advanced")
+        {
+            notifier.publish(1U, 0U);
+            auto const changed = notifier.wait_for_change(0U, 0U, std::chrono::seconds{10});
+
+            THEN("it was never counted as waiting")
+            {
+                REQUIRE(changed);
+                REQUIRE(notifier.waiting() == 0U);
+            }
+        }
+    }
+}

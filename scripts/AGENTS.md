@@ -11,7 +11,7 @@ called by it rather than directly.
 | `build-linux.sh` | Linux release build (Meson + Ninja) |
 | `build-wsl.sh` / `build-wsl.ps1` | WSL build wrapper (runs the Linux build inside WSL from Windows) |
 | `build-static-linux.sh` | Fully static Linux binary (musl) |
-| `build-bsd.sh` | POSIX-sh build/test driver for BSD hosts (FreeBSD/NetBSD/OpenBSD): configures Meson with system libsodium/openssl/libpq/libcurl, supports named profiles (`debug`, `release`, `sanitizer`, `coverage`, `fuzz`, `hardened`), and runs `meson test` with hardening disabled in-process for the Catch2 runner |
+| `build-bsd.sh` | POSIX-sh build/test driver for BSD hosts (FreeBSD/NetBSD/OpenBSD): configures Meson with system libsodium/openssl/libpq/libcurl, supports named profiles (`debug`, `release`, `sanitizer`, `coverage`, `fuzz`, `hardened`), and runs `meson test` with hardening disabled in-process for the Catch2 runner and `--timeout-multiplier 2` by default (`MESON_TEST_TIMEOUT_MULTIPLIER` overrides it), because the BSD CI VMs' speed varies between runs |
 | `build-deb.sh` | Builds a `.deb` package |
 | `build-rpm.sh` | Builds an `.rpm` package (Fedora-family default spec) |
 | `build-opensuse-rpm.sh` | Builds an `.rpm` for OpenSUSE Tumbleweed from `packaging/opensuse/merovingian.spec` (OpenSUSE package names); forces the `.opensuse` dist tag so the filename doesn't collide with the Fedora/RHEL RPMs |

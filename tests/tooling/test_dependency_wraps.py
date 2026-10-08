@@ -197,6 +197,16 @@ class DependencyWrapTests(unittest.TestCase):
             # THEN Meson is configured in forcefallback mode instead of system dependency mode.
             self.assertIn("forcefallback", wrapper)
 
+    def test_bsd_wrapper_gives_tests_headroom_on_slow_bsd_vms(self) -> None:
+        # GIVEN the BSD build wrapper, which runs the suite on emulated CI VMs whose speed
+        # varies by 20-40% between runs (unit and conformance hit their 600 s limits).
+        wrapper = BSD_BUILD_WRAPPER.read_text(encoding="utf-8")
+
+        # WHEN no timeout multiplier is set by the caller
+        # THEN meson test still gets a multiplier of 2, and an explicit one still wins.
+        self.assertIn('MESON_TEST_TIMEOUT_MULTIPLIER:-2', wrapper)
+        self.assertIn("--timeout-multiplier", wrapper)
+
     def test_windows_wsl_launch_chain_targets_the_dedicated_wsl_wrapper(self) -> None:
         # GIVEN the Windows entrypoints for WSL builds.
         self.assertTrue(WSL_BUILD_CMD.is_file(), "build-wsl.cmd is missing")

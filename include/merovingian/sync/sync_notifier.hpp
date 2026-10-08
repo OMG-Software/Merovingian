@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 
@@ -61,11 +62,16 @@ public:
     // for tests that want to drive the notifier deterministically.
     [[nodiscard]] auto current_sync_stream_id() const -> std::uint64_t;
 
+    // Callers currently blocked in wait_for_change (diagnostics and tests:
+    // it tells a test when a long-poll has started waiting).
+    [[nodiscard]] auto waiting() const -> std::size_t;
+
 private:
     mutable std::mutex mutex_{};
     std::condition_variable cv_{};
     std::uint64_t stream_ordering_{0U};
     std::uint64_t sync_stream_id_{0U};
+    std::size_t waiting_{0U};
 };
 
 } // namespace merovingian::sync
