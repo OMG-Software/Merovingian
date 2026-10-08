@@ -8167,7 +8167,7 @@ SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][c
 // --- DELETE /_matrix/client/v3/directory/room/{roomAlias} --------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3directoryroomroomalias
 // IMPLEMENTATION GAP: alias deletion not yet implemented.
-SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("DELETE /directory/room/{alias} returns 404 M_NOT_FOUND for an unmapped alias",
          "[conformance][client-server][room-directory]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -8181,14 +8181,15 @@ SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementat
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"DELETE", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                // IMPLEMENTATION GAP: alias deletion not supported.
+                // Spec (DELETE /directory/room/{roomAlias}): 404 "There is no mapped room ID for
+                // this room alias." The endpoint was unrouted (M_UNRECOGNIZED) until CSAZ-12.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -14599,14 +14600,15 @@ SCENARIO("DELETE /directory/room/{roomAlias} conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"DELETE", "/_matrix/client/v3/directory/room/%23test%3Aexample.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND for the unmapped alias")
             {
-                // IMPLEMENTATION GAP: DELETE directory not routed
+                // Spec (DELETE /directory/room/{roomAlias}): 404 "There is no mapped room ID for
+                // this room alias." The endpoint was unrouted (M_UNRECOGNIZED) until CSAZ-12.
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }

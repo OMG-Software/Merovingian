@@ -339,6 +339,7 @@ shell = find_program('sh')
       'conformance/test_redaction_conformance.cpp',
       'conformance/test_redaction_application_conformance.cpp',
       'conformance/test_redaction_federation_conformance.cpp',
+      'conformance/test_room_admin_gates_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
       'conformance/test_receipt_conformance.cpp',

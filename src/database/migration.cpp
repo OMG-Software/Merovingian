@@ -634,6 +634,28 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {19U, "drop_remote_media_cache_mapping", std::move(statements), MigrationDirection::downgrade};
 }
 
+// CSAZ-12: an alias records the user who created it, so DELETE
+// /directory/room/{roomAlias} can let its creator remove it. Aliases created
+// before this migration have an empty creator: only a user with
+// canonical-alias power in the room, or a server administrator, may delete them.
+[[nodiscard]] auto upgrade_room_alias_creator_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"add_room_aliases_creator_user_id_column",
+                          "ALTER TABLE room_aliases ADD COLUMN creator_user_id TEXT NOT NULL DEFAULT ''",
+                          {}});
+    return {21U, "room_alias_creator", std::move(statements), MigrationDirection::upgrade};
+}
+
+[[nodiscard]] auto downgrade_room_alias_creator_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "drop_room_aliases_creator_user_id_column", "ALTER TABLE room_aliases DROP COLUMN creator_user_id", {}});
+    return {20U, "drop_room_alias_creator", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -655,7 +677,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_token_rotation_lineage_migration(),
             upgrade_room_directory_visibility_migration(),
             upgrade_to_device_queue_age_bound_migration(),
-            upgrade_remote_media_cache_mapping_migration()};
+            upgrade_remote_media_cache_mapping_migration(),
+            upgrade_room_alias_creator_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -806,7 +829,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_remote_media_cache_mapping_migration(),
+    return {downgrade_room_alias_creator_migration(),
+            downgrade_remote_media_cache_mapping_migration(),
             downgrade_to_device_queue_age_bound_migration(),
             downgrade_room_directory_visibility_migration(),
             downgrade_token_rotation_lineage_migration(),

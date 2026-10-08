@@ -3,6 +3,8 @@
 
 #include "merovingian/auth/identity.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -248,6 +250,23 @@ namespace
     }
 
 } // namespace
+
+auto room_alias_is_valid(std::string_view room_alias) noexcept -> bool
+{
+    if (room_alias.size() < 2U || room_alias.size() > 255U || room_alias.front() != '#')
+    {
+        return false;
+    }
+    // The localpart cannot contain ':', so the first one ends it.
+    auto const colon = room_alias.find(':');
+    if (colon == std::string_view::npos)
+    {
+        return false;
+    }
+    auto const localpart = room_alias.substr(1U, colon - 1U);
+    return localpart.find('\0') == std::string_view::npos && canonicaljson::utf8_is_valid(localpart) &&
+           server_name_is_valid(room_alias.substr(colon + 1U));
+}
 
 auto server_name_is_valid(std::string_view server_name) noexcept -> bool
 {

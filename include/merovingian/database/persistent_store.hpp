@@ -603,6 +603,10 @@ struct PersistentRoomAlias final
 {
     std::string room_alias{};
     std::string room_id{};
+    // The local user who created the alias, who may always delete it (CSAZ-12).
+    // Empty for an alias created before schema version 21, or by createRoom's
+    // `room_alias_name` before then.
+    std::string creator_user_id{};
 };
 
 // Idempotency record for a client-issued room send or send-to-device PUT.
@@ -1366,6 +1370,8 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool;
 [[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
     -> std::optional<PersistentRoomAlias>;
+// Removes the alias. False when it does not exist or the backend refuses.
+[[nodiscard]] auto delete_room_alias(PersistentStore& store, std::string_view room_alias) -> bool;
 [[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool;
 [[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
     -> std::optional<PersistentDeviceKey>;

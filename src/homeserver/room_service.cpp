@@ -3014,7 +3014,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         auto canonical_alias = canonicaljson::Object{};
         canonical_alias.push_back(canonicaljson::make_member("alias", canonicaljson::Value{alias}));
         if (!emit_state("m.room.canonical_alias", std::move(canonical_alias)) ||
-            !database::store_room_alias(runtime.database.persistent_store, {alias, room_id}))
+            !database::store_room_alias(runtime.database.persistent_store, {alias, room_id, *user_id}))
         {
             log_diagnostic("room.create.rejected", {
                                                        {"actor",      *user_id,                        false},

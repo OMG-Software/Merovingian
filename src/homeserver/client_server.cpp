@@ -41,6 +41,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
@@ -9483,13 +9484,43 @@ namespace
         {
             return err(400U, "M_BAD_JSON", "report body must be a JSON object with optional string reason");
         }
+        // Clients percent-encode the IDs in the path (`!` and `:` included); compare decoded IDs.
+        auto const room_id = core::percent_decode_path_component(path->room_id);
+        auto const event_id = core::percent_decode_path_component(path->event_id);
+        // CSAZ-12. Spec: "The caller must be joined to the room to report it." 404: "The event was
+        // not found or you are not joined to the room where the event resides." One answer for
+        // both, so a report cannot be used to learn whether an event or room exists. An event the
+        // reporter may not see under the room's history visibility counts as not found.
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](LocalRoom const& current) {
+            return current.room_id == room_id;
+        });
+        auto const event = std::ranges::find_if(store.events, [&event_id](database::PersistentEvent const& stored) {
+            return stored.event_id == event_id;
+        });
+        if (room == rt.homeserver.database.rooms.end() || !joined(*room, user) || event == store.events.end() ||
+            event->room_id != room_id || !sync::HistoryVisibility{store, user}.can_see(*event))
+        {
+            return err(404U, "M_NOT_FOUND", "Event not found or you are not joined to its room");
+        }
         auto const decision =
-            trust_safety::validate_safety_report({std::string{user}, path->room_id, path->event_id, body->reason, 0});
-        auto const audit = trust_safety::make_safety_audit_event(user, path->event_id, decision);
-        append_policy_audit(rt, audit);
+            trust_safety::validate_safety_report({std::string{user}, room_id, event_id, body->reason, 0});
         if (!decision.allowed)
         {
             return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
+        }
+        // CSAZ-12: each report is a durable audit row, so a repeat of the same report (same
+        // reporter, same event) among the rows the admin listing shows is acknowledged without
+        // writing another. A member cannot grow the table faster than the events they can see.
+        auto const audit = trust_safety::make_safety_audit_event(user, event_id, decision);
+        auto const recent =
+            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
+        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
+            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
+        });
+        if (!already_reported)
+        {
+            append_policy_audit(rt, audit);
         }
         return resp(200U, "{}");
     }
@@ -11594,6 +11625,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "PUT" && starts_with(request_path, directory_room_prefix))
     {
+        auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
+        // CSAZ-12. Spec: 400 M_INVALID_PARAM when "The given `roomAlias` is not a valid room
+        // alias". The alias's domain is "the server name of the homeserver which created the
+        // alias" (appendices, "Room Aliases"), so this server only creates aliases on its own.
+        if (!auth::room_alias_is_valid(room_alias))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Room alias invalid");
+        }
+        if (server_name_from_room_alias(room_alias) != rt.homeserver.config.server().server_name)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Room alias must be on this server's domain");
+        }
         auto const body = parsed_json_object(req.body);
         if (!body.has_value())
         {
@@ -11611,11 +11654,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
         }
-        if (!joined(*room, *user))
+        // CSAZ-12: creating an alias needs the power to send m.room.canonical_alias in the room
+        // (the event that would advertise it), or a server administrator. Joining is not enough.
+        auto const server_admin = authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!server_admin &&
+            (!joined(*room, *user) ||
+             !may_send_state_event(rt.homeserver.database.persistent_store, *room_id, *user, "m.room.canonical_alias")))
         {
-            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "You do not have permission to create an alias for this room");
         }
-        auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
         // Spec: an exclusive aliases namespace blocks alias creation by
         // anyone other than the owning appservice, including another
         // appservice. The owning appservice itself is exempt from its own
@@ -11635,10 +11683,51 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                        ? dispatch_resp(req, rt, 200U, "{}")
                        : dispatch_err(req, rt, 409U, "M_ROOM_IN_USE", "room alias already in use");
         }
-        if (!database::store_room_alias(rt.homeserver.database.persistent_store, {room_alias, *room_id}))
+        if (!database::store_room_alias(rt.homeserver.database.persistent_store, {room_alias, *room_id, *user}))
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist room alias");
         }
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, "room_alias.created", *user,
+                           room_alias, *room_id);
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+    // DELETE /_matrix/client/v3/directory/room/{roomAlias}
+    // Spec: "Servers may choose to implement additional access control checks here, for instance
+    // that room aliases can only be deleted by their creator or a server administrator." CSAZ-12:
+    // this server allows the alias's creator, a user who may send m.room.canonical_alias in the
+    // alias's room, or a server administrator. 404 when the alias is not mapped.
+    if (req.method == "DELETE" && starts_with(request_path, directory_room_prefix))
+    {
+        auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
+        if (!auth::room_alias_is_valid(room_alias))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Room alias invalid");
+        }
+        auto const existing = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        if (!existing.has_value())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "Room alias not found");
+        }
+        auto const is_creator = !existing->creator_user_id.empty() && existing->creator_user_id == *user;
+        auto const alias_room =
+            std::ranges::find_if(rt.homeserver.database.rooms, [&existing](LocalRoom const& current) {
+                return current.room_id == existing->room_id;
+            });
+        auto const has_room_power = alias_room != rt.homeserver.database.rooms.end() && joined(*alias_room, *user) &&
+                                    may_send_state_event(rt.homeserver.database.persistent_store, existing->room_id,
+                                                         *user, "m.room.canonical_alias");
+        auto const permitted =
+            is_creator || has_room_power || authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!permitted)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to delete this alias");
+        }
+        if (!database::delete_room_alias(rt.homeserver.database.persistent_store, room_alias))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete room alias");
+        }
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, "room_alias.deleted", *user,
+                           room_alias, existing->room_id);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     // PUT /_matrix/client/v3/directory/list/room/{roomId}
@@ -11665,9 +11754,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
         }
-        if (!joined(*room_it, *user))
+        // CSAZ-12. Spec: "Servers MAY implement additional access control checks, for instance,
+        // to ensure that a room's visibility can only be changed by the room creator or a server
+        // administrator." Publishing a room advertises it as its aliases do, so this needs the
+        // power to send m.room.canonical_alias, or a server administrator.
+        auto const may_publish =
+            (joined(*room_it, *user) &&
+             may_send_state_event(rt.homeserver.database.persistent_store, room_id, *user, "m.room.canonical_alias")) ||
+            authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!may_publish)
         {
-            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "You do not have permission to change this room's directory visibility");
         }
         auto const published = *vis_str == "public";
         if (!database::set_room_directory_public(rt.homeserver.database.persistent_store, room_id, published))
@@ -14806,6 +14904,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
             }
+            // CSAZ-12. Spec: 403 "The user is not permitted to upgrade the room." An upgrade ends
+            // the old room with an m.room.tombstone, so a user who may not send one may not
+            // upgrade, and is refused here before the replacement room is created.
+            if (!may_send_state_event(rt.homeserver.database.persistent_store, room_id, *user, "m.room.tombstone"))
+            {
+                log_diagnostic("room.upgrade.rejected", {
+                                                            {"actor",   *user,                          false},
+                                                            {"room_id", room_id,                        false},
+                                                            {"reason",  "insufficient tombstone power", false}
+                });
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to upgrade this room");
+            }
             auto const last_event_id = old_room_it->events.empty() ? std::string{} : old_room_it->events.back();
             auto predecessor = canonicaljson::Object{};
             predecessor.push_back(json_member("room_id", json_str(room_id)));
@@ -14832,13 +14942,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 json_member("replacement_room", json_str(new_room_id)),
             }));
             auto const tombstone_body = event_body_from_content("m.room.tombstone", tombstone_content, std::string{""});
-            if (tombstone_body.has_value())
+            if (!tombstone_body.has_value())
             {
-                auto tombstone_req = req;
-                tombstone_req.method = "POST";
-                tombstone_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
-                tombstone_req.body = *tombstone_body;
-                call_local(tombstone_req);
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "tombstone event could not be built");
+            }
+            auto tombstone_req = req;
+            tombstone_req.method = "POST";
+            tombstone_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
+            tombstone_req.body = *tombstone_body;
+            // The power check above can be overtaken by a power-levels change while create_room
+            // ran unlocked; the upgrade is reported as failed then, not as a success that left
+            // the old room open.
+            if (auto const tombstone = call_local(tombstone_req); tombstone.status != 200U)
+            {
+                log_diagnostic("room.upgrade.rejected", {
+                                                            {"actor",       *user,                   false},
+                                                            {"old_room_id", room_id,                 false},
+                                                            {"new_room_id", new_room_id,             false},
+                                                            {"reason",      "tombstone was refused", false}
+                });
+                return dispatch_err(req, rt, tombstone.status, error_code_for(tombstone), tombstone.body);
             }
             log_diagnostic("room.upgrade.accepted", {
                                                         {"actor",       *user,            false},
