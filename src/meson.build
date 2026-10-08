@@ -1,6 +1,7 @@
 subdir('crypto')
-subdir('auth')
+# canonicaljson before auth: auth links it (identity.cpp, oidc_discovery.cpp).
 subdir('canonicaljson')
+subdir('auth')
 subdir('core')
 subdir('config')
 subdir('database')

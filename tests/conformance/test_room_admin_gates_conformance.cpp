@@ -527,3 +527,178 @@ SCENARIO("A room alias may be deleted by its creator, a user with canonical-alia
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT and DELETE /_matrix/client/v3/directory/room/{roomAlias}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directoryroomroomalias
+//
+// Spec: PUT answers 409 "A room alias with that name already exists"; an alias that is not valid is
+// 400 M_INVALID_PARAM on both methods. A server administrator may map an alias for a room they are
+// not in (ADR-0127).
+SCENARIO("Room alias requests are refused on malformed input, unknown rooms and conflicts",
+         "[conformance][client-server][directory][alias][csaz-12]")
+{
+    GIVEN("alice's room with an alias, and carol outside it")
+    {
+        auto started = merovingian::homeserver::start_client_server(gates_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const carol = register_and_login(rt, "carol");
+        auto const room_id = create_room(rt, alice);
+        auto const other_room = create_room(rt, alice);
+        REQUIRE(put_alias(rt, alice, "#general:example.org", room_id).status == 200U);
+
+        WHEN("the alias is put again for the same room")
+        {
+            THEN("the request succeeds without change")
+            {
+                REQUIRE(put_alias(rt, alice, "#general:example.org", room_id).status == 200U);
+            }
+        }
+        WHEN("the alias is put for a different room")
+        {
+            auto const reply = put_alias(rt, alice, "#general:example.org", other_room);
+
+            THEN("the server answers 409 and the alias still names the first room")
+            {
+                // Spec: 409 "A room alias with that name already exists."
+                REQUIRE(reply.status == 409U);
+                REQUIRE(merovingian::database::find_room_alias(rt.homeserver.database.persistent_store,
+                                                               "#general:example.org")
+                            ->room_id == room_id);
+            }
+        }
+        WHEN("the request body is not a JSON object, or names no room")
+        {
+            auto const not_json = call(rt, "PUT", alias_path("#a:example.org"), alice, "[]");
+            auto const no_room = call(rt, "PUT", alias_path("#b:example.org"), alice, "{}");
+
+            THEN("the server answers 400 M_BAD_JSON")
+            {
+                REQUIRE(not_json.status == 400U);
+                REQUIRE(errcode_of(not_json) == "M_BAD_JSON");
+                REQUIRE(no_room.status == 400U);
+                REQUIRE(errcode_of(no_room) == "M_BAD_JSON");
+            }
+        }
+        WHEN("the alias names a room this server does not know")
+        {
+            auto const reply = put_alias(rt, alice, "#ghost:example.org", "!unknown:example.org");
+
+            THEN("the server answers 404 M_NOT_FOUND")
+            {
+                REQUIRE(reply.status == 404U);
+                REQUIRE(errcode_of(reply) == "M_NOT_FOUND");
+            }
+        }
+        WHEN("carol, a server administrator outside the room, maps an alias to it")
+        {
+            make_server_admin(rt, "carol");
+
+            THEN("it is created")
+            {
+                REQUIRE(put_alias(rt, carol, "#admins:example.org", room_id).status == 200U);
+                REQUIRE(alias_resolves(rt, alice, "#admins:example.org"));
+            }
+        }
+        WHEN("a malformed alias is deleted")
+        {
+            auto const reply = call(rt, "DELETE", alias_path("general:example.org"), alice);
+
+            THEN("the server answers 400 M_INVALID_PARAM")
+            {
+                REQUIRE(reply.status == 400U);
+                REQUIRE(errcode_of(reply) == "M_INVALID_PARAM");
+            }
+        }
+        WHEN("carol, outside the room and not an administrator, deletes the alias")
+        {
+            auto const reply = call(rt, "DELETE", alias_path("#general:example.org"), carol);
+
+            THEN("the server answers 403 M_FORBIDDEN")
+            {
+                REQUIRE(reply.status == 403U);
+                REQUIRE(alias_resolves(rt, alice, "#general:example.org"));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/directory/list/room/{roomId}, POST
+// /_matrix/client/v3/rooms/{roomId}/upgrade, POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directorylistroomroomid
+//
+// Malformed requests and unknown rooms are refused before any permission is considered.
+SCENARIO("Directory visibility, upgrade and report requests are refused on malformed input and unknown rooms",
+         "[conformance][client-server][directory][upgrade][report][csaz-12]")
+{
+    GIVEN("alice's room")
+    {
+        auto started = merovingian::homeserver::start_client_server(gates_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const room_id = create_room(rt, alice);
+        auto const visibility_path = "/_matrix/client/v3/directory/list/room/" + room_id;
+
+        WHEN("the visibility is not public or private, or the body is not an object")
+        {
+            auto const bad_value = call(rt, "PUT", visibility_path, alice, R"({"visibility":"everyone"})");
+            auto const not_object = call(rt, "PUT", visibility_path, alice, "[]");
+
+            THEN("the server answers 400")
+            {
+                REQUIRE(bad_value.status == 400U);
+                REQUIRE(not_object.status == 400U);
+            }
+        }
+        WHEN("the visibility of an unknown room is set")
+        {
+            auto const reply = call(rt, "PUT", "/_matrix/client/v3/directory/list/room/!unknown:example.org", alice,
+                                    R"({"visibility":"public"})");
+
+            THEN("the server answers 404 M_NOT_FOUND")
+            {
+                REQUIRE(reply.status == 404U);
+                REQUIRE(errcode_of(reply) == "M_NOT_FOUND");
+            }
+        }
+        WHEN("an upgrade names an unsupported room version")
+        {
+            auto const reply = call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", alice,
+                                    R"({"new_version":"not-a-version"})");
+
+            THEN("the server answers 400 M_UNSUPPORTED_ROOM_VERSION")
+            {
+                // Spec: 400 "if the room version requested is not supported by the homeserver".
+                REQUIRE(reply.status == 400U);
+                REQUIRE(errcode_of(reply) == "M_UNSUPPORTED_ROOM_VERSION");
+            }
+        }
+        WHEN("a report is made about an event in a room this server does not know")
+        {
+            auto const message = send_text(rt, alice, room_id, "r-unknown-room");
+            auto const reply = report(rt, alice, "!unknown:example.org", message);
+
+            THEN("the server answers 404 M_NOT_FOUND")
+            {
+                REQUIRE(reply.status == 404U);
+                REQUIRE(errcode_of(reply) == "M_NOT_FOUND");
+            }
+        }
+        WHEN("a report names an event that is in a different room")
+        {
+            auto const other_room = create_room(rt, alice);
+            auto const message = send_text(rt, alice, other_room, "r-other-room");
+            auto const reply = report(rt, alice, room_id, message);
+
+            THEN("the server answers 404 M_NOT_FOUND")
+            {
+                REQUIRE(reply.status == 404U);
+                REQUIRE(errcode_of(reply) == "M_NOT_FOUND");
+            }
+        }
+    }
+}

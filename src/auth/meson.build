@@ -14,5 +14,5 @@ auth_lib = static_library(
   auth_sources,
   include_directories: inc,
   dependencies: [libsodium_dep],
-  link_with: [crypto_lib],
+  link_with: [crypto_lib, canonicaljson_lib],
 )

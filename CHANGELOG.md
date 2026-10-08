@@ -50,6 +50,12 @@ CSAZ-6, CSAZ-9, CSAZ-11 and CSAZ-12 of the 29 September 2026 security audit are 
   `404 M_NOT_FOUND`; the trust-and-safety unit scenario and the AUTH-1 safety-report listing scenario
   (`tests/integration/test_persistent_homeserver_flow.cpp`) report real events; the migration-count
   assertions count 21 steps.
+- **BUILD:** `merovingian-auth` links `merovingian-canonicaljson` (`auth::room_alias_is_valid` and
+  `oidc_discovery.cpp` use it); `src/meson.build` configures canonicaljson first. The fuzz config-parser
+  target, which links auth without canonicaljson, failed to link.
+- **TESTS:** refusal paths of the CSAZ-12 gates (malformed alias, unknown room, 409 conflict, administrator
+  mapping, invalid visibility, unsupported upgrade version, report in an unknown or different room), every
+  `createRoom` size pre-check field, and `tests/unit/test_room_power.cpp` (`[power]`).
 - Docs: the audit report's status (14 lows fixed), `docs/event-engine.md`, `docs/threat-model.md`,
   `docs/trust-safety.md`, `docs/database-persistence.md`, `docs/security-coding-rules.md`,
   `docs/matrix-v1.19-client-server-api.md`, `docs/todos/capability-gaps.md`, `migrations/AGENTS.md`,

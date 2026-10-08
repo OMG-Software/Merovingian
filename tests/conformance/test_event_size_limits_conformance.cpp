@@ -339,3 +339,77 @@ SCENARIO("createRoom with a topic too large for one event is refused with M_TOO_
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: POST /_matrix/client/v3/createRoom; "Size limits"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#size-limits
+//
+// Every piece of client content createRoom turns into an event is held to the limits, and a refused
+// request creates no room.
+SCENARIO("createRoom refuses each kind of oversized client content before creating a room",
+         "[conformance][client-server][size-limits][csaz-9]")
+{
+    GIVEN("a registered user in no rooms")
+    {
+        auto started = merovingian::homeserver::start_client_server(size_limit_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        auto const big = std::string(70'000U, 'z');
+        auto const long_key = std::string(256U, 'k');
+        auto const long_type = "org.example." + std::string(256U - 12U, 't');
+
+        auto const refused_without_room = [&](std::string const& body) {
+            auto const reply = call(rt, "POST", "/_matrix/client/v3/createRoom", token, body);
+            REQUIRE(reply.status == 400U);
+            REQUIRE(errcode_of(reply) == "M_TOO_LARGE");
+            auto const joined = call(rt, "GET", "/_matrix/client/v3/joined_rooms", token);
+            REQUIRE(joined.body.find("\"joined_rooms\":[]") != std::string::npos);
+        };
+
+        WHEN("the name is too large")
+        {
+            THEN("it is refused")
+            {
+                refused_without_room(R"({"name":")" + big + R"("})");
+            }
+        }
+        WHEN("creation_content is too large")
+        {
+            THEN("it is refused")
+            {
+                refused_without_room(R"({"creation_content":{"x":")" + big + R"("}})");
+            }
+        }
+        WHEN("power_level_content_override is too large")
+        {
+            THEN("it is refused")
+            {
+                refused_without_room(R"({"power_level_content_override":{"x":")" + big + R"("}})");
+            }
+        }
+        WHEN("an initial_state event is too large, or its type or state_key is over 255 bytes")
+        {
+            THEN("each is refused")
+            {
+                refused_without_room(R"({"initial_state":[{"type":"org.example.big","state_key":"","content":{"x":")" +
+                                     big + R"("}}]})");
+                refused_without_room(R"({"initial_state":[{"type":")" + long_type +
+                                     R"(","state_key":"","content":{}}]})");
+                refused_without_room(R"({"initial_state":[{"type":"org.example.k","state_key":")" + long_key +
+                                     R"(","content":{}}]})");
+            }
+        }
+        WHEN("an initial_state event's state_key is exactly 255 bytes")
+        {
+            auto const reply = call(rt, "POST", "/_matrix/client/v3/createRoom", token,
+                                    R"({"initial_state":[{"type":"org.example.k","state_key":")" +
+                                        std::string(255U, 'k') + R"(","content":{}}]})");
+
+            THEN("the room is created")
+            {
+                REQUIRE(reply.status == 200U);
+            }
+        }
+    }
+}
