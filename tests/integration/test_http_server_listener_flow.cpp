@@ -263,6 +263,13 @@ struct TlsResponseReader final
 // (pipelined) response stay buffered in the reader.
 [[nodiscard]] auto receive_response(int fd, PlainResponseReader& reader) -> std::string
 {
+    // Bounded: a server that neither answers nor closes would otherwise block
+    // here until meson kills the whole binary, hiding which scenario stalled
+    // (OpenBSD CI: the integration binary hit its 900 s limit mid-scenario).
+    // A stall now surfaces as an empty or partial response in that scenario.
+    auto timeout = timeval{};
+    timeout.tv_sec = 30;
+    std::ignore = ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     auto buffer = std::array<char, 4096U>{};
     while (true)
     {

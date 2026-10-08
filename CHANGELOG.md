@@ -14,6 +14,10 @@
   Each path fails with `429` when the re-runs are counted again.
 - **NEW: `sync::SyncNotifier::waiting()`**, the number of callers blocked in `wait_for_change`, so
   a test can tell when a long-poll has started waiting (`[sync][notifier]` scenario).
+- **TESTS:** the listener tests' response reader (`receive_response` in
+  `tests/integration/test_http_server_listener_flow.cpp`) gives up after 30 s instead of blocking
+  forever. A connection the server neither answered nor closed made OpenBSD CI kill the whole
+  integration binary at its 900 s limit, mid-scenario; a stall now fails only that scenario.
 - Docs: `docs/http-transport.md` (sync re-runs; the default per-account and per-device wait caps
   are 4 and 2, not 8 and 4 as it said).
 
