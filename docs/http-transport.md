@@ -602,7 +602,7 @@ across many source IPs previously accumulated against nothing at all,
 regardless of tier. There is now an additional, independent per-account
 failed-login throttle layered on top of these IP/user buckets, tracking
 failures against the claimed user ID rather than an IP or an authenticated
-identity; see `docs/auth-identity.md` "Per-account failed-login throttle"
+identity; see `docs/auth-identity.md` "Failed-login throttle"
 for the mechanism, thresholds, and trade-offs.
 
 Classification is method-agnostic: a `GET` against `/login` is the same

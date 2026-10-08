@@ -25,6 +25,7 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
@@ -283,6 +284,7 @@ auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, s
 }
 
 using namespace merovingian::tests;
+using merovingian::tests::tls_mock::MockIdentityServer;
 
 [[nodiscard]] auto event_json_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view event_type, std::string_view state_key = {}) -> std::string
@@ -702,25 +704,17 @@ SCENARIO("Client-server registration discovery endpoints track availability toke
                 REQUIRE(*valid_true);
                 REQUIRE(!*valid_false);
 
-                REQUIRE(email_request_first.response.status == 200U);
-                REQUIRE(email_request_second.response.status == 200U);
-                auto const email_first_body = parse_object(email_request_first.response.body);
-                auto const email_second_body = parse_object(email_request_second.response.body);
-                auto const* email_sid_first = string_member(email_first_body, "sid");
-                auto const* email_sid_second = string_member(email_second_body, "sid");
-                REQUIRE(email_sid_first != nullptr);
-                REQUIRE(email_sid_second != nullptr);
-                REQUIRE(*email_sid_first == *email_sid_second);
-
-                REQUIRE(msisdn_request_first.response.status == 200U);
-                REQUIRE(msisdn_request_second.response.status == 200U);
-                auto const msisdn_first_body = parse_object(msisdn_request_first.response.body);
-                auto const msisdn_second_body = parse_object(msisdn_request_second.response.body);
-                auto const* msisdn_sid_first = string_member(msisdn_first_body, "sid");
-                auto const* msisdn_sid_second = string_member(msisdn_second_body, "sid");
-                REQUIRE(msisdn_sid_first != nullptr);
-                REQUIRE(msisdn_sid_second != nullptr);
-                REQUIRE(*msisdn_sid_first == *msisdn_sid_second);
+                // AUTH-5: this server cannot send email or SMS, so a requestToken
+                // that names no trusted identity server is refused (and creates
+                // no validation session) rather than minting a session that
+                // nobody can validate.
+                for (auto const* refused :
+                     {&email_request_first, &email_request_second, &msisdn_request_first, &msisdn_request_second})
+                {
+                    REQUIRE(refused->response.status == 400U);
+                    REQUIRE(refused->response.body.find("M_THREEPID_MEDIUM_NOT_SUPPORTED") != std::string::npos);
+                }
+                REQUIRE(runtime.registration_validation_sessions.empty());
 
                 REQUIRE(registered.response.status == 200U);
                 REQUIRE(available_after.response.status == 400U);
@@ -3587,60 +3581,40 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
 SCENARIO("Registration requestToken sessions are capped per remote address",
          "[homeserver][client-server][register][rate-limit]")
 {
-    GIVEN("a running client-server homeserver")
+    GIVEN("a running client-server homeserver with a trusted identity server")
     {
         auto config = registration_enabled_config();
         config.server().client_api.max_registration_validation_sessions_per_remote = 4U;
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({})};
+        identity_server.install(runtime);
 
         WHEN("one remote address opens more validation sessions than allowed")
         {
-            auto const request_one = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register/email/requestToken",
-                          {},
-                          R"({"client_secret":"secret-1","email":"user1@example.org","send_attempt":1})",
-                          {},
-                          "203.0.113.10"});
-            auto const request_two = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register/email/requestToken",
-                          {},
-                          R"({"client_secret":"secret-2","email":"user2@example.org","send_attempt":1})",
-                          {},
-                          "203.0.113.10"});
-            auto const request_three = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register/email/requestToken",
-                          {},
-                          R"({"client_secret":"secret-3","email":"user3@example.org","send_attempt":1})",
-                          {},
-                          "203.0.113.10"});
-            auto const request_four = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register/email/requestToken",
-                          {},
-                          R"({"client_secret":"secret-4","email":"user4@example.org","send_attempt":1})",
-                          {},
-                          "203.0.113.10"});
-            auto const request_five = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register/email/requestToken",
-                          {},
-                          R"({"client_secret":"secret-5","email":"user5@example.org","send_attempt":1})",
-                          {},
-                          "203.0.113.10"});
+            auto statuses = std::vector<std::uint16_t>{};
+            auto last_body = std::string{};
+            for (auto const index : {1, 2, 3, 4, 5})
+            {
+                auto const number = std::to_string(index);
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register/email/requestToken",
+                              {},
+                              identity_server.with_identity_server(R"({"client_secret":"secret-)" + number +
+                                                                   R"(","email":"user)" + number +
+                                                                   R"(@example.org","send_attempt":1})"),
+                              {},
+                              "203.0.113.10"});
+                statuses.push_back(response.response.status);
+                last_body = response.response.body;
+            }
 
             THEN("the configured per-remote cap rejects the fifth session instead of growing without bound")
             {
-                REQUIRE(request_one.response.status == 200U);
-                REQUIRE(request_two.response.status == 200U);
-                REQUIRE(request_three.response.status == 200U);
-                REQUIRE(request_four.response.status == 200U);
-                REQUIRE(request_five.response.status == 429U);
-                REQUIRE(request_five.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(statuses == std::vector<std::uint16_t>{200U, 200U, 200U, 200U, 429U});
+                REQUIRE(last_body.find("M_LIMIT_EXCEEDED") != std::string::npos);
             }
         }
     }
@@ -3661,6 +3635,11 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(registration.response.status == 200U);
         auto const token = login_token(registration.response.body);
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}, {"msisdn", "07700000000"}}
+            )
+        };
+        identity_server.install(runtime);
 
         WHEN("email and phone identifiers are requested and associated with the account")
         {
@@ -3668,7 +3647,8 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
                 runtime, {"POST",
                           "/_matrix/client/v3/account/3pid/email/requestToken",
                           {},
-                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+                          identity_server.with_identity_server(
+                              R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})")});
             REQUIRE(email_response.response.status == 200U);
             auto const email_body = parse_object(email_response.response.body);
             auto const* email_sid = string_member(email_body, "sid");
@@ -3679,7 +3659,8 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
                 {"POST",
                  "/_matrix/client/v3/account/3pid/msisdn/requestToken",
                  {},
-                 R"({"client_secret":"secret123","country":"GB","phone_number":"07700000000","send_attempt":1})"});
+                 identity_server.with_identity_server(
+                     R"({"client_secret":"secret123","country":"GB","phone_number":"07700000000","send_attempt":1})")});
             REQUIRE(msisdn_response.response.status == 200U);
             auto const msisdn_body = parse_object(msisdn_response.response.body);
             auto const* msisdn_sid = string_member(msisdn_body, "sid");
@@ -3693,14 +3674,16 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
             auto const add_email = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_email_body});
             auto const bind_msisdn_body = std::string{R"({"client_secret":"secret123","sid":")"} + *msisdn_sid +
-                                          R"(","id_server":"id.example.org","id_access_token":"opaque"})";
+                                          R"(","id_server":")" + identity_server.host_port() +
+                                          R"(","id_access_token":"opaque"})";
             auto const bind_msisdn = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_msisdn_body});
             auto const list_after_add = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/3pid", token, {}});
             auto const unbind_msisdn = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/unbind", token,
-                          R"({"address":"07700000000","medium":"msisdn","id_server":"id.example.org"})"});
+                          R"({"address":"07700000000","medium":"msisdn","id_server":")" + identity_server.host_port() +
+                              R"("})"});
             auto const delete_email = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", token,
                           R"({"address":"user@example.org","medium":"email"})"});
@@ -3788,11 +3771,17 @@ SCENARIO("Account 3PID request tokens reject identifiers already in use", "[home
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE"})"});
         REQUIRE(alice_login.response.status == 200U);
         auto const alice_token = login_token(alice_login.response.body);
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}}
+            )
+        };
+        identity_server.install(runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
                       "/_matrix/client/v3/account/3pid/email/requestToken",
                       {},
-                      R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+                      identity_server.with_identity_server(
+                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})")});
         REQUIRE(token_request.response.status == 200U);
         auto const token_request_body = parse_object(token_request.response.body);
         auto const* sid = string_member(token_request_body, "sid");
@@ -3848,11 +3837,17 @@ SCENARIO("Account 3PID email handling treats addresses case-insensitively for du
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_CASE"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "User@Example.org"}}
+            )
+        };
+        identity_server.install(runtime);
         auto const initial_request = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
                       "/_matrix/client/v3/account/3pid/email/requestToken",
                       {},
-                      R"({"client_secret":"secret123","email":"User@Example.org","send_attempt":1})"});
+                      identity_server.with_identity_server(
+                          R"({"client_secret":"secret123","email":"User@Example.org","send_attempt":1})")});
         REQUIRE(initial_request.response.status == 200U);
         auto const initial_body = parse_object(initial_request.response.body);
         auto const* sid = string_member(initial_body, "sid");
@@ -3932,17 +3927,23 @@ SCENARIO("Account 3PID unbind and delete report no-support for mismatched identi
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(registration.response.status == 200U);
         auto const token = login_token(registration.response.body);
+        auto identity_server = MockIdentityServer{
+            MockIdentityServer::cooperative_responses({{"email", "user@example.org"}}
+            )
+        };
+        identity_server.install(runtime);
         auto const token_request = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
                       "/_matrix/client/v3/account/3pid/email/requestToken",
                       {},
-                      R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+                      identity_server.with_identity_server(
+                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})")});
         REQUIRE(token_request.response.status == 200U);
         auto const token_request_body = parse_object(token_request.response.body);
         auto const* sid = string_member(token_request_body, "sid");
         REQUIRE(sid != nullptr);
-        auto const bind_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
-                               R"(","id_server":"id.example.org","id_access_token":"opaque"})";
+        auto const bind_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid + R"(","id_server":")" +
+                               identity_server.host_port() + R"(","id_access_token":"opaque"})";
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_body})
                     .response.status == 200U);
@@ -4099,6 +4100,8 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        auto identity_server = MockIdentityServer{MockIdentityServer::cooperative_responses({})};
+        identity_server.install(runtime);
 
         WHEN("too many outstanding validation sessions are requested from one address")
         {
@@ -4111,7 +4114,12 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
                 body += std::to_string(index);
                 body += R"(@example.org","send_attempt":1})";
                 denied = merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register/email/requestToken", {}, body, {}, "203.0.113.10"});
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register/email/requestToken",
+                              {},
+                              identity_server.with_identity_server(body),
+                              {},
+                              "203.0.113.10"});
             }
 
             THEN("the configured cap returns retry_after_ms=60000 and Retry-After: 60")

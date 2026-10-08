@@ -32,18 +32,24 @@ production-gated.
   endpoint does not require authentication via an access token. Authentication
   is provided via the refresh token." `client_auth_endpoint_requires_access_token`
   excludes `login`, `register_account`, and `refresh_token`.
-- Account 3PID email and MSISDN flows are implemented across both the local and
-  the IS-delegated surface. `POST /account/3pid/email/requestToken` and
-  `POST /account/3pid/msisdn/requestToken` issue local validation sessions when no
-  `id_server` is supplied (spec-conformant local validation), and delegate to a
-  trusted remote identity server when both `id_server` and `id_access_token` are
-  supplied — storing a `RegistrationValidationSession` keyed by the IS-issued
-  `sid` so a later `bind` with the same `sid` + `client_secret` completes the
-  association. `POST /account/3pid/add` enforces password UIA, the deprecated
-  `POST /account/3pid` association route is accepted, and the bind/list/unbind/
-  delete endpoints maintain per-account 3PID records including `added_at` /
-  `validated_at` metadata plus, for IS-bound 3PIDs, the stored `client_secret` and
-  `sid` (migration `007`) needed to drive a mode-2 remote unbind.
+- Account 3PID email and MSISDN flows are implemented only through a trusted
+  identity server (AUTH-5). This server cannot send email or SMS, so it cannot
+  validate an address itself and never claims to: the four `requestToken`
+  endpoints (`/account/3pid/{email,msisdn}/requestToken`,
+  `/register/{email,msisdn}/requestToken`) answer `400
+  M_THREEPID_MEDIUM_NOT_SUPPORTED` and create no session unless both `id_server`
+  (operator-trusted) and `id_access_token` are supplied, in which case the
+  request is delegated to that identity server and a `RegistrationValidationSession`
+  keyed by the IS-issued `sid` is stored. That session starts **unvalidated**.
+  `POST /account/3pid/add`, `POST /account/3pid/bind` and the deprecated
+  `POST /account/3pid` ask the identity server whether the session was validated
+  (`getValidated3pid`) and refuse `400 M_SESSION_NOT_VALIDATED` unless it reports
+  the same medium and address; see "3PID ownership is proven by the identity
+  server" below. `POST /account/3pid/add` also enforces password UIA, and the
+  bind/list/unbind/delete endpoints maintain per-account 3PID records including
+  `added_at` / `validated_at` metadata plus, for IS-bound 3PIDs, the stored
+  `client_secret` and `sid` (migration `007`) needed to drive a mode-2 remote
+  unbind.
 - Access-token hashes are durable and hydrate back into runtime sessions after
   restart, with their expiry (before 0.12.13 hydration dropped `expires_at`,
   so every access token was valid forever after a restart).
@@ -156,7 +162,22 @@ production-gated.
   token-issuance path (`complete_login`) with `m.login.password`. An
   appservice's `exclusive` namespace blocks registration/alias creation by
   anyone else (`M_EXCLUSIVE`) — enforced in the registration and
-  `PUT /directory/room/{roomAlias}` / `POST /createRoom` handlers. Outbound
+  `PUT /directory/room/{roomAlias}` / `POST /createRoom` handlers. The same
+  rule binds **other appservices**: `/register` with
+  `m.login.application_service` into another service's exclusive users
+  namespace is `400 M_EXCLUSIVE` (the `/register` response table's status),
+  `/login` with that type is `403 M_EXCLUSIVE`, and asserting such a user via
+  `?user_id=` is `403 M_EXCLUSIVE` (AUTH-7). Identity assertion also requires
+  the asserted user to be registered and not deactivated — otherwise `403
+  M_FORBIDDEN` (AUTH-12); a service creates its virtual users with
+  `/register` first, and its own `sender_localpart` user is created at
+  startup, so acting as the sender always works. Assertion does not apply to
+  Account Management (AUTH-8): every `/account/*` endpoint except
+  `GET /account/whoami` (password change and its `requestToken` calls,
+  `deactivate`, and the whole 3PID family) answers `403 M_FORBIDDEN` to an
+  `as_token` request, with or without `?user_id=`
+  (`appservice::is_account_management_endpoint`, checked in
+  `handle_client_server_request_impl` under the request lock). Outbound
   delivery to appservices is wired: `appservice::AppserviceClient`
   (`src/appservice/appservice_client.cpp`) implements `send_transaction`
   (`PUT /_matrix/app/v1/transactions/{txnId}`), `query_user`, `query_room_alias`,
@@ -287,19 +308,50 @@ trusted `id_server` is supplied, not just persist locally:
   a 200 with an IS-issued `sid` stores a `RegistrationValidationSession` keyed by
   that `sid` (purpose `register` / `account-3pid`). The IS is the validation
   authority: it contacts the user by email/SMS and (optionally) redirects via
-  `next_link`, so Merovingian has no client-facing `submitToken` for IS-delegated
-  flows — the session completes when the client later calls `bind` with the same
-  `sid` + `client_secret`. Absent `id_server` / `id_access_token`, the existing
-  local-validation path is unchanged. Fail closed with `502` on transport error
-  or a malformed IS response; `403` when `id_server` is not trusted.
+  `next_link`, so Merovingian has no client-facing `submitToken`. Absent
+  `id_server` / `id_access_token` the request is refused `400
+  M_THREEPID_MEDIUM_NOT_SUPPORTED` (before AUTH-5 it minted a local session
+  that was already marked validated and sent nothing). Fail closed with `502` on
+  transport error or a malformed IS response; `403` when `id_server` is not
+  trusted; `400 M_BAD_JSON` when only one of the pair is supplied.
 
-- **`bind`** (`/account/3pid/add`, plus the deprecated `/account/3pid`) — after
-  password UIA and the validation-session lookup, when `id_server` /
-  `id_access_token` are supplied and trusted, the HS calls
-  `IdentityServerClient::bind` over the held runtime mutex released for the
-  network call, then persists `bound=true`, `id_server`, `client_secret`, and
-  `sid`. The legacy `/account/3pid` route is extended to carry optional
-  `id_server` / `id_access_token`; when absent it stays local-only for back-compat.
+- **`bind`** (`/account/3pid/bind`, plus the deprecated `/account/3pid`) - after
+  the identity server has confirmed the session validated (below) and the
+  `id_server` is trusted, the HS calls `IdentityServerClient::bind` with the
+  runtime mutex released for the network call, then persists `bound=true`,
+  `id_server`, `client_secret`, and `sid`. A bind that names an `id_server` this
+  server does not trust is refused `400 M_SERVER_NOT_TRUSTED`; before AUTH-5 it
+  was recorded locally as bound although no identity server had been asked.
+  `/account/3pid/add` adds the 3PID to the account without an identity-server
+  bind, but needs the same confirmation.
+
+- **3PID ownership is proven by the identity server (AUTH-5).**
+  `confirm_validation_session` (`client_server.cpp`) is the single gate for
+  `/account/3pid/add`, `/account/3pid/bind` and `/account/3pid`. It calls
+  `IdentityServerClient::get_validated_3pid`
+  (`GET /_matrix/identity/v2/3pid/getValidated3pid?sid=&client_secret=`, bearer
+  `id_access_token`) against the trusted identity server stored with the session,
+  with `runtime.mutex` released, and only marks the session validated (and
+  records the IS-reported `validated_at`) when the answer is a 200 whose
+  `medium` equals the session's and whose `address` matches the session's
+  (emails case-insensitively, MSISDNs by their digits). Everything else refuses
+  and binds nothing: IS 400/404 -> `400 M_SESSION_NOT_VALIDATED`; a different
+  address or medium -> `400 M_SESSION_NOT_VALIDATED`; a transport failure or
+  non-200 -> `502 M_UNREACHABLE`; a 200 that does not parse -> `502
+  M_UNRECOGNIZED`. The session is looked up again once the lock is re-taken
+  (it may have expired or been consumed meanwhile). A validated 3PID is added
+  or bound, and the session is then erased, so a sid cannot be replayed. The
+  session holds the identity server's base URL and the caller's
+  `id_access_token` in memory only, for the session's lifetime (the 15-minute
+  validation TTL, or until it is consumed); the token is overwritten when the
+  session is dropped and is never persisted or logged. A MSISDN the identity
+  server reports in a different numeral form than the client sent (for example
+  with the country code expanded) does not match and is refused; that fails
+  closed rather than guessing.
+
+  The registration flow has no identity stage: `/register` advertises only
+  `m.login.registration_token`, so the `register/*/requestToken` sessions are
+  recorded unvalidated and nothing consumes them.
 
 - **`unbind`** (`/account/3pid/delete`, `/account/3pid`) — the client sends no
   secret (spec-correct), so the HS recovers `client_secret` + `sid` from the
@@ -508,38 +560,124 @@ a SHOULD, not a MUST, so this is not a conformance violation, but a client
 that explicitly asks for erasure gets the same silent no-op as a client that
 does not. The account's rooms are also not left on its behalf.
 
-## Per-account failed-login throttle
+## Argon2id admission
 
-`/login` was previously throttled only per source IP, because the runtime
-rate limiter's per-user tier keys on the *authenticated* user — someone who,
-before a login succeeds, does not exist yet (see `docs/http-transport.md`
-"Rate-limit policy"). Guesses against one account spread across many source
-IPs therefore accumulated against nothing at all.
+Argon2id is memory-hard, so one request can pin a core and tens of MiB for tens of milliseconds. Every
+place a client request reaches it shares one concurrency budget, `HomeserverRuntime::argon2id_admission`
+(`auth::Argon2idAdmission`), and none of them holds `runtime.mutex` while it hashes:
 
-`login_local_user` (`src/homeserver/auth_service.cpp`) now tracks failures
-against the *claimed* user ID, whether or not that user exists, so the
-throttle cannot itself be used to probe which accounts are real: five
-failures within a fifteen-minute window lock that claimed identity out for
-fifteen minutes, returning `429`. Any successful login clears the account's
-failure history. Tracking a claimed identity does mean a third party can
-deliberately trip a real account's lockout — the standard account-lockout
-trade-off — bounded by the window being fixed and short rather than
-escalating or sticky, and by a real login clearing it immediately. The
-thresholds (five failures, fifteen-minute window, fifteen-minute lockout)
-are compile-time constants; exposing them as configuration is not done (see
-`docs/todos/capability-gaps.md`).
+| Call site | Admission | Re-validated after the lock is re-taken |
+|---|---|---|
+| `/login` (`login_local_user`) | slot, else 429 | user still exists and stored hash unchanged |
+| Ordinary and appservice registration (`make_user`) | slot, else 429 | username still free, else the duplicate-username error |
+| Registration token check | slot, else 429 | none: no runtime state is used |
+| `POST /account/password` (`change_local_user_password`) | slot, else 429 | account exists, stored hash unchanged since the request started, access token still valid; otherwise refused with 403 and nothing written |
+| UIA password check (`verify_local_user_password`) | slot, else 429 | account exists, stored hash unchanged, access token still valid; otherwise not verified |
 
-This same counter is also enforced by `verify_local_user_password`
-(`src/homeserver/auth_service.cpp`), the password stage used by every
-UI-Auth (UIA) flow: password change, account deactivation, adding a 3PID,
-cross-signing key upload, and single/bulk device deletion. A stolen access
-token therefore no longer gets a separate, unbounded password-guessing
-budget through UIA; the fifth failed re-auth attempt locks the account for
-the same fifteen-minute window as a direct `/login` attacker. While locked,
-`verify_local_user_password` returns a non-zero `retry_after_ms` and every
-UIA call site surfaces it as `429 M_LIMIT_EXCEEDED` with a `Retry-After`
-header. A correct password during lockout is still refused until the window
-elapses, and it clears the failure history on success.
+A refusal for lack of a slot is `429 M_LIMIT_EXCEEDED` carrying `retry_after_ms`, answered before any hash
+work. It changes nothing and is not a failed attempt: it counts toward neither the login throttle nor the
+UIA throttle. A stale result (the password changed while it was being verified) is also not counted as a
+wrong guess, since the guess may well have been right for the hash it was checked against. Registration
+checks the username before taking a slot, so a request that cannot succeed never costs a hash.
+
+## Failed-login throttle
+
+`/login` is throttled per source IP by the runtime rate limiter, but that
+limiter's per-user tier keys on the *authenticated* user, who does not exist
+before a login succeeds (see `docs/http-transport.md` "Rate-limit policy").
+Guesses against one account spread across many source IPs would therefore
+accumulate against nothing. `login_local_user`
+(`src/homeserver/auth_service.cpp`) counts failed password logins against the
+*claimed* user ID, whether or not that user exists, so the throttle cannot be
+used to probe which accounts are real.
+
+### What is counted, and what is refused
+
+Failures are counted twice, in two bounded tables on the runtime:
+
+| Counter | Keyed on | Default limit | Refuses |
+|---|---|---|---|
+| per source | (account, client source) | 5 failures in 15 minutes | password logins for that account **from that source only** |
+| per account ceiling | account | 50 failures in 15 minutes | password logins for that account **from every source** |
+
+The client source is the same key the HTTP rate limiter uses
+(`rate_limit_client_key`): it honours `server.trusted_proxies` and groups IPv6
+clients by `server.http.ipv6_client_prefix_length`. Behind a reverse proxy that
+is not listed in `server.trusted_proxies` every client shares the proxy's
+address, so the per-source counter degrades to a per-account counter: configure
+`trusted_proxies`.
+
+Consequences, which are the point of the design:
+
+- A stranger who fails five logins as `@alice` locks `@alice` out from the
+  stranger's address, not from her own. Alice, logging in from another address,
+  is not affected.
+- Guessing spread over many addresses stops at the per-account ceiling. Past it,
+  every password login for that account is refused, the account owner's
+  included, until the window ends. This is the standard account-lockout
+  trade-off, now reachable only by an attacker who can make 50 failed logins
+  inside one window rather than 5.
+- A refused login is `429 M_LIMIT_EXCEEDED` carrying `retry_after_ms`. It is
+  refused before the password is checked, so a refused attempt neither counts
+  nor spends Argon2id time, and a correct password during a lockout is still
+  refused.
+- A refusal that comes from load shedding (the Argon2id admission limit) is not
+  a failed login and is not counted.
+
+A window opens at a key's first failure. When the count reaches the limit the
+window restarts at that failure, so the key stays refused for one full window
+from the failure that tripped it. A key whose window has elapsed forgets its
+failures. **A successful login clears only the per-source counter for the source
+it came from.** It does not clear the per-account ceiling: otherwise an attacker
+could spend 49 guesses, wait for the owner to log in, and start again.
+
+All three numbers are configuration, and a change is reloadable:
+`security.login_throttle.max_failures_per_source` (default 5, 1 to 1000),
+`security.login_throttle.max_failures_per_account` (default 50, 1 to 100000, not
+below the per-source limit) and `security.login_throttle.window` (default
+`15m`, `1s` to `1440m`). See `docs/user-manual.md`.
+
+### Bounded memory (AUTH-10)
+
+Each table (`auth::FailureWindowTable`, `include/merovingian/auth/failure_window_table.hpp`)
+holds at most 100 000 entries. A key is a fixed-size BLAKE2b-256 digest of the
+counter kind and its parts, so a user ID chosen to be 60 KiB costs the same 32
+bytes as a short one, and the account is length-prefixed so two different
+(account, source) pairs cannot hash alike. Entries sit in a list ordered by the
+time their window opened, which is also the order they expire in, so expiry pops
+the front: each failure and each check is amortised O(1), never a scan of the
+table. When a table is full, a new key evicts the oldest entry. The cap bounds
+memory against a flood of distinct claimed user IDs; it means a flood of more
+than 100 000 distinct IDs inside one window can push an earlier counter out
+early, which the per-IP HTTP rate limit (20 requests a minute at the auth
+tier) makes expensive. The tables are guarded by `HomeserverRuntime::mutex`.
+
+### User-interactive auth is separate
+
+`verify_local_user_password` (`src/homeserver/auth_service.cpp`) is the password
+stage of every UI-Auth (UIA) flow: password change, account deactivation,
+adding a 3PID, cross-signing key upload, and single/bulk device deletion. It is
+reached only with a valid access token, so it has its own counter, keyed on
+(account, device) with the same per-source limit and window. Two properties:
+
+- Unauthenticated login failures never touch it. A stranger failing logins as
+  `@alice` cannot stop her changing her password, deactivating, or deleting a
+  device from a session she is already signed in on. (Sharing the counter, as
+  an earlier version did, allowed exactly that.)
+- UIA failures never feed the login counters. A stolen access token still has a
+  bounded password-guessing budget through UIA (the fifth failed check on that
+  device refuses the sixth with `429 M_LIMIT_EXCEEDED` and `Retry-After`), but
+  spending it does not lock the owner out of logging in.
+
+A correct password clears the device's UIA counter.
+
+### Audit
+
+A refused login writes `login.throttled`, a failed one `login.rejected`. Both
+can be triggered by anyone, so both pass through `observability::AuditRateGate`
+(10 durable rows per kind per 60 seconds; the rest are counted and reported as
+`suppressed=<n>` on the next row, and the diagnostic log line is still written
+for every attempt). See `docs/observability-audit.md`.
 
 ## Security posture
 

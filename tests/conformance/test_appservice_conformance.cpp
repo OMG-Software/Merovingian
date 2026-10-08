@@ -128,6 +128,14 @@ SCENARIO("?user_id= masquerades as a user within the appservice's namespace", "[
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
+        // AUTH-12: an asserted user must be registered, so the service
+        // registers its virtual user (via /register) before asserting it.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", "irc-bridge-as-token-secret",
+                     R"({"type":"m.login.application_service","inhibit_login":true,"username":"_irc_bridge_alice"})"})
+                    .response.status == 200U);
+
         WHEN("whoami is called with ?user_id= naming a user inside the users namespace")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
@@ -219,7 +227,11 @@ SCENARIO("m.login.application_service registers and logs in a passwordless virtu
                 // Spec: "Application services which attempt to create users
                 // or aliases outside of their defined namespaces ... will
                 // receive an error code M_EXCLUSIVE."
-                REQUIRE(response.response.status == 403U);
+                // Status 400: client-server-api.md, POST /register responses
+                // table, "`400` ... `M_EXCLUSIVE` : The desired user ID is in
+                // the exclusive namespace claimed by an application service."
+                // (previously asserted 403, which the table does not list.)
+                REQUIRE(response.response.status == 400U);
                 CHECK(response.response.body.find("M_EXCLUSIVE") != std::string::npos);
             }
         }

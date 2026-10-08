@@ -532,6 +532,21 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "security.trust_safety.policy_server_allow_without_result");
     }
 
+    if (current.security().login_throttle.max_failures_per_source !=
+        next.security().login_throttle.max_failures_per_source)
+    {
+        add_change(plan, "security.login_throttle.max_failures_per_source");
+    }
+    if (current.security().login_throttle.max_failures_per_account !=
+        next.security().login_throttle.max_failures_per_account)
+    {
+        add_change(plan, "security.login_throttle.max_failures_per_account");
+    }
+    if (current.security().login_throttle.window != next.security().login_throttle.window)
+    {
+        add_change(plan, "security.login_throttle.window");
+    }
+
     if (current.security().access_token_lifetime_ms != next.security().access_token_lifetime_ms)
     {
         add_change(plan, "security.access_token_lifetime_ms");

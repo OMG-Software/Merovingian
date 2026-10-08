@@ -54,7 +54,17 @@ struct RegistrationValidationSession final
     std::uint64_t send_attempt{0U};
     std::uint64_t created_at_ms{0U};
     std::uint64_t updated_at_ms{0U};
+    // Zero until a trusted identity server has reported this session validated
+    // (AUTH-5): this server cannot send email or SMS, so it has no way to
+    // validate a 3PID itself and a session is never born validated.
     std::uint64_t validated_at_ms{0U};
+    // The trusted identity server that issued `sid`, and the caller's access
+    // token for it, kept so the server can ask that identity server whether the
+    // session was validated (getValidated3pid). In memory only, for the life of
+    // the session (it is pruned with the session after the validation TTL, and
+    // erased as soon as the 3PID is added or bound); never persisted or logged.
+    std::string identity_server_base_url{};
+    std::string identity_access_token{};
 };
 
 struct ClientApiLimits final

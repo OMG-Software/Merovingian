@@ -1,4 +1,4 @@
-## 0.12.22
+## 0.12.24
 
 - **FIXED: a waiting `/sync` was counted against the rate limit again every time it was run
   again.** A long-poll is run once more after each wake-up and when its timeout expires (on the
@@ -16,6 +16,67 @@
   a test can tell when a long-poll has started waiting (`[sync][notifier]` scenario).
 - Docs: `docs/http-transport.md` (sync re-runs; the default per-account and per-device wait caps
   are 4 and 2, not 8 and 4 as it said).
+
+## 0.12.23
+
+Every AUTH finding of the 29 September 2026 security audit is now fixed.
+
+- **FIXED (AUTH-2): a stranger could hold any account in login lockout.** Five failed logins
+  refused every login for that account for 15 minutes, correct passwords included, and blocked
+  password change, deactivation and device deletion too. Failures are now counted per (account,
+  client source) and per account: `security.login_throttle.max_failures_per_source` (5) refuses
+  only that source, `max_failures_per_account` (50) refuses every source, within
+  `security.login_throttle.window` (15m). A correct login clears only its source's counter.
+  User-interactive-auth password checks have their own (account, device) counter, which login
+  failures never touch, so the owner's sessions keep working. `docs/auth-identity.md` no longer
+  claims a real login clears the lockout. ADR-0122 (supersedes ADR-0066, refines ADR-0032).
+- **FIXED (AUTH-10): the failed-login map was unbounded and scanned on every failure.** The new
+  `auth::FailureWindowTable` stores a fixed-size BLAKE2b digest per key, holds at most 100,000
+  entries, and expires entries from a list ordered by window start.
+- **FIXED (AUTH-5): 3PID ownership was never validated.** `requestToken` without an identity
+  server created a session already marked validated and sent nothing, so a user could bind
+  someone else's email address. Ownership is now proven only by a trusted identity server:
+  `requestToken` without one answers `400 M_THREEPID_MEDIUM_NOT_SUPPORTED`; delegated sessions
+  start unvalidated and keep the identity server's URL and access token in memory only;
+  `/account/3pid/add`, `/bind` and `POST /account/3pid` confirm with the identity server
+  (`getValidated3pid`) for the same medium and address, otherwise `400 M_SESSION_NOT_VALIDATED`.
+  A consumed session is erased so it cannot be replayed. A bind naming an untrusted identity
+  server is refused instead of being recorded as bound. ADR-0123.
+- **FIXED (AUTH-7): other services' exclusive namespaces were ignored.** An application service
+  can no longer register (`400 M_EXCLUSIVE`), log in as or assert (`403 M_EXCLUSIVE`) a user in
+  another service's exclusive namespace. An out-of-namespace `/register` now answers 400 rather
+  than 403, as the spec's response table gives.
+- **FIXED (AUTH-12): an application service could act as a deactivated or non-existent user.**
+  Asserting a user that is not registered or is deactivated answers `403 M_FORBIDDEN`; bridges
+  must register a puppet before acting as it. `/register` and `/login` are exempt. ADR-0124.
+- **FIXED (AUTH-8): identity assertion applied to account management.** A masqueraded request
+  to any `/account/*` endpoint except `GET /account/whoami` answers `403 M_FORBIDDEN`.
+- **FIXED (AUTH-9, remainder): log field values were unbounded.** Every structured log field
+  value is capped at 2048 emitted bytes on a character boundary, with a `...[truncated N bytes]`
+  marker; redaction runs first.
+- **FIXED (AUTH-4, remainder): Argon2id in `/register`, password change and UIA ran under the
+  runtime mutex with no admission limit.** Each now takes a slot in the shared Argon2id budget
+  (`429 M_LIMIT_EXCEEDED` with `retry_after_ms` when none is free, never counted as a failed
+  attempt), hashes with the mutex released, and re-checks the username, session and stored hash
+  once it is re-taken. `/register` 429s now carry `retry_after_ms`.
+- **FIXED (AUTH-1, remainder):** `login.rejected` and `login.throttled` audit rows are
+  rate-capped like other unauthenticated rejections.
+- **CHANGED: the example config enables remote media fetching.**
+  `config/merovingian.conf.example` sets `security.media.remote_fetch_enabled=true`, so a server
+  set up from it can download attachments sent from other servers. The built-in default stays
+  `false`: a config without the line refuses every remote download with 404 and sends nothing.
+- **TESTS:** `tests/unit/test_login_throttle_http.cpp`, `test_failure_window_table.cpp`,
+  `test_config_login_throttle.cpp` (`[login-throttle]`); `tests/integration/test_identity_service_flow.cpp`
+  and `tests/unit/test_identity_client.cpp` (`[auth-5]`) with a new `MockIdentityServer` in
+  `tests/support/tls_mock_server.hpp`; `tests/conformance/test_appservice_assertion_conformance.cpp`
+  and `tests/unit/test_appservice_masquerade_token.cpp` (`[auth-7]`, `[auth-8]`, `[auth-12]`);
+  `tests/unit/test_security_audit_log_controls.cpp` and `test_audit_flood.cpp` (`[auth-9]`);
+  `tests/unit/test_security_audit_auth_4_admission.cpp` and
+  `tests/integration/test_security_audit_auth_4_admission_flow.cpp` (`[auth-4]`);
+  `tests/tooling/test_example_config.py`. Each new test failed against the code before its fix.
+- Docs: ADR-0122, ADR-0123, ADR-0124; audit report remediation status; `docs/auth-identity.md`,
+  user manual, example config, observability, threat model, security coding rules, and the
+  `src/auth`, `src/appservice`, `src/identity` and `src/observability` AGENTS.md files.
 
 ## 0.12.21
 

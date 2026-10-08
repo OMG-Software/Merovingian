@@ -13,6 +13,7 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 | `identity.cpp` | Validation of user IDs, localparts, device IDs and server names; login policy |
 | `password.cpp` | Argon2id hashing and verification of passwords and registration tokens |
 | `oidc_discovery.cpp` | OIDC / RFC 8414 authorisation-server metadata built from `config::OidcConfig` |
+| `failure_window_table.cpp` | `FailureWindowTable`: the bounded, time-ordered failure counters behind the failed-login throttle (100 000 entries, fixed-size BLAKE2b-256 keys via `make_failure_key`, O(1) expiry from the front, oldest evicted when full). Not thread-safe: the runtime mutex serialises it. Used for (account, source), per-account and (account, device) UIA counters |
 | `key_api.cpp` | `/_matrix/client/v3/keys/upload`, `/query`, `/claim` — E2EE key management |
 
 UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in this module.
@@ -30,6 +31,30 @@ UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in
 5. **Validate all user IDs** against the identifier grammar before accepting registration.
 6. **Revocation is one-way.** Never restore a revoked token; revoke more narrowly instead
    (e.g. `revoke_tokens_for_user_except_device`). See ADR-0052.
+
+## Argon2id admission and the runtime lock
+
+Every Argon2id call a client request can reach is bounded by the one `HomeserverRuntime::argon2id_admission`
+budget and runs with `runtime.mutex` released (AUTH-4): `/login`, ordinary and appservice registration
+(`make_user`), the registration token check, `POST /account/password` (hashing the new password) and
+the user-interactive-auth password check (`verify_local_user_password`). The order is fixed: cheap
+refusals first, then `try_acquire()` (no slot is `429 M_LIMIT_EXCEEDED` with `retry_after_ms`, never a
+failed attempt), then `RuntimeLockRelease` around only the hash, then re-take the lock and **re-validate
+what the hash's use depends on** before acting: the username is still free (registration), the account
+exists, its stored hash is the one snapshotted before the release and the access token is still valid
+(password change, UIA check, login). Never keep a `LocalUser` pointer across the release; copy the hash
+out first. A new Argon2id call site without all three (slot, released lock, re-validation) is the defect.
+See `docs/auth-identity.md` "Argon2id admission".
+
+## Failed-login throttle
+
+Three `FailureWindowTable`s on `HomeserverRuntime` back it (AUTH-2, AUTH-10); the policy lives in
+`src/homeserver/auth_service.cpp`. Never merge them: login failures keyed (account, source) and per
+account must not be consulted by user-interactive-auth password checks, which have their own
+(account, device) table, or any stranger can lock the owner out of changing their password. UIA
+failures must not feed the login tables either. A successful login clears only the (account,
+source) key, never the per-account ceiling. Keep the cap and the amortised-O(1) expiry: no code
+path may scan a table. See `docs/auth-identity.md` "Failed-login throttle".
 
 ## Token lifecycle
 

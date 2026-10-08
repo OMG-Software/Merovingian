@@ -122,6 +122,9 @@
 * [0119 - Media bytes live in the database and are read on demand](0119-media-bytes-live-in-the-database-and-are-read-on-demand.md)
 * [0120 - Cached remote media has its own storage budget](0120-cached-remote-media-has-its-own-storage-budget.md)
 * [0121 - Remote media fetches run on their own pool, one fetch per remote file](0121-remote-media-fetches-run-on-their-own-pool.md)
+* [0122 - Login failures are throttled per source, with an account-wide ceiling](0122-login-failures-are-throttled-per-source-with-an-account-ceiling.md)
+* [0123 - 3PID ownership is proven only by a trusted identity server](0123-3pid-ownership-is-proven-only-by-a-trusted-identity-server.md)
+* [0124 - Application services assert only registered, active users, and never on Account Management](0124-application-services-assert-only-registered-active-users.md)
 
 ## Rejected Records
 
@@ -138,5 +141,7 @@
 ## Records with non-standard statuses
 
 * None
+* [0066 - UI-auth password checks share the /login failed-login counter](0066-uia-password-checks-share-login-failed-login-counter.md) — Superseded by ADR-0122: UIA password checks have their own (account, device) counter, which login failures never touch
+* [0032 - Throttle failed logins per claimed account](0032-throttle-failed-logins-per-claimed-account.md) — Refined by ADR-0122: failures are counted per (account, source) with an account-wide ceiling
 * [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md) — Superseded by ADR-0121 for remote media downloads and thumbnails, which run on their own pool; directory lookups keep this budget
 * [0015 - Keep the signing secret out of the federation worker](0015-keep-the-signing-secret-out-of-the-federation-worker.md) — Superseded by ADR-0078 for the signing-oracle part (the `sign_request` frame); the signing secret still never enters the worker

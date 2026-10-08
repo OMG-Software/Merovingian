@@ -22,6 +22,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_admin_safety_policy_rules_conformance.cpp` | Project-specific: Merovingian admin API (trust-and-safety extension, not in the Matrix v1.19 spec) — `GET`/`PUT`/`DELETE /_matrix/client/v3/admin/safety/policy_rules` |
 | `test_admin_safety_review_conformance.cpp` | Project-specific: Merovingian admin API (trust-and-safety extension, not in the Matrix v1.19 spec) — `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}` |
 | `test_appservice_conformance.cpp` | [Application Service API](../../docs/matrix-v1.19-spec/application-service-api.md) (as_token auth, `?user_id=` masquerade, `m.login.application_service`, namespace exclusivity) |
+| `test_appservice_assertion_conformance.cpp` | [Application Service API](../../docs/matrix-v1.19-spec/application-service-api.md) (cross-service exclusive namespaces on register/login/assertion, assertion of missing or deactivated users, no identity assertion on Account Management) |
 | `test_appservice_thirdparty_conformance.cpp` | [CS API § Third-party Lookups](../../docs/matrix-v1.19-spec/client-server-api.md#third-party-lookups) |
 | `test_canonicaljson_parser.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | `test_canonicaljson_serializer.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |

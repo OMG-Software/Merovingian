@@ -19,8 +19,15 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart,
                                         std::string_view password) -> OperationResult;
+// `client_source` is the rate-limit client key of the caller
+// (`rate_limit_client_key`, which honours server.trusted_proxies). Failed
+// password logins are counted per (account, client_source) and per account;
+// see docs/auth-identity.md "Failed-login throttle". An empty source is one
+// shared bucket, which is what a caller with no transport (a test, the
+// registration auto-login) gets.
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
-                                    std::string_view device_id, bool with_ttl = false) -> OperationResult;
+                                    std::string_view device_id, bool with_ttl = false,
+                                    std::string_view client_source = {}) -> OperationResult;
 // Grants a session for an already-authenticated `user_id` -- the second
 // half of login_local_user (device-id validation, account lock/suspend
 // gate, token issuance/persistence, session bookkeeping) without a password
@@ -41,6 +48,12 @@ namespace merovingian::homeserver
                                                    std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
     -> SessionRefreshResult;
+// True when `user_id` is a registered, not-deactivated local account. Identity
+// assertion (Application Service API) must act only as such a user (AUTH-12):
+// asserting an unregistered or deactivated user is refused with 403
+// M_FORBIDDEN by the dispatcher, and authenticated_user/authenticated_session
+// re-check it as defense in depth.
+[[nodiscard]] auto asserted_user_is_active(HomeserverRuntime const& runtime, std::string_view user_id) -> bool;
 [[nodiscard]] auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token)
     -> std::optional<std::string>;
 [[nodiscard]] auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)
@@ -90,9 +103,14 @@ struct AdminAuthResult
     -> OperationResult;
 // Result of verifying a password during re-authentication (UIA). `ok` is true
 // only when the password is correct AND the account is not currently locked
-// out. `retry_after_ms` is non-zero when the per-account failed-login lockout
-// is active; callers MUST return 429 M_LIMIT_EXCEEDED in that case rather than
+// out. `retry_after_ms` is non-zero when this device's UIA password-failure
+// budget is spent (its own counter, keyed (account, device): /login failures never
+// touch it); callers MUST return 429 M_LIMIT_EXCEEDED in that case rather than
 // 401 UIA, because further guesses are pointless until the window expires.
+// It is also non-zero when the Argon2id admission budget has no free slot (AUTH-4):
+// the password was not checked, nothing was counted, and the same 429 applies.
+// `ok` is false, with no delay, when the password changed or the session ended
+// while it was being verified.
 struct PasswordVerificationResult final
 {
     bool ok{false};

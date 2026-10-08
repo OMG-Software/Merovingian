@@ -41,7 +41,8 @@ current in-process runtime path.
   `security.media.max_upload_size`, so client upload hints match the policy
   enforced by the repository.
 - Downloads serve local media owned by the configured server name.
-- Remote media fetches are opt-in (`security.media.remote_fetch_enabled`, default `false`) and
+- Remote media fetches are opt-in (`security.media.remote_fetch_enabled`, built-in default `false`;
+  `config/merovingian.conf.example` sets it to `true`) and
   the flag is checked first: `download_local_media` and `download_local_media_thumbnail` answer
   `404 M_NOT_FOUND` for a remote `serverName` before any policy hook, server discovery or outbound
   call when it is off, and likewise when the request carries `allow_remote=false` (spec: "the server
