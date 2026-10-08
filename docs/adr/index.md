@@ -125,6 +125,7 @@
 * [0122 - Login failures are throttled per source, with an account-wide ceiling](0122-login-failures-are-throttled-per-source-with-an-account-ceiling.md)
 * [0123 - 3PID ownership is proven only by a trusted identity server](0123-3pid-ownership-is-proven-only-by-a-trusted-identity-server.md)
 * [0124 - Application services assert only registered, active users, and never on Account Management](0124-application-services-assert-only-registered-active-users.md)
+* [0125 - Redactions are applied once, at the store, and destroy the original content](0125-redactions-are-applied-once-at-the-store-and-destroy-the-original.md)
 
 ## Rejected Records
 
