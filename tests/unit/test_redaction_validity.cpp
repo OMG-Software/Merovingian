@@ -158,3 +158,62 @@ SCENARIO("A redaction applies on power level or on a matching sender domain",
         }
     }
 }
+
+SCENARIO("A malformed redaction names no target", "[csaz-11][redaction][events]")
+{
+    GIVEN("events that are not usable redactions")
+    {
+        auto const& v10 = policy_for("10");
+        auto const& v11 = policy_for("11");
+        auto const not_an_object = parse(R"(["m.room.redaction"])");
+        auto const wrong_type = parse(R"({"type":"m.room.message","redacts":"$x"})");
+        auto const no_content_v11 = parse(R"({"type":"m.room.redaction","redacts":"$x"})");
+        auto const empty_target = parse(R"({"type":"m.room.redaction","redacts":""})");
+
+        WHEN("their targets are read")
+        {
+            auto const from_array = merovingian::events::redaction_target(not_an_object, v10);
+            auto const from_message = merovingian::events::redaction_target(wrong_type, v10);
+            auto const v11_without_content = merovingian::events::redaction_target(no_content_v11, v11);
+            auto const from_empty = merovingian::events::redaction_target(empty_target, v10);
+
+            THEN("none of them names an event")
+            {
+                REQUIRE_FALSE(from_array.has_value());
+                REQUIRE_FALSE(from_message.has_value());
+                REQUIRE_FALSE(v11_without_content.has_value());
+                REQUIRE_FALSE(from_empty.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("A redaction without a sender, or of a malformed target, never applies", "[csaz-11][redaction][events]")
+{
+    GIVEN("a room version 10 context in which the redact level is 50")
+    {
+        auto const& v10 = policy_for("10");
+        auto const context = RedactionContext{power_levels(R"({"@admin:a.example":100})"), create_event()};
+        auto const redaction_without_sender = parse(R"({"type":"m.room.redaction","redacts":"$x"})");
+        auto const redaction_by_admin =
+            parse(R"({"type":"m.room.redaction","sender":"@admin:a.example","redacts":"$x"})");
+        auto const target_not_an_object = parse(R"(["m.room.message"])");
+
+        WHEN("a redaction with no sender is judged, and an administrator's redaction of a malformed target")
+        {
+            auto const no_sender = merovingian::events::judge_redaction(redaction_without_sender,
+                                                                        message_from("@bob:a.example"), context, v10);
+            auto const malformed_target =
+                merovingian::events::judge_redaction(redaction_by_admin, target_not_an_object, context, v10);
+            auto const sender_power =
+                merovingian::events::sender_meets_redact_level(redaction_without_sender, context, v10);
+
+            THEN("neither applies, and a sender that is missing has no power")
+            {
+                REQUIRE(no_sender == RedactionVerdict::sender_lacks_authority);
+                REQUIRE(malformed_target == RedactionVerdict::sender_lacks_authority);
+                REQUIRE_FALSE(sender_power);
+            }
+        }
+    }
+}

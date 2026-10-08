@@ -50,6 +50,14 @@ CSAZ-6, CSAZ-9, CSAZ-11 and CSAZ-12 of the 29 September 2026 security audit are 
   `404 M_NOT_FOUND`; the trust-and-safety unit scenario and the AUTH-1 safety-report listing scenario
   (`tests/integration/test_persistent_homeserver_flow.cpp`) report real events; the migration-count
   assertions count 21 steps.
+- **FIXED: `ConnectionParker::parked()` could still count a connection its peer had already seen
+  closed.** The poll loop closed expired, hung-up and invalid connections first and decremented
+  `parked_count` after the whole pass, so a peer woken by the close could read the old count (NetBSD CI:
+  `test_net_connection_parker.cpp:393`). The count is now decremented before those connections are
+  closed; closing stays outside the lock.
+- **TESTS:** refused membership actions (`/invite` by a non-member, `/ban` and `/unban` without power,
+  `/forget` while joined, `/knock` on a non-knock room) answer the spec's 403 or 400 and change nothing;
+  malformed redactions name no target and never apply (`tests/unit/test_redaction_validity.cpp`).
 - **BUILD:** `merovingian-auth` links `merovingian-canonicaljson` (`auth::room_alias_is_valid` and
   `oidc_discovery.cpp` use it); `src/meson.build` configures canonicaljson first. The fuzz config-parser
   target, which links auth without canonicaljson, failed to link.

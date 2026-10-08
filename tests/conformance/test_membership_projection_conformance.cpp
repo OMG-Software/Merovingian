@@ -257,3 +257,85 @@ SCENARIO("An invite sent through the state API is an invite the invitee can see 
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: POST /_matrix/client/v3/rooms/{roomId}/invite, /ban, /unban, /forget;
+// POST /_matrix/client/v3/knock/{roomIdOrAlias}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidinvite
+//
+// Spec: invite, ban, unban and knock answer 403 when the user may not perform them ("A meaningful
+// `errcode` and description error text will be returned"); forget answers 400 "The user has not
+// left the room". A refused action changes no membership.
+SCENARIO("Membership actions a user may not perform are refused and change nothing",
+         "[conformance][client-server][membership][csaz-6]")
+{
+    GIVEN("alice's public room with bob joined at power level 0, and carol outside it")
+    {
+        auto started = merovingian::homeserver::start_client_server(projection_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const carol = register_and_login(rt, "carol");
+        auto const room_id = create_room(rt, alice, "public_chat");
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}").status == 200U);
+        auto const room_path = "/_matrix/client/v3/rooms/" + room_id;
+
+        WHEN("carol, who is not in the room, invites someone")
+        {
+            auto const reply =
+                call(rt, "POST", room_path + "/invite", carol, R"({"user_id":")" + user_id("bob") + R"("})");
+
+            THEN("the server answers 403 M_FORBIDDEN")
+            {
+                REQUIRE(reply.status == 403U);
+                REQUIRE(string_member(parse_object(reply.body), "errcode") != nullptr);
+            }
+        }
+        WHEN("bob, at power level 0, bans alice")
+        {
+            auto const reply =
+                call(rt, "POST", room_path + "/ban", bob, R"({"user_id":")" + user_id("alice") + R"("})");
+
+            THEN("the server answers 403 and alice is still joined")
+            {
+                REQUIRE(reply.status == 403U);
+                REQUIRE(joined_members_body(rt, alice, room_id).find(user_id("alice")) != std::string::npos);
+            }
+        }
+        WHEN("alice bans carol and bob, at power level 0, unbans her")
+        {
+            REQUIRE(call(rt, "POST", room_path + "/ban", alice, R"({"user_id":")" + user_id("carol") + R"("})").status ==
+                    200U);
+            auto const reply =
+                call(rt, "POST", room_path + "/unban", bob, R"({"user_id":")" + user_id("carol") + R"("})");
+
+            THEN("the server answers 403 and carol stays banned")
+            {
+                REQUIRE(reply.status == 403U);
+                REQUIRE(call(rt, "POST", room_path + "/join", carol, "{}").status == 403U);
+            }
+        }
+        WHEN("bob, still joined, forgets the room")
+        {
+            auto const reply = call(rt, "POST", room_path + "/forget", bob, "{}");
+
+            THEN("the server answers 400 and bob is still joined")
+            {
+                // Spec: 400 "The user has not left the room".
+                REQUIRE(reply.status == 400U);
+                REQUIRE(joined_members_body(rt, alice, room_id).find(user_id("bob")) != std::string::npos);
+            }
+        }
+        WHEN("carol knocks on the room, whose join rule is public, not knock")
+        {
+            auto const reply = call(rt, "POST", "/_matrix/client/v3/knock/" + room_id, carol, "{}");
+
+            THEN("the server answers 403")
+            {
+                // Spec: 403 for example when "The room is not set up for knocking".
+                REQUIRE(reply.status == 403U);
+            }
+        }
+    }
+}
