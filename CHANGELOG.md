@@ -18,6 +18,10 @@
   `tests/integration/test_http_server_listener_flow.cpp`) gives up after 30 s instead of blocking
   forever. A connection the server neither answered nor closed made OpenBSD CI kill the whole
   integration binary at its 900 s limit, mid-scenario; a stall now fails only that scenario.
+- **CI:** `scripts/build-bsd.sh` runs `meson test` with `--timeout-multiplier 2` unless
+  `MESON_TEST_TIMEOUT_MULTIPLIER` says otherwise. The BSD CI VMs' speed varies by 20-40% between
+  runs, and the unit, conformance and integration binaries each hit their meson limits on
+  OpenBSD runs where nothing hung. Test: `tests/tooling/test_dependency_wraps.py`.
 - Docs: `docs/http-transport.md` (sync re-runs; the default per-account and per-device wait caps
   are 4 and 2, not 8 and 4 as it said).
 
