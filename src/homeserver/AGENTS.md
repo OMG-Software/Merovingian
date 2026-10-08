@@ -17,6 +17,7 @@ This is the largest and most complex module — read this file carefully before 
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
 | `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
+| `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
 | `default_push_ruleset.cpp` | The server-default push ruleset returned by `/pushrules/` |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -197,3 +198,13 @@ moving it, never by sharing it.
 - `docs/http-transport.md` — HTTP handling, TLS, rate limiting
 - `docs/media-repository.md` — media upload/download flow
 - `docs/auth-identity.md` — token validation and session flow
+
+## Redactions (CSAZ-11)
+
+`PUT /rooms/{roomId}/redact/{eventId}/{txnId}` builds an `m.room.redaction` and sends it through `send_event`, like
+`PUT /send`; `send_event` runs `check_local_redaction` (own event, `redact` level, or server administrator over a
+local user's event) before storing it, and `compose_signed_event` puts `redacts` where the room version keeps it.
+`install_redaction_reconciler` makes the persistent store call `reconcile_redactions_for_event` after every event it
+stores, so a new ingest path needs no extra call. It overwrites the target's JSON with the redacted form; do not add a
+copy of the original content anywhere. A suspended user may redact only their own events (the handler enforces it, the
+suspension gate lets the route through).

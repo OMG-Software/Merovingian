@@ -819,6 +819,32 @@ see `docs/todos/capability-gaps.md` for that tracked divergence.
 
 ## Redaction
 
+### Applying redactions (CSAZ-11)
+
+`events::redaction_target` reads the event a redaction names (`redacts` at the top level before room
+v11, in `content` from v11) and `events::judge_redaction` decides whether the redaction applies, per
+rooms/v3.md to v12.md "Handling redactions": the sender's power level is at least the redact level
+(default 50; room creators in v12 have an infinite level), or the sender's domain equals the original
+event sender's domain. A redaction of `m.room.create` never applies: before v11 the algorithm would
+strip `room_version`, which the server reads from that event.
+
+`homeserver::reconcile_redactions_for_event` (`src/homeserver/redaction_service.cpp`) runs for every
+event the main process stores, through `PersistentStore::redaction_observer`, and once at startup
+(`reconcile_all_redactions`). It judges the redactions involving that event, using the power levels among
+the redaction event's own `auth_events` so every server decides alike. When one applies, the target's stored
+JSON is overwritten with `redact_event`'s output (`database::replace_event_json`): the original content is
+deleted from the database, not kept aside, and every read path, `/_matrix/federation/v1/event` and backfill
+included, serves the redacted form. `hashes` and `signatures` are kept by the algorithm, so receiving servers
+still verify the redacted event. A redaction whose target is unknown is held; it stays "withheld"
+(`PersistentStore::redactions`, derived from `events`, rebuilt after hydration) and clients are not sent it
+until it applies. `sync::HistoryVisibility::can_see` is the one check every client read path shares.
+
+Clients are served `unsigned.redacted_because` on a redacted event (`database::attach_redacted_because`,
+called by `client_event_with_id` and the sliding sync builder) and `redacts` in both locations on a redaction
+event (`database::add_redaction_compat`, rooms/v11.md).
+
+### The algorithm
+
 The redaction engine retains top-level keys and event-content keys according to
 the supported room-version policy split (room v1–v10 vs v11+). Two room-version
 policy flags refine this further:

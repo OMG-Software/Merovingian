@@ -48,3 +48,11 @@ Migrations run automatically at startup via `migration.hpp`; the runner is idemp
 ## Key docs
 
 - `docs/database-persistence.md` — schema reference, store interface, migration policy
+
+## Redaction state (CSAZ-11)
+
+`PersistentStore::redactions` (which redaction events name which target, which are still withheld from clients, which
+was applied to which target) is derived from `events` and never persisted in a table of its own: `rebuild_redaction_state`
+re-derives it after hydration and the homeserver's startup reconciliation re-applies. What is durable is the redacted
+JSON of the target (`replace_event_json`), so no migration. The database module does not judge redactions (it cannot
+link `events`/`rooms`); `PersistentStore::redaction_observer` is how the homeserver does, after each stored event.
