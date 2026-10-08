@@ -118,7 +118,8 @@ SCENARIO("login_local_user sheds load when Argon2id admission is full", "[homese
 
             THEN("the failed-login counter is not incremented for a shed request")
             {
-                REQUIRE(runtime.failed_logins.find(user_id) == runtime.failed_logins.end());
+                REQUIRE(runtime.login_failures_by_source.size() == 0U);
+                REQUIRE(runtime.login_failures_by_account.size() == 0U);
             }
         }
     }

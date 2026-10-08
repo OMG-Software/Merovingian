@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/appservice/registration.hpp"
+#include "merovingian/auth/failure_window_table.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -250,20 +251,6 @@ struct TestOnlyForcedOutboundResolution final
     std::string trusted_ca_pem{};
 };
 
-// Per-account failed-login accounting for the login throttle. Lives on the
-// runtime, not in a file-scope static: a static is shared by every runtime in
-// the process, which in the test binary means lockout state leaks between
-// unrelated scenarios and makes them order-dependent. It did exactly that --
-// a scenario that deliberately exhausts the threshold for one localpart broke a
-// later, unrelated scenario registering the same name under a different RNG
-// seed. Guarded by HomeserverRuntime::mutex.
-struct FailedLoginRecord final
-{
-    std::size_t count{0U};
-    std::chrono::steady_clock::time_point first_failure{};
-    std::chrono::steady_clock::time_point last_failure{};
-};
-
 // FED-11: solicited outbound joins own bounded, transient receipt queues. These
 // are never database state. Guard every access with HomeserverRuntime::mutex.
 constexpr auto max_pending_join_rooms = std::size_t{32U};
@@ -399,8 +386,21 @@ struct HomeserverRuntime final
     // verification (AUTH-4). Stored by unique_ptr so the runtime remains movable
     // while the semaphore itself is not.
     std::unique_ptr<auth::Argon2idAdmission> argon2id_admission{};
-    // Failed-login counters keyed on the claimed user ID. See FailedLoginRecord.
-    std::unordered_map<std::string, FailedLoginRecord> failed_logins{};
+    // Failed-login accounting (AUTH-2, AUTH-10). These live on the runtime, not
+    // in file-scope statics: a static is shared by every runtime in the process,
+    // which in the test binary means lockout state leaks between unrelated
+    // scenarios and makes them order-dependent. All three are bounded and
+    // guarded by `mutex`. See auth/failure_window_table.hpp.
+    //   by_source:  password-login failures keyed (account, client source).
+    //   by_account: the same failures keyed by account alone, the ceiling that
+    //               stops guessing spread over many sources.
+    //   uia_device: user-interactive-auth password failures keyed (account,
+    //               device). Login failures never touch it and it never feeds
+    //               the other two, so a stranger failing logins cannot stop an
+    //               authenticated user changing their password.
+    auth::FailureWindowTable login_failures_by_source{};
+    auth::FailureWindowTable login_failures_by_account{};
+    auth::FailureWindowTable uia_failures_by_device{};
     std::uint64_t next_request_sequence{1U};
     // Guards mutable runtime state when requests are handled concurrently.
     // Handlers must release it before outbound network I/O so unrelated

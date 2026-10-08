@@ -5,6 +5,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 
 #include <string>
@@ -273,6 +274,42 @@ auto parse_request_token_response(std::string_view body) -> std::optional<std::s
     return std::optional<std::string>{*sid};
 }
 
+auto parse_validated_3pid_response(std::string_view body) -> std::optional<ValidatedThreepid>
+{
+    auto const parsed = canonicaljson::parse_lossless(body);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+    auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* medium = string_member(*root, "medium");
+    auto const* address = string_member(*root, "address");
+    auto const* validated_at_value = object_member(*root, "validated_at");
+    if (medium == nullptr || medium->empty() || address == nullptr || address->empty() || validated_at_value == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* validated_at = std::get_if<std::int64_t>(&validated_at_value->storage());
+    if (validated_at == nullptr || *validated_at <= 0)
+    {
+        return std::nullopt;
+    }
+    return ValidatedThreepid{*medium, *address, static_cast<std::uint64_t>(*validated_at)};
+}
+
+auto build_get_validated_3pid_path(std::string_view client_secret, std::string_view sid) -> std::string
+{
+    auto path = std::string{"/_matrix/identity/v2/3pid/getValidated3pid?sid="};
+    path += core::percent_encode_path_component(sid);
+    path += "&client_secret=";
+    path += core::percent_encode_path_component(client_secret);
+    return path;
+}
+
 IdentityServerClient::IdentityServerClient(
     http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
     config::IdentityServerConfig const& config,
@@ -381,6 +418,14 @@ auto IdentityServerClient::bind(std::string_view base_url, std::string_view id_a
 {
     return perform(base_url, "POST", "/_matrix/identity/v2/3pid/bind", id_access_token,
                    build_bind_body(client_secret, sid, mxid));
+}
+
+auto IdentityServerClient::get_validated_3pid(std::string_view base_url, std::string_view id_access_token,
+                                              std::string_view client_secret, std::string_view sid)
+    -> IdentityServerResult
+{
+    return perform(base_url, "GET", build_get_validated_3pid_path(client_secret, sid), id_access_token,
+                   std::string_view{});
 }
 
 auto IdentityServerClient::unbind(std::string_view base_url, std::string_view id_access_token,

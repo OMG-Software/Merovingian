@@ -621,6 +621,15 @@ Used for 3PID (email/phone) invites, binds, unbinds, and `requestToken`
 flows. With `trusted_servers` empty (the default) every operation that needs
 an identity server fails closed rather than silently minting tokens locally.
 
+Merovingian cannot send email or SMS itself, so a user can add an email address
+or phone number to their account only through a trusted identity server: the
+client asks for the validation token with `id_server` and `id_access_token`,
+the identity server messages the user, and the address is added only once the
+identity server confirms the user completed validation. Without a trusted
+identity server the `requestToken` endpoints answer
+`M_THREEPID_MEDIUM_NOT_SUPPORTED` and adding an email address or phone number
+is not possible. 3PIDs are not used for login or password reset.
+
 | Key | Default | When to change |
 |---|---|---|
 | `server.identity_server.trusted_servers` | (empty) | Comma-separated allow-list of identity server base URLs (must be HTTPS). A 3PID operation naming an `id_server` outside this list is refused. |
@@ -835,6 +844,21 @@ revoked — the request returns `401 M_UNKNOWN_TOKEN` and the audit log records
 `access_token.rejected` with reason `token expired`. Existing rows written
 without an expiry remain valid, so upgrading does not invalidate legacy
 sessions.
+
+#### Failed-login throttle — `security.login_throttle.*`
+
+| Key | Default | When to change |
+|---|---|---|
+| `security.login_throttle.max_failures_per_source` | `5` | Failed password logins for one account from one client source (and failed UIA password checks from one device) inside the window before that source is refused. `1` to `1000`; `0` is rejected. |
+| `security.login_throttle.max_failures_per_account` | `50` | Failed password logins for one account across all sources inside the window before every source is refused. `1` to `100000`; must not be below the per-source value. Lower it on a small server where 50 guesses a quarter of an hour is too generous. |
+| `security.login_throttle.window` | `15m` | Counting window, and how long a source or account stays refused once it trips. `1s` to `1440m` (`s` and `m` suffixes only). |
+
+A refused login returns `429 M_LIMIT_EXCEEDED` with `retry_after_ms`, even for
+the correct password. Because the per-source counter keys on the client source,
+set `server.trusted_proxies` when running behind a reverse proxy: otherwise every
+client shares the proxy's address and one person's failures lock out everyone's
+logins for that account. The counters hold at most 100 000 entries each. All
+three keys are reloadable. See `docs/auth-identity.md` "Failed-login throttle".
 
 #### Encryption policy — `security.encryption.*`
 
@@ -1051,6 +1075,16 @@ should win; check the startup log for `start.appservice_registration_rejected`
 events. `as_token`/`hs_token` are held in an mlocked `core::SecretBuffer` and
 never appear in logs or diagnostics.
 
+Identity assertion (`?user_id=` with the `as_token`) acts only as a user that
+exists and is not deactivated: a bridge must create each virtual user with
+`POST /register` (`type: m.login.application_service`) before asserting it,
+otherwise the request is `403 M_FORBIDDEN`. The bridge's own
+`sender_localpart` user is created at startup. A bridge cannot register, log in
+as or assert a user inside another bridge's *exclusive* namespace
+(`M_EXCLUSIVE`), and an `as_token` request is refused (`403 M_FORBIDDEN`) on the
+Account Management endpoints (`/account/password`, `/account/deactivate`,
+`/account/3pid*`); only `GET /account/whoami` accepts assertion.
+
 Outbound delivery (`PUT /_matrix/app/v1/transactions/{txnId}`) is wired into
 the event pipeline. The outbound query hooks (`GET /_matrix/app/v1/users/
 {userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) exist but are not yet
@@ -1072,7 +1106,7 @@ Service API".
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |
-| `security.media.remote_fetch_enabled` | `false` | Opt-in for live remote media fetching. While it is `false` (the default) a download or thumbnail of media hosted on another server is answered `404 M_NOT_FOUND` before any server discovery or outbound call, on the legacy `/_matrix/media/v3/` routes and the authenticated `/_matrix/client/v1/media/` routes alike. When it is `true`, fetches run on a dedicated media fetch pool, so a slow remote server never holds a main request thread, with at most `server.http.media_fetch_max_in_flight` (64) fetches running or waiting and `server.http.media_fetch_max_per_client` (8) for one client; over either the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000. Requests for the same remote file at the same time share one fetch, and each fetch has a 30 s total deadline. A request that carries `allow_remote=false` is never fetched remotely, whatever this is set to. |
+| `security.media.remote_fetch_enabled` | `false` (the example config sets `true`) | Opt-in for live remote media fetching. While it is `false` (the default) a download or thumbnail of media hosted on another server is answered `404 M_NOT_FOUND` before any server discovery or outbound call, on the legacy `/_matrix/media/v3/` routes and the authenticated `/_matrix/client/v1/media/` routes alike. When it is `true`, fetches run on a dedicated media fetch pool, so a slow remote server never holds a main request thread, with at most `server.http.media_fetch_max_in_flight` (64) fetches running or waiting and `server.http.media_fetch_max_per_client` (8) for one client; over either the answer is `429 M_LIMIT_EXCEEDED` with `retry_after_ms` 1000. Requests for the same remote file at the same time share one fetch, and each fetch has a 30 s total deadline. A request that carries `allow_remote=false` is never fetched remotely, whatever this is set to. |
 | `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path does not read it: remote fetches use the fixed 30 s client-outbound deadline (bounded further by `security.federation.remote_timeout` when that is shorter). |
 | `security.media.decode_in_sandbox` | `true` | Decode/thumbnail media inside a sandboxed child process. |
 | `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
@@ -1278,6 +1312,7 @@ only reports what *would* happen.
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |
+| `security.login_throttle.*` | Reloadable |
 | Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
 | `security.registration.*` (except `token_file`) | Reloadable |
 | `security.encryption.*` | Reloadable |
@@ -2202,7 +2237,10 @@ If joins to big rooms time out or return `502`:
 
 ### Remote media fetching
 
-Remote fetching is opt-in:
+Remote fetching is off unless configured. The example config
+(`config/merovingian.conf.example`) turns it on, so a server set up from it can download
+attachments sent from other servers; a config without the line refuses every remote download
+with `404`:
 
 ```ini
 security.media.remote_fetch_enabled=true

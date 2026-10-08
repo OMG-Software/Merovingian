@@ -27,9 +27,11 @@ namespace merovingian::observability
 inline constexpr auto audit_rate_gate_max_rows = std::uint32_t{10U};
 inline constexpr auto audit_rate_gate_window = std::chrono::seconds{60};
 
-// True for the audit event kinds the gate governs. Every other kind, including
-// login successes and failures, admin actions and authenticated security
-// events, is written on every occurrence.
+// True for the audit event kinds the gate governs: the three above plus
+// `login.rejected` and `login.throttled` (a failed password login and one refused
+// by the failed-login throttle; per-IP limits do not bound a flood from many
+// addresses). Every other kind, including login successes, admin actions and
+// authenticated security events, is written on every occurrence.
 [[nodiscard]] auto audit_event_is_rate_capped(std::string_view event_type) noexcept -> bool;
 
 struct AuditRateDecision final

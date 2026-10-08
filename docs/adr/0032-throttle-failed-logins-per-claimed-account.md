@@ -1,6 +1,6 @@
 # Throttle failed logins per claimed account
 
-* Status: accepted
+* Status: accepted; refined by [ADR-0122](0122-login-failures-are-throttled-per-source-with-an-account-ceiling.md) (2026-10-07)
 * Date: 2026-09-06
 
 ## Context and Problem Statement

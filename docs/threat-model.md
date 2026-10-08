@@ -834,6 +834,21 @@ threat it closes; the controls above are the standing defences these reinforce.
   outside `runtime.mutex` per the codebase convention, so a slow or hostile
   IS cannot block other runtime work.
 
+- **3PID ownership claimed without proof (AUTH-5):** before AUTH-5
+  `requestToken` without an identity server created a validation session that
+  was already marked validated and sent nothing, so any authenticated user could
+  bind an email address or phone number they did not own, and the real owner
+  was then refused `M_THREEPID_IN_USE`. Mitigation: ownership is proven only by
+  a trusted identity server. Sessions start unvalidated and `/account/3pid/add`,
+  `/bind` and `/account/3pid` ask the identity server (`getValidated3pid`)
+  whether the same medium and address were validated; without a trusted
+  identity server `requestToken` is refused `M_THREEPID_MEDIUM_NOT_SUPPORTED`.
+  Residual: the session keeps the caller's identity-server access token in
+  memory for at most the 15-minute session TTL (overwritten when the session
+  is dropped, never persisted or logged); a trusted identity server that lies
+  about validation can still vouch for an address, which is what trusting it
+  means.
+
 - **IS-delegated `bind`/`unbind`/`requestToken` and stored `client_secret`/`sid`
   (v0.11.10):** delegating `bind`, `unbind`, and `requestToken` to a remote IS
   extends the v0.11.9 outbound surface, and unbind auth mode 2 requires the HS
@@ -1345,9 +1360,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   `suppressed=<n>` on the kind's next row; `LocalDatabase::audit_events` and
   `PersistentStore::audit_log` keep only the newest 1 024 rows; actor, target and
   reason are cut to 255 bytes on a UTF-8 boundary with invalid bytes and control
-  characters replaced. **Residual:** `login.rejected` is not gated (it is
-  throttled per IP at the auth tier), so many source addresses can still write
-  one row per attempt; and the `audit_log` table itself has no retention, so a
+  characters replaced. `login.rejected` and `login.throttled` are gated the
+  same way. **Residual:** the `audit_log` table itself has no retention, so a
   distributed flood of ungated kinds still grows it. Rejected requests beyond a
   window's allowance keep their diagnostic log line but no audit row.
 
@@ -1425,6 +1439,13 @@ threat it closes; the controls above are the standing defences these reinforce.
   authenticated user, who pre-login is nobody. Guesses spread across many source
   IPs accumulated nowhere. Fixed by counting failures against the claimed user ID
   — existent or not, so the throttle cannot probe which accounts are real.
+  Revised (2026-09-29 audit AUTH-2, AUTH-10): failures are counted per (account,
+  client source) with a higher per-account ceiling, so a stranger can lock an
+  account out only from their own address, or from everywhere only by making 50
+  failed logins in the window; user-interactive-auth password checks use their
+  own per-(account, device) counter that login failures never touch; and the
+  counters are bounded (100 000 entries, fixed-size keys, time-ordered expiry).
+  See `docs/auth-identity.md` "Failed-login throttle".
 
 - **Root secret in swappable memory, silently (0.12.4):** the master key file was
   read twice per authenticated request, each read `mlock`-ing a fresh 4 KiB

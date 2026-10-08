@@ -33,5 +33,17 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertIn("# Keep TLS disabled only on loopback binds behind a declared reverse proxy.", config)
 
 
+    def test_example_config_enables_remote_media_fetching(self) -> None:
+        # GIVEN the example config an operator starts from
+        lines = [line.strip() for line in EXAMPLE_CONFIG.read_text(encoding="utf-8").splitlines()]
+
+        # WHEN its active (uncommented) media settings are read
+        active = {line.split("=", 1)[0]: line.split("=", 1)[1] for line in lines if line and not line.startswith("#") and "=" in line}
+
+        # THEN federated users' attachments can be downloaded: remote fetching is on,
+        # and fetched media is admitted rather than quarantined (or every download is 451)
+        self.assertEqual(active.get("security.media.remote_fetch_enabled"), "true")
+        self.assertEqual(active.get("security.media.remote_fetch_media_policy"), "allow")
+
 if __name__ == "__main__":
     unittest.main()

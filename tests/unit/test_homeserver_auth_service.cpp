@@ -1203,8 +1203,8 @@ SCENARIO("change_local_user_password does not resurrect a previously revoked tok
 // A password change must still drop the user's other devices — the behaviour the
 // revoke-then-restore pair was written to provide. Asserting it here means the
 // M-05 fix cannot be "achieved" by simply not revoking anything.
-SCENARIO("verify_local_user_password applies the same lockout as /login",
-         "[homeserver][auth][reauth][lockout][security][m02]")
+SCENARIO("verify_local_user_password has its own per-device lockout, separate from /login",
+         "[homeserver][auth][reauth][lockout][security][m02][auth-2][login-throttle]")
 {
     GIVEN("a registered user with a valid access token")
     {
@@ -1257,7 +1257,7 @@ SCENARIO("verify_local_user_password applies the same lockout as /login",
         }
     }
 
-    GIVEN("a locked-out account reached through /login")
+    GIVEN("an account whose /login is locked out for the attacker's source")
     {
         REQUIRE(sodium_init() >= 0);
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
@@ -1268,27 +1268,31 @@ SCENARIO("verify_local_user_password applies the same lockout as /login",
                                                                       merovingian::tests::registration_token);
         REQUIRE(reg.ok);
         // Obtain a valid access token before tripping the lockout. The token
-        // survives the lockout; the point is that re-auth shares the /login
-        // failure counter.
+        // survives the lockout. AUTH-2: re-auth must not share the /login
+        // failure counter, or any stranger could stop the owner changing the
+        // password or deleting devices by failing logins as them.
         auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE_OK");
         REQUIRE(login.ok);
 
-        // Trip the lockout through /login so the re-auth path shares the counter.
+        // Trip the /login lockout from the attacker's source.
         for (auto i = 0U; i < 5U; ++i)
         {
-            std::ignore =
-                merovingian::homeserver::login_local_user(runtime, reg.value, "wrong", "DEVICE" + std::to_string(i));
+            std::ignore = merovingian::homeserver::login_local_user(runtime, reg.value, "wrong",
+                                                                    "DEVICE" + std::to_string(i), false, "203.0.113.5");
         }
+        REQUIRE(merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE_X", false,
+                                                          "203.0.113.5")
+                    .status == 429U);
 
         WHEN("the same account is asked to re-authenticate using the pre-lockout token")
         {
             auto const reauth =
                 merovingian::homeserver::verify_local_user_password(runtime, login.value, "CorrectHorse7!");
 
-            THEN("the re-auth path sees the lockout and refuses even the correct password")
+            THEN("the re-auth path is not affected by the login lockout")
             {
-                REQUIRE_FALSE(reauth.ok);
-                REQUIRE(reauth.retry_after_ms > 0U);
+                REQUIRE(reauth.ok);
+                REQUIRE(reauth.retry_after_ms == 0U);
             }
         }
     }

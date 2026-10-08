@@ -86,8 +86,13 @@ bytes moved out of memory into the database (ADR-0119), which changes how MED-6 
 OUT-4 are resolved (rows below); the remote media cache has its own storage budget
 (ADR-0120); OPS-3 is fixed and MED-4 partly fixed.
 
+**Update:** 8 October 2026, branch `fix/auth-low-findings` (0.12.23) — every AUTH finding
+is now fixed: the low findings AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-10 and AUTH-12, the
+field-length cap left over from AUTH-9, and the residual gaps noted under AUTH-1 and AUTH-4
+(ADR-0122, ADR-0123, ADR-0124; rows below).
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 4 are fixed, 3 are partly fixed and 39 are open.
+fixed. Of the 46 low findings, 10 are fixed, 3 are partly fixed and 33 are open.
 
 ### Fixed
 
@@ -97,8 +102,8 @@ fixed. Of the 46 low findings, 4 are fixed, 3 are partly fixed and 39 are open.
 - **Medium:** all 31 — AUTH-3, AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, CSAZ-10, HTTP-3,
   HTTP-4, HTTP-8, FED-6, FED-8, FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, OUT-4,
   CRY-2, ISO-2, ISO-3, MED-1, MED-2, MED-3, MED-5, MED-6, DB-2, DB-3, DB-5.
-- **Low:** AUTH-9, HTTP-6, OUT-5, OPS-3. AUTH-9: the control-character escaping is done;
-  the field-length cap from its fix is not. OUT-5: `CURLOPT_PROXY` is set to `""` on the
+- **Low:** AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-9, AUTH-10, AUTH-12, HTTP-6, OUT-5, OPS-3.
+  The AUTH rows are in "Fixed — low, AUTH" below. OUT-5: `CURLOPT_PROXY` is set to `""` on the
   only curl handle, but there is no regression test with `https_proxy` set. OPS-3: media
   size limits that do not parse are rejected by `validate()`, the effective limits are
   logged at startup, and `src/config/AGENTS.md` names the accepted suffixes.
@@ -111,11 +116,15 @@ Residual notes on fixed findings:
   ingestion verifies the signature for every PDU carrying the key
   (`src/federation/inbound_request.cpp`), so remote events are covered, but the auth rule
   is not ordered as the spec orders it and the cryptographic path has no test.
-- **AUTH-1:** fixed by rate-capping unauthenticated audit rows. `login.rejected` is not
-  gated and relies on the per-IP limit.
-- **AUTH-4:** Argon2id hashing in ordinary `/register` (`make_user`) and password
-  verification in user-interactive auth still run under the runtime mutex with no
-  admission limit.
+- **AUTH-1:** fixed by rate-capping unauthenticated audit rows. Since 0.12.23
+  `login.rejected` and `login.throttled` are capped too.
+- **AUTH-4:** since 0.12.23 every client-reachable Argon2id call (`/register`, password
+  change and user-interactive-auth password checks, as well as `/login` and the
+  registration-token check) takes a slot in the shared admission budget, answering
+  `429 M_LIMIT_EXCEEDED` without counting a failed attempt when none is free, and hashes
+  with the runtime mutex released, re-checking the username, session and stored hash once
+  the lock is re-taken. A one-time dummy hash on the first unknown-user login and a cached
+  registration-token-file hash still run under the lock.
 - **ISO-2:** the worker still runs under main's uid, which the audit preferred; the
   seccomp argument checks and, on Landlock ABI 6 kernels, signal scoping are what stop it
   signalling main.
@@ -140,6 +149,18 @@ Residual notes on fixed findings:
 | MED-6 | Media bytes are no longer held in memory at all; they are read from the database per request (0.12.20, ADR-0119). Local quota defaults are `250GiB` total, `10GiB` per user and `1000000` records, and cached remote media has its own `25GiB` / 50,000-file budget instead of counting toward local quotas (ADR-0113, ADR-0120). |
 | OUT-4 | Remote media admitted within the TTL is served from the stored copy before any outbound slot, discovery or request. Since 0.12.20 the cache and its copies are durable and survive restarts; a re-fetch after the TTL replaces the stored copy, eviction deletes it, and quarantined or removed copies answer 451/404 without a re-fetch (ADR-0114, ADR-0119). |
 
+### Fixed — low, AUTH, 8 October 2026
+
+| ID | Resolution |
+|----|------------|
+| AUTH-2 | Login failures are counted per (account, client source) and per account: 5 per source refuses that source, 50 per account refuses all sources, within 15 minutes (`security.login_throttle.*`). A correct login clears only its source. UIA password checks have their own (account, device) counter that login failures never touch. `docs/auth-identity.md` corrected. ADR-0122, superseding ADR-0066. |
+| AUTH-5 | 3PID ownership is proven only by a trusted identity server. `requestToken` without one answers `400 M_THREEPID_MEDIUM_NOT_SUPPORTED`; delegated sessions start unvalidated, and `/account/3pid/add`, `/bind` and `POST /account/3pid` confirm with the identity server (`getValidated3pid`) for the same medium and address before binding, otherwise `400 M_SESSION_NOT_VALIDATED`. A consumed session is erased. ADR-0123. |
+| AUTH-7 | Register, login and assertion refuse a user in another service's exclusive namespace: `400 M_EXCLUSIVE` on `/register`, `403 M_EXCLUSIVE` on `/login` and assertion. |
+| AUTH-8 | Identity assertion is refused on every `/account/*` endpoint except `GET /account/whoami` (`403 M_FORBIDDEN`). ADR-0124. |
+| AUTH-9 | The field-length cap is done: every structured log field value is capped at 2048 emitted bytes, on a character boundary, with a `...[truncated N bytes]` marker. |
+| AUTH-10 | The failure tables store fixed-size digests, hold at most 100,000 entries each, and expire from a time-ordered list, so no operation scans the table (`auth::FailureWindowTable`). |
+| AUTH-12 | Asserting a user that is not registered or is deactivated answers `403 M_FORBIDDEN`; `/register` and `/login` are exempt. ADR-0124. |
+
 ### Outstanding — medium
 
 None.
@@ -152,15 +173,14 @@ None.
 | OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
 | MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). There is no thumbnail cache, no per-user concurrency cap, and no test with a slow decoder stub. |
 
-Open, with no code, test or documentation change found: AUTH-2, AUTH-5, AUTH-7, AUTH-8,
-AUTH-10, AUTH-12, CSAZ-6, CSAZ-9, CSAZ-11, CSAZ-12 (all four endpoints), HTTP-7, FED-9,
+Open, with no code, test or documentation change found: CSAZ-6, CSAZ-9, CSAZ-11, CSAZ-12 (all four endpoints), HTTP-7, FED-9,
 FED-10, FED-12, EVT-10, EVT-11, OUT-6, OUT-8, CRY-3, CRY-4, CRY-5, CRY-6, ISO-4, ISO-5,
 ISO-6, ISO-7, ISO-8, MED-7, MED-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2, OPS-4,
 OPS-5, OPS-6.
 
 The documentation corrections listed under "Documentation found to be wrong about the
-code" for AUTH-2, CRY-6, ISO-4, OPS-2, OUT-8 (`deny_ip_ranges`) and CSAZ-11 have not
-been made.
+code" for CRY-6, ISO-4, OPS-2, OUT-8 (`deny_ip_ranges`) and CSAZ-11 have not been made;
+the AUTH-2 correction was made in 0.12.23.
 
 ---
 

@@ -60,8 +60,8 @@
 | `GET` | `/_matrix/client/v1/register/m.login.registration_token/validity` | `registrationTokenValidity` | none | - | 200, 403, 429 |
 | `GET` | `/_matrix/client/v3/account/3pid` | `getAccount3PIDs` | access token | - | 200 |
 | `POST` | `/_matrix/client/v3/account/3pid` | `post3PIDs` | access token | required application/json | 200, 403 |
-| `POST` | `/_matrix/client/v3/account/3pid/add` | `add3PID` | access token | required application/json | 200, 401, 429 |
-| `POST` | `/_matrix/client/v3/account/3pid/bind` | `bind3PID` | access token | required application/json | 200, 429 |
+| `POST` | `/_matrix/client/v3/account/3pid/add` | `add3PID` | access token | required application/json | 200, 400, 401, 429 |
+| `POST` | `/_matrix/client/v3/account/3pid/bind` | `bind3PID` | access token | required application/json | 200, 400, 429 |
 | `POST` | `/_matrix/client/v3/account/3pid/delete` | `delete3pidFromAccount` | access token | required application/json | 200 |
 | `POST` | `/_matrix/client/v3/account/3pid/email/requestToken` | `requestTokenTo3PIDEmail` | none | required application/json | 200, 400, 403 |
 | `POST` | `/_matrix/client/v3/account/3pid/msisdn/requestToken` | `requestTokenTo3PIDMSISDN` | none | required application/json | 200, 400, 403 |

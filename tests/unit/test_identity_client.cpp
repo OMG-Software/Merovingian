@@ -366,3 +366,126 @@ SCENARIO("parse_request_token_response extracts the IS-issued session id", "[ide
         }
     }
 }
+
+// Spec: Identity Service API v1.19, GET /_matrix/identity/v2/3pid/getValidated3pid
+// URL:  ../../docs/matrix-v1.19-spec/identity-service-api.md
+// AUTH-5: the homeserver proves 3PID ownership only by asking the identity
+// server whether the session was validated. The 200 body carries `address`,
+// `medium` and `validated_at`, all required.
+SCENARIO("parse_validated_3pid_response extracts the validated medium, address and time",
+         "[identity][identity-parse][auth][3pid][auth-5]")
+{
+    GIVEN("a well-formed getValidated3pid response")
+    {
+        WHEN("parsed")
+        {
+            auto const parsed = merovingian::identity::parse_validated_3pid_response(
+                R"({"address":"alice@example.org","medium":"email","validated_at":1457622739026})");
+
+            THEN("all three fields are captured")
+            {
+                REQUIRE(parsed.has_value());
+                REQUIRE(parsed->address == "alice@example.org");
+                REQUIRE(parsed->medium == "email");
+                REQUIRE(parsed->validated_at_ms == 1457622739026U);
+            }
+        }
+    }
+
+    GIVEN("a response missing one required field")
+    {
+        auto const missing_address =
+            merovingian::identity::parse_validated_3pid_response(R"({"medium":"email","validated_at":1})");
+        auto const missing_medium =
+            merovingian::identity::parse_validated_3pid_response(R"({"address":"a@b.c","validated_at":1})");
+        auto const missing_time =
+            merovingian::identity::parse_validated_3pid_response(R"({"address":"a@b.c","medium":"email"})");
+
+        THEN("parsing fails closed for each")
+        {
+            REQUIRE_FALSE(missing_address.has_value());
+            REQUIRE_FALSE(missing_medium.has_value());
+            REQUIRE_FALSE(missing_time.has_value());
+        }
+    }
+
+    GIVEN("a response whose fields have the wrong types")
+    {
+        auto const string_time = merovingian::identity::parse_validated_3pid_response(
+            R"({"address":"a@b.c","medium":"email","validated_at":"1457622739026"})");
+        auto const numeric_address =
+            merovingian::identity::parse_validated_3pid_response(R"({"address":5,"medium":"email","validated_at":1})");
+        auto const object_medium =
+            merovingian::identity::parse_validated_3pid_response(R"({"address":"a@b.c","medium":{},"validated_at":1})");
+
+        THEN("parsing fails closed for each")
+        {
+            REQUIRE_FALSE(string_time.has_value());
+            REQUIRE_FALSE(numeric_address.has_value());
+            REQUIRE_FALSE(object_medium.has_value());
+        }
+    }
+
+    GIVEN("a response with an empty address, an empty medium or a non-positive timestamp")
+    {
+        auto const empty_address =
+            merovingian::identity::parse_validated_3pid_response(R"({"address":"","medium":"email","validated_at":1})");
+        auto const empty_medium =
+            merovingian::identity::parse_validated_3pid_response(R"({"address":"a@b.c","medium":"","validated_at":1})");
+        auto const zero_time = merovingian::identity::parse_validated_3pid_response(
+            R"({"address":"a@b.c","medium":"email","validated_at":0})");
+        auto const negative_time = merovingian::identity::parse_validated_3pid_response(
+            R"({"address":"a@b.c","medium":"email","validated_at":-5})");
+
+        THEN("parsing fails closed: an unvalidated session must never look validated")
+        {
+            REQUIRE_FALSE(empty_address.has_value());
+            REQUIRE_FALSE(empty_medium.has_value());
+            REQUIRE_FALSE(zero_time.has_value());
+            REQUIRE_FALSE(negative_time.has_value());
+        }
+    }
+
+    GIVEN("malformed JSON or a non-object body")
+    {
+        THEN("parsing fails closed")
+        {
+            REQUIRE_FALSE(merovingian::identity::parse_validated_3pid_response("not-json").has_value());
+            REQUIRE_FALSE(merovingian::identity::parse_validated_3pid_response("[]").has_value());
+            REQUIRE_FALSE(merovingian::identity::parse_validated_3pid_response("").has_value());
+        }
+    }
+}
+
+SCENARIO("build_get_validated_3pid_path puts the sid and client_secret in the query, percent-encoded",
+         "[identity][identity-body][auth][3pid][auth-5]")
+{
+    GIVEN("a sid and client secret")
+    {
+        WHEN("the path is built")
+        {
+            auto const path = merovingian::identity::build_get_validated_3pid_path("s3cr3t", "sid-1");
+
+            THEN("it targets the v2 endpoint with both query parameters")
+            {
+                REQUIRE(path == "/_matrix/identity/v2/3pid/getValidated3pid?sid=sid-1&client_secret=s3cr3t");
+            }
+        }
+    }
+
+    GIVEN("an IS-issued sid containing characters that would corrupt a query string")
+    {
+        WHEN("the path is built")
+        {
+            auto const path = merovingian::identity::build_get_validated_3pid_path("s3cr3t", "a&client_secret=x#y z");
+
+            THEN("those characters are percent-encoded so the sid cannot inject another parameter")
+            {
+                REQUIRE(path.find('#') == std::string::npos);
+                REQUIRE(path.find(' ') == std::string::npos);
+                REQUIRE(path.find("&client_secret=x") == std::string::npos);
+                REQUIRE(path.find("sid=a%26client_secret%3Dx%23y%20z&client_secret=s3cr3t") != std::string::npos);
+            }
+        }
+    }
+}

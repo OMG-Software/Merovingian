@@ -19,8 +19,64 @@
 
 using merovingian::appservice::decode_masquerade_token;
 using merovingian::appservice::encode_masquerade_token;
+using merovingian::appservice::is_account_management_endpoint;
 using merovingian::appservice::is_masquerade_token;
 using merovingian::appservice::MasqueradeIdentity;
+
+// AUTH-8: "This applies to all aspects of the Client-Server API, except for
+// Account Management." (Application Service API, Identity assertion.)
+SCENARIO("identity assertion is refused on Account Management endpoints except whoami",
+         "[appservice][masquerade][auth-8]")
+{
+    GIVEN("the Account Management endpoints of the Client-Server API")
+    {
+        WHEN("is_account_management_endpoint classifies them")
+        {
+            THEN("password, deactivation and 3PID management endpoints are all covered")
+            {
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/password"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/password/email/requestToken"));
+                CHECK(
+                    is_account_management_endpoint("POST", "/_matrix/client/v3/account/password/msisdn/requestToken"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/deactivate"));
+                CHECK(is_account_management_endpoint("GET", "/_matrix/client/v3/account/3pid"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/3pid"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/3pid/add"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/3pid/bind"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/3pid/delete"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/3pid/unbind"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/3pid/email/requestToken"));
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/3pid/msisdn/requestToken"));
+            }
+
+            THEN("an unknown path under /account/ is refused rather than assumed harmless")
+            {
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/something_new"));
+                CHECK(is_account_management_endpoint("GET", "/_matrix/client/v3/account/"));
+                CHECK(is_account_management_endpoint("GET", "/_matrix/client/v3/account"));
+            }
+
+            THEN("whoami, the spec's own identity-assertion example, is not covered")
+            {
+                CHECK_FALSE(is_account_management_endpoint("GET", "/_matrix/client/v3/account/whoami"));
+            }
+
+            THEN("only GET whoami is exempt, not other methods on that path")
+            {
+                CHECK(is_account_management_endpoint("POST", "/_matrix/client/v3/account/whoami"));
+            }
+
+            THEN("paths outside /account are not covered")
+            {
+                CHECK_FALSE(is_account_management_endpoint("GET", "/_matrix/client/v3/accounts"));
+                CHECK_FALSE(is_account_management_endpoint("GET", "/_matrix/client/v3/account_data/x"));
+                CHECK_FALSE(is_account_management_endpoint("POST", "/_matrix/client/v3/register"));
+                CHECK_FALSE(is_account_management_endpoint("GET", "/_matrix/client/v3/user/@a:b/account_data/m.x"));
+                CHECK_FALSE(is_account_management_endpoint("GET", ""));
+            }
+        }
+    }
+}
 
 SCENARIO("encoding and decoding a masquerade identity round-trips exactly", "[appservice][masquerade]")
 {
