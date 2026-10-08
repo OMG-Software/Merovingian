@@ -1366,6 +1366,18 @@ namespace
         return http::ConnectionPreference::keep_alive;
     }
 
+    // Runs a waiting /sync again, after a wake-up or once its timeout expires.
+    // Its first run was counted by the rate limiter: a request only answers
+    // needs_wait after allow() admitted it. Counting every re-run as well
+    // refused a client allowed one more request with 429 at the moment its
+    // waiting sync was answered.
+    [[nodiscard]] auto rerun_waiting_sync(ClientServerRuntime& runtime, LocalHttpRequest const& request, bool can_wait)
+        -> DispatchResult
+    {
+        return handle_client_server_request(
+            runtime, request, ClientServerDispatchOptions{.can_wait = can_wait, .rate_limit_admitted = true});
+    }
+
     // A long-poll handed to the sync pool. It owns the connection from the
     // moment it is submitted; everything it needs is held by value, since the
     // round that created it may be gone by the time it runs.
@@ -1416,7 +1428,7 @@ namespace
                                                      wait_params.since_sync_stream_id,
                                                      std::min(remaining, poll_interval)))
                 {
-                    auto interim = handle_client_server_request(runtime, handoff.request, true);
+                    auto interim = rerun_waiting_sync(runtime, handoff.request, true);
                     if (interim.status == DispatchResult::Status::complete)
                     {
                         dispatched_result = std::move(interim);
@@ -1454,9 +1466,8 @@ namespace
             handoff.connection.reset();
             return;
         }
-        auto const final_result = dispatched_result.has_value()
-                                      ? std::move(*dispatched_result)
-                                      : handle_client_server_request(runtime, handoff.request, false);
+        auto const final_result = dispatched_result.has_value() ? std::move(*dispatched_result)
+                                                                : rerun_waiting_sync(runtime, handoff.request, false);
         ++stats.completed_requests;
         log_diagnostic("request.completed",
                        {
@@ -1863,7 +1874,7 @@ namespace
                         }
                         if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining))
                         {
-                            auto interim = handle_client_server_request(ctx.runtime, local_request, true);
+                            auto interim = rerun_waiting_sync(ctx.runtime, local_request, true);
                             if (interim.status == DispatchResult::Status::complete)
                             {
                                 result = std::move(interim);
@@ -1886,7 +1897,7 @@ namespace
                 }
                 if (!dispatched)
                 {
-                    result = handle_client_server_request(ctx.runtime, local_request, false);
+                    result = rerun_waiting_sync(ctx.runtime, local_request, false);
                 }
             }
         }
@@ -2121,7 +2132,7 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
                 }
                 if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining))
                 {
-                    auto interim = handle_client_server_request(runtime, request, true);
+                    auto interim = rerun_waiting_sync(runtime, request, true);
                     if (interim.status == DispatchResult::Status::complete)
                     {
                         result = std::move(interim);
@@ -2144,7 +2155,7 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
         }
         if (!dispatched)
         {
-            result = handle_client_server_request(runtime, request, false);
+            result = rerun_waiting_sync(runtime, request, false);
         }
     }
 

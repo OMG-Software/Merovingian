@@ -752,14 +752,22 @@ layout and [`src/sync/AGENTS.md`](../src/sync/AGENTS.md) for sync-specific
 conventions.
 
 Both v3 and sliding-sync waits share admission budgets keyed by authenticated
-account and device, rather than bearer token or IP address: eight waits per
-account and four per device by default. The configured global cap defaults to
+account and device, rather than bearer token or IP address: four waits per
+account and two per device by default (`sync_max_per_user`, `sync_max_per_device`). The configured global cap defaults to
 128 and is clamped to the sync pool's worker count; per-account and per-device
 caps cannot exceed that global cap. All three caps are `server.http` settings. Queued tasks count against these limits. Excess
 waits get 429 `M_LIMIT_EXCEEDED` with `retry_after_ms`, and a refused sync-pool
 submission also returns 429 immediately instead of waiting on a main worker.
 Slots are released on response, disconnect, exception and failed handoff.
 Timeouts are capped at 120 seconds. See [ADR-0091](adr/0091-bound-sync-waits-with-admission.md).
+
+A waiting sync is run again after each wake-up and once more when its timeout
+expires (on the sync pool, in the no-pool fallback and in
+`dispatch_local_http_request`). Those re-runs pass
+`ClientServerDispatchOptions::rate_limit_admitted` (`rerun_waiting_sync`), so the
+rate limiter counts each `/sync` once, when it first arrives; a client allowed
+one more request is no longer refused with 429 at the moment its waiting sync
+is answered.
 
 ## Request lock and blocking network calls
 

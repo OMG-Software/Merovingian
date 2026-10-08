@@ -7,6 +7,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -69,9 +70,11 @@ auto SyncNotifier::wait_for_change(std::uint64_t since_stream_ordering, std::uin
     {
         return false;
     }
+    ++waiting_;
     auto const changed = cv_.wait_for(lock, timeout, [this, since_stream_ordering, since_sync_stream_id] {
         return stream_ordering_ > since_stream_ordering || sync_stream_id_ > since_sync_stream_id;
     });
+    --waiting_;
     log_diagnostic(changed ? "stream.changed" : "stream.timeout",
                    {
                        {"since_stream_ordering", std::to_string(since_stream_ordering), false},
@@ -87,6 +90,12 @@ auto SyncNotifier::current_sync_stream_id() const -> std::uint64_t
 {
     auto lock = std::lock_guard{mutex_};
     return sync_stream_id_;
+}
+
+auto SyncNotifier::waiting() const -> std::size_t
+{
+    auto lock = std::lock_guard{mutex_};
+    return waiting_;
 }
 
 } // namespace merovingian::sync

@@ -261,10 +261,12 @@ export MEROVINGIAN_TEST_DISABLE_HARDENING=1
 # Meson does not read MESON_TEST_TIMEOUT_MULTIPLIER from the environment.
 # Translate the env var used by the sanitizers workflow into the matching
 # command-line flag so long-running integration tests get the extra time.
-meson_test_timeout_args=""
-if [ -n "${MESON_TEST_TIMEOUT_MULTIPLIER:-}" ]; then
-    meson_test_timeout_args="--timeout-multiplier ${MESON_TEST_TIMEOUT_MULTIPLIER}"
-fi
+# It defaults to 2 here: the BSD CI VMs run under emulation and the same
+# test binary's duration varies by 20-40% between runs, which pushed the
+# unit, conformance and integration binaries past their meson limits
+# (600 s / 900 s) on runs where nothing hung. An explicit value still wins.
+timeout_multiplier="${MESON_TEST_TIMEOUT_MULTIPLIER:-2}"
+meson_test_timeout_args="--timeout-multiplier ${timeout_multiplier}"
 
 # shellcheck disable=SC2086
 run env MEROVINGIAN_TEST_DISABLE_HARDENING=1 meson test -C "$builddir" --print-errorlogs ${meson_test_timeout_args}
