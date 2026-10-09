@@ -145,6 +145,18 @@ struct ModuleLogLevelGuard final
     };
 }
 
+// The string value of top-level `field` in a response body.
+[[nodiscard]] auto string_field(std::string const& body, std::string const& field) -> std::string
+{
+    auto const key = "\"" + field + "\":\"";
+    auto const begin = body.find(key);
+    REQUIRE(begin != std::string::npos);
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_begin, value_end - value_begin);
+}
+
 [[nodiscard]] auto login_token(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"access_token\":\""};
@@ -2620,8 +2632,18 @@ SCENARIO("Client-server runtime wires trust and safety report and admin review r
 
         WHEN("the client reports an event and the admin reviews a media target")
         {
+            // Spec: the reporter must be joined to the room, and the event must exist (CSAZ-12).
+            auto const created = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
+            REQUIRE(created.response.status == 200U);
+            auto const room_id = string_field(created.response.body, "room_id");
+            auto const sent = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/report-1", token,
+                          R"({"msgtype":"m.text","body":"spam"})"});
+            REQUIRE(sent.response.status == 200U);
+            auto const event_id = string_field(sent.response.body, "event_id");
             auto const report = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event", token,
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report/" + event_id, token,
                           R"({"reason":"spam","score":50})"});
             auto const reports = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/admin/safety/reports", token, {}});

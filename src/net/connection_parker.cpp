@@ -311,16 +311,18 @@ auto ConnectionParker::State::run(std::shared_ptr<State> self) -> void // SHARED
         auto const now = std::chrono::steady_clock::now();
         auto still_waiting = std::vector<Entry>{};
         still_waiting.reserve(awaiting.size());
-        auto removed = std::size_t{0U};
+        // Connections leaving the parker are closed only after parked_count no
+        // longer counts them, so a peer that sees the close never sees parked()
+        // still including its connection. Closing stays outside the lock.
+        auto leaving = std::vector<Entry>{};
         for (auto index = std::size_t{0U}; index < awaiting.size(); ++index)
         {
             auto& entry = awaiting[index];
             auto const revents = poll_result > 0 ? fds[index + 1U].revents : short{0};
             if ((revents & POLLNVAL) != 0)
             {
-                // Not a descriptor we can wait on; drop it (closes).
-                ++removed;
-                entry.connection.reset();
+                // Not a descriptor we can wait on; drop it.
+                leaving.push_back(std::move(entry));
                 continue;
             }
             if ((revents & POLLIN) != 0)
@@ -333,24 +335,25 @@ auto ConnectionParker::State::run(std::shared_ptr<State> self) -> void // SHARED
             if ((revents & (POLLHUP | POLLERR)) != 0)
             {
                 // Gone with nothing to read: close here, no worker needed.
-                ++removed;
-                entry.connection.reset();
+                leaving.push_back(std::move(entry));
                 continue;
             }
             if (entry.deadline <= now)
             {
                 entry.connection->on_park_expired();
-                ++removed;
-                entry.connection.reset();
+                leaving.push_back(std::move(entry));
                 continue;
             }
             still_waiting.push_back(std::move(entry));
         }
         awaiting.swap(still_waiting);
-        if (removed > 0U)
+        if (!leaving.empty())
         {
-            auto const lock = std::lock_guard{state.mutex};
-            state.parked_count -= std::min(removed, state.parked_count);
+            {
+                auto const lock = std::lock_guard{state.mutex};
+                state.parked_count -= std::min(leaving.size(), state.parked_count);
+            }
+            leaving.clear(); // closes each connection, outside the lock
         }
     }
 

@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -88,6 +89,17 @@ namespace
 [[nodiscard]] auto token_from_login_body(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"access_token\":\""};
+    auto const begin = body.find(key);
+    REQUIRE(begin != std::string::npos);
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_begin, value_end - value_begin);
+}
+
+[[nodiscard]] auto event_id_from_body(std::string const& body) -> std::string
+{
+    auto const key = std::string{"\"event_id\":\""};
     auto const begin = body.find(key);
     REQUIRE(begin != std::string::npos);
     auto const value_begin = begin + key.size();
@@ -640,13 +652,13 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 20U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 21U);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
                         merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
                         "initial_schema");
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "remote_media_cache_mapping");
+                        "room_alias_creator");
             }
         }
     }
@@ -672,7 +684,7 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 20U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 21U);
             }
         }
     }
@@ -802,10 +814,21 @@ SCENARIO("Admin safety-report listing keeps earlier reports after unauthenticate
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = token_from_login_body(login.response.body);
+        // Spec: a report needs a joined reporter and an event in the room (CSAZ-12).
+        auto const created = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
+        REQUIRE(created.response.status == 200U);
+        auto const room_id = room_from_body(created.response.body);
+        auto reported = std::vector<std::string>{};
         for (auto i = 1; i <= 3; ++i)
         {
+            auto const sent = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/r" + std::to_string(i),
+                          token, R"({"msgtype":"m.text","body":"spam"})"});
+            REQUIRE(sent.response.status == 200U);
+            reported.push_back(event_id_from_body(sent.response.body));
             auto const report = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event" + std::to_string(i), token,
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report/" + reported.back(), token,
                           R"({"reason":"spam","score":50})"});
             REQUIRE(report.response.status == 200U);
         }
@@ -846,9 +869,9 @@ SCENARIO("Admin safety-report listing keeps earlier reports after unauthenticate
                     ++count;
                 }
                 REQUIRE(count == 3U);
-                for (auto i = 1; i <= 3; ++i)
+                for (auto const& event_id : reported)
                 {
-                    REQUIRE(reports.response.body.find("$event" + std::to_string(i)) != std::string::npos);
+                    REQUIRE(reports.response.body.find(event_id) != std::string::npos);
                 }
             }
         }

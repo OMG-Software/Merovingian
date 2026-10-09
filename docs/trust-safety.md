@@ -11,7 +11,12 @@ This capability note describes runtime-wired trust-and-safety behavior.
   rules in the admin workflow.
 - Federation request policy checks in the runtime federation path.
 - Authenticated client event reporting through
-  `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`.
+  `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`. The reporter must be
+  joined to the room and the event must be in it and visible to them under the
+  room's history visibility, otherwise `404 M_NOT_FOUND` (spec: "The event was not
+  found or you are not joined to the room where the event resides"). A repeat report
+  of the same event by the same reporter is acknowledged without a second audit row
+  (CSAZ-12, ADR-0127).
 - Admin report listing through
   `GET /_matrix/client/v3/admin/safety/reports`.
 - Admin review actions through

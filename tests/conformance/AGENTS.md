@@ -30,6 +30,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_event_auth_rules.cpp` | [Auth Rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
 | `test_event_graph_conformance.cpp` | [SS API § Retrieving events](../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-events) (`/state/{roomId}`, `/state_ids/{roomId}`) · [§ Backfilling and retrieving missing events](../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) (`/backfill/{roomId}`) |
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.19-spec/client-server-api.md#forming-relationships-between-events) |
+| `test_event_size_limits_conformance.cpp` | [CS API § Size limits](../../docs/matrix-v1.19-spec/client-server-api.md#size-limits) (locally composed events over 65536 bytes, or with a `type` or `state_key` over 255 bytes, are refused with 400 `M_TOO_LARGE` on `/send`, `/state`, membership and `createRoom`) |
 | `test_events.cpp` | [SS API § Event Signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events) · [§ Content Hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | `test_federation_conformance.cpp` | [Server-Server API](../../docs/matrix-v1.19-spec/server-server-api.md) |
 | `test_federation_media_conformance.cpp` | [SS API § Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}](../../docs/matrix-v1.19-spec/server-server-api.md#content-repository) |
@@ -39,6 +40,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_identifier_grammar.cpp` | [Appendices § Identifier Grammar](../../docs/matrix-v1.19-spec/appendices.md#identifier-grammar) |
 | `test_ignoring_users_conformance.cpp` | [CS API § Ignoring Users](../../docs/matrix-v1.19-spec/client-server-api.md#ignoring-users) |
 | `test_key_publication_conformance.cpp` | [SS API § Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys) |
+| `test_membership_projection_conformance.cpp` | [CS API § m.room.member](../../docs/matrix-v1.19-spec/client-server-api.md#mroommember) (a ban, kick or invite sent through `PUT /state/m.room.member/{userId}` takes effect as through the membership APIs; a banned user still reads pre-ban history and nothing after) |
 | `test_notifications_conformance.cpp` | [CS API § Push Notifications](../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications) |
 | `test_outbound_delivery_conformance.cpp` | [SS API § Transactions](../../docs/matrix-v1.19-spec/server-server-api.md#transactions) · [§ EDUs](../../docs/matrix-v1.19-spec/server-server-api.md#edus) |
 | `test_pdu_format_conformance.cpp` | [SS API § PDUs](../../docs/matrix-v1.19-spec/server-server-api.md#pdus) |
@@ -49,6 +51,9 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_read_markers_conformance.cpp` | [CS API § Read and unread markers](../../docs/matrix-v1.19-spec/client-server-api.md#read-and-unread-markers) |
 | `test_receipt_conformance.cpp` | [CS API § Receipts](../../docs/matrix-v1.19-spec/client-server-api.md#receipts) |
 | `test_redaction_conformance.cpp` | [SS API § Redaction](../../docs/matrix-v1.19-spec/client-server-api.md#redactions) |
+| `test_redaction_application_conformance.cpp` | [CS API § Redactions](../../docs/matrix-v1.19-spec/client-server-api.md#redactions) (`PUT /rooms/{roomId}/redact/{eventId}/{txnId}`, `redacted_because` on every read path, `redacts` per room version) |
+| `test_redaction_federation_conformance.cpp` | [Room versions § Handling redactions](../../docs/matrix-v1.19-spec/rooms/v10.md#handling-redactions) (a federated redaction is applied only when the sender has power or the original sender is on the same server) |
+| `test_room_admin_gates_conformance.cpp` | [CS API § Reporting content](../../docs/matrix-v1.19-spec/client-server-api.md#reporting-content), [Room upgrades](../../docs/matrix-v1.19-spec/client-server-api.md#room-upgrades), [Published room directory](../../docs/matrix-v1.19-spec/client-server-api.md#published-room-directory), [Room aliases](../../docs/matrix-v1.19-spec/client-server-api.md#room-aliases) (event reports need a joined reporter and a visible event; `/upgrade` needs tombstone power; directory visibility and alias create/delete need canonical-alias power, an administrator, or for deletion the alias creator; alias grammar and domain) |
 | `test_room_version_table_conformance.cpp` | [Room Versions](../../docs/matrix-v1.19-spec/rooms/index.md) |
 | `test_safety_report_conformance.cpp` | [CS API § Reporting Content](../../docs/matrix-v1.19-spec/client-server-api.md#reporting-content) |
 | `test_search_conformance.cpp` | [CS API § Server Side Search](../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search) |

@@ -26,8 +26,8 @@ namespace merovingian::events
 namespace
 {
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -40,22 +40,22 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object,
-                                      std::string_view key) noexcept -> std::int64_t const*
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
-                                               std::string_view key) noexcept -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -127,8 +127,8 @@ namespace
         return false;
     }
 
-    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event,
-                                            std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* obj = value_is_object(event);
         if (obj == nullptr)
@@ -145,8 +145,8 @@ namespace
     // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — "Values in
     // m.room.power_levels events must be integers" (and, for v1-v9, v9's
     // "m.room.power_levels events accept values as strings").
-    [[nodiscard]] auto power_level_value(canonicaljson::Value const* value,
-                                         bool allow_string_values) noexcept -> std::optional<std::int64_t>
+    [[nodiscard]] auto power_level_value(canonicaljson::Value const* value, bool allow_string_values) noexcept
+        -> std::optional<std::int64_t>
     {
         if (value == nullptr)
         {
@@ -194,8 +194,8 @@ namespace
     // "If a user_id is in the users list, then that user_id has the associated
     // power level".
     [[nodiscard]] auto extract_user_level_from_users(canonicaljson::Object const& users_object,
-                                                     std::string_view user_id,
-                                                     bool allow_string_values) noexcept -> std::optional<std::int64_t>
+                                                     std::string_view user_id, bool allow_string_values) noexcept
+        -> std::optional<std::int64_t>
     {
         return power_level_member(users_object, user_id, allow_string_values);
     }
@@ -213,8 +213,8 @@ namespace
         return false;
     }
 
-    [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value,
-                                             std::string_view needle) noexcept -> bool
+    [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value, std::string_view needle) noexcept
+        -> bool
     {
         auto const* array = std::get_if<canonicaljson::Array>(&value.storage());
         if (array == nullptr)
@@ -359,8 +359,9 @@ namespace
     // public key in the m.room.third_party_invite event, allow." The signed blob
     // ({mxid, sender, token, signatures}) is signed like any other Matrix signed
     // JSON object: canonical JSON with "signatures" (and "unsigned") stripped.
-    [[nodiscard]] auto third_party_invite_signature_is_valid(
-        canonicaljson::Object const& signed_obj, canonicaljson::Value const& third_party_invite_event) -> bool
+    [[nodiscard]] auto third_party_invite_signature_is_valid(canonicaljson::Object const& signed_obj,
+                                                             canonicaljson::Value const& third_party_invite_event)
+        -> bool
     {
         auto const* signatures_value = object_member(signed_obj, "signatures");
         auto const* signatures = signatures_value == nullptr ? nullptr : value_is_object(*signatures_value);
@@ -421,10 +422,11 @@ namespace
     // "If content has a third_party_invite property" — a fully self-contained
     // decision tree that replaces the normal invite checks (target-not-joined,
     // sender-joined, invite-power) for invites accepted via a 3PID token.
-    [[nodiscard]] auto authorize_third_party_invite(
-        canonicaljson::Value const& third_party_invite_content, std::string_view state_key, std::string_view sender,
-        MembershipState target_current_membership,
-        canonicaljson::Value const& third_party_invite_event) -> EventAuthorizationDecision
+    [[nodiscard]] auto authorize_third_party_invite(canonicaljson::Value const& third_party_invite_content,
+                                                    std::string_view state_key, std::string_view sender,
+                                                    MembershipState target_current_membership,
+                                                    canonicaljson::Value const& third_party_invite_event)
+        -> EventAuthorizationDecision
     {
         // 4.3.1.1: target user banned -> reject.
         if (target_current_membership == MembershipState::ban)
@@ -630,8 +632,8 @@ namespace
     // users_default, ban, kick, redact and invite without bound (#487).
     [[nodiscard]] auto scalar_power_level_rejection_reason(canonicaljson::Object const& old_content,
                                                            canonicaljson::Object const& new_content,
-                                                           std::int64_t sender_power,
-                                                           bool allow_string_values) -> std::string
+                                                           std::int64_t sender_power, bool allow_string_values)
+        -> std::string
     {
         for (auto const& key : scalar_power_level_keys)
         {
@@ -828,8 +830,8 @@ namespace
 // rule 1 ("x's sender has greater power level than y's sender, when
 // looking at their respective auth_events").
 auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
-                            canonicaljson::Value const& create_event,
-                            rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
+                            canonicaljson::Value const& create_event, rooms::RoomVersionPolicy const& policy) noexcept
+    -> std::int64_t
 {
     if (user_is_room_creator(create_event, sender, policy))
     {
@@ -891,6 +893,26 @@ auto parse_membership_state(std::string_view membership) noexcept -> std::option
         return MembershipState::knock;
     }
     return std::nullopt;
+}
+
+auto required_state_event_power(canonicaljson::Value const& power_levels_event, std::string_view event_type,
+                                rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
+{
+    if (!value_has_content(power_levels_event))
+    {
+        return 50;
+    }
+    auto const state_default =
+        extract_power_level_key(power_levels_event, "state_default", 50, !policy.power_levels_require_integers);
+    auto const* pl_obj = value_is_object(power_levels_event);
+    auto const* pl_content = pl_obj == nullptr ? nullptr : object_member_as_object(*pl_obj, "content");
+    auto const* events = pl_content == nullptr ? nullptr : object_member_as_object(*pl_content, "events");
+    if (events == nullptr)
+    {
+        return state_default;
+    }
+    auto const* level = integer_member(*events, event_type);
+    return level != nullptr ? *level : state_default;
 }
 
 auto domain_of(std::string_view matrix_id) noexcept -> std::string_view
@@ -1628,34 +1650,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     // Step 13: state events require state_default power
     if (is_state_event)
     {
-        auto const state_default = value_has_content(auth_events.power_levels)
-                                       ? extract_power_level_key(auth_events.power_levels, "state_default", 50,
-                                                                 !policy.power_levels_require_integers)
-                                       : 50;
-
-        // Check per-event-type power level in events map
-        auto const events_state_level = value_has_content(auth_events.power_levels) ? [&]() -> std::int64_t {
-            auto const* pl_obj = value_is_object(auth_events.power_levels);
-            if (pl_obj == nullptr)
-            {
-                return state_default;
-            }
-            auto const* pl_content = object_member_as_object(*pl_obj, "content");
-            if (pl_content == nullptr)
-            {
-                return state_default;
-            }
-            auto const* events = object_member_as_object(*pl_content, "events");
-            if (events == nullptr)
-            {
-                return state_default;
-            }
-            auto const* level = integer_member(*events, *event_type);
-            return level != nullptr ? *level : state_default;
-        }()
-            : state_default;
-
-        if (sender_power < events_state_level)
+        if (sender_power < required_state_event_power(auth_events.power_levels, *event_type, policy))
         {
             return make_denied("13", "insufficient power for state event");
         }

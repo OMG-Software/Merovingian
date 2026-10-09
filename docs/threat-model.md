@@ -2056,6 +2056,38 @@ instead of repeated path enumeration (ADR-0095). A legal shared DAG therefore
 does not exhaust the budget merely by having many paths. Over-budget graphs
 still fail closed and require operational handling of the rejected resolution.
 
+### Redactions accepted but never applied (audit CSAZ-11)
+
+Threat: content a moderator redacted stayed readable, because an `m.room.redaction` was relayed and never applied
+(`/event`, `/messages`, `/sync` and federation kept serving the original), and a redaction from a sender with no
+authority could be shown to clients as if it had applied (clients apply a redaction they are sent). Mitigation: a
+redaction is judged by the room version's "Handling redactions" rule using the power levels among its own
+`auth_events` (so every server decides alike), applied by overwriting the target's stored JSON with the redacted
+form (the original is deleted, not kept aside), and withheld from clients, push and sync wake-ups until it applies.
+One that does not apply stays withheld; one whose target is unknown waits. A redaction of the room's
+`m.room.create` event is never applied, so a moderator cannot make the server forget the room version. Residual risk:
+the verdict is made once, so a redaction that applied stays applied if the sender later loses power (as the spec has
+it: events are not un-redacted), and redacting a redaction event in room versions before 11 strips its `redacts`, so
+the target no longer shows `unsigned.redacted_because` after the next restart.
+
+### Moderation through the state API, oversized local events, and ungated room administration (audit CSAZ-6, CSAZ-9, CSAZ-12)
+
+Threats: a ban or kick sent as `PUT /state/m.room.member` changed room state but not the membership projections, so
+the banned user stayed listed as joined and could rejoin (CSAZ-6); a client could make this server sign an event over
+the spec's size limits, which every other server rejects (CSAZ-9); any member could publish a room in the directory,
+any user could take any alias on this server for a room they had joined (`#admin:<server>` included), a power-level-0
+member could upgrade a room, creating a replacement that names the old room as its predecessor, and anyone could file
+reports about any room or event as unbounded audit rows (CSAZ-12). Mitigations: every locally composed `m.room.member`
+event that becomes current state is projected in one place (ADR-0126); `compose_signed_event` refuses events over
+65536 signed bytes or with a `type` or `state_key` over 255 bytes (`400 M_TOO_LARGE`); directory visibility and alias
+creation need the power to send `m.room.canonical_alias` (or a server administrator), aliases must be well formed and
+on this server's domain, alias deletion needs the creator, that power, or an administrator (ADR-0127); `/upgrade`
+needs the power to send `m.room.tombstone` before anything is created; a report needs a joined reporter and an event
+in the room that the reporter can see, and a repeat report adds no row. Residual risk: a createRoom whose content fits
+the limits alone but not once signed is refused after the room is stored, leaving the room created with its initial
+state up to the refused event; report de-duplication covers only the rows the admin listing reads
+(`server.client_api.max_safety_report_rows`).
+
 ## Security principles
 
 - Fail closed.

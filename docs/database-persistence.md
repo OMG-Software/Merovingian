@@ -129,6 +129,10 @@ value. Test fixtures that do not exercise persistence select it through
   admission displaces, sets those blobs' reference counts (clearing bytes at zero),
   and inserts the new media, blob and `remote_media` rows. `remote_media` carries
   `local_media_id` and `fetched_at_ms` since schema version 20.
+- `room_aliases` carries `creator_user_id` since schema version 21 (CSAZ-12,
+  ADR-0127): `store_room_alias` writes the creating user, empty for aliases
+  created earlier, and `delete_room_alias` removes a mapping, in the database and
+  in memory, for `DELETE /directory/room/{roomAlias}`.
 - Binary payload columns are `BLOB` (#448): `media_blobs.bytes` holds raw media
   content and `server_signing_keys.secret_key` holds encrypted key material
   (`BLOB NOT NULL DEFAULT ''`, empty = no secret persisted). Both were folded

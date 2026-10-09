@@ -1,3 +1,76 @@
+## 0.12.25
+
+CSAZ-6, CSAZ-9, CSAZ-11 and CSAZ-12 of the 29 September 2026 security audit are fixed.
+
+- **FIXED (CSAZ-11): redactions were relayed but never applied.** Redacted content stayed readable on
+  every read path and over federation, and `PUT /rooms/{roomId}/redact/{eventId}/{txnId}` was not routed.
+  A redaction is now judged by the room version's "Handling redactions" rule against the power levels in
+  its own `auth_events` (or the sender's domain matching the original sender's), applied by overwriting the
+  target's stored JSON with the redacted form (the original content is deleted), served with
+  `unsigned.redacted_because`, and withheld from clients, push and sync wake-ups until it applies. `redacts`
+  is read and written where the room version keeps it. `PUT /redact` is routed: a user may redact their own
+  events, another user's at the `redact` level, and a server administrator any local user's event. On the
+  first start, redactions accepted by earlier builds are applied. ADR-0125.
+- **FIXED (CSAZ-6): a ban or kick sent through `PUT /state/m.room.member` did not take effect.** It changed
+  room state, but the user stayed in `/joined_members` and `/joined_rooms` and could rejoin, because only
+  the membership APIs updated the membership tables. `persist_composed_event` now projects every locally
+  composed `m.room.member` event that becomes current state (`memberships`, `LocalRoom.members`,
+  device-list share changes, invite metadata); the membership APIs, join and `createRoom` no longer do it
+  themselves. A banned user still reads the history they could see before the ban, and nothing after it,
+  as the spec's history visibility rules require. ADR-0126.
+- **FIXED (CSAZ-9): locally created events were not held to the spec's size limits.** An event whose signed
+  canonical JSON is over 65536 bytes, or whose `type` or `state_key` is over 255 bytes, is refused with
+  `400 M_TOO_LARGE` on `/send`, `/state`, the membership endpoints and `createRoom`, and nothing is stored
+  (`createRoom` checks client content before storing the room). `OperationResult::errcode` and
+  `LocalHttpResponse::errcode` carry a specific errcode to the client; a 400 used to become `M_UNKNOWN`.
+- **FIXED (CSAZ-12): reports, upgrades, directory visibility and aliases were not gated.**
+  - `POST /rooms/{roomId}/report/{eventId}` answers `404 M_NOT_FOUND` unless the reporter is joined and the
+    event is in the room and visible to them; the path is percent-decoded; a repeat report of the same event
+    by the same reporter writes no second audit row.
+  - `POST /rooms/{roomId}/upgrade` answers `403 M_FORBIDDEN` before creating anything unless the user may
+    send `m.room.tombstone`, and fails if the tombstone is refused instead of reporting success.
+  - `PUT /directory/list/room/{roomId}` needs the power to send `m.room.canonical_alias`, or a server
+    administrator.
+  - `PUT /directory/room/{roomAlias}` validates the alias grammar and this server's domain
+    (`400 M_INVALID_PARAM`) and needs canonical-alias power or an administrator.
+  - **NEW:** `DELETE /directory/room/{roomAlias}`, for the alias's creator, a joined user with
+    canonical-alias power, or an administrator; `404 M_NOT_FOUND` when unmapped. ADR-0127.
+- **MIGRATION 021:** `room_aliases.creator_user_id` (empty for existing aliases, which then need
+  canonical-alias power or an administrator to delete). `database::delete_room_alias`.
+- **NEW:** `events::required_state_event_power` (the auth rule's required level for a state event, now
+  shared with the client API gates), `homeserver::may_send_state_event`, `auth::room_alias_is_valid`,
+  `events::max_event_type_length_bytes`.
+- **TESTS:** `[csaz-6]` `tests/conformance/test_membership_projection_conformance.cpp`, `[csaz-9]`
+  `tests/conformance/test_event_size_limits_conformance.cpp`, `[csaz-12]`
+  `tests/conformance/test_room_admin_gates_conformance.cpp`, the alias validator in
+  `tests/unit/test_auth.cpp` and the alias creator and deletion in `tests/unit/test_database_persistence.cpp`;
+  CSAZ-11 in `tests/conformance/test_redaction_application_conformance.cpp`,
+  `tests/conformance/test_redaction_federation_conformance.cpp` and `tests/unit/test_redaction_validity.cpp`.
+  The two `DELETE /directory/room` "implementation gap" conformance scenarios now expect the spec's
+  `404 M_NOT_FOUND`; the trust-and-safety unit scenario and the AUTH-1 safety-report listing scenario
+  (`tests/integration/test_persistent_homeserver_flow.cpp`) report real events; the migration-count
+  assertions count 21 steps.
+- **FIXED: `ConnectionParker::parked()` could still count a connection its peer had already seen
+  closed.** The poll loop closed expired, hung-up and invalid connections first and decremented
+  `parked_count` after the whole pass, so a peer woken by the close could read the old count (NetBSD CI:
+  `test_net_connection_parker.cpp:393`). The count is now decremented before those connections are
+  closed; closing stays outside the lock.
+- **TESTS:** refused membership actions (`/invite` by a non-member, `/ban` and `/unban` without power,
+  `/forget` while joined, `/knock` on a non-knock room) answer the spec's 403 or 400 and change nothing;
+  malformed redactions name no target and never apply (`tests/unit/test_redaction_validity.cpp`).
+  `may_send_state_event` refuses when the room's create event is missing or has no readable content, and
+  `PUT /redact` with a body that is not a JSON object answers `400 M_BAD_JSON` and redacts nothing.
+- **BUILD:** `merovingian-auth` links `merovingian-canonicaljson` (`auth::room_alias_is_valid` and
+  `oidc_discovery.cpp` use it); `src/meson.build` configures canonicaljson first. The fuzz config-parser
+  target, which links auth without canonicaljson, failed to link.
+- **TESTS:** refusal paths of the CSAZ-12 gates (malformed alias, unknown room, 409 conflict, administrator
+  mapping, invalid visibility, unsupported upgrade version, report in an unknown or different room), every
+  `createRoom` size pre-check field, and `tests/unit/test_room_power.cpp` (`[power]`).
+- Docs: the audit report's status (14 lows fixed), `docs/event-engine.md`, `docs/threat-model.md`,
+  `docs/trust-safety.md`, `docs/database-persistence.md`, `docs/security-coding-rules.md`,
+  `docs/matrix-v1.19-client-server-api.md`, `docs/todos/capability-gaps.md`, `migrations/AGENTS.md`,
+  `src/homeserver/AGENTS.md`.
+
 ## 0.12.24
 
 - **FIXED: a waiting `/sync` was counted against the rate limit again every time it was run

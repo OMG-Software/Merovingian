@@ -23,8 +23,8 @@ namespace
     constexpr auto member_type = std::string_view{"m.room.member"};
 
     // The string at `content.<key>` of a stored event's JSON.
-    [[nodiscard]] auto content_string_of(std::string_view event_json,
-                                         std::string_view key) -> std::optional<std::string>
+    [[nodiscard]] auto content_string_of(std::string_view event_json, std::string_view key)
+        -> std::optional<std::string>
     {
         auto const parsed = canonicaljson::parse_lossless(event_json);
         if (parsed.error != canonicaljson::ParseError::none)
@@ -85,8 +85,8 @@ auto parse_history_visibility(std::string_view value) noexcept -> HistoryVisibil
     return HistoryVisibilityValue::shared;
 }
 
-auto current_history_visibility(database::PersistentStore const& store,
-                                std::string_view room_id) -> HistoryVisibilityValue
+auto current_history_visibility(database::PersistentStore const& store, std::string_view room_id)
+    -> HistoryVisibilityValue
 {
     for (auto const& state : store.state)
     {
@@ -413,6 +413,13 @@ auto HistoryVisibility::allows(HistoryVisibilityValue visibility, std::string_vi
 auto HistoryVisibility::can_see(database::PersistentEvent const& event) -> bool
 {
     if (event_is_withheld(event))
+    {
+        return false;
+    }
+    // CSAZ-11. rooms/v3.md "Handling redactions": a redaction is not sent to clients until it has
+    // been applied, so a redaction that is waiting for its target, or that does not apply, is
+    // never returned by any read path that goes through this check.
+    if (database::redaction_is_withheld(store_, event.event_id))
     {
         return false;
     }

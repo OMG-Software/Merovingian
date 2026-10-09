@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `020`.
+Current highest: `021`.
 
 - Schema version `16` (`016_media_legacy_endpoint_visibility.sql`) ALTERs
   `legacy_endpoint_visible` onto `media` (ADR-0068).
@@ -29,6 +29,9 @@ Current highest: `020`.
 - Schema version `20` (`020_remote_media_cache_mapping.sql`) ALTERs
   `local_media_id` and `fetched_at_ms` onto `remote_media`, which had no reader
   or writer until then, making the remote media cache durable (ADR-0119).
+- Schema version `21` (`021_room_alias_creator.sql`) ALTERs `creator_user_id`
+  onto `room_aliases`, so an alias's creator may delete it (CSAZ-12, ADR-0127).
+  Aliases created before it have an empty creator.
 
 None of these adds a table, so the federation worker allowlist
 classification is unchanged.

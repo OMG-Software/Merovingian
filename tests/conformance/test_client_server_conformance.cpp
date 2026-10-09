@@ -8167,7 +8167,7 @@ SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][c
 // --- DELETE /_matrix/client/v3/directory/room/{roomAlias} --------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3directoryroomroomalias
 // IMPLEMENTATION GAP: alias deletion not yet implemented.
-SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("DELETE /directory/room/{alias} returns 404 M_NOT_FOUND for an unmapped alias",
          "[conformance][client-server][room-directory]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -8181,14 +8181,15 @@ SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementat
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"DELETE", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                // IMPLEMENTATION GAP: alias deletion not supported.
+                // Spec (DELETE /directory/room/{roomAlias}): 404 "There is no mapped room ID for
+                // this room alias." The endpoint was unrouted (M_UNRECOGNIZED) until CSAZ-12.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -14544,20 +14545,39 @@ SCENARIO("PUT /rooms/{roomId}/redact/{eventId}/{txnId} conformance")
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("PUT /rooms/{roomId}/redact/{eventId}/{txnId} is called")
+        // Spec: PUT /rooms/{roomId}/redact/{eventId}/{txnId} -- 200 "An ID for the redaction event."
+        // This was an implementation gap (404 M_UNRECOGNIZED) until CSAZ-11 routed it; applying the
+        // redaction is covered by test_redaction_application_conformance.cpp.
+        WHEN("PUT /rooms/{roomId}/redact/{eventId}/{txnId} is called for a message of the room")
+        {
+            auto const message_id = send_message(started.runtime, token, room_id);
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/redact/" + message_id + "/1", token,
+                                  R"({"reason":"test"})"});
+
+            THEN("the server returns 200 with the redaction event's event_id")
+            {
+                REQUIRE(response.response.status == 200);
+                auto const body = parse_object(response.response.body);
+                auto const* event_id = string_member(body, "event_id");
+                REQUIRE(event_id != nullptr);
+                REQUIRE(*event_id != message_id);
+            }
+        }
+
+        WHEN("PUT /rooms/{roomId}/redact/{eventId}/{txnId} is called for an event the room does not contain")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/redact/$event_id/1", token, R"({"reason":"test"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                // IMPLEMENTATION GAP: redact not routed
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
@@ -14580,14 +14600,15 @@ SCENARIO("DELETE /directory/room/{roomAlias} conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"DELETE", "/_matrix/client/v3/directory/room/%23test%3Aexample.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND for the unmapped alias")
             {
-                // IMPLEMENTATION GAP: DELETE directory not routed
+                // Spec (DELETE /directory/room/{roomAlias}): 404 "There is no mapped room ID for
+                // this room alias." The endpoint was unrouted (M_UNRECOGNIZED) until CSAZ-12.
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }

@@ -16,10 +16,12 @@
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/redaction_view.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -32,6 +34,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
@@ -235,9 +238,35 @@ namespace
         std::string room_version{};
     };
 
+    // Why compose_signed_event produced no event. too_large means the event would
+    // break the spec's size limits (CSAZ-9) and is the client's to fix, so callers
+    // answer 400 M_TOO_LARGE; rejected covers everything else (malformed input,
+    // authorization, signing).
+    enum class ComposeFailure : std::uint8_t
+    {
+        none,
+        too_large,
+        rejected,
+    };
+
+    struct ComposeResult final
+    {
+        std::optional<ComposedEvent> event{};
+        ComposeFailure failure{ComposeFailure::none};
+    };
+
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view sender, std::string_view client_event_json)
-        -> std::optional<ComposedEvent>;
+        -> ComposeResult;
+
+    // Spec v1.19 "Size limits": the refusal for an event over 65536 bytes, or
+    // whose type or state_key is over 255 bytes.
+    [[nodiscard]] auto event_too_large_result() -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, "event exceeds the Matrix event size limits", 400U);
+        result.errcode = "M_TOO_LARGE";
+        return result;
+    }
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view sender, ComposedEvent const& composed) -> bool;
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
@@ -986,7 +1015,12 @@ namespace
             return make_operation_result(false, {}, "membership event serialization failed", 500U);
         }
 
-        auto const composed = compose_signed_event(runtime, room_id, sender_user_id, *event_json);
+        auto const composition = compose_signed_event(runtime, room_id, sender_user_id, *event_json);
+        if (composition.failure == ComposeFailure::too_large)
+        {
+            return event_too_large_result();
+        }
+        auto const& composed = composition.event;
         if (!composed.has_value())
         {
             return make_operation_result(false, {}, "membership event rejected", 403U);
@@ -996,38 +1030,11 @@ namespace
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
 
+        // persist_composed_event has already projected the membership (CSAZ-6).
         auto* room = find_room(runtime.database, room_id);
         if (room != nullptr)
         {
             room->events.push_back(composed->json);
-        }
-
-        auto const membership_stream = allocate_stream_ordering(runtime.database);
-        if (!store_or_update_membership(runtime.database.persistent_store, room_id, target_user_id, membership,
-                                        membership_stream))
-        {
-            return make_operation_result(false, {}, "membership persistence failed", 500U);
-        }
-
-        if ((membership == "leave" || membership == "ban") &&
-            !record_room_share_ended_device_changes(runtime, room_id, target_user_id))
-        {
-            return make_operation_result(false, {}, "device list change persistence failed", 500U);
-        }
-
-        apply_runtime_membership(runtime.database, room_id, target_user_id, membership);
-        if (membership == "invite")
-        {
-            if (!upsert_local_invite_metadata(runtime.database.persistent_store, room_id, sender_user_id,
-                                              target_user_id, membership_stream))
-            {
-                return make_operation_result(false, {}, "invite metadata persistence failed", 500U);
-            }
-        }
-        else if ((membership == "join" || membership == "leave" || membership == "ban") &&
-                 !database::delete_invite(runtime.database.persistent_store, room_id, target_user_id))
-        {
-            return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
         }
 
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -1341,7 +1348,7 @@ namespace
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view sender, std::string_view client_event_json)
-        -> std::optional<ComposedEvent>
+        -> ComposeResult
     {
         auto const parsed = canonicaljson::parse_lossless(client_event_json);
         auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
@@ -1353,7 +1360,7 @@ namespace
                                {"sender",     std::string{sender},                      false},
                                {"body_bytes", std::to_string(client_event_json.size()), false}
             });
-            return std::nullopt;
+            return ComposeResult{std::nullopt, ComposeFailure::rejected};
         }
 
         auto const* type = string_member(*input, "type");
@@ -1365,6 +1372,21 @@ namespace
             }
             return std::nullopt;
         }();
+        // CSAZ-9. Spec v1.19 "Size limits": "`state_key` MUST NOT exceed 255 bytes" and "`type`
+        // MUST NOT exceed 255 bytes". Refused here, before anything is composed or stored.
+        if (event_type.size() > events::max_event_type_length_bytes ||
+            (event_state_key.has_value() && event_state_key->size() > events::max_state_key_length_bytes))
+        {
+            log_diagnostic(
+                "event.compose.too_large",
+                {
+                    {"room_id",         std::string{room_id},                                           false},
+                    {"sender",          std::string{sender},                                            false},
+                    {"type_bytes",      std::to_string(event_type.size()),                              false},
+                    {"state_key_bytes", std::to_string(event_state_key.value_or(std::string{}).size()), false}
+            });
+            return ComposeResult{std::nullopt, ComposeFailure::too_large};
+        }
         // Derive the room version so the correct signing policy (event-id format, auth
         // rules, MSC4291/MSC4289 behaviour) is used for every event in the room. The
         // m.room.create event carries its own room_version in content — and while it is
@@ -1386,7 +1408,7 @@ namespace
         auto const* policy = rooms::find_room_version_policy(room_version);
         if (policy == nullptr)
         {
-            return std::nullopt;
+            return ComposeResult{std::nullopt, ComposeFailure::rejected};
         }
         // MSC4291 (room v12): the create event omits room_id (the room ID is its reference
         // hash) and no event lists the create event in its auth_events.
@@ -1435,7 +1457,37 @@ namespace
         event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(depth)}));
         event.push_back(canonicaljson::make_member("prev_events", string_array(prev_events)));
         event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
-        event.push_back(canonicaljson::make_member("content", copy_member_or_empty_object(*input, "content")));
+        auto event_content = copy_member_or_empty_object(*input, "content");
+        // Spec (Client-Server API, PUT /send): "In rooms with a version older than 11 they MUST move
+        // the `redacts` property inside the `content` to the top level of the event." From room
+        // version 11 it stays in `content` (rooms/v11.md).
+        auto redacts_for_top_level = std::optional<std::string>{};
+        if (event_type == "m.room.redaction" && policy->redaction_rules != rooms::RedactionRules::room_v11_plus)
+        {
+            if (auto const* content_object = std::get_if<canonicaljson::Object>(&event_content.storage());
+                content_object != nullptr)
+            {
+                auto remaining = canonicaljson::Object{};
+                for (auto const& member : *content_object)
+                {
+                    if (member.key != "redacts")
+                    {
+                        remaining.push_back(member);
+                    }
+                    else if (auto const* redacts = std::get_if<std::string>(&member.value->storage());
+                             redacts != nullptr)
+                    {
+                        redacts_for_top_level = *redacts;
+                    }
+                }
+                event_content = canonicaljson::Value{std::move(remaining)};
+            }
+        }
+        event.push_back(canonicaljson::make_member("content", std::move(event_content)));
+        if (redacts_for_top_level.has_value())
+        {
+            event.push_back(canonicaljson::make_member("redacts", canonicaljson::Value{*redacts_for_top_level}));
+        }
         auto state_key = std::optional<std::string>{};
         if (event_state_key.has_value())
         {
@@ -1453,7 +1505,7 @@ namespace
                                                          {"event_type", event_type,           false},
                                                          {"reason",     content_hash.error,   false}
             });
-            return std::nullopt;
+            return ComposeResult{std::nullopt, ComposeFailure::rejected};
         }
         auto hashes = canonicaljson::Object{};
         hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
@@ -1468,7 +1520,7 @@ namespace
                                                          {"event_type", event_type,           false},
                                                          {"reason",     event_id.error,       false}
             });
-            return std::nullopt;
+            return ComposeResult{std::nullopt, ComposeFailure::rejected};
         }
 
         auto key = find_active_server_signing_key(runtime);
@@ -1480,7 +1532,7 @@ namespace
                                                          {"event_type", event_type,                       false},
                                                          {"reason",     "server signing key unavailable", false}
             });
-            return std::nullopt;
+            return ComposeResult{std::nullopt, ComposeFailure::rejected};
         }
         auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
         auto const signed_event = events::sign_event_for_server(
@@ -1493,7 +1545,22 @@ namespace
                                                          {"event_type", event_type,           false},
                                                          {"reason",     signed_event.error,   false}
             });
-            return std::nullopt;
+            return ComposeResult{std::nullopt, ComposeFailure::rejected};
+        }
+        // CSAZ-9. Spec v1.19 "Size limits": "The complete event MUST NOT be larger than 65536
+        // bytes, when formatted with the federation event format, including any signatures, and
+        // encoded as Canonical JSON." That is exactly signed_event.event_json, so a request body
+        // under the limit is still refused when the envelope, hashes and signature push it over.
+        if (signed_event.event_json.size() > events::max_event_size_bytes)
+        {
+            log_diagnostic("event.compose.too_large",
+                           {
+                               {"room_id",     std::string{room_id},                           false},
+                               {"sender",      std::string{sender},                            false},
+                               {"event_type",  event_type,                                     false},
+                               {"event_bytes", std::to_string(signed_event.event_json.size()), false}
+            });
+            return ComposeResult{std::nullopt, ComposeFailure::too_large};
         }
         // Authorization is fail-closed: every path out of this block that is not an
         // explicit "allowed" returns nullopt. Before 0.12.4 the check sat inside
@@ -1509,7 +1576,7 @@ namespace
         // and short-circuiting it again is how the fail-open arose in the first
         // place.
         auto const reject = [&](std::string_view reason, std::string_view rule_hook = {},
-                                std::string_view rule_step = {}) -> std::optional<ComposedEvent> {
+                                std::string_view rule_step = {}) -> ComposeResult {
             log_diagnostic("event.auth.rejected", {
                                                       {"room_id",    std::string{room_id},   false},
                                                       {"sender",     std::string{sender},    false},
@@ -1518,7 +1585,7 @@ namespace
                                                       {"rule_step",  std::string{rule_step}, false},
                                                       {"reason",     std::string{reason},    false}
             });
-            return std::nullopt;
+            return ComposeResult{std::nullopt, ComposeFailure::rejected};
         };
 
         auto signed_event_value = canonicaljson::parse_lossless(signed_event.event_json);
@@ -1542,18 +1609,73 @@ namespace
             return reject(auth_decision.reason, auth_decision.rule_hook, auth_decision.rule_step);
         }
 
-        return ComposedEvent{
-            event_id.event_id,
-            signed_event.event_json,
-            depth,
-            0U,
-            prev_events,
-            auth_events,
-            {{signed_event.server_name, signed_event.key_id, signed_event.signature}},
-            event_type,
-            state_key,
-            room_version,
+        return ComposeResult{
+            ComposedEvent{
+                          event_id.event_id,
+                          signed_event.event_json,
+                          depth, 0U,
+                          prev_events, auth_events,
+                          {{signed_event.server_name, signed_event.key_id, signed_event.signature}},
+                          event_type, state_key,
+                          room_version, }
         };
+    }
+
+    // CSAZ-6: the one place a locally created m.room.member event becomes the
+    // user's membership. persist_composed_event calls it for every such event,
+    // whichever endpoint sent it: the membership APIs, PUT /state/m.room.member,
+    // createRoom and join alike. Before this only the membership APIs updated the
+    // projections, so a ban sent through the state API changed room state but
+    // left the user in `memberships` and `LocalRoom.members`, which the read gates
+    // and join_room trust. Callers must not repeat any of this.
+    //
+    // Nothing is projected unless the event is now the current state for its
+    // user: an event that state resolution did not pick is not their membership.
+    [[nodiscard]] auto project_local_membership(HomeserverRuntime& runtime, std::string_view room_id,
+                                                std::string_view sender, ComposedEvent const& composed) -> bool
+    {
+        auto& store = runtime.database.persistent_store;
+        auto const& target = *composed.state_key;
+        auto const current = membership_state_entry(store, room_id, target);
+        if (!current.has_value() || current->event_id != composed.event_id)
+        {
+            return true;
+        }
+        auto const parsed = canonicaljson::parse_lossless(composed.json);
+        auto const membership = events::extract_content_membership(parsed.value);
+        if (parsed.error != canonicaljson::ParseError::none || membership.empty())
+        {
+            return false;
+        }
+
+        auto const* room = find_room(runtime.database, room_id);
+        auto const was_joined = room != nullptr && room_has_member(*room, target);
+        auto const membership_stream = allocate_stream_ordering(runtime.database);
+        if (!store_or_update_membership(store, room_id, target, membership, membership_stream))
+        {
+            return false;
+        }
+        // Device lists (spec v1.19 "Tracking the device list for a user"): leaving
+        // the room's joined set is recorded while the user is still in it, joining
+        // once they are, matching what each helper reads.
+        if (was_joined && membership != "join" && !record_room_share_ended_device_changes(runtime, room_id, target))
+        {
+            return false;
+        }
+        apply_runtime_membership(runtime.database, room_id, target, membership);
+        if (!was_joined && membership == "join" && !record_room_share_started_device_changes(runtime, room_id, target))
+        {
+            return false;
+        }
+        if (membership == "invite")
+        {
+            return upsert_local_invite_metadata(store, room_id, sender, target, membership_stream);
+        }
+        if (membership == "join" || membership == "leave" || membership == "ban")
+        {
+            return database::delete_invite(store, room_id, target);
+        }
+        return true;
     }
 
     // Composes, signs, and persists a single room state event.  Used by create_room to
@@ -1593,20 +1715,59 @@ namespace
         event.prev_event_ids = composed.prev_event_ids;
         event.auth_event_ids = composed.auth_event_ids;
         event.signatures = composed.signatures;
-        return store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state),
-                                 state_resolution_limits(runtime.config.security().federation.state_resolution));
-    }
-
-    [[nodiscard]] auto emit_initial_state_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                                std::string_view sender, std::string const& event_json) -> bool
-    {
-        auto const composed = compose_signed_event(runtime, room_id, sender, event_json);
-        if (!composed.has_value())
+        if (!store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state),
+                               state_resolution_limits(runtime.config.security().federation.state_resolution)))
         {
-            // compose_signed_event already emitted a diagnostic.
             return false;
         }
-        return persist_composed_event(runtime, room_id, sender, *composed);
+        return composed.event_type != "m.room.member" || !composed.state_key.has_value() ||
+               project_local_membership(runtime, room_id, sender, composed);
+    }
+
+    // CSAZ-9: true when createRoom content the client supplied cannot fit in an
+    // event within the spec's size limits on its own. Checked before the room is
+    // stored, so such a request creates nothing. Content that fits alone but not
+    // once the envelope and signature are added is still caught by
+    // compose_signed_event, after the room exists.
+    [[nodiscard]] auto create_room_options_exceed_size_limits(CreateRoomOptions const& options) -> bool
+    {
+        auto const too_large = [](canonicaljson::Value const& value) {
+            auto const serialized = serialize_canonical_string(value);
+            return serialized.has_value() && serialized->size() > events::max_event_size_bytes;
+        };
+        if (options.name.size() > events::max_event_size_bytes || options.topic.size() > events::max_event_size_bytes ||
+            too_large(canonicaljson::Value{options.creation_content}) ||
+            too_large(canonicaljson::Value{options.power_level_content_override}))
+        {
+            return true;
+        }
+        return std::ranges::any_of(options.initial_state, [&too_large](canonicaljson::Value const& entry) {
+            auto const* object = std::get_if<canonicaljson::Object>(&entry.storage());
+            if (object == nullptr)
+            {
+                return false;
+            }
+            auto const* type = string_member(*object, "type");
+            auto const* state_key = string_member(*object, "state_key");
+            return too_large(entry) || (type != nullptr && type->size() > events::max_event_type_length_bytes) ||
+                   (state_key != nullptr && state_key->size() > events::max_state_key_length_bytes);
+        });
+    }
+
+    // Returns none once the event is stored. rejected also covers a persistence
+    // failure; create_room only needs to tell too_large (400) from the rest (500).
+    [[nodiscard]] auto emit_initial_state_event(HomeserverRuntime& runtime, std::string_view room_id,
+                                                std::string_view sender, std::string const& event_json)
+        -> ComposeFailure
+    {
+        auto const composition = compose_signed_event(runtime, room_id, sender, event_json);
+        if (!composition.event.has_value())
+        {
+            // compose_signed_event already emitted a diagnostic.
+            return composition.failure;
+        }
+        return persist_composed_event(runtime, room_id, sender, *composition.event) ? ComposeFailure::none
+                                                                                    : ComposeFailure::rejected;
     }
 
     // Upserts m.direct global account data for `user_id` to record that
@@ -2551,6 +2712,15 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    if (create_room_options_exceed_size_limits(options))
+    {
+        log_diagnostic("room.create.rejected", {
+                                                   {"actor",  *user_id,                                       false},
+                                                   {"status", "400",                                          false},
+                                                   {"reason", "content exceeds the Matrix event size limits", false}
+        });
+        return event_too_large_result();
+    }
 
     // Build the m.room.create content first. In room version 12 the room ID is the
     // reference hash of the create event (MSC4291), so the create event must be
@@ -2638,7 +2808,12 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         {
             return make_operation_result(false, {}, "initial room state event generation failed", 500U);
         }
-        precomposed_create = compose_signed_event(runtime, std::string_view{}, *user_id, *create_event_json);
+        auto create_composition = compose_signed_event(runtime, std::string_view{}, *user_id, *create_event_json);
+        if (create_composition.failure == ComposeFailure::too_large)
+        {
+            return event_too_large_result();
+        }
+        precomposed_create = std::move(create_composition.event);
         if (!precomposed_create.has_value())
         {
             return make_operation_result(false, {}, "initial room state event generation failed", 500U);
@@ -2696,6 +2871,9 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     }
     runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}, options.directory_public});
 
+    // Set when an initial state event is refused for the spec's size limits, so
+    // the request answers 400 M_TOO_LARGE rather than a 500 (CSAZ-9).
+    auto initial_state_too_large = false;
     auto emit_state = [&](std::string_view event_type, canonicaljson::Object content,
                           std::string_view state_key = std::string_view{}) -> bool {
         auto event = canonicaljson::Object{};
@@ -2703,7 +2881,18 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{state_key}}));
         event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
         auto const serialized = serialize_canonical_string(canonicaljson::Value{std::move(event)});
-        return serialized.has_value() && emit_initial_state_event(runtime, room_id, *user_id, *serialized);
+        if (!serialized.has_value())
+        {
+            return false;
+        }
+        auto const failure = emit_initial_state_event(runtime, room_id, *user_id, *serialized);
+        initial_state_too_large = initial_state_too_large || failure == ComposeFailure::too_large;
+        return failure == ComposeFailure::none;
+    };
+    auto const initial_state_failure = [&initial_state_too_large] {
+        return initial_state_too_large
+                   ? event_too_large_result()
+                   : make_operation_result(false, {}, "initial room state event generation failed", 500U);
     };
 
     auto power_levels = canonicaljson::Object{};
@@ -2817,7 +3006,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                                    {"status",  "500",                                        false},
                                                    {"reason",  "initial room state event generation failed", false}
         });
-        return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+        return initial_state_failure();
     }
 
     if (!alias.empty())
@@ -2825,7 +3014,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         auto canonical_alias = canonicaljson::Object{};
         canonical_alias.push_back(canonicaljson::make_member("alias", canonicaljson::Value{alias}));
         if (!emit_state("m.room.canonical_alias", std::move(canonical_alias)) ||
-            !database::store_room_alias(runtime.database.persistent_store, {alias, room_id}))
+            !database::store_room_alias(runtime.database.persistent_store, {alias, room_id, *user_id}))
         {
             log_diagnostic("room.create.rejected", {
                                                        {"actor",      *user_id,                        false},
@@ -2948,7 +3137,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         }
         if (!emit_state(*event_type, object_copy(*content), state_key))
         {
-            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+            return initial_state_failure();
         }
     }
 
@@ -2958,7 +3147,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         name_content.push_back(canonicaljson::make_member("name", canonicaljson::Value{options.name}));
         if (!emit_state("m.room.name", std::move(name_content)))
         {
-            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+            return initial_state_failure();
         }
     }
     if (!options.topic.empty())
@@ -2967,7 +3156,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         topic_content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{options.topic}));
         if (!emit_state("m.room.topic", std::move(topic_content)))
         {
-            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+            return initial_state_failure();
         }
     }
 
@@ -2980,38 +3169,12 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         {
             invite_content.push_back(canonicaljson::make_member("is_direct", canonicaljson::Value{true}));
         }
+        // emit_state's persist_composed_event projects the invite, its metadata
+        // included (CSAZ-6).
         if (!emit_state("m.room.member", std::move(invite_content), invitee))
         {
-            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+            return initial_state_failure();
         }
-        auto const membership_stream = allocate_stream_ordering(runtime.database);
-        auto const membership_result = database::store_membership(runtime.database.persistent_store,
-                                                                  {room_id, invitee, "invite", membership_stream});
-        if (membership_result == database::MembershipStoreResult::error ||
-            (membership_result == database::MembershipStoreResult::already_exists &&
-             !database::update_membership(runtime.database.persistent_store, room_id, invitee, "invite",
-                                          membership_stream)))
-        {
-            return make_operation_result(false, {}, "invite membership persistence failed", 500U);
-        }
-        auto const invite_state = std::ranges::find_if(
-            runtime.database.persistent_store.state, [&](database::PersistentStateEvent const& state) {
-                return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == invitee;
-            });
-        if (invite_state == runtime.database.persistent_store.state.end())
-        {
-            return make_operation_result(false, {}, "invite state event missing", 500U);
-        }
-        auto const invite_json = event_json_for_id(runtime.database.persistent_store, invite_state->event_id);
-        if (!invite_json.has_value() ||
-            !database::upsert_invite(runtime.database.persistent_store,
-                                     {room_id, invitee, *user_id, invite_state->event_id, *invite_json,
-                                      invite_state_events_for_room(runtime.database.persistent_store, room_id, invitee),
-                                      membership_stream}))
-        {
-            return make_operation_result(false, {}, "invite metadata persistence failed", 500U);
-        }
-        apply_runtime_membership(runtime.database, room_id, invitee, "invite");
         invited_anyone = true;
     }
 
@@ -4610,7 +4773,12 @@ namespace
                 });
                 return make_operation_result(false, {}, "third-party invite event serialization failed", 500U);
             }
-            auto const composed_invite = compose_signed_event(runtime, room_id, inviter_id, *invite_event_json);
+            auto const invite_composition = compose_signed_event(runtime, room_id, inviter_id, *invite_event_json);
+            if (invite_composition.failure == ComposeFailure::too_large)
+            {
+                return event_too_large_result();
+            }
+            auto const& composed_invite = invite_composition.event;
             if (!composed_invite.has_value())
             {
                 log_diagnostic("room.join.rejected", {
@@ -4646,7 +4814,12 @@ namespace
             });
             return make_operation_result(false, {}, "membership event serialization failed", 500U);
         }
-        auto const composed = compose_signed_event(runtime, room_id, *user_id, *join_event_json);
+        auto const composition = compose_signed_event(runtime, room_id, *user_id, *join_event_json);
+        if (composition.failure == ComposeFailure::too_large)
+        {
+            return event_too_large_result();
+        }
+        auto const& composed = composition.event;
         if (!composed.has_value())
         {
             log_diagnostic("room.join.rejected", {
@@ -4669,71 +4842,13 @@ namespace
         }
         room->events.push_back(composed->json);
 
-        auto const membership_stream = allocate_stream_ordering(runtime.database);
-        auto const result = database::store_membership(runtime.database.persistent_store,
-                                                       {std::string{room_id}, *user_id, "join", membership_stream});
-        if (result == database::MembershipStoreResult::error)
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                        false},
-                                                     {"room_id", std::string{room_id},            false},
-                                                     {"status",  "500",                           false},
-                                                     {"reason",  "membership persistence failed", false}
-            });
-            return make_operation_result(false, {}, "membership persistence failed", 500U);
-        }
-        // Both stored and already_exists: membership is valid — sync the in-memory state.
-        if (result == database::MembershipStoreResult::already_exists &&
-            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join",
-                                         membership_stream))
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                   false},
-                                                     {"room_id", std::string{room_id},       false},
-                                                     {"status",  "500",                      false},
-                                                     {"reason",  "membership update failed", false}
-            });
-            return make_operation_result(false, {}, "membership update failed", 500U);
-        }
-        append_unique_member(room->members, *user_id);
-        if (!record_room_share_started_device_changes(runtime, room_id, *user_id))
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                                false},
-                                                     {"room_id", std::string{room_id},                    false},
-                                                     {"status",  "500",                                   false},
-                                                     {"reason",  "device list change persistence failed", false}
-            });
-            return make_operation_result(false, {}, "device list change persistence failed", 500U);
-        }
-        if (result == database::MembershipStoreResult::stored)
-        {
-            log_diagnostic("room.join.membership_persisted",
-                           {
-                               {"actor",        *user_id,                             false},
-                               {"room_id",      std::string{room_id},                 false},
-                               {"member_count", std::to_string(room->members.size()), false}
-            });
-        }
-        else
-        {
-            log_diagnostic("room.join.membership_updated",
-                           {
-                               {"actor",        *user_id,                             false},
-                               {"room_id",      std::string{room_id},                 false},
-                               {"member_count", std::to_string(room->members.size()), false}
-            });
-        }
-        if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                         false},
-                                                     {"room_id", std::string{room_id},             false},
-                                                     {"status",  "500",                            false},
-                                                     {"reason",  "invite metadata cleanup failed", false}
-            });
-            return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
-        }
+        // persist_composed_event has already projected the join (CSAZ-6).
+        log_diagnostic("room.join.membership_persisted",
+                       {
+                           {"actor",        *user_id,                             false},
+                           {"room_id",      std::string{room_id},                 false},
+                           {"member_count", std::to_string(room->members.size()), false}
+        });
         // Push delivery: a self-join has no distinct recipient to add (the
         // extra_recipient equals the sender and is filtered as such), but is
         // still routed through the same pipeline as every other membership
@@ -5303,7 +5418,12 @@ namespace
     {
         return make_operation_result(false, {}, "user is not joined", 403U);
     }
-    auto const composed = compose_signed_event(runtime, room_id, *user_id, event_json);
+    auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json);
+    if (composition.failure == ComposeFailure::too_large)
+    {
+        return event_too_large_result();
+    }
+    auto const& composed = composition.event;
     if (!composed.has_value())
     {
         return make_operation_result(false, {}, "third-party invite event rejected", 403U);
@@ -6320,6 +6440,32 @@ namespace
 
 } // namespace
 
+namespace
+{
+
+    // True for a client request to send an m.room.redaction whose content has no string `redacts`.
+    [[nodiscard]] auto request_is_redaction_without_target(std::string_view event_json) -> bool
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || input == nullptr)
+        {
+            return false;
+        }
+        auto const* type = string_member(*input, "type");
+        if (type == nullptr || *type != "m.room.redaction")
+        {
+            return false;
+        }
+        auto const* content = object_member(*input, "content");
+        auto const* content_object =
+            content == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content->storage());
+        auto const* redacts = content_object == nullptr ? nullptr : string_member(*content_object, "redacts");
+        return redacts == nullptr || redacts->empty();
+    }
+
+} // namespace
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json) -> OperationResult
@@ -6359,7 +6505,7 @@ namespace
                 {"room_id", std::string{room_id}, false},
                 {"reason",  "not joined",         false}
         });
-        return make_operation_result(false, {}, "not joined");
+        return make_operation_result(false, {}, "not joined", 403U);
     }
     if (event_json.empty())
     {
@@ -6371,7 +6517,24 @@ namespace
         return make_operation_result(false, {}, "empty event");
     }
 
-    auto const composed = compose_signed_event(runtime, room_id, *user_id, event_json);
+    // CSAZ-11: a redaction must name the event it redacts. Without it there is nothing to compose.
+    if (request_is_redaction_without_target(event_json))
+    {
+        log_diagnostic("room.event.rejected", {
+                                                  {"actor",   *user_id,                   false},
+                                                  {"room_id", std::string{room_id},       false},
+                                                  {"status",  "400",                      false},
+                                                  {"reason",  "redaction names no event", false}
+        });
+        return make_operation_result(false, {}, "m.room.redaction content must name the event in redacts", 400U);
+    }
+
+    auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json);
+    if (composition.failure == ComposeFailure::too_large)
+    {
+        return event_too_large_result();
+    }
+    auto const& composed = composition.event;
     if (!composed.has_value())
     {
         log_diagnostic("room.event.rejected", {
@@ -6381,6 +6544,28 @@ namespace
                                                   {"reason",  "event authorization or signing failed", false}
         });
         return make_operation_result(false, {}, "event authorization or signing failed", 403U);
+    }
+    // CSAZ-11. Spec (Client-Server API, PUT /redact): a user may redact their own events, another
+    // user's only with the `redact` level, and a server administrator any event sent by a user on
+    // their server. Refusing here keeps a redaction that would not be applied out of the room.
+    if (composed->event_type == "m.room.redaction")
+    {
+        auto const check = check_local_redaction(runtime.database.persistent_store, room_id, composed->json,
+                                                 authenticated_admin_user(runtime, access_token).has_value(),
+                                                 runtime.config.server().server_name);
+        if (check != LocalRedactionCheck::permitted)
+        {
+            auto const missing = check == LocalRedactionCheck::target_unknown;
+            log_diagnostic("room.event.rejected",
+                           {
+                               {"actor",   *user_id,                                                         false},
+                               {"room_id", std::string{room_id},                                             false},
+                               {"status",  missing ? "404" : "403",                                          false},
+                               {"reason",  missing ? "redaction target unknown" : "redaction not permitted", false}
+            });
+            return missing ? make_operation_result(false, {}, "the event to redact was not found in this room", 404U)
+                           : make_operation_result(false, {}, "you may not redact that event", 403U);
+        }
     }
     // ADR-0064 phase B1: route through the same choke point every other
     // local event path uses, rather than duplicating the raw store call —
@@ -6679,6 +6864,10 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
             }
         }
     }
+    // CSAZ-11: a redacted event carries unsigned.redacted_because (the stored JSON is already the
+    // redacted form); a redaction event carries `redacts` where older and newer clients look for it.
+    database::add_redaction_compat(client_obj);
+    database::attach_redacted_because(store, event.event_id, client_obj);
     return canonicaljson::Value{std::move(client_obj)};
 }
 

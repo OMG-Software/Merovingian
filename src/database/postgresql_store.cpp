@@ -1303,17 +1303,18 @@ namespace
 
         if (table_load_profile_includes("room_aliases", profile))
         {
-            auto room_aliases = query_rows(connection, "postgresql_load_room_aliases",
-                                           "SELECT room_alias, room_id FROM room_aliases ORDER BY room_alias");
+            auto room_aliases =
+                query_rows(connection, "postgresql_load_room_aliases",
+                           "SELECT room_alias, room_id, creator_user_id FROM room_aliases ORDER BY room_alias");
             if (!room_aliases.ok)
             {
                 return false;
             }
             for (auto const& row : room_aliases.rows)
             {
-                if (row.size() >= 2U)
+                if (row.size() >= 3U)
                 {
-                    store.room_aliases.push_back({row[0], row[1]});
+                    store.room_aliases.push_back({row[0], row[1], row[2]});
                 }
             }
         }
@@ -1975,6 +1976,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     }
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
+    rebuild_redaction_state(store);
     rebuild_key_signature_index(store);
     restore_sync_stream_id(store);
 

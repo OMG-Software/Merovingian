@@ -71,8 +71,16 @@ struct AuthEventMap final
                                           canonicaljson::Value const& create_event,
                                           rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t;
 [[nodiscard]] auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,
-                                           std::int64_t default_value,
-                                           bool allow_string_values = false) noexcept -> std::int64_t;
+                                           std::int64_t default_value, bool allow_string_values = false) noexcept
+    -> std::int64_t;
+// The power level a state event of `event_type` requires under `power_levels_event`
+// (a full event value, or null when the room has none): `events[event_type]` when
+// listed, else `state_default`, else 50. The authorization rule for state events
+// uses this, and so do the client API gates that refuse an action up front because
+// the state event it would send would be rejected (CSAZ-12).
+[[nodiscard]] auto required_state_event_power(canonicaljson::Value const& power_levels_event,
+                                              std::string_view event_type,
+                                              rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t;
 [[nodiscard]] auto domain_of(std::string_view matrix_id) noexcept -> std::string_view;
 [[nodiscard]] auto extract_content_membership(canonicaljson::Value const& event) noexcept -> std::string;
 

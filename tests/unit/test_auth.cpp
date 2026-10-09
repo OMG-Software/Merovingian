@@ -121,6 +121,42 @@ SCENARIO("Auth server-name validator rejects malformed host and port shapes", "[
     }
 }
 
+// Spec appendices, "Room Aliases": `#room_alias:domain`; the localpart may contain any valid
+// non-surrogate Unicode codepoints except `:` and NUL; the whole alias MUST NOT exceed 255 bytes.
+SCENARIO("Auth room alias validator follows the room alias grammar", "[auth][alias][csaz-12]")
+{
+    GIVEN("aliases at and around each rule")
+    {
+        auto const at_limit = "#" + std::string(255U - 1U - std::string{":example.org"}.size(), 'a') + ":example.org";
+        auto const over_limit = "#" + std::string(256U - 1U - std::string{":example.org"}.size(), 'a') + ":example.org";
+        auto const with_nul = std::string{"#a"} + '\0' + "b:example.org";
+        auto const invalid_utf8 = std::string{"#a"} + static_cast<char>(0xC3) + ":example.org";
+
+        WHEN("they are validated")
+        {
+            THEN("well-formed aliases are accepted, up to exactly 255 bytes")
+            {
+                REQUIRE(at_limit.size() == 255U);
+                REQUIRE(merovingian::auth::room_alias_is_valid(at_limit));
+                REQUIRE(merovingian::auth::room_alias_is_valid("#general:example.org"));
+                REQUIRE(merovingian::auth::room_alias_is_valid("#caf\xC3\xA9 and spaces:example.org:8448"));
+            }
+            THEN("everything else is refused")
+            {
+                REQUIRE(over_limit.size() == 256U);
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid(over_limit));
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid("general:example.org"));   // no sigil
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid("!general:example.org"));  // wrong sigil
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid("#general"));              // no domain
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid("#general:"));             // empty domain
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid("#general:exa mple.org")); // bad server name
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid(with_nul));
+                REQUIRE_FALSE(merovingian::auth::room_alias_is_valid(invalid_utf8));
+            }
+        }
+    }
+}
+
 SCENARIO("Auth user ID validator enforces lowercase-only localparts for new IDs", "[auth]")
 {
     GIVEN("a lowercase-only user ID, an uppercase user ID, and a malformed server name")

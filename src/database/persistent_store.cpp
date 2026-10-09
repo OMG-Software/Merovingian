@@ -1728,6 +1728,102 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
     return &store.state_transitions[iterator->second];
 }
 
+namespace
+{
+
+    struct RedactionShape final
+    {
+        bool is_redaction{false};
+        std::vector<std::string> targets{};
+    };
+
+    // CSAZ-11. Whether `json` is an m.room.redaction event and which event IDs it names. A
+    // redaction names its target in `redacts` at the top level (room versions before 11) or in
+    // `content` (11 and later); both places are recorded, and the redaction reconciler keeps only
+    // the one the room version uses. Most events fail the substring test and are never parsed.
+    [[nodiscard]] auto redaction_shape_of(std::string_view json) -> RedactionShape
+    {
+        auto shape = RedactionShape{};
+        if (json.find("m.room.redaction") == std::string_view::npos)
+        {
+            return shape;
+        }
+        auto const parsed = canonicaljson::parse_lossless(json);
+        auto const* object = parsed.error == canonicaljson::ParseError::none
+                                 ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                 : nullptr;
+        if (object == nullptr)
+        {
+            return shape;
+        }
+        auto const string_in = [](canonicaljson::Object const& holder, std::string_view key) -> std::string const* {
+            for (auto const& member : holder)
+            {
+                if (member.key == key)
+                {
+                    return std::get_if<std::string>(&member.value->storage());
+                }
+            }
+            return nullptr;
+        };
+        auto const* type = string_in(*object, "type");
+        if (type == nullptr || *type != "m.room.redaction")
+        {
+            return shape;
+        }
+        shape.is_redaction = true;
+        if (auto const* top_level = string_in(*object, "redacts"); top_level != nullptr && !top_level->empty())
+        {
+            shape.targets.push_back(*top_level);
+        }
+        for (auto const& member : *object)
+        {
+            if (member.key != "content")
+            {
+                continue;
+            }
+            if (auto const* content = std::get_if<canonicaljson::Object>(&member.value->storage()); content != nullptr)
+            {
+                if (auto const* in_content = string_in(*content, "redacts");
+                    in_content != nullptr && !in_content->empty() &&
+                    std::ranges::find(shape.targets, *in_content) == shape.targets.end())
+                {
+                    shape.targets.push_back(*in_content);
+                }
+            }
+        }
+        return shape;
+    }
+
+    // Records a newly stored event in the redaction bookkeeping. A redaction starts out withheld.
+    auto note_event_for_redactions(PersistentStore& store, PersistentEvent const& event) -> void
+    {
+        auto const shape = redaction_shape_of(event.json);
+        if (!shape.is_redaction)
+        {
+            return;
+        }
+        store.redactions.withheld.insert(event.event_id);
+        for (auto const& target : shape.targets)
+        {
+            auto& ids = store.redactions.by_target[target];
+            if (std::ranges::find(ids, event.event_id) == ids.end())
+            {
+                ids.push_back(event.event_id);
+            }
+        }
+    }
+
+    auto notify_redaction_observer(PersistentStore& store, std::string const& event_id) -> void
+    {
+        if (store.redaction_observer)
+        {
+            store.redaction_observer(store, event_id);
+        }
+    }
+
+} // namespace
+
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool
 {
     if (event_exists(store, event.event_id))
@@ -1753,7 +1849,10 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
         return false;
     }
     append_event_graph_rows(store, event);
+    note_event_for_redactions(store, event);
+    auto stored_event_id = event.event_id;
     store.events.push_back(std::move(event));
+    notify_redaction_observer(store, stored_event_id);
     return true;
 }
 
@@ -1959,6 +2058,7 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
     });
     append_event_graph_rows(store, update.event);
     store.events.push_back(update.event);
+    note_event_for_redactions(store, update.event);
     if (update.state.has_value())
     {
         auto const existing = std::ranges::find_if(store.state, [&update](PersistentStateEvent const& current) {
@@ -1980,6 +2080,8 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
                                                                         update.state->event_id),
                                              store.state_transitions.size() - 1U);
     }
+    // Last, so the observer sees the event with its state already mirrored.
+    notify_redaction_observer(store, update.event.event_id);
 }
 
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
@@ -2322,6 +2424,66 @@ namespace
         return false;
     }
     existing->status = std::string{status};
+    return true;
+}
+
+auto rebuild_redaction_state(PersistentStore& store) -> void
+{
+    store.redactions = RedactionState{};
+    for (auto const& event : store.events)
+    {
+        note_event_for_redactions(store, event);
+    }
+}
+
+[[nodiscard]] auto redactions_naming(PersistentStore const& store, std::string_view target_event_id)
+    -> std::vector<std::string>
+{
+    auto const it = store.redactions.by_target.find(std::string{target_event_id});
+    return it == store.redactions.by_target.end() ? std::vector<std::string>{} : it->second;
+}
+
+[[nodiscard]] auto redaction_is_withheld(PersistentStore const& store, std::string_view event_id) -> bool
+{
+    return store.redactions.withheld.contains(std::string{event_id});
+}
+
+[[nodiscard]] auto applied_redaction_of(PersistentStore const& store, std::string_view target_event_id)
+    -> std::optional<std::string>
+{
+    auto const it = store.redactions.applied_by_target.find(std::string{target_event_id});
+    if (it == store.redactions.applied_by_target.end())
+    {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_event_id,
+                            std::string_view target_event_id) -> void
+{
+    store.redactions.withheld.erase(std::string{redaction_event_id});
+    store.redactions.applied_by_target.try_emplace(std::string{target_event_id}, std::string{redaction_event_id});
+}
+
+[[nodiscard]] auto replace_event_json(PersistentStore& store, std::string_view event_id, std::string json) -> bool
+{
+    auto const existing = std::ranges::find_if(store.events, [event_id](PersistentEvent const& event) {
+        return event.event_id == event_id;
+    });
+    if (existing == store.events.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("update_event_json", "UPDATE events SET json = $2 WHERE event_id = $1",
+                                             {
+                                                 public_value(event_id), {json, true}
+    })))
+    {
+        return false;
+    }
+    existing->json = std::move(json);
     return true;
 }
 
@@ -3662,8 +3824,9 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     {
         return false;
     }
-    auto const statement = record_statement("insert_room_alias", "INSERT INTO room_aliases VALUES ($1, $2)",
-                                            {public_value(alias.room_alias), public_value(alias.room_id)});
+    auto const statement = record_statement(
+        "insert_room_alias", "INSERT INTO room_aliases (room_alias, room_id, creator_user_id) VALUES ($1, $2, $3)",
+        {public_value(alias.room_alias), public_value(alias.room_id), public_value(alias.creator_user_id)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -3679,6 +3842,25 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
         return alias.room_alias == room_alias;
     });
     return it == store.room_aliases.end() ? std::nullopt : std::optional<PersistentRoomAlias>{*it};
+}
+
+[[nodiscard]] auto delete_room_alias(PersistentStore& store, std::string_view room_alias) -> bool
+{
+    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
+        return alias.room_alias == room_alias;
+    });
+    if (it == store.room_aliases.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("delete_room_alias",
+                                                    "DELETE FROM room_aliases WHERE room_alias = $1",
+                                                    {public_value(std::string{room_alias})})))
+    {
+        return false;
+    }
+    store.room_aliases.erase(it);
+    return true;
 }
 
 [[nodiscard]] auto persist_sync_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool

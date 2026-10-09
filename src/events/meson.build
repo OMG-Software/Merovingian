@@ -4,6 +4,7 @@ events_sources = files(
   'event_id.cpp',
   'event_signer.cpp',
   'redaction.cpp',
+  'redaction_validity.cpp',
   'state_resolution.cpp',
 )
 

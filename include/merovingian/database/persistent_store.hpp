@@ -603,6 +603,10 @@ struct PersistentRoomAlias final
 {
     std::string room_alias{};
     std::string room_id{};
+    // The local user who created the alias, who may always delete it (CSAZ-12).
+    // Empty for an alias created before schema version 21, or by createRoom's
+    // `room_alias_name` before then.
+    std::string creator_user_id{};
 };
 
 // Idempotency record for a client-issued room send or send-to-device PUT.
@@ -785,6 +789,27 @@ struct PersistentForwardExtremity final
     std::string event_id{};
 };
 
+// CSAZ-11. In-memory bookkeeping about m.room.redaction events, derived from `events`: rebuilt by
+// rebuild_redaction_state after hydration and kept current as events are stored. Never persisted
+// in a table of its own; what is durable is the redacted JSON of the target event itself.
+struct RedactionState final
+{
+    // Target event ID -> IDs of the redaction events that name it (in `redacts` at the top level
+    // or in `content`, whichever the event has; the room version decides which one counts).
+    std::unordered_map<std::string, std::vector<std::string>> by_target{};
+    // Redaction events that have not been applied: unjudged, waiting for their target, or not
+    // allowed to apply. Clients are not sent these (rooms/v3.md "Handling redactions").
+    std::unordered_set<std::string> withheld{};
+    // Target event ID -> the redaction event that was applied to it.
+    std::unordered_map<std::string, std::string> applied_by_target{};
+};
+
+struct PersistentStore;
+
+// Called after an event has been added to `PersistentStore::events`, with the event's ID. The
+// homeserver installs the redaction reconciler here (see homeserver/redaction_service.hpp).
+using RedactionObserver = std::function<void(PersistentStore&, std::string const&)>;
+
 struct PersistentStore final
 {
     PersistentStore() = default;
@@ -805,6 +830,8 @@ struct PersistentStore final
         , memberships{other.memberships}
         , invites{other.invites}
         , events{other.events}
+        , redactions{other.redactions}
+        , redaction_observer{other.redaction_observer}
         , state{other.state}
         , event_edges{other.event_edges}
         , event_auth{other.event_auth}
@@ -878,6 +905,8 @@ struct PersistentStore final
         memberships = other.memberships;
         invites = other.invites;
         events = other.events;
+        redactions = other.redactions;
+        redaction_observer = other.redaction_observer;
         state = other.state;
         event_edges = other.event_edges;
         event_auth = other.event_auth;
@@ -953,6 +982,8 @@ struct PersistentStore final
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
     std::vector<PersistentEvent> events{};
+    RedactionState redactions{};
+    RedactionObserver redaction_observer{};
     std::vector<PersistentStateEvent> state{};
     std::vector<PersistentStateTransition> state_transitions{};
     // In-memory index over state_transitions keyed by (room_id, event_type, state_key, event_id)
@@ -1280,6 +1311,29 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 // SQLite/PostgreSQL hydration and after any direct backfill of the vector.
 auto rebuild_state_transition_index(PersistentStore& store) -> void;
 
+// ---- CSAZ-11: redactions ----
+//
+// Rebuilds `store.redactions` from `store.events`: every m.room.redaction event is withheld
+// until the redaction reconciler applies it. Called after hydration.
+auto rebuild_redaction_state(PersistentStore& store) -> void;
+// IDs of the redaction events that name `target_event_id`, in the order they were stored.
+[[nodiscard]] auto redactions_naming(PersistentStore const& store, std::string_view target_event_id)
+    -> std::vector<std::string>;
+// True when `event_id` is a redaction event that has not been applied, so clients must not be
+// sent it. False for every other event.
+[[nodiscard]] auto redaction_is_withheld(PersistentStore const& store, std::string_view event_id) -> bool;
+// The redaction event applied to `target_event_id`, if any.
+[[nodiscard]] auto applied_redaction_of(PersistentStore const& store, std::string_view target_event_id)
+    -> std::optional<std::string>;
+// Records that `redaction_event_id` was applied to `target_event_id`: the redaction event is no
+// longer withheld and `target_event_id` has a `redacted_because`.
+auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_event_id,
+                            std::string_view target_event_id) -> void;
+// Overwrites the stored JSON of an existing event (UPDATE, then the in-memory copy). This is how
+// a redaction destroys the original content: only the redacted JSON is kept. Returns false if the
+// event is unknown or the backend refuses the write.
+[[nodiscard]] auto replace_event_json(PersistentStore& store, std::string_view event_id, std::string json) -> bool;
+
 // Looks up a state transition by its primary tuple. Requires the index to be
 // current; callers that modify the vector directly must call
 // rebuild_state_transition_index() first.
@@ -1316,6 +1370,8 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool;
 [[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
     -> std::optional<PersistentRoomAlias>;
+// Removes the alias. False when it does not exist or the backend refuses.
+[[nodiscard]] auto delete_room_alias(PersistentStore& store, std::string_view room_alias) -> bool;
 [[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool;
 [[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
     -> std::optional<PersistentDeviceKey>;

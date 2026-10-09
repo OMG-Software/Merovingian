@@ -41,6 +41,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/homeserver/room_power.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
@@ -789,6 +790,13 @@ namespace
         std::string txn_id{};
     };
 
+    struct RoomRedactPathParts final
+    {
+        std::string room_id{};
+        std::string event_id{};
+        std::string txn_id{};
+    };
+
     struct RoomStatePathParts final
     {
         std::string room_id{};
@@ -970,9 +978,8 @@ namespace
             // PUT /rooms/{roomId}/redact/{eventId}/{txnId} — redaction. The
             // spec permits a suspended user to redact *their own* events; this
             // gate cannot see the target event's sender, so the handler must
-            // enforce ownership itself. That endpoint is not routed today (it
-            // answers 404 M_UNRECOGNIZED); whoever implements it owns that
-            // check.
+            // enforce ownership itself: the PUT /redact handler below refuses a
+            // suspended user's redaction of anyone else's event.
             if (method == "PUT" && action == "redact")
             {
                 return true;
@@ -5722,11 +5729,23 @@ namespace
         return "M_UNKNOWN";
     }
 
+    // The errcode a failed operation named (for example M_TOO_LARGE, CSAZ-9),
+    // or the usual one for its status when it named none.
+    [[nodiscard]] auto error_code_for(OperationResult const& result) -> std::string_view
+    {
+        return result.errcode.empty() ? error_code_for_status(result.status) : std::string_view{result.errcode};
+    }
+
+    [[nodiscard]] auto error_code_for(LocalHttpResponse const& response) -> std::string_view
+    {
+        return response.errcode.empty() ? error_code_for_status(response.status) : std::string_view{response.errcode};
+    }
+
     [[nodiscard]] auto wrap(LocalHttpResponse const& r, std::string_view key) -> LocalHttpResponse
     {
         if (r.status != 200U)
         {
-            return err(r.status, error_code_for_status(r.status), r.body);
+            return err(r.status, error_code_for(r), r.body);
         }
         return resp(200U, json_serialize(json_obj({json_member(std::string{key}, json_str(r.body))})));
     }
@@ -7127,6 +7146,66 @@ namespace
         return RoomSendPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
                                  core::percent_decode_path_component(event_and_txn.substr(0U, separator)),
                                  core::percent_decode_path_component(event_and_txn.substr(separator + 1U))};
+    }
+
+    // PUT /_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId}
+    [[nodiscard]] auto room_redact_path_parts(std::string_view target) -> std::optional<RoomRedactPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/redact/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const marker_pos = suffix.find(marker);
+        // The room ID is the first segment: "/redact/" inside a state key or an event type must not match.
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            suffix.substr(0U, marker_pos).find('/') != std::string_view::npos ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const event_and_txn = suffix.substr(marker_pos + marker.size());
+        auto const separator = event_and_txn.find('/');
+        if (separator == std::string_view::npos || separator == 0U || separator + 1U >= event_and_txn.size() ||
+            event_and_txn.find('/', separator + 1U) != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return RoomRedactPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                   core::percent_decode_path_component(event_and_txn.substr(0U, separator)),
+                                   core::percent_decode_path_component(event_and_txn.substr(separator + 1U))};
+    }
+
+    // The request body of PUT /redact is `{"reason": "..."}`, with `reason` optional. An empty body
+    // is accepted as `{}`. nullopt means the body is not a JSON object or `reason` is not a string;
+    // otherwise the content of the m.room.redaction event to send, with `redacts` set.
+    [[nodiscard]] auto redaction_content_from_body(std::string_view body, std::string_view event_id)
+        -> std::optional<canonicaljson::Value>
+    {
+        auto content = canonicaljson::Object{};
+        if (!body.empty())
+        {
+            auto const parsed = canonicaljson::parse_lossless(body);
+            auto const* request = parsed.error == canonicaljson::ParseError::none
+                                      ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                      : nullptr;
+            if (request == nullptr)
+            {
+                return std::nullopt;
+            }
+            for (auto const& member : *request)
+            {
+                if (member.key != "reason")
+                {
+                    continue;
+                }
+                if (std::get_if<std::string>(&member.value->storage()) == nullptr)
+                {
+                    return std::nullopt;
+                }
+                content.push_back(member);
+            }
+        }
+        content.push_back(json_member("redacts", json_str(event_id)));
+        return canonicaljson::Value{std::move(content)};
     }
 
     [[nodiscard]] auto room_state_path_parts(std::string_view target) -> std::optional<RoomStatePathParts>
@@ -9405,13 +9484,43 @@ namespace
         {
             return err(400U, "M_BAD_JSON", "report body must be a JSON object with optional string reason");
         }
+        // Clients percent-encode the IDs in the path (`!` and `:` included); compare decoded IDs.
+        auto const room_id = core::percent_decode_path_component(path->room_id);
+        auto const event_id = core::percent_decode_path_component(path->event_id);
+        // CSAZ-12. Spec: "The caller must be joined to the room to report it." 404: "The event was
+        // not found or you are not joined to the room where the event resides." One answer for
+        // both, so a report cannot be used to learn whether an event or room exists. An event the
+        // reporter may not see under the room's history visibility counts as not found.
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](LocalRoom const& current) {
+            return current.room_id == room_id;
+        });
+        auto const event = std::ranges::find_if(store.events, [&event_id](database::PersistentEvent const& stored) {
+            return stored.event_id == event_id;
+        });
+        if (room == rt.homeserver.database.rooms.end() || !joined(*room, user) || event == store.events.end() ||
+            event->room_id != room_id || !sync::HistoryVisibility{store, user}.can_see(*event))
+        {
+            return err(404U, "M_NOT_FOUND", "Event not found or you are not joined to its room");
+        }
         auto const decision =
-            trust_safety::validate_safety_report({std::string{user}, path->room_id, path->event_id, body->reason, 0});
-        auto const audit = trust_safety::make_safety_audit_event(user, path->event_id, decision);
-        append_policy_audit(rt, audit);
+            trust_safety::validate_safety_report({std::string{user}, room_id, event_id, body->reason, 0});
         if (!decision.allowed)
         {
             return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
+        }
+        // CSAZ-12: each report is a durable audit row, so a repeat of the same report (same
+        // reporter, same event) among the rows the admin listing shows is acknowledged without
+        // writing another. A member cannot grow the table faster than the events they can see.
+        auto const audit = trust_safety::make_safety_audit_event(user, event_id, decision);
+        auto const recent =
+            database::load_audit_events_by_type_prefix(store, audit.event_type, rt.limits.max_safety_report_rows);
+        auto const already_reported = std::ranges::any_of(recent, [&](database::PersistentAuditEvent const& row) {
+            return row.event_type == audit.event_type && row.actor == audit.actor && row.target == audit.entity;
+        });
+        if (!already_reported)
+        {
+            append_policy_audit(rt, audit);
         }
         return resp(200U, "{}");
     }
@@ -11516,6 +11625,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "PUT" && starts_with(request_path, directory_room_prefix))
     {
+        auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
+        // CSAZ-12. Spec: 400 M_INVALID_PARAM when "The given `roomAlias` is not a valid room
+        // alias". The alias's domain is "the server name of the homeserver which created the
+        // alias" (appendices, "Room Aliases"), so this server only creates aliases on its own.
+        if (!auth::room_alias_is_valid(room_alias))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Room alias invalid");
+        }
+        if (server_name_from_room_alias(room_alias) != rt.homeserver.config.server().server_name)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Room alias must be on this server's domain");
+        }
         auto const body = parsed_json_object(req.body);
         if (!body.has_value())
         {
@@ -11533,11 +11654,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
         }
-        if (!joined(*room, *user))
+        // CSAZ-12: creating an alias needs the power to send m.room.canonical_alias in the room
+        // (the event that would advertise it), or a server administrator. Joining is not enough.
+        auto const server_admin = authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!server_admin &&
+            (!joined(*room, *user) ||
+             !may_send_state_event(rt.homeserver.database.persistent_store, *room_id, *user, "m.room.canonical_alias")))
         {
-            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "You do not have permission to create an alias for this room");
         }
-        auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
         // Spec: an exclusive aliases namespace blocks alias creation by
         // anyone other than the owning appservice, including another
         // appservice. The owning appservice itself is exempt from its own
@@ -11557,10 +11683,51 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                        ? dispatch_resp(req, rt, 200U, "{}")
                        : dispatch_err(req, rt, 409U, "M_ROOM_IN_USE", "room alias already in use");
         }
-        if (!database::store_room_alias(rt.homeserver.database.persistent_store, {room_alias, *room_id}))
+        if (!database::store_room_alias(rt.homeserver.database.persistent_store, {room_alias, *room_id, *user}))
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist room alias");
         }
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, "room_alias.created", *user,
+                           room_alias, *room_id);
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+    // DELETE /_matrix/client/v3/directory/room/{roomAlias}
+    // Spec: "Servers may choose to implement additional access control checks here, for instance
+    // that room aliases can only be deleted by their creator or a server administrator." CSAZ-12:
+    // this server allows the alias's creator, a user who may send m.room.canonical_alias in the
+    // alias's room, or a server administrator. 404 when the alias is not mapped.
+    if (req.method == "DELETE" && starts_with(request_path, directory_room_prefix))
+    {
+        auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
+        if (!auth::room_alias_is_valid(room_alias))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "Room alias invalid");
+        }
+        auto const existing = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        if (!existing.has_value())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "Room alias not found");
+        }
+        auto const is_creator = !existing->creator_user_id.empty() && existing->creator_user_id == *user;
+        auto const alias_room =
+            std::ranges::find_if(rt.homeserver.database.rooms, [&existing](LocalRoom const& current) {
+                return current.room_id == existing->room_id;
+            });
+        auto const has_room_power = alias_room != rt.homeserver.database.rooms.end() && joined(*alias_room, *user) &&
+                                    may_send_state_event(rt.homeserver.database.persistent_store, existing->room_id,
+                                                         *user, "m.room.canonical_alias");
+        auto const permitted =
+            is_creator || has_room_power || authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!permitted)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to delete this alias");
+        }
+        if (!database::delete_room_alias(rt.homeserver.database.persistent_store, room_alias))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete room alias");
+        }
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, "room_alias.deleted", *user,
+                           room_alias, existing->room_id);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     // PUT /_matrix/client/v3/directory/list/room/{roomId}
@@ -11587,9 +11754,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
         }
-        if (!joined(*room_it, *user))
+        // CSAZ-12. Spec: "Servers MAY implement additional access control checks, for instance,
+        // to ensure that a room's visibility can only be changed by the room creator or a server
+        // administrator." Publishing a room advertises it as its aliases do, so this needs the
+        // power to send m.room.canonical_alias, or a server administrator.
+        auto const may_publish =
+            (joined(*room_it, *user) &&
+             may_send_state_event(rt.homeserver.database.persistent_store, room_id, *user, "m.room.canonical_alias")) ||
+            authenticated_admin_user(rt.homeserver, req.access_token).has_value();
+        if (!may_publish)
         {
-            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "You do not have permission to change this room's directory visibility");
         }
         auto const published = *vis_str == "public";
         if (!database::set_room_directory_public(rt.homeserver.database.persistent_store, room_id, published))
@@ -13050,7 +13226,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }();
         if (!create_result.ok)
         {
-            auto errcode = error_code_for_status(create_result.status);
+            auto errcode = error_code_for(create_result);
             if (create_result.status == 400U && create_result.reason == "room alias in use")
             {
                 errcode = "M_ROOM_IN_USE";
@@ -13270,8 +13446,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 // A rejected include/limit/from is a malformed parameter, which
                 // M_UNKNOWN would not tell the client anything useful about.
-                auto const code =
-                    result.status == 400U ? std::string_view{"M_INVALID_PARAM"} : error_code_for_status(result.status);
+                auto const code = result.status == 400U ? std::string_view{"M_INVALID_PARAM"} : error_code_for(result);
                 return dispatch_err(req, rt, result.status, code, result.reason);
             }
             return complete({200U, result.value});
@@ -13302,8 +13477,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const result = fetch_relations(rt.homeserver, req.access_token, request);
             if (!result.ok)
             {
-                auto const code =
-                    result.status == 404U ? std::string_view{"M_NOT_FOUND"} : error_code_for_status(result.status);
+                auto const code = result.status == 404U ? std::string_view{"M_NOT_FOUND"} : error_code_for(result);
                 return dispatch_err(req, rt, result.status, code, result.reason);
             }
             return complete({200U, result.value});
@@ -13328,6 +13502,80 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const suffix = std::string_view{req.target}.substr(room_prefix.size());
         if (req.method == "PUT")
         {
+            // Spec: PUT /_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId}
+            // ../../docs/matrix-v1.19-spec/client-server-api.md#redactions
+            if (auto const redact = room_redact_path_parts(req.target); redact.has_value())
+            {
+                // The transaction ID is scoped to this endpoint and target, so the same txnId used
+                // on /send, or to redact another event, is a different request.
+                auto const txn_scope = std::string{"redact/"} + redact->event_id;
+                if (auto const cached = database::find_client_txn_event_id(
+                        rt.homeserver.database.persistent_store, *user, redact->room_id, txn_scope, redact->txn_id);
+                    cached.has_value())
+                {
+                    return complete({200U, json_serialize(json_obj({json_member("event_id", json_str(*cached))}))});
+                }
+                auto const content = redaction_content_from_body(req.body, redact->event_id);
+                if (!content.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "the request body must be a JSON object");
+                }
+                // Spec (account suspension): a suspended user may redact their own events only. The
+                // suspension gate lets the whole endpoint through because it cannot see the target.
+                auto const suspended = std::ranges::any_of(rt.homeserver.database.persistent_store.users,
+                                                           [&user](database::PersistentUser const& account) {
+                                                               return account.user_id == *user && account.suspended;
+                                                           });
+                if (suspended)
+                {
+                    auto const target_event = std::ranges::find_if(rt.homeserver.database.persistent_store.events,
+                                                                   [&redact](database::PersistentEvent const& event) {
+                                                                       return event.event_id == redact->event_id;
+                                                                   });
+                    if (target_event == rt.homeserver.database.persistent_store.events.end() ||
+                        target_event->sender_user_id != *user)
+                    {
+                        return dispatch_err(req, rt, 403U, "M_USER_SUSPENDED",
+                                            "You cannot perform this action while suspended.");
+                    }
+                }
+                auto rewritten = req;
+                rewritten.method = "POST";
+                rewritten.target = "/_matrix/client/v3/rooms/" + redact->room_id + "/send";
+                rewritten.body = json_serialize(json_obj({
+                    json_member("type", json_str("m.room.redaction")),
+                    json_member("content", *content),
+                }));
+                auto const result = wrap(call_local(rewritten), "event_id");
+                log_diagnostic(result.status == 200U ? "room.redact.accepted" : "room.redact.rejected",
+                               {
+                                   {"actor",    *user,                                                   false},
+                                   {"room_id",  redact->room_id,                                         false},
+                                   {"event_id", redact->event_id,                                        false},
+                                   {"status",   std::to_string(result.status),                           false},
+                                   {"reason",   result.status == 200U ? std::string{"ok"} : result.body, false}
+                });
+                if (result.status == 200U)
+                {
+                    auto const parsed = canonicaljson::parse_lossless(result.body);
+                    if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
+                    {
+                        auto const eid_it = std::ranges::find_if(*obj, [](canonicaljson::ObjectMember const& m) {
+                            return m.key == "event_id";
+                        });
+                        if (eid_it != obj->end() && eid_it->value != nullptr)
+                        {
+                            if (auto const* s = std::get_if<std::string>(&eid_it->value->storage()))
+                            {
+                                std::ignore =
+                                    database::store_client_txn(rt.homeserver.database.persistent_store,
+                                                               {*user, redact->room_id, txn_scope, redact->txn_id, *s});
+                            }
+                        }
+                    }
+                }
+                return complete(result);
+            }
             if (auto const path = room_send_path_parts(req.target); path.has_value())
             {
                 // CS API §10.5.1: idempotent send — replay the original response.
@@ -13721,7 +13969,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             });
             if (result.status != 200U)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.body);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.body);
             }
             return complete(result);
         }
@@ -14263,7 +14511,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                          body->user_id, body->reason);
                 if (!result.ok)
                 {
-                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                    return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
                 }
                 // For remote invitees dispatch the federation invite so the remote server
                 // learns about the event and can deliver it to the invitee's client.
@@ -14301,7 +14549,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     body->id_access_token.value_or(""));
                 if (!result.ok)
                 {
-                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                    return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
                 }
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
@@ -14319,7 +14567,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                   body->user_id, body->reason);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14336,7 +14584,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                    body->user_id, body->reason);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14353,7 +14601,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 merovingian::homeserver::unban_user(rt.homeserver, req.access_token, room_id, body->user_id);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14365,7 +14613,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const result = merovingian::homeserver::forget_room(rt.homeserver, req.access_token, room_id);
             if (!result.ok)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
@@ -14394,8 +14642,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
                                    {"reason",  result.reason,                                              false}
                 });
-                return dispatch_err(req, rt, result.status != 0U ? result.status : 403U,
-                                    error_code_for_status(result.status != 0U ? result.status : 403U), result.reason);
+                auto refused = result;
+                refused.status = result.status != 0U ? result.status : 403U;
+                return dispatch_err(req, rt, refused.status, error_code_for(refused), result.reason);
             }
             log_diagnostic("room.leave.accepted", {
                                                       {"actor",   *user,   false},
@@ -14655,6 +14904,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
             }
+            // CSAZ-12. Spec: 403 "The user is not permitted to upgrade the room." An upgrade ends
+            // the old room with an m.room.tombstone, so a user who may not send one may not
+            // upgrade, and is refused here before the replacement room is created.
+            if (!may_send_state_event(rt.homeserver.database.persistent_store, room_id, *user, "m.room.tombstone"))
+            {
+                log_diagnostic("room.upgrade.rejected", {
+                                                            {"actor",   *user,                          false},
+                                                            {"room_id", room_id,                        false},
+                                                            {"reason",  "insufficient tombstone power", false}
+                });
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "You do not have permission to upgrade this room");
+            }
             auto const last_event_id = old_room_it->events.empty() ? std::string{} : old_room_it->events.back();
             auto predecessor = canonicaljson::Object{};
             predecessor.push_back(json_member("room_id", json_str(room_id)));
@@ -14673,8 +14934,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }();
             if (!create_result.ok)
             {
-                return dispatch_err(req, rt, create_result.status, error_code_for_status(create_result.status),
-                                    create_result.reason);
+                return dispatch_err(req, rt, create_result.status, error_code_for(create_result), create_result.reason);
             }
             auto const& new_room_id = create_result.value;
             auto const tombstone_content = json_serialize(json_obj({
@@ -14682,13 +14942,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 json_member("replacement_room", json_str(new_room_id)),
             }));
             auto const tombstone_body = event_body_from_content("m.room.tombstone", tombstone_content, std::string{""});
-            if (tombstone_body.has_value())
+            if (!tombstone_body.has_value())
             {
-                auto tombstone_req = req;
-                tombstone_req.method = "POST";
-                tombstone_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
-                tombstone_req.body = *tombstone_body;
-                call_local(tombstone_req);
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "tombstone event could not be built");
+            }
+            auto tombstone_req = req;
+            tombstone_req.method = "POST";
+            tombstone_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
+            tombstone_req.body = *tombstone_body;
+            // The power check above can be overtaken by a power-levels change while create_room
+            // ran unlocked; the upgrade is reported as failed then, not as a success that left
+            // the old room open.
+            if (auto const tombstone = call_local(tombstone_req); tombstone.status != 200U)
+            {
+                log_diagnostic("room.upgrade.rejected", {
+                                                            {"actor",       *user,                   false},
+                                                            {"old_room_id", room_id,                 false},
+                                                            {"new_room_id", new_room_id,             false},
+                                                            {"reason",      "tombstone was refused", false}
+                });
+                return dispatch_err(req, rt, tombstone.status, error_code_for(tombstone), tombstone.body);
             }
             log_diagnostic("room.upgrade.accepted", {
                                                         {"actor",       *user,            false},
@@ -14987,7 +15260,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const result = merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id);
         if (!result.ok)
         {
-            return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            return dispatch_err(req, rt, result.status, error_code_for(result), result.reason);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("room_id", json_str(result.value))})));
     }

@@ -38,6 +38,11 @@ struct LoginPolicyDecision final
 
 [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool;
 
+// Spec appendices, "Room Aliases": `#room_alias:domain`, where the localpart is
+// any valid non-surrogate Unicode codepoints except `:` and NUL, the domain is a
+// server name, and the whole alias is at most 255 bytes (CSAZ-12).
+[[nodiscard]] auto room_alias_is_valid(std::string_view room_alias) noexcept -> bool;
+
 // Validates a localpart for a NEW user ID (registration / local auth paths).
 // Accepts: a-z, 0-9, '.', '_', '-', '=', '/', '+'. Non-empty required.
 // Rejects uppercase — new IDs must be lowercase per Matrix v1.19 spec.

@@ -428,7 +428,27 @@ namespace
     [[nodiscard]] auto response_from_operation(OperationResult const& result, std::uint16_t ok_status = 200U)
         -> LocalHttpResponse
     {
-        return result.ok ? response(ok_status, result.value) : response(result.status, result.reason);
+        if (result.ok)
+        {
+            return response(ok_status, result.value);
+        }
+        auto out = response(result.status, result.reason);
+        out.errcode = result.errcode;
+        return out;
+    }
+
+    // A room operation's result, where a failure with no status is a refusal
+    // (403). The errcode travels with it so the client API can return, for
+    // example, M_TOO_LARGE rather than the generic code for its status.
+    [[nodiscard]] auto response_from_room_operation(OperationResult const& result) -> LocalHttpResponse
+    {
+        if (result.ok || result.status != 0U)
+        {
+            return response_from_operation(result);
+        }
+        auto refused = result;
+        refused.status = 403U;
+        return response_from_operation(refused);
     }
 
     [[nodiscard]] auto response_from_media_operation(OperationResult const& result) -> LocalHttpResponse
@@ -1536,7 +1556,16 @@ namespace
                 // request for a local recipient — the normal federated-room
                 // case. See room_service.hpp's deliver_federation_push_
                 // notifications doc comment.
-                deliver_federation_push_notifications(*rt, envelope, result.accepted_stream_ordering);
+                // CSAZ-11: a redaction that has not been applied is not sent to clients
+                // (rooms/v3.md "Handling redactions"), so it raises no notification either.
+                auto const redaction_withheld = [&]() {
+                    auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
+                    return database::redaction_is_withheld(rt->database.persistent_store, envelope.event_id);
+                }();
+                if (!redaction_withheld)
+                {
+                    deliver_federation_push_notifications(*rt, envelope, result.accepted_stream_ordering);
+                }
             }
             return result;
         };
@@ -4972,8 +5001,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             std::ignore = released;
             return create_room(runtime, request.access_token);
         }();
-        return result.ok ? response(200U, result.value)
-                         : response(result.status != 0U ? result.status : 403U, result.reason);
+        return response_from_room_operation(result);
     }
 
     auto constexpr rooms_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
@@ -5054,8 +5082,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
                            {"reason",  result.ok ? std::string{"ok"} : result.reason,              false}
         });
-        return result.ok ? response(200U, result.value)
-                         : response(result.status != 0U ? result.status : 403U, result.reason);
+        return response_from_room_operation(result);
     }
     if (request.method == "POST" && suffix.size() > send_suffix.size() &&
         suffix.substr(suffix.size() - send_suffix.size()) == send_suffix)
@@ -5073,8 +5100,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
                            {"reason",  result.ok ? std::string{"ok"} : result.reason,              false}
         });
-        return result.ok ? response(200U, result.value)
-                         : response(result.status != 0U ? result.status : 403U, result.reason);
+        return response_from_room_operation(result);
     }
     if (request.method == "GET" && suffix.size() > state_suffix.size() &&
         suffix.substr(suffix.size() - state_suffix.size()) == state_suffix)
@@ -5082,8 +5108,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto const room_id =
             core::percent_decode_path_component(suffix.substr(0U, suffix.size() - state_suffix.size()));
         auto result = fetch_room_state(runtime, request.access_token, room_id);
-        return result.ok ? response(200U, result.value)
-                         : response(result.status != 0U ? result.status : 403U, result.reason);
+        return response_from_room_operation(result);
     }
     if (request.method == "PUT")
     {
@@ -5108,8 +5133,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                                {"status",     std::to_string(result.status != 0U ? result.status : 403U), false},
                                {"reason",     result.ok ? std::string{"ok"} : result.reason,              false}
             });
-            return result.ok ? response(200U, result.value)
-                             : response(result.status != 0U ? result.status : 403U, result.reason);
+            return response_from_room_operation(result);
         }
     }
     log_diagnostic("request.route_not_found",
