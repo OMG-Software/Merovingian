@@ -21,6 +21,7 @@
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -193,8 +194,8 @@ namespace
     // operator's master key file from disk. That meant two open+read cycles of
     // the server's root secret per request, and two sodium_mlock/munlock pairs
     // of a 4 KiB SecretBuffer. Besides the blocking I/O, the mlock churn could
-    // exhaust RLIMIT_MEMLOCK under concurrency, at which point SecretBuffer
-    // silently falls back to unpinned (swappable) memory for the root secret.
+    // exhaust RLIMIT_MEMLOCK under concurrency. Root and derived keys must
+    // remain locked; allocation failure makes the keys unavailable.
     //
     // The cache is invalidated on the file's identity (see
     // crypto::master_key_file_identity) rather than on the path alone, so
@@ -207,6 +208,7 @@ namespace
     };
 
     [[nodiscard]] auto token_hmac_keys(HomeserverRuntime const& runtime) -> TokenHmacKeys
+    try
     {
         auto const& path = runtime.config.security().secrets.master_key_file;
         if (path.empty())
@@ -239,9 +241,15 @@ namespace
         }
         auto keys = TokenHmacKeys{crypto::derive_token_hmac_key_v3(material->bytes()),
                                   crypto::derive_token_hmac_key(material->bytes())};
+        cached_keys = std::move(keys);
         cached_identity = identity;
-        cached_keys = keys;
-        return keys;
+        return cached_keys;
+    }
+    catch (std::bad_alloc const&)
+    {
+        // A cache hit still creates an independently locked key copy. Never
+        // leak its allocation failure to callers or downgrade new issuance.
+        return {};
     }
 
     // v3 HMAC key: retained only for validating legacy tokens; new tokens MUST
@@ -253,7 +261,8 @@ namespace
 
     // v4 HMAC key: derived from the operator's master key file, completely
     // independent from the Ed25519 signing secret. If no master key is configured,
-    // v4 hashing is unavailable and the code falls back to v3/v2.
+    // v4 hashing is unavailable and new issuance fails closed. Legacy token
+    // validation remains separate and retains its historical hash formats.
     [[nodiscard]] auto token_hmac_key_v4(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
     {
         return token_hmac_keys(runtime).v4;
@@ -407,38 +416,13 @@ namespace
     [[nodiscard]] auto issue_token_hash(HomeserverRuntime const& runtime, std::string_view token)
         -> std::optional<std::string>
     {
-        // Prefer the master-key-derived v4 hash when a master key is configured.
-        if (auto const key = token_hmac_key_v4(runtime); key.has_value())
+        // Issuance is v4-only. Legacy v2/v3 remain available solely for lookup.
+        auto const key = token_hmac_key_v4(runtime);
+        if (!key.has_value())
         {
-            if (auto const v4 = auth::hash_access_token_v4(token, *key); v4.has_value())
-            {
-                return v4;
-            }
+            return std::nullopt;
         }
-        // No master key: fall back to the master-key-derived v3 hash for
-        // backwards compatibility.
-        if (auto const key = token_hmac_key_v3(runtime); key.has_value())
-        {
-            if (auto const v3 = auth::hash_access_token_v3(token, *key); v3.has_value())
-            {
-                return v3;
-            }
-        }
-        // Signing key and master key both unavailable: fall back to the unkeyed
-        // v2 hash so local operations still work. Federation will fail separately
-        // if keys are broken; login should not be collateral damage.
-        // #436: v2 is an unkeyed crypto_generichash — a DB leak lets an
-        // attacker build an offline rainbow table and recover token
-        // plaintexts. Warn loudly so operators notice the server is
-        // running in this weaker degraded mode (fixable by configuring a
-        // master key file) rather than discovering it silently in a
-        // post-breach audit.
-        log_diagnostic("token.unkeyed_hash_fallback",
-                       {
-                           {"reason", "no master key or signing key configured", false}
-        },
-                       observability::LogEventSeverity::warning);
-        return auth::hash_access_token_v2(token);
+        return auth::hash_access_token_v4(token, *key);
     }
 
     [[nodiscard]] auto lookup_token_hashes(HomeserverRuntime const& runtime, std::string_view token)
@@ -721,71 +705,7 @@ namespace
 
     [[nodiscard]] auto read_registration_token_file(std::string const& path) -> std::optional<core::SecretBuffer>
     {
-        auto constexpr max_token_bytes = std::size_t{4096U};
-
-        auto fd = core::FileDescriptor{::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)};
-        if (!fd.valid())
-        {
-            return std::nullopt;
-        }
-
-        struct stat stat_buf{};
-        if (::fstat(fd.get(), &stat_buf) != 0)
-        {
-            return std::nullopt;
-        }
-        if (!S_ISREG(stat_buf.st_mode))
-        {
-            return std::nullopt;
-        }
-
-        auto const file_size = static_cast<std::size_t>(stat_buf.st_size);
-        if (file_size == 0U || file_size > max_token_bytes)
-        {
-            return std::nullopt;
-        }
-
-        auto secret = core::SecretBuffer{file_size};
-        if (!secret.is_locked())
-        {
-            // Fail closed: if we cannot pin the plaintext into RAM we must not
-            // load it at all (issue #406).
-            return std::nullopt;
-        }
-
-        auto token = secret.bytes();
-        auto total_read = std::size_t{0U};
-        while (total_read < file_size)
-        {
-            auto const remaining = file_size - total_read;
-            auto const n = ::read(fd.get(), token.data() + total_read, remaining);
-            if (n == 0)
-            {
-                break;
-            }
-            if (n < 0)
-            {
-                if (errno == EINTR)
-                {
-                    continue;
-                }
-                return std::nullopt;
-            }
-            total_read += static_cast<std::size_t>(n);
-        }
-        if (total_read == 0U)
-        {
-            return std::nullopt;
-        }
-
-        token = token.subspan(0U, total_read);
-        trim_line_ending(token);
-        if (token.empty())
-        {
-            return std::nullopt;
-        }
-
-        return secret;
+        return platform::read_secure_secret_file(path, 4096U);
     }
 
     // AUTH-4: the answer when the Argon2id admission budget has no free slot.
@@ -960,7 +880,7 @@ namespace
             },
                                  observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                                  "login.rejected", user.user_id, std::string{device_id}, "token hashing failed");
-            return make_operation_result(false, {}, "token hashing failed");
+            return make_operation_result(false, {}, "token key unavailable", 503U);
         }
         auto const device_exists = std::ranges::any_of(
             runtime.database.persistent_store.devices, [&user, device_id](database::PersistentDevice const& device) {
@@ -1035,8 +955,9 @@ namespace
     [[nodiscard]] auto registration_token_file_identity(std::string const& path)
         -> std::optional<RegistrationTokenFileIdentity>
     {
+        auto const file = platform::open_secure_secret_file(path);
         struct ::stat info{};
-        if (::stat(path.c_str(), &info) != 0)
+        if (!file || ::fstat(file->get(), &info) != 0)
         {
             return std::nullopt;
         }
@@ -1406,7 +1327,7 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", user->user_id, std::string{device_id}, "token hashing failed");
-        return make_operation_result(false, {}, "token hashing failed");
+        return make_operation_result(false, {}, "token key unavailable", 503U);
     }
     auto const device_exists = std::ranges::any_of(
         runtime.database.persistent_store.devices, [user, device_id](database::PersistentDevice const& device) {
@@ -1499,7 +1420,7 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
     auto const refresh_hash = issue_token_hash(runtime, *refresh_token);
     if (!refresh_hash.has_value())
     {
-        return make_operation_result(false, {}, "refresh token hashing failed", 500U);
+        return make_operation_result(false, {}, "token key unavailable", 503U);
     }
     auto const refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
     if (!database::store_refresh_token(runtime.database.persistent_store, {std::string{user_id}, std::string{device_id},
@@ -1514,6 +1435,10 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
 
 auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token) -> SessionRefreshResult
 {
+    if (!token_hmac_key_v4(runtime).has_value())
+    {
+        return {false, 503U, {}, {}, {}, {}, "token key unavailable"};
+    }
     auto const refresh_hashes = lookup_token_hashes(runtime, refresh_token);
     if (refresh_hashes.empty())
     {
@@ -1612,6 +1537,20 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
                            device_id, "device no longer exists");
         return {false, 401U, {}, {}, {}, {}, "refresh device rejected"};
     }
+    // Finish all fallible key work before any credential mutation.
+    auto const access_token = issue_token();
+    auto const new_refresh_token = issue_token();
+    if (!access_token.has_value() || !new_refresh_token.has_value())
+    {
+        return {false, 500U, {}, {}, {}, {}, "token generation failed"};
+    }
+    auto const access_hash = issue_token_hash(runtime, *access_token);
+    auto const new_refresh_hash = issue_token_hash(runtime, *new_refresh_token);
+    if (!access_hash.has_value() || !new_refresh_hash.has_value())
+    {
+        return {false, 503U, {}, {}, {}, {}, "token key unavailable"};
+    }
+
     // ADR-0074: "The old refresh token remains valid until the new access token
     // or refresh token is used, at which point the old refresh token is
     // revoked." So the presented token is not revoked here: the client may not
@@ -1648,18 +1587,6 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
         }
     }
 
-    auto const access_token = issue_token();
-    auto const new_refresh_token = issue_token();
-    if (!access_token.has_value() || !new_refresh_token.has_value())
-    {
-        return {false, 500U, {}, {}, {}, {}, "token generation failed"};
-    }
-    auto const access_hash = issue_token_hash(runtime, *access_token);
-    auto const new_refresh_hash = issue_token_hash(runtime, *new_refresh_token);
-    if (!access_hash.has_value() || !new_refresh_hash.has_value())
-    {
-        return {false, 500U, {}, {}, {}, {}, "token hashing failed"};
-    }
     auto const new_access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
     auto const new_refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
     if (!database::store_access_token(runtime.database.persistent_store, {user_id, device_id, *access_hash, false,

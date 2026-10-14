@@ -5,10 +5,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <chrono>
 #include <cstdint>
 #include <string>
-#include <thread>
 
 namespace
 {
@@ -58,7 +56,7 @@ SCENARIO("the per-recipient to-device queue drops the oldest rows once the cap i
 // CSAZ-10: rows older than the configured TTL must be evicted even if the
 // recipient has never acknowledged them (for example, because the device does
 // not exist).
-SCENARIO("to-device rows are evicted once the TTL expires", "[database][sync][security][csaz-10]")
+SCENARIO("to-device rows are evicted once the TTL expires", "[database][sync][security][csaz-10][ttl-expired-fixture]")
 {
     GIVEN("a memory store with a 1-second to-device TTL")
     {
@@ -71,7 +69,10 @@ SCENARIO("to-device rows are evicted once the TTL expires", "[database][sync][se
             REQUIRE(merovingian::database::enqueue_to_device_message(
                 store, make_message(1U, "@bob:example.org", "BOB_DEVICE")));
             REQUIRE(store.to_device_messages.size() == 1U);
-            std::this_thread::sleep_for(std::chrono::milliseconds{1200});
+            // Model a definitely expired persisted timestamp, not elapsed sleep:
+            // sleep_for measures an interval but cannot make the wall clock
+            // used by TTL evaluation advance (e.g. around host clock changes).
+            store.to_device_messages.front().created_at_ms = 1U;
 
             auto const drained = merovingian::database::drain_to_device_messages(
                 store, "@bob:example.org", "BOB_DEVICE", 0U, store.next_sync_stream_id);

@@ -46,6 +46,8 @@
 #include <system_error>
 
 #include <sodium.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace
@@ -71,6 +73,120 @@ namespace
 } // namespace
 
 // --- bootstrap_admin_user --------------------------------------------------------
+
+#if defined(__linux__)
+SCENARIO("Credential issuance refuses a cached key copy that cannot be locked", "[homeserver][auth][cry6-lock]")
+{
+    GIVEN("a started runtime with a populated token-key cache")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::bootstrap_admin_user(runtime, "lockprobe", "AdminPass99!");
+        REQUIRE(user.ok);
+        auto const initial = merovingian::homeserver::login_local_user(runtime, user.value, "AdminPass99!", "INITIAL");
+        REQUIRE(initial.ok);
+        WHEN("a child loses its locked-memory budget before issuance")
+        {
+            auto const child = ::fork();
+            REQUIRE(child >= 0);
+            if (child == 0)
+            {
+                auto const limit = rlimit{0, 0};
+                if (::setrlimit(RLIMIT_MEMLOCK, &limit) != 0)
+                {
+                    ::_exit(20);
+                }
+                auto const count = runtime.database.persistent_store.refresh_tokens.size();
+                try
+                {
+                    auto const result =
+                        merovingian::homeserver::issue_refresh_token_for_session(runtime, user.value, "INITIAL");
+                    ::_exit(!result.ok && result.status == 503U && result.value.empty() &&
+                                    runtime.database.persistent_store.refresh_tokens.size() == count
+                                ? 0
+                                : 21);
+                }
+                catch (...)
+                {
+                    ::_exit(22);
+                }
+            }
+            auto status = int{};
+            REQUIRE(::waitpid(child, &status, 0) == child);
+            THEN("issuance returns 503 rather than throwing or weakening the key")
+            {
+                REQUIRE(WIFEXITED(status));
+                REQUIRE(WEXITSTATUS(status) == 0);
+            }
+        }
+    }
+}
+#endif
+
+SCENARIO("Credential issuance fails closed after the master key disappears", "[homeserver][auth][cry6]")
+{
+    GIVEN("a live account whose token key has already been cached")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto config = registration_enabled_config();
+        auto security = config.security();
+        auto const path = merovingian::tests::master_key_file();
+        security.secrets.master_key_file = path;
+        auto started = merovingian::homeserver::start_runtime(merovingian::config::Config{
+            config.server(), config.listeners(), merovingian::tests::in_memory_database_config(), security,
+            config.client_rate_limits(), config.log_modules()});
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::bootstrap_admin_user(runtime, "keyprobe", "AdminPass99!");
+        REQUIRE(user.ok);
+        auto const initial = merovingian::homeserver::login_local_user(runtime, user.value, "AdminPass99!", "INITIAL");
+        REQUIRE(initial.ok);
+        auto const access_count = runtime.database.persistent_store.access_tokens.size();
+        auto const refresh_count = runtime.database.persistent_store.refresh_tokens.size();
+        auto const device_count = runtime.database.persistent_store.devices.size();
+        auto const session_count = runtime.database.sessions.size();
+        WHEN("the key file is removed before login or refresh issuance")
+        {
+            std::filesystem::remove(path);
+            auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "AdminPass99!", "NEW");
+            auto const refresh =
+                merovingian::homeserver::issue_refresh_token_for_session(runtime, user.value, "INITIAL");
+            THEN("both issuers return 503 without storing credentials or creating devices")
+            {
+                CHECK_FALSE(login.ok);
+                CHECK(login.status == 503U);
+                CHECK(login.value.empty());
+                CHECK_FALSE(refresh.ok);
+                CHECK(refresh.status == 503U);
+                CHECK(refresh.value.empty());
+                CHECK(runtime.database.persistent_store.access_tokens.size() == access_count);
+                CHECK(runtime.database.persistent_store.refresh_tokens.size() == refresh_count);
+                CHECK(runtime.database.persistent_store.devices.size() == device_count);
+                CHECK(runtime.database.sessions.size() == session_count);
+            }
+        }
+        WHEN("the key file loses its read permission before issuance")
+        {
+            std::filesystem::permissions(path, std::filesystem::perms::none);
+            auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "AdminPass99!", "NEW");
+            auto const refresh =
+                merovingian::homeserver::issue_refresh_token_for_session(runtime, user.value, "INITIAL");
+            std::filesystem::remove(path);
+            THEN("permission loss also invalidates the cache and refuses issuance")
+            {
+                CHECK_FALSE(login.ok);
+                CHECK(login.status == 503U);
+                CHECK_FALSE(refresh.ok);
+                CHECK(refresh.status == 503U);
+                CHECK(runtime.database.persistent_store.access_tokens.size() == access_count);
+                CHECK(runtime.database.persistent_store.refresh_tokens.size() == refresh_count);
+                CHECK(runtime.database.persistent_store.devices.size() == device_count);
+                CHECK(runtime.database.sessions.size() == session_count);
+            }
+        }
+    }
+}
 
 SCENARIO("bootstrap_admin_user creates a new user with admin privilege", "[homeserver][auth][admin][bootstrap]")
 {
@@ -747,6 +863,7 @@ SCENARIO("load_hashed_registration_token reloads a rotated token file", "[homese
             auto output = std::ofstream{path};
             output << "first-token-value\n";
         }
+        std::filesystem::permissions(path, std::filesystem::perms::owner_read);
         auto registration = merovingian::config::RegistrationSecurityConfig{};
         registration.token_file = path.string();
 
@@ -770,10 +887,13 @@ SCENARIO("load_hashed_registration_token reloads a rotated token file", "[homese
             // A same-second rewrite is the hard case: an mtime-seconds-only
             // check would miss it. The identity therefore includes size and
             // sub-second mtime as well.
+            std::filesystem::permissions(path,
+                                         std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
             {
                 auto output = std::ofstream{path, std::ios::trunc};
                 output << "second-token-value-which-is-longer\n";
             }
+            std::filesystem::permissions(path, std::filesystem::perms::owner_read);
             auto const rotated = merovingian::homeserver::load_hashed_registration_token(registration);
 
             THEN("the new token is accepted and the old one is not")
@@ -824,6 +944,44 @@ SCENARIO("access_token_is_soft_logout returns false for empty and unknown tokens
 }
 
 // --- load_hashed_registration_token ------------------------------------------------
+
+SCENARIO("Registration token loading rejects insecure files even after caching",
+         "[homeserver][auth][iso7-registration]")
+{
+    GIVEN("a securely provisioned registration token file")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const path = merovingian::tests::registration_token_file();
+        std::filesystem::permissions(path, std::filesystem::perms::owner_read);
+        auto registration = merovingian::config::RegistrationSecurityConfig{};
+        registration.token_file = path;
+        REQUIRE(merovingian::homeserver::load_hashed_registration_token(registration).has_value());
+        WHEN("its permissions become group-readable")
+        {
+            std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::group_read);
+            auto const accepted = merovingian::homeserver::load_hashed_registration_token(registration).has_value();
+            std::filesystem::remove(path);
+            THEN("a cached hash cannot authorize use of the insecure file")
+            {
+                REQUIRE_FALSE(accepted);
+            }
+        }
+        WHEN("a fresh unsafe file has never been cached")
+        {
+            auto const unsafe = merovingian::tests::registration_token_file();
+            std::filesystem::permissions(unsafe,
+                                         std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+            registration.token_file = unsafe;
+            auto const accepted = merovingian::homeserver::load_hashed_registration_token(registration).has_value();
+            std::filesystem::remove(unsafe);
+            std::filesystem::remove(path);
+            THEN("the read boundary refuses it before hashing")
+            {
+                REQUIRE_FALSE(accepted);
+            }
+        }
+    }
+}
 
 SCENARIO("load_hashed_registration_token loads and hashes a token file once",
          "[homeserver][auth][registration][security]")

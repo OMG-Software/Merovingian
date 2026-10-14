@@ -25,6 +25,10 @@ Implemented now:
 - transfer-encoding rejection until streaming support exists
 - single-request HTTP/1.1 adapter from parsed request heads to client-server
   Matrix JSON handlers
+- general-purpose JSON parsing for unsigned payloads retains doubles but
+  rejects signed/unsigned integer values outside the canonical range before
+  signed conversion (`integer_out_of_range`, HTTP-7); `UINT64_MAX` cannot
+  become a negative room-tag/account-data value
 - production-named client-server API boundary in `client_server.hpp`
 - slowloris progress policy scaffolding
 - per-endpoint rate-limit policy scaffolding
@@ -281,6 +285,18 @@ backend choice:
   does not resolve hostnames so the SSRF policy in
   `merovingian::federation::security` remains the single source of truth
 
+Federation discovery applies `security.federation.deny_ip_ranges` in addition
+to the mandatory built-in SSRF blocks. The discovery network owns this immutable
+policy, so IP-literal, explicit-port, well-known, SRV, fallback, redirect and
+filtered URL lookups retain it on both cached and uncached paths. Main and
+federation-worker startup wire the same policy. Configured ranges cannot enable
+loopback or private destinations. The server-name discovery cache retains at
+most 1024 positive and negative entries combined, with a 60-second freshness
+TTL; when full, a new name evicts the oldest retained result. Expired entries
+are swept before cache hits and insertion. Invalid server names are refused
+before network work and never cached; concurrent admissions obey the same cap.
+A zero constructor capacity disables caching.
+
 **`OutboundRequest::allow_cleartext_http`** (added 0.12.1) is a narrow,
 opt-in escape hatch from the https-only rule above, defaulting to `false`
 for every existing caller (federation, the push-gateway client, the
@@ -474,6 +490,111 @@ The parser rejects oversized or malformed request heads before any endpoint hand
 ## Structured errors
 
 Request parser failures use stable error names and HTTP statuses. Oversized start lines, headers, header counts, and bodies map to `413`. Malformed request lines, invalid methods, invalid targets, and invalid content lengths map to `400`. Unsupported transfer encoding maps to `501` until streaming support exists.
+
+The public client-server and internal local-router entry points also
+preflight the **path portion**, before the first `?`, for literal NUL and
+`%00` (DB-6). They return `400 M_INVALID_PARAM` before a path-component
+decoder or handler runs; the public refusal retains configured CORS headers
+and does not reflect the untrusted target. The shared allocation-free
+`core::path_component_contains_nul` check preserves one-pass decoding:
+`%2500` remains a literal `%00`, not NUL. This is not a query/body/binary
+payload filter. Recognized `via` and `server_name` join-server query values
+are checked separately before their path-style decoding: NUL returns
+`400 M_INVALID_PARAM`, rather than an exception escaping either the public
+join handler or the direct-local room join route.
+Unknown query values and once-encoded percent signs are not blanket-rejected.
+Send, redact, state GET/PUT, report and typing parsers strip the query before
+extracting or decoding path components. Unrelated ordinary, `%00`, `%2500`
+and literal-NUL query values cannot change transaction scope, state keys,
+reported event IDs or typing subjects. The authenticated SQLite regression
+first failed 48 / 174 checks, then passed 230 / 1 after path/query separation.
+The join-hint regression first reproduced direct-local exceptions (16 / 108),
+then passed 188 / 1 with memory and reopened durable business snapshots.
+Unrelated `std::invalid_argument` exceptions are not caught and relabelled
+as malformed paths. The no-proxy `handle_federation_http_request` entry point
+also checks the path before routing or verified-worker replay and emits a
+structured Matrix error without reflecting the target. Real authenticated
+loopback socket-HTTP coverage checks nine malformed room/member/event ID
+cases, complete `400` responses, keep-alive with `200` controls on the same
+socket, `%2500` compatibility and unchanged memory/reopened SQLite rows and
+watermarks (246 assertions / 1 case after a genuine 16-failure RED).
+Proxy routing runs before that dispatcher. `FederationProxy::handle` therefore
+applies the same narrow guard before bypass/authentication/shard-key decoding.
+A second real socket scenario uses a healthy separate worker, durable startup
+fixtures and no failed-room-sync fallback: genuine RED failed 7 / 293, then
+GREEN passed 311 / 1 (both transport cases together: 557 / 2). It also checks
+structured `M_INVALID_PARAM`, same-socket controls, one-pass compatibility and
+unchanged business rows/watermarks. Independent source review approves this
+federation slice. The five client query/path and direct-local join-hint
+repairs passed bounded independent review with reviewed-source hash binding.
+The subsequent review-gap full CLI completed exit 0: 56 OK, no failures or
+timeouts, fresh text/JSON reports, all return codes zero and 127 unchanged
+snapshotted files. This checkpoint does not accept subsequent edits.
+Further tracing found raw query text reaching to-device transaction IDs,
+knock room IDs and shared user-metadata suffixes. Those boundaries now take
+the path before the query separator. The additional real authenticated
+SQLite regression failed 34 / 169 checks before the repair, then passed
+255 / 1 after a declaration-order build failure was corrected. It checks
+original to-device transaction replay and recipient delivery, intended
+account-data/tag keys (including read/delete), and durable knock membership.
+The current normal DB-6 integration group passes 1595 / 12 with unchanged
+socket and earlier admission/query groups. Isolated real PostgreSQL
+URI-only and URI-plus-file reruns after this repair each pass 178 / 2 with
+verified fixture cleanup, cluster shutdown/removal and unchanged sources.
+The extended review found no blocking issue in the additional three-boundary
+repair, but its decoder-completeness check failed: profile GET/PUT, shared
+room action/receipt suffixes and presence still use raw target slices.
+Query-contained endpoint markers can reach their decoders; ordinary receipt
+query text can change the recorded event ID. Parent source inspection
+corroborates these pre-existing gaps. A separate registered real SQLite
+scenario then failed 206 / 691 assertions after a complete no-query control
+passed; every nonempty query/marker case failed. Profile GET/PUT, shared
+room suffixes (including receipts) and presence now take the existing
+path-only request view. The new scenario checks correct profile/presence
+rows after reopen, canonical whole state, exact in-memory receipt event IDs,
+durable fully-read markers and leave-last membership. GREEN passes 733 / 1;
+current normal DB-6 integration passes 2328 / 13, with prior groups unchanged.
+Current isolated PostgreSQL admission reruns each pass 178 / 2 in URI-only
+and URI-plus-file modes, with verified cleanup/teardown and all 22 then-tracked
+sources matching executed integration/unit/database snapshots. The subsequent
+review rejected an introduced `/members` query-loss regression. Its real-dispatch
+conformance RED failed 50 / 164 checks; extracting supported queries separately
+from the original request, while keeping the path suffix clean, passes 164 / 1.
+A separate RED 16 / 73 exposed a pre-existing intersection of combined member
+filters; the pinned specification requires union, now passing 73 / 1. Current
+history conformance passes 1816 / 17, normal DB-6 integration remains 2328 / 13,
+and both current isolated PostgreSQL modes pass 178 / 2 with verified teardown.
+All 23 current admission sources match conformance/integration/unit/both-database
+snapshots; scoped static findings are unchanged. Fresh member-repair source
+review passed with no security or logic findings; reviewed production/tests
+match executed GREEN. The postmembers full checkpoint subsequently passed
+56 OK targets, all return codes zero and no failures/timeouts, with 129 unchanged
+snapshotted files. That is acceptance of its earlier snapshot only.
+
+The remaining nondecoder device GET/PUT/password-UIA DELETE and backup-version
+DELETE handlers now select IDs from the path, never the unrelated query suffix.
+Real public device login establishes the client cache as well as durable rows.
+After healthy no-query controls, device RED failed 56 / 216 assertions and backup
+RED failed 24 / 181; repaired scenarios pass 224 / 1 and 181 / 1. They check
+intended identities, SQLite reopen, target-session revocation without losing the
+owner's device/session, preservation of another backup version and repeated
+deletion. Current normal DB-6 integration passes 2733 / 15, history conformance
+remains 1816 / 17 and unit groups remain green. Both isolated PostgreSQL
+admission/compatibility modes pass 178 / 2 with verified cleanup/teardown; all
+five completed execution manifests match the same 23 current sources.
+Bounded independent source review of this addition passed with no security or
+logic findings. The fresh combined checkpoint passed 56 OK targets with all
+return codes zero and no failures/timeouts, verified against 130 unchanged
+snapshotted files including the focused sources. The source freeze ended after
+acceptance. Exact UIA challenge structure and stronger reopened owner-token and
+survivor-metadata comparisons remain nonblocking coverage suggestions; this is
+not whole DB-6 or release acceptance.
+Other room-action branches, presence GET, arbitrary encoded device IDs, backup
+encryption/session cascade and new live-PostgreSQL/wire coverage of these
+operations are not established by these SQLite scenarios. DB-6 is not closed.
+This is not TLS, hardened-worker, raw-wire-NUL,
+query/body, or all-route socket coverage; see proposed
+[ADR-0137](adr/0137-reject-nul-before-mutation-and-path-decoding.md).
 
 ## Slowloris policy
 
@@ -739,6 +860,64 @@ an attacker able to reach a trusted proxy (or a proxy that fails to overwrite
 an inbound `X-Forwarded-For` header) could rotate through malformed
 pseudo-IP values to mint a fresh rate-limit bucket per request and defeat
 per-IP limiting on `/login`, `/register`, and every other endpoint entirely.
+
+## Federation signing-key resolution admission
+
+Network-capable relayed-PDU sender lookups share origin bootstrap's source-keyed
+rate budget, per-runtime in-flight cap and bounded `(server_name, key_id)` negative
+cache (FED-10). Authenticating a relay does not authorize unlimited discovery for
+other domains named in its events. Parallel pre-resolution and authorization
+fallbacks use the same admission wrapper; overload rejects work rather than
+queueing it. A rejected admission is not cached as a failed lookup.
+
+Core inbound resolution preserves local denial separately from actual lookup
+failure. A locally deferred sender or restricted-join authorising key returns
+503 without charging or resetting the relay's trust. The original transaction
+is not recorded as accepted, and its EDUs are deferred, so it remains retryable.
+Genuine failures, including negative-cache hits, retain their penalties in mixed
+transactions. Some PDUs may already have reached ingestion before the 503;
+event-ID idempotency remains necessary on retry. Direct membership/invite paths
+likewise return 503 before their acceptance hook. See
+[ADR-0133](adr/0133-preserve-local-key-admission-denial-separately-from-remote-failure.md).
+
+Main's PDU, membership and invite IPC re-verification uses the same key-only
+resolution/admission helper. Matching cached keys need no discovery. Misses
+share main's in-flight cap, negative cache and one `<unknown>` source bucket:
+these frames contain no main-validated client address, and a worker-provided
+address must not select the bucket. This deliberately limits cold-key misses
+across all main relay channels rather than claiming per-client fairness. Local
+denial returns the existing PDU `main_overloaded` status or an unaccepted 503
+membership/invite response, before mutation. Signature, event-time validity and
+signed-event identity checks still run. See
+[ADR-0134](adr/0134-share-key-admission-with-main-worker-relay-verification.md).
+These remain per-runtime controls, not aggregate limits for every process.
+Backfilled events, snapshot state and fetched auth-chain events now use that same
+admitted key-only helper and unknown-source bucket. Their existing backfill HTTP
+limits remain separate. A local key denial stops subsequent recovery calls and
+returns the existing PDU overload result, not ordinary missing state; transaction
+handling therefore preserves 503, deferred EDUs and unchanged-transaction retry.
+Already verified outliers from earlier recovery steps are not rolled back. See
+[ADR-0135](adr/0135-preserve-key-admission-denial-through-backfill-recovery.md).
+Fresh post-backfill full-suite verification and independent source-only review
+passed. Additional sticky-denial/partial-progress tests and end-to-end worker
+socket-HTTP overload propagation coverage remain before whole-FED-10 closure;
+source review does not establish transport behavior.
+
+A separate `cached_pdu_key_lookup` reads verification keys without DNS or HTTP.
+Production returns owned local signing keys, including retained keys, or fresh
+persistent remote keys; the federation core checks the requested server/key
+identity and event authorization retains signature and event-time validity checks.
+These reads spend no outbound budget and release no outbound reservation.
+
+Known-peer rotation can use the same direct key read while preserving existing
+discovery/trust state. An unknown origin still needs admitted discovery even when
+its persistent key is fresh; freshness is not proof that a complete peer resolver
+will avoid the network. Production therefore does not set the legacy boolean
+full-resolution cache hint. Raw and already-verified request paths populate the
+signed request's source using `rate_limit_client_key`; missing sources retain the
+shared unknown bucket. In-flight guards release only their own reservations, and
+parallel task permits/callable lifetimes are RAII-managed during exceptions.
+See [ADR-0132](adr/0132-separate-cached-verification-keys-from-budgeted-discovery.md).
 
 ## Sync long-poll thread pool
 

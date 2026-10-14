@@ -150,6 +150,11 @@ auto event_type_is_valid(std::string_view type) noexcept -> bool
     return !type.empty() && type.size() <= 255U && contains_no_control_or_space(type);
 }
 
+auto state_key_contains_nul(std::string_view state_key) noexcept -> bool
+{
+    return state_key.find('\0') != std::string_view::npos;
+}
+
 auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
 {
     auto result = [&]() -> EventParseResult {
@@ -213,6 +218,10 @@ auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
 
         if (auto const* state_key = string_member(*object, "state_key"); state_key != nullptr)
         {
+            if (state_key_contains_nul(*state_key))
+            {
+                return {{}, "state_key contains NUL"};
+            }
             if (state_key->size() > max_state_key_length_bytes)
             {
                 return {{}, "state_key exceeds 255 bytes"};

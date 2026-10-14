@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <fstream>
+#include <filesystem>
 #include <random>
 #include <string>
 #include <string_view>
@@ -29,6 +30,8 @@ inline auto registration_token_file() -> std::string
     auto const path = temporary_directory() / filename;
     auto output = std::ofstream{path};
     output << registration_token << '\n';
+    output.close();
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read);
     return path.string();
 }
 

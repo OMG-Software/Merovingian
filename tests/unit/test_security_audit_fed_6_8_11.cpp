@@ -676,6 +676,16 @@ SCENARIO("PDUs for rooms with no local membership are not stored", "[security][f
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
         auto const worker_relay = GENERATE(false, true);
+        // This flood exercises room-interest admission, not discovery. Main's
+        // already-known verification key must be cache-only just as in production.
+        runtime.federation.cached_pdu_key_lookup =
+            [](std::string_view server,
+               std::string_view id) -> std::optional<merovingian::federation::FederationKeyRecord> {
+            auto key = remote_for_test().signing_key;
+            if (key.server_name == server && key.key_id == id)
+                return key;
+            return std::nullopt;
+        };
         runtime.federation.remote_key_resolver = [](auto, auto) {
             return std::optional{remote_for_test()};
         };

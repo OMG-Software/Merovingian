@@ -19,9 +19,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef __linux__
@@ -76,6 +78,7 @@ auto read_file(std::string_view path) -> std::optional<std::string>
 
 auto main(int argc, char const* const* argv) -> int
 {
+    std::ignore = ::umask(0077);
     // HTTP-5: ignore SIGPIPE before any thread exists and before seccomp is
     // installed. Fail closed.
     if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)

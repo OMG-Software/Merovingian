@@ -170,6 +170,16 @@ int merovingian_yyjson_number_is_integer(MerovingianYyjsonValue* value)
     return yyjson_is_int(value) ? 1 : 0;
 }
 
+int merovingian_yyjson_integer_in_canonical_range(MerovingianYyjsonValue* value)
+{
+    // Check unsigned integers before yyjson_get_sint can reinterpret their sign bit.
+    if (yyjson_is_uint(value))
+    {
+        return yyjson_get_uint(value) <= 9007199254740991ULL ? 1 : 0;
+    }
+    return yyjson_get_sint(value) >= -9007199254740991LL && yyjson_get_sint(value) <= 9007199254740991LL ? 1 : 0;
+}
+
 long long merovingian_yyjson_number_as_int64(MerovingianYyjsonValue* value)
 {
     return (long long)yyjson_get_sint(value);

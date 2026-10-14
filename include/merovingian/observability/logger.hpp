@@ -246,6 +246,12 @@ public:
         m_console_log_level.store(level);
     }
 
+    // Return the exact previous threshold for scoped diagnostic capture.
+    [[nodiscard]] auto exchange_console_log_level(LogLevel level) noexcept -> LogLevel
+    {
+        return m_console_log_level.exchange(level);
+    }
+
     auto set_file_log_level(LogLevel level) noexcept -> void
     {
         m_file_log_level.store(level);
@@ -269,6 +275,27 @@ public:
     {
         auto lock = std::lock_guard<std::shared_mutex>{m_module_levels_lock};
         m_module_levels[std::string{logger}] = level;
+    }
+
+    // nullopt removes an override, preserving inheritance rather than copying
+    // the current default into a permanent explicit module level. The caller
+    // retains its name so restoration of an existing entry needs no allocation.
+    [[nodiscard]] auto exchange_module_log_level(std::string const& logger,
+                                                 std::optional<LogLevel> level) -> std::optional<LogLevel>
+    {
+        auto lock = std::lock_guard<std::shared_mutex>{m_module_levels_lock};
+        auto const current = m_module_levels.find(logger);
+        auto const previous =
+            current == m_module_levels.end() ? std::optional<LogLevel>{} : std::optional<LogLevel>{current->second};
+        if (level.has_value())
+        {
+            m_module_levels.insert_or_assign(logger, *level);
+        }
+        else if (current != m_module_levels.end())
+        {
+            m_module_levels.erase(current);
+        }
+        return previous;
     }
 
     [[nodiscard]] auto module_log_level(std::string_view logger) const -> LogLevel

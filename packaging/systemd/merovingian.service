@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=simple
 User=merovingian
 Group=merovingian
+UMask=0077
 ExecStart=/usr/bin/merovingian-server --config /etc/merovingian/merovingian.conf
 Restart=on-failure
 RestartSec=5s

@@ -63,6 +63,95 @@ SCENARIO("EDU-only federation send transactions bypass the worker pool", "[feder
     }
 }
 
+SCENARIO("Federation send bypass requires an explicitly empty PDU array", "[federation][routing][fed9]")
+{
+    GIVEN("a nonempty transaction with a malformed first PDU followed by a room PDU")
+    {
+        auto const first_pdus = std::vector<std::string>{R"({"event_id":"$missing-room"})",
+                                                         "null",
+                                                         "42",
+                                                         R"({"room_id":null})",
+                                                         R"({"room_id":42})",
+                                                         R"({"room_id":""})"};
+
+        WHEN("the transaction is classified for worker routing")
+        {
+            THEN("every transaction stays in the worker even without a first-PDU shard key")
+            {
+                for (auto const& first_pdu : first_pdus)
+                {
+                    INFO("first PDU: " << first_pdu);
+                    auto request = make_request(
+                        "/_matrix/federation/v1/send/txn-mixed",
+                        R"({"pdus":[)" + first_pdu +
+                            R"(,{"room_id":"!real:example.org","event_id":"$real","type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}}]})");
+                    request.method = "PUT";
+                    REQUIRE_FALSE(federation_request_should_bypass_worker(request));
+                    // Do not select a later PDU's room and trigger main's room-sync fallback.
+                    REQUIRE(federation_worker_room_id_from_request(request).empty());
+                }
+            }
+        }
+    }
+
+    GIVEN("a transaction whose PDU array is missing, mistyped, nonempty, or unparseable")
+    {
+        auto const bodies = std::vector<std::string>{R"({"edus":[]})",
+                                                     R"({"pdus":null})",
+                                                     R"({"pdus":{}})",
+                                                     R"({"pdus":"[]"})",
+                                                     R"({"pdus":[{}]})",
+                                                     R"({"pdus":[{"room_id":"!room:example.org"}]})",
+                                                     R"({"pdus":[])",
+                                                     "[]",
+                                                     ""};
+
+        WHEN("the worker bypass decision is made")
+        {
+            THEN("none is mistaken for an EDU-only transaction")
+            {
+                for (auto const& body : bodies)
+                {
+                    INFO("body: " << body);
+                    auto request = make_request("/_matrix/federation/v1/send/txn-invalid", body);
+                    request.method = "PUT";
+                    REQUIRE_FALSE(federation_request_should_bypass_worker(request));
+                }
+            }
+        }
+    }
+
+    GIVEN("a transaction with an explicitly empty PDU array")
+    {
+        WHEN("PUT /send is classified with or without a query string")
+        {
+            THEN("the existing EDU-only fast path is preserved")
+            {
+                for (auto const& target : std::vector<std::string>{"/_matrix/federation/v1/send/txn-empty",
+                                                                   "/_matrix/federation/v1/send/txn-empty?x=1"})
+                {
+                    auto request = make_request(target, R"({"pdus":[],"edus":[]})");
+                    request.method = "PUT";
+                    REQUIRE(federation_request_should_bypass_worker(request));
+                    REQUIRE(federation_worker_room_id_from_request(request).empty());
+                }
+            }
+        }
+
+        WHEN("the method or path does not identify PUT /send")
+        {
+            THEN("an empty PDU array does not grant a bypass")
+            {
+                auto request = make_request("/_matrix/federation/v1/send/txn-empty", R"({"pdus":[]})");
+                REQUIRE_FALSE(federation_request_should_bypass_worker(request));
+                request.method = "PUT";
+                request.target = "/_matrix/federation/v1/query/profile?x=/_matrix/federation/v1/send/txn-empty";
+                REQUIRE_FALSE(federation_request_should_bypass_worker(request));
+            }
+        }
+    }
+}
+
 SCENARIO("Federation /send room_id extraction uses the real JSON parser", "[federation][routing][room-id][json]")
 {
     GIVEN("a /send body whose first PDU contains a decoy substring before the real room_id")

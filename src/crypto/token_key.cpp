@@ -10,43 +10,6 @@
 namespace merovingian::crypto
 {
 
-TokenHmacKey::TokenHmacKey(TokenHmacKey const& other) noexcept
-    : bytes(other.bytes)
-{
-}
-
-auto TokenHmacKey::operator=(TokenHmacKey const& other) noexcept -> TokenHmacKey&
-{
-    if (this != &other)
-    {
-        sodium_memzero(bytes.data(), bytes.size());
-        bytes = other.bytes;
-    }
-    return *this;
-}
-
-TokenHmacKey::TokenHmacKey(TokenHmacKey&& other) noexcept
-    : bytes(other.bytes)
-{
-    sodium_memzero(other.bytes.data(), other.bytes.size());
-}
-
-auto TokenHmacKey::operator=(TokenHmacKey&& other) noexcept -> TokenHmacKey&
-{
-    if (this != &other)
-    {
-        sodium_memzero(bytes.data(), bytes.size());
-        bytes = other.bytes;
-        sodium_memzero(other.bytes.data(), other.bytes.size());
-    }
-    return *this;
-}
-
-TokenHmacKey::~TokenHmacKey()
-{
-    sodium_memzero(bytes.data(), bytes.size());
-}
-
 namespace
 {
 
@@ -71,6 +34,7 @@ namespace
     // the label, guaranteeing the two keys are independent.
     [[nodiscard]] auto derive_with_label(std::span<std::uint8_t const> master_key_material,
                                          std::string_view label) noexcept -> std::optional<TokenHmacKey>
+    try
     {
         if (!sodium_is_ready() || master_key_material.empty())
         {
@@ -84,6 +48,10 @@ namespace
             return std::nullopt;
         }
         return key;
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::nullopt;
     }
 
 } // namespace

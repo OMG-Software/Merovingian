@@ -5,6 +5,7 @@
 
 #include "merovingian/federation/security.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -14,16 +15,23 @@ namespace merovingian::federation
 {
 
 CachedServerDiscovery::CachedServerDiscovery(ServerDiscoveryNetwork& upstream, std::uint64_t ttl_ms,
-                                             std::function<std::uint64_t()> now_ms)
+                                             std::function<std::uint64_t()> now_ms, std::size_t capacity)
     : upstream_{upstream}
     , ttl_ms_{ttl_ms}
     , now_ms_{std::move(now_ms)}
+    , capacity_{capacity}
 {
 }
 
-auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t timeout_seconds)
-    -> ServerDiscoveryResult
+auto CachedServerDiscovery::discover(std::string_view server_name,
+                                     std::uint32_t timeout_seconds) -> ServerDiscoveryResult
 {
+    if (!server_name_is_valid(server_name))
+    {
+        auto result = ServerDiscoveryResult{};
+        result.reason = "invalid server name";
+        return result;
+    }
     auto const key = std::string{server_name};
     auto const now = now_ms_ ? now_ms_() : std::uint64_t{0U};
 
@@ -32,6 +40,9 @@ auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t
     // server does not block concurrent lookups for another.
     {
         auto const lock = std::lock_guard<std::mutex>{mutex_};
+        std::erase_if(cache_, [now, this](auto const& item) {
+            return now < item.second.fetched_at_ms || now - item.second.fetched_at_ms >= ttl_ms_;
+        });
         auto const it = cache_.find(key);
         if (it != cache_.end() && (now - it->second.fetched_at_ms) < ttl_ms_)
         {
@@ -45,8 +56,29 @@ auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t
     // server does not trigger a full DNS cascade on every PDU in a large
     // inbound transaction. `pinned_addresses` are refreshed on the next miss.
     auto const lock = std::lock_guard<std::mutex>{mutex_};
-    cache_[key] = Entry{result, now};
+    auto const completed_at = now_ms_ ? now_ms_() : std::uint64_t{0U};
+    std::erase_if(cache_, [completed_at, this](auto const& item) {
+        return completed_at < item.second.fetched_at_ms || completed_at - item.second.fetched_at_ms >= ttl_ms_;
+    });
+    if (capacity_ != 0U && ttl_ms_ != 0U && completed_at >= now && completed_at - now < ttl_ms_)
+    {
+        if (!cache_.contains(key) && cache_.size() >= capacity_)
+        {
+            auto const oldest = std::ranges::min_element(cache_, [](auto const& left, auto const& right) {
+                return left.second.fetched_at_ms < right.second.fetched_at_ms ||
+                       (left.second.fetched_at_ms == right.second.fetched_at_ms && left.first < right.first);
+            });
+            cache_.erase(oldest);
+        }
+        cache_.insert_or_assign(key, Entry{result, now});
+    }
     return result;
+}
+
+auto CachedServerDiscovery::size() const -> std::size_t
+{
+    auto const lock = std::lock_guard<std::mutex>{mutex_};
+    return cache_.size();
 }
 
 auto CachedServerDiscovery::lookup_addresses_filtered(std::string_view host, std::uint16_t port) -> ResolvedAddressSet
@@ -56,7 +88,7 @@ auto CachedServerDiscovery::lookup_addresses_filtered(std::string_view host, std
     {
         return resolved;
     }
-    if (!address_set_allowed(resolved.addresses))
+    if (!address_set_allowed(resolved.addresses, upstream_.denied_ip_ranges()))
     {
         return ResolvedAddressSet{false, {}, "resolved address set contains disallowed addresses"};
     }

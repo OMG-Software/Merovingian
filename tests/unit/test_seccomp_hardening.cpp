@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #ifdef __linux__
+#include <array>
+#include <csignal>
 #include <cstdint>
+#include <tuple>
 
 #include <linux/audit.h>
 #include <linux/seccomp.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 // #428: personality() is allowed in the seccomp allowlist only for
@@ -168,6 +174,123 @@ SCENARIO("seccomp probe reads /proc/self/status successfully on Linux", "[platfo
     }
 }
 
+SCENARIO("Only the main seccomp profile permits descriptor-bound owner-only database permissions",
+         "[platform][seccomp][linux][sqlite-mode]")
+{
+    GIVEN("a private descriptor and the main, federation and decoder profiles")
+    {
+        auto file = merovingian::core::FileDescriptor{static_cast<int>(::syscall(__NR_memfd_create, "sqlite-mode", 0))};
+        REQUIRE(file.valid());
+        REQUIRE(::fchmod(file.get(), 0600) == 0);
+
+        WHEN("each profile attempts owner-only and broader permission changes")
+        {
+            THEN("only main can set exactly 0600 and neither worker gains metadata mutation")
+            {
+                for (auto const profile : std::array{0, 1, 2})
+                {
+                    for (auto const mode : std::array<mode_t, 4>{0600, 0644, 0666, 04777})
+                    {
+                        CAPTURE(profile, mode);
+                        auto const pid = ::fork();
+                        REQUIRE(pid >= 0);
+                        if (pid == 0)
+                        {
+                            auto const installed =
+                                profile == 0
+                                    ? merovingian::platform::apply_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS)
+                                : profile == 1 ? merovingian::platform::apply_worker_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS)
+                                               : merovingian::platform::apply_decoder_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS);
+                            if (!installed)
+                            {
+                                ::syscall(__NR_exit_group, 20);
+                                __builtin_unreachable();
+                            }
+                            auto const result = ::fchmod(file.get(), mode);
+                            ::syscall(__NR_exit_group, result == 0 ? 0 : 21);
+                            __builtin_unreachable();
+                        }
+                        auto status = int{};
+                        REQUIRE(::waitpid(pid, &status, 0) == pid);
+                        if (profile == 0 && mode == 0600)
+                        {
+                            REQUIRE(WIFEXITED(status));
+                            REQUIRE(WEXITSTATUS(status) == 0);
+                        }
+                        else
+                        {
+                            REQUIRE(WIFSIGNALED(status));
+                            REQUIRE(WTERMSIG(status) == SIGSYS);
+                        }
+                        struct stat metadata
+                        {
+                        };
+                        REQUIRE(::fstat(file.get(), &metadata) == 0);
+                        REQUIRE((metadata.st_mode & 07777) == 0600);
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Inherited main seccomp permits only the private creation mask before worker hardening",
+         "[platform][seccomp][linux][worker-private-mask]")
+{
+    GIVEN("a subprocess that must set its mask before installing its own worker profile")
+    {
+        WHEN("each profile receives private and non-private umask requests")
+        {
+            THEN("main admits exactly 0077 while hardened workers admit no mask changes")
+            {
+                for (auto const profile : std::array{0, 1, 2})
+                {
+                    for (auto const mask : std::array<mode_t, 4>{0077, 0000, 0022, 0777})
+                    {
+                        CAPTURE(profile, mask);
+                        auto const pid = ::fork();
+                        REQUIRE(pid >= 0);
+                        if (pid == 0)
+                        {
+                            std::ignore = ::umask(0000);
+                            auto const installed =
+                                profile == 0
+                                    ? merovingian::platform::apply_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS)
+                                : profile == 1 ? merovingian::platform::apply_worker_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS)
+                                               : merovingian::platform::apply_decoder_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS);
+                            if (!installed)
+                            {
+                                ::syscall(__NR_exit_group, 20);
+                                __builtin_unreachable();
+                            }
+                            auto const previous = ::umask(mask);
+                            auto const observed = ::umask(0077);
+                            ::syscall(__NR_exit_group, previous == 0 && observed == 0077 ? 0 : 21);
+                            __builtin_unreachable();
+                        }
+                        auto status = int{};
+                        REQUIRE(::waitpid(pid, &status, 0) == pid);
+                        if (profile == 0 && mask == 0077)
+                        {
+                            REQUIRE(WIFEXITED(status));
+                            REQUIRE(WEXITSTATUS(status) == 0);
+                        }
+                        else
+                        {
+                            REQUIRE(WIFSIGNALED(status));
+                            REQUIRE(WTERMSIG(status) == SIGSYS);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalation syscalls",
          "[platform][hardening][seccomp][linux]")
 {
@@ -239,10 +362,11 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
 
         WHEN("privilege-modification filesystem syscalls are checked")
         {
-            THEN("chmod, fchmod, fchmodat, umask, mkdir, and truncate remain blocked")
+            THEN("chmod, fchmod, fchmodat, umask, mkdir, and truncate are not unconditionally allowed")
             {
-                // Permission bits, ownership, and umask changes are not required
-                // after startup. truncate (path-based) is blocked; only the fd-based
+                // Arbitrary permissions, ownership, and umask remain denied;
+                // fchmod is restricted to 0600 and tested against the kernel above.
+                // truncate (path-based) is blocked; only the fd-based
                 // ftruncate (needed by SQLite) is permitted.
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_chmod));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fchmod));

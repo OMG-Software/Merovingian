@@ -97,6 +97,11 @@
 | `PUT` | `/_matrix/client/v3/devices/{deviceId}` | `updateDevice` | access token | required application/json | 200, 201, 404 |
 | `DELETE` | `/_matrix/client/v3/devices/{deviceId}` | `deleteDevice` | access token | required application/json | 200, 401 |
 
+Single-device GET, PUT and password-UIA DELETE extract `deviceId` from the
+request path before the query separator. Unrelated query text does not rename
+the selected device or alter its deletion/session revocation. Authentication
+and the password-UIA requirement remain unchanged.
+
 ## End-to-end encryption
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
@@ -121,6 +126,12 @@
 | `GET` | `/_matrix/client/v3/room_keys/version/{version}` | `getRoomKeysVersion` | access token | - | 200, 404, 429 |
 | `PUT` | `/_matrix/client/v3/room_keys/version/{version}` | `putRoomKeysVersion` | access token | required application/json | 200, 400, 404, 429 |
 | `DELETE` | `/_matrix/client/v3/room_keys/version/{version}` | `deleteRoomKeysVersion` | access token | - | 200, 404, 429 |
+
+Backup-version DELETE also selects `version` from the path before `?`.
+Unrelated query text cannot turn a successful deletion into a no-op on the
+intended version. SQLite regressions check deletion after reopening the store,
+preservation of another version and repeated deletion; encryption and backed-up
+session cascade are outside that regression's scope.
 
 ## Event relationships
 
@@ -327,6 +338,14 @@ Implemented: returns RFC 8414 metadata when `server.oidc.*` is configured; `404 
 | `GET` | `/_matrix/client/v3/login/sso/redirect/{idpId}` | `redirectToIdP` | none | - | 302, 404 |
 | `POST` | `/_matrix/client/v3/logout` | `logout` | access token | - | 200 |
 | `POST` | `/_matrix/client/v3/logout/all` | `logout_all` | access token | - | 200 |
+
+Refresh-enabled `POST /_matrix/client/v3/login` and `POST /_matrix/client/v3/refresh`
+include `expires_in_ms` for positive configured access-token lifetimes. When
+`security.access_token_lifetime_ms` is zero, both omit the optional field: its
+absence means that the issued access token does not expire (Matrix v1.19).
+Legacy login without refresh support is unchanged. These response semantics are
+covered by `tests/conformance/test_token_expiry_conformance.cpp`; registration
+expiry responses are outside that scenario's scope.
 
 ## Spaces
 

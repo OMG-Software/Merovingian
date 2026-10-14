@@ -320,6 +320,9 @@ SCENARIO("Public registration enforces configured token policy and never bootstr
             auto output = std::ofstream{token_file};
             output << "register-alpha-token\n";
         }
+        // Production secret readers require owner-read-only files, not the
+        // process umask's default mode for an ofstream fixture.
+        std::filesystem::permissions(token_file, std::filesystem::perms::owner_read);
         auto started = merovingian::homeserver::start_client_server(token_required_registration_config(token_file));
         REQUIRE(started.started);
         auto& runtime = started.runtime;

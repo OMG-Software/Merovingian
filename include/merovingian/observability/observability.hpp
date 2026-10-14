@@ -187,6 +187,9 @@ private:
 [[nodiscard]] auto audit_event_summary(AuditLogEvent const& event) -> std::string;
 [[nodiscard]] auto log_field_is_sensitive(std::string_view key) -> bool;
 [[nodiscard]] auto sanitized_http_target(std::string_view target) -> std::string;
+// Audit targets retain only the path/identifier, never any query string. Bound
+// and repair UTF-8 before either logging or persistence; see ADR-0136.
+[[nodiscard]] auto sanitized_audit_target(std::string_view target) -> std::string;
 [[nodiscard]] auto redact_log_value(StructuredLogField const& field) -> std::string;
 // M-11 (security-audit-report-2026-09.md): redacts `key=value` tokens in a
 // freeform log message when `key` matches the same sensitivity rules as

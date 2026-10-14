@@ -275,10 +275,103 @@ auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> boo
            starts_with(address, "fd");
 }
 
-auto address_set_allowed(std::vector<std::string> const& addresses) noexcept -> bool
+namespace
 {
-    return !addresses.empty() && std::ranges::none_of(addresses, [](std::string const& address) {
-        return ip_address_is_private_or_loopback(address);
+    struct IpBytes final
+    {
+        std::array<std::uint8_t, 16U> bytes{};
+        std::size_t size{0U};
+    };
+
+    [[nodiscard]] auto parse_ip_bytes(std::string_view text) noexcept -> IpBytes
+    {
+        auto result = IpBytes{};
+        if (text.empty() || text.size() >= INET6_ADDRSTRLEN || text.find('\0') != std::string_view::npos)
+        {
+            return result;
+        }
+        auto literal = std::array<char, INET6_ADDRSTRLEN>{};
+        std::ranges::copy(text, literal.begin());
+        auto v4 = in_addr{};
+        if (::inet_pton(AF_INET, literal.data(), &v4) == 1)
+        {
+            auto const value = ntohl(v4.s_addr);
+            for (auto index = 0U; index < 4U; ++index)
+            {
+                result.bytes[index] = static_cast<std::uint8_t>(value >> (24U - index * 8U));
+            }
+            result.size = 4U;
+            return result;
+        }
+        auto v6 = in6_addr{};
+        if (::inet_pton(AF_INET6, literal.data(), &v6) == 1)
+        {
+            std::ranges::copy(v6.s6_addr, result.bytes.begin());
+            result.size = 16U;
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto prefix_matches(IpBytes const& address, IpBytes const& network, unsigned prefix) noexcept -> bool
+    {
+        if (address.size != network.size)
+        {
+            return false;
+        }
+        for (auto index = 0U; index < prefix / 8U; ++index)
+        {
+            if (address.bytes[index] != network.bytes[index])
+            {
+                return false;
+            }
+        }
+        auto const remaining = prefix % 8U;
+        auto const mask = remaining == 0U ? 0U : 0xFFU << (8U - remaining);
+        return remaining == 0U || (address.bytes[prefix / 8U] & mask) == (network.bytes[prefix / 8U] & mask);
+    }
+
+    [[nodiscard]] auto range_denies(IpBytes address, std::string_view range) noexcept -> bool
+    {
+        auto const slash = range.find('/');
+        auto const network = parse_ip_bytes(range.substr(0U, slash));
+        auto prefix = static_cast<unsigned>(network.size * 8U);
+        if (network.size == 0U)
+        {
+            return true; // An invalid operator policy must never open the boundary.
+        }
+        if (slash != std::string_view::npos)
+        {
+            auto const text = range.substr(slash + 1U);
+            auto const parsed = std::from_chars(text.data(), text.data() + text.size(), prefix);
+            if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+                prefix > network.size * 8U)
+            {
+                return true;
+            }
+        }
+        if (network.size == 4U && address.size == 16U &&
+            std::ranges::all_of(address.bytes.begin(), address.bytes.begin() + 10,
+                                [](auto byte) {
+                                    return byte == 0U;
+                                }) &&
+            address.bytes[10] == 0xFFU && address.bytes[11] == 0xFFU)
+        {
+            std::copy_n(address.bytes.begin() + 12, 4U, address.bytes.begin());
+            address.size = 4U;
+        }
+        return prefix_matches(address, network, prefix);
+    }
+} // namespace
+
+auto address_set_allowed(std::vector<std::string> const& addresses,
+                         std::vector<std::string> const& denied_ranges) noexcept -> bool
+{
+    return !addresses.empty() && std::ranges::none_of(addresses, [&denied_ranges](std::string const& address) {
+        auto const parsed = parse_ip_bytes(address);
+        return parsed.size == 0U || ip_address_is_private_or_loopback(address) ||
+               std::ranges::any_of(denied_ranges, [&parsed](std::string const& range) {
+                   return range_denies(parsed, range);
+               });
     });
 }
 

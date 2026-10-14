@@ -818,6 +818,7 @@ struct PersistentStore final
         , backend{other.backend}
         , postgresql_conninfo{other.postgresql_conninfo}
         , sqlite_path{other.sqlite_path}
+        , sqlite_read_only{other.sqlite_read_only}
         , schema{other.schema}
         , users{other.users}
         , devices{other.devices}
@@ -893,6 +894,7 @@ struct PersistentStore final
         backend = other.backend;
         postgresql_conninfo = other.postgresql_conninfo;
         sqlite_path = other.sqlite_path;
+        sqlite_read_only = other.sqlite_read_only;
         schema = other.schema;
         users = other.users;
         devices = other.devices;
@@ -970,6 +972,8 @@ struct PersistentStore final
     // SET ROLE, preserving single-role deployments.
     std::string postgresql_runtime_role{};
     std::string sqlite_path{};
+    // Worker snapshots never migrate, create files, or persist transactions.
+    bool sqlite_read_only{false};
     SchemaState schema{};
     std::vector<PersistentUser> users{};
     std::vector<PersistentDevice> devices{};
@@ -1123,7 +1127,8 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto parse_expires_at(std::string_view text) -> std::optional<std::chrono::system_clock::time_point>;
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state = {}) -> PersistentStoreOpenResult;
-[[nodiscard]] auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult;
+[[nodiscard]] auto open_sqlite_persistent_store(std::string const& path,
+                                               TableLoadProfile profile = TableLoadProfile::full) -> PersistentStoreOpenResult;
 [[nodiscard]] auto validate_persistent_store(PersistentStore const& store) -> MigrationValidationResult;
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;

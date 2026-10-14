@@ -14,6 +14,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -159,9 +160,25 @@ auto make_worker_db_uri_pipe(std::span<std::uint8_t const> uri) -> core::FileDes
     return make_worker_secret_pipe(uri, reserved);
 }
 
-auto WorkerSupervisor::set_request_handler(ipc::IpcChannel::RequestHandler handler) -> void
+auto WorkerSupervisor::set_channel_request_handler(ChannelRequestHandler handler) -> void
 {
     request_handler_ = std::move(handler);
+}
+
+auto WorkerSupervisor::set_request_handler(ipc::IpcChannel::RequestHandler handler) -> void
+{
+    if (!handler)
+    {
+        set_channel_request_handler({});
+        return;
+    }
+    set_channel_request_handler([handler = std::move(handler)](
+                                    std::shared_ptr<ipc::IpcChannel> const& // SHARED_PTR: reviewed - dispatch lifetime.
+                                        receiving_channel,
+                                    std::uint64_t id, std::string json) {
+        std::ignore = receiving_channel;
+        handler(id, std::move(json));
+    });
 }
 
 auto WorkerSupervisor::start() -> void
@@ -449,7 +466,14 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     new_channel->set_dispatch_queue_limits(ipc_max_dispatch_queue_count_, ipc_max_dispatch_queue_bytes_);
     if (request_handler_)
     {
-        new_channel->set_request_handler(request_handler_);
+        // Retain the exact receiving channel across restart without a self-owning cycle.
+        new_channel->set_request_handler([weak_channel = std::weak_ptr<ipc::IpcChannel>{new_channel},
+                                          handler = request_handler_](std::uint64_t id, std::string json) {
+            if (auto receiving_channel = weak_channel.lock())
+            {
+                handler(receiving_channel, id, std::move(json));
+            }
+        });
     }
     new_channel->start();
 

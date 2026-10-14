@@ -362,13 +362,13 @@ SCENARIO("A successful Landlock ruleset contains exactly the expected rules, nev
                 REQUIRE(recording.restrict_self_called);
             }
 
-            AND_THEN("the SQLite database directory is granted read-write")
+            AND_THEN("the SQLite database directory is granted read-only")
             {
                 auto const it = std::find_if(rules.begin(), rules.end(), [](LandlockPathRule const& rule) {
                     return rule.path == "/var/lib/merovingian";
                 });
                 REQUIRE(it != rules.end());
-                REQUIRE(it->access == LandlockAccess::read_write);
+                REQUIRE(it->access == LandlockAccess::read_only);
                 REQUIRE(it->required);
             }
 

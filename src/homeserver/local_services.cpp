@@ -120,7 +120,7 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
     // `user`, a request target). Bound and sanitise them once, here, so the log
     // line, the in-memory window and the durable row all see the same value.
     auto const safe_actor = database::bounded_utf8(actor, database::max_audit_field_bytes);
-    auto const safe_target = database::bounded_utf8(target, database::max_audit_field_bytes);
+    auto const safe_target = observability::sanitized_audit_target(target);
     auto const safe_reason = [&]() {
         if (admission.suppressed == 0U)
         {
@@ -151,7 +151,7 @@ auto remember_local_audit(LocalDatabase& database, observability::AuditCategory 
                           std::string_view actor, std::string_view target, std::string_view reason) -> void
 {
     auto const safe_actor = database::bounded_utf8(actor, database::max_audit_field_bytes);
-    auto const safe_target = database::bounded_utf8(target, database::max_audit_field_bytes);
+    auto const safe_target = observability::sanitized_audit_target(target);
     auto const safe_reason = database::bounded_utf8(reason, database::max_audit_field_bytes);
     log_diagnostic("audit.append", {
                                        {"category",   std::string{observability::audit_category_name(category)}, false},

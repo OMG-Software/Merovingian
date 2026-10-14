@@ -128,6 +128,24 @@
 * [0125 - Redactions are applied once, at the store, and destroy the original content](0125-redactions-are-applied-once-at-the-store-and-destroy-the-original.md)
 * [0126 - Local membership is projected once, at the local-event choke point](0126-local-membership-is-projected-once-at-the-local-event-choke-point.md)
 * [0127 - Room directory and alias changes need canonical-alias power; aliases record their creator](0127-room-directory-and-alias-changes-need-canonical-alias-power.md)
+* [0128 - Lock derived-key storage without changing persisted derivations](0128-lock-derived-key-storage-without-changing-persisted-derivations.md)
+* [0129 - Restrict main's fchmod to owner-only database mode](0129-restrict-main-fchmod-to-owner-only-database-mode.md)
+* [0130 - Admit only a private startup umask through main's inherited seccomp](0130-admit-only-private-startup-umask-through-main-seccomp.md)
+* [0131 - Keep malformed-first-PDU transactions inside worker shard zero](0131-keep-malformed-first-pdu-transactions-inside-worker-shard-zero.md)
+* [0132 - Separate cached verification keys from budgeted discovery](0132-separate-cached-verification-keys-from-budgeted-discovery.md)
+* [0133 - Preserve local key-admission denial separately from remote failure](0133-preserve-local-key-admission-denial-separately-from-remote-failure.md)
+* [0134 - Share key-resolution admission with main's worker-relay verification](0134-share-key-admission-with-main-worker-relay-verification.md)
+* [0135 - Preserve key-admission denial through backfill recovery](0135-preserve-key-admission-denial-through-backfill-recovery.md)
+* [0136 - Retain path-only, bounded audit targets](0136-retain-path-only-bounded-audit-targets.md)
+
+## Proposed Records
+
+* [0137 - Reject NUL before mutation and path decoding](0137-reject-nul-before-mutation-and-path-decoding.md)
+* [0138 - Require explicit remote PostgreSQL TLS policy](0138-require-explicit-remote-postgresql-tls-policy.md)
+* [0139 - Suppress PostgreSQL connection options in diagnostics](0139-suppress-postgresql-connection-options-in-diagnostics.md)
+* [0140 - Isolate push delivery capacity per recipient](0140-isolate-push-delivery-capacity-per-recipient.md)
+* [0141 - Bound configured token lifetimes without coercion](0141-bound-configured-token-lifetimes-without-coercion.md)
+* [0142 - Bind worker EDU relays to live main-verified requests](0142-bind-worker-edu-relays-to-live-main-verified-requests.md)
 
 ## Rejected Records
 

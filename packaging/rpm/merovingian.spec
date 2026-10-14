@@ -77,7 +77,7 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 # Generate a registration token on first install. Never overwrite an existing token.
 TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
 if [ ! -f "${TOKEN_FILE}" ]; then
-    openssl rand -base64 48 > "${TOKEN_FILE}"
+    (umask 077; openssl rand -base64 48 > "${TOKEN_FILE}")
     chmod 0400 "${TOKEN_FILE}"
     chown merovingian:merovingian "${TOKEN_FILE}"
 fi

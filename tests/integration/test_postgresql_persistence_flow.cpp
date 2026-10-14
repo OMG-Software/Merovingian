@@ -1,28 +1,42 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/master_key.hpp"
+#include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include <fcntl.h>
+#include <merovingian/canonicaljson/parser.hpp>
+#include <merovingian/canonicaljson/serializer.hpp>
 #include <merovingian/config/config.hpp>
+#include <merovingian/core/file_descriptor.hpp>
 #include <merovingian/database/migration.hpp>
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/database/postgresql_store.hpp>
 #include <merovingian/database/schema.hpp>
+#include <merovingian/events/event_id.hpp>
+#include <merovingian/events/event_signer.hpp>
+#include <merovingian/homeserver/local_http_router.hpp>
 #include <merovingian/homeserver/room_service.hpp>
 #include <merovingian/homeserver/runtime.hpp>
+#include <merovingian/homeserver/worker_pool.hpp>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace
 {
@@ -1449,6 +1463,410 @@ SCENARIO("PostgreSQL audit rows outlive the in-memory window and hydrate newest-
                 {
                     REQUIRE(std::stoul(log[i].target) == std::stoul(log[i - 1U].target) + 1U);
                 }
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// Own only the newly created directory/file. A failed outer constructor still
+// destroys this member, so partial writes and assertion unwinds are cleaned up.
+class PgAdmissionDirectory final
+{
+public:
+    PgAdmissionDirectory()
+        : directory_{merovingian::tests::temporary_directory() / ("db6-connection-" + unique_test_suffix())}
+        , file_{directory_ / "connection.file"}
+    {
+        if (::mkdir(directory_.c_str(), 0700) != 0)
+        {
+            throw std::runtime_error{"cannot create private PostgreSQL test directory"};
+        }
+    }
+    ~PgAdmissionDirectory() noexcept
+    {
+        std::ignore = ::unlink(file_.c_str());
+        std::ignore = ::rmdir(directory_.c_str());
+    }
+    PgAdmissionDirectory(PgAdmissionDirectory const&) = delete;
+    auto operator=(PgAdmissionDirectory const&) -> PgAdmissionDirectory& = delete;
+    [[nodiscard]] auto file() const noexcept -> std::filesystem::path const&
+    {
+        return file_;
+    }
+
+private:
+    std::filesystem::path directory_;
+    std::filesystem::path file_;
+};
+
+class PgAdmissionUriFile final
+{
+public:
+    explicit PgAdmissionUriFile(std::string_view uri)
+    {
+        auto file = merovingian::core::FileDescriptor{
+            ::open(directory_.file().c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
+        if (!file.valid())
+        {
+            throw std::runtime_error{"cannot create private PostgreSQL test connection file"};
+        }
+        while (!uri.empty())
+        {
+            auto const written = ::write(file.get(), uri.data(), uri.size());
+            if (written < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            if (written <= 0)
+            {
+                throw std::runtime_error{"cannot write PostgreSQL test connection file"};
+            }
+            uri.remove_prefix(static_cast<std::size_t>(written));
+        }
+        if (::fchmod(file.get(), 0400) != 0)
+        {
+            throw std::runtime_error{"cannot protect PostgreSQL test connection file"};
+        }
+        struct stat metadata
+        {
+        };
+        if (::fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_uid != ::geteuid() ||
+            (metadata.st_mode & 0777) != 0400)
+        {
+            throw std::runtime_error{"invalid private PostgreSQL test connection file metadata"};
+        }
+    }
+    [[nodiscard]] auto path() const noexcept -> std::filesystem::path const&
+    {
+        return directory_.file();
+    }
+
+private:
+    PgAdmissionDirectory directory_;
+};
+
+[[nodiscard]] auto pg_admission_config(std::filesystem::path const& uri_file) -> merovingian::config::Config
+{
+    // The owned file contains exactly the explicitly opted-in URI used by the
+    // reopened-store checks. Never select a different ambient URI_FILE database.
+    auto server = merovingian::config::ServerConfig{};
+    server.server_name = "pg-db6-" + unique_test_suffix() + ".example.org";
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::postgresql;
+    database.uri_file = uri_file.string();
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    security.federation.enabled = true;
+    return {server,   merovingian::config::ListenersConfig{},        database,
+            security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{}};
+}
+
+// Reuse the accepted-history fixture as data, but commit every row to PostgreSQL.
+// A unique local MXID keeps room interest tied to this runtime's own server.
+[[nodiscard]] auto seed_pg_admission_room(merovingian::homeserver::HomeserverRuntime& runtime) -> std::string
+{
+    namespace rr = merovingian::tests::remote_room;
+    namespace db = merovingian::database;
+    auto const room_id = "!pg-db6-" + unique_test_suffix() + ":" + runtime.config.server().server_name;
+    auto const local_user = "@admin:" + runtime.config.server().server_name;
+    auto fixture = merovingian::homeserver::HomeserverRuntime{};
+    auto memory = db::open_persistent_store();
+    REQUIRE(memory.ok);
+    fixture.database.persistent_store = std::move(memory.store);
+    rr::seed_room_with_genesis_state_group(fixture, room_id);
+    auto const localize = [&local_user](std::string text) {
+        auto position = std::size_t{0U};
+        while ((position = text.find(rr::local_admin, position)) != std::string::npos)
+        {
+            text.replace(position, std::string_view{rr::local_admin}.size(), local_user);
+            position += local_user.size();
+        }
+        return text;
+    };
+    auto& store = runtime.database.persistent_store;
+    REQUIRE(db::store_room(store, {room_id, local_user}));
+    for (auto event : fixture.database.persistent_store.events)
+    {
+        event.sender_user_id = localize(event.sender_user_id);
+        event.json = localize(event.json);
+        event.stream_ordering = merovingian::homeserver::allocate_stream_ordering(runtime.database);
+        auto const state = std::ranges::find_if(fixture.database.persistent_store.state, [&](auto const& row) {
+            return row.event_id == event.event_id;
+        });
+        REQUIRE(state != fixture.database.persistent_store.state.end());
+        REQUIRE(db::store_event_with_state(
+            store, event,
+            db::PersistentStateEvent{room_id, state->event_type, localize(state->state_key), event.event_id}));
+    }
+    for (auto membership : fixture.database.persistent_store.memberships)
+    {
+        membership.user_id = localize(membership.user_id);
+        REQUIRE(db::store_membership(store, membership) == db::MembershipStoreResult::stored);
+    }
+    auto group_state = fixture.database.persistent_store.state_group_state;
+    for (auto& entry : group_state)
+        entry.state_key = localize(entry.state_key);
+    auto const group =
+        db::create_or_reuse_state_group(store, room_id, room_id + ":genesis-group", std::nullopt, group_state);
+    REQUIRE(group.has_value());
+    for (auto const& event : fixture.database.persistent_store.events)
+        REQUIRE(db::set_event_state_group(store, event.event_id, *group));
+    REQUIRE(db::update_forward_extremities(store, room_id, room_id + ":member", {}, true));
+    runtime.database.rooms.push_back({
+        room_id, local_user, {local_user, rr::remote_member},
+          {},
+          false
+    });
+
+    // Production network-free persistent-key lookup, not a fake resolver or sink.
+    auto const remote = rr::remote_runtime();
+    auto const public_key = merovingian::events::matrix_base64_from_bytes(remote.signing_key.public_key_bytes);
+    REQUIRE_FALSE(public_key.empty());
+    REQUIRE(db::store_server_signing_key(
+        store, {rr::remote_server, rr::remote_key_id, public_key, remote.signing_key.valid_until_ts, {}}));
+    merovingian::homeserver::wire_federation_callbacks(runtime);
+    REQUIRE(static_cast<bool>(runtime.federation.cached_pdu_key_lookup));
+    REQUIRE(static_cast<bool>(runtime.federation.pdu_sink));
+    return room_id;
+}
+
+[[nodiscard]] auto pg_admission_json(std::string const& room_id, std::string const& key,
+                                     std::int64_t timestamp) -> std::string
+{
+    namespace rr = merovingian::tests::remote_room;
+    namespace cj = merovingian::canonicaljson;
+    auto content = cj::Object{};
+    content.push_back(cj::make_member("body", cj::Value{std::string{"before"} + '\0' + "after"}));
+    auto const json = rr::make_remote_event_json(
+        room_id, "org.example.db6.state", key, rr::remote_member, std::move(content), {room_id + ":member"},
+        {room_id + ":create", room_id + ":pl", room_id + ":member:bob"}, 4, timestamp);
+    REQUIRE_FALSE(json.empty());
+    REQUIRE(json.find('\0') == std::string::npos);
+    auto const parsed = cj::parse_lossless(json);
+    REQUIRE(parsed.error == cj::ParseError::none);
+    REQUIRE(merovingian::events::verify_pdu_content_hash(parsed.value));
+    return json;
+}
+
+[[nodiscard]] auto pg_admission_frame(std::string const& room_id, std::string const& json) -> std::string
+{
+    namespace cj = merovingian::canonicaljson;
+    namespace rr = merovingian::tests::remote_room;
+    // Do not parse an ingestion envelope here: it rejects hostile state keys
+    // before the real admission entrypoint sees them. Main reconstructs all
+    // event fields; these are the transport fields consumed by the handler.
+    auto const event_id = merovingian::federation::test::reference_hash_event_id(json, rr::room_version);
+    REQUIRE_FALSE(event_id.empty());
+    auto object = cj::Object{};
+    object.push_back(cj::make_member("type", cj::Value{std::string{"pdu_ingest"}}));
+    object.push_back(cj::make_member("event_id", cj::Value{event_id}));
+    object.push_back(cj::make_member("room_id", cj::Value{room_id}));
+    object.push_back(cj::make_member("room_version", cj::Value{std::string{rr::room_version}}));
+    object.push_back(cj::make_member("origin", cj::Value{std::string{rr::remote_server}}));
+    object.push_back(cj::make_member("json", cj::Value{json}));
+    auto const serialized = cj::serialize_canonical(cj::Value{std::move(object)});
+    REQUIRE(serialized.error == cj::CanonicalJsonError::none);
+    return serialized.output;
+}
+
+// Only admission-owned rows, not audits: denial may be audited. Length-prefix
+// fields and sort rows so hydration order and embedded bytes cannot mask writes.
+// Callers compare booleans, never print these payloads.
+[[nodiscard]] auto pg_admission_snapshot(merovingian::database::PersistentStore const& store)
+    -> std::vector<std::string>
+{
+    auto rows = std::vector<std::string>{};
+    auto const append = [&rows](std::vector<std::string> const& fields) {
+        auto encoded = std::string{};
+        for (auto const& field : fields)
+            encoded += std::to_string(field.size()) + ":" + field;
+        rows.push_back(std::move(encoded));
+    };
+    for (auto const& row : store.rooms)
+        append({"room", row.room_id, row.creator_user_id, std::to_string(row.directory_public)});
+    for (auto const& row : store.memberships)
+        append({"membership", row.room_id, row.user_id, row.membership, std::to_string(row.stream_ordering)});
+    for (auto const& row : store.invites)
+        append({"invite", row.room_id, row.user_id, row.sender_user_id, row.event_id, row.signed_event_json,
+                std::to_string(row.stream_ordering)});
+    for (auto const& row : store.events)
+        append({"event", row.event_id, row.room_id, row.sender_user_id, row.json, std::to_string(row.depth),
+                std::to_string(row.stream_ordering), row.status});
+    for (auto const& row : store.state)
+        append({"state", row.room_id, row.event_type, row.state_key, row.event_id});
+    for (auto const& row : store.state_transitions)
+        append({"transition", row.room_id, row.event_type, row.state_key, row.event_id, row.previous_event_id});
+    for (auto const& row : store.state_groups)
+        append({"group", row.state_group_id, row.room_id, row.parent_state_group_id.value_or(""),
+                std::to_string(row.delta_depth)});
+    for (auto const& row : store.state_group_state)
+        append({"group-state", row.state_group_id, row.event_type, row.state_key, row.event_id});
+    for (auto const& row : store.event_state_groups)
+        append({"event-group", row.event_id, row.state_group_id});
+    for (auto const& row : store.event_edges)
+        append({"edge", row.event_id, row.prev_event_id});
+    for (auto const& row : store.event_auth)
+        append({"auth", row.event_id, row.auth_event_id});
+    for (auto const& row : store.event_signatures)
+        append({"signature", row.event_id, row.server_name, row.key_id, row.signature});
+    for (auto const& row : store.forward_extremities)
+        append({"extremity", row.room_id, row.event_id});
+    append({"event-watermark", std::to_string(store.event_stream_watermark)});
+    append({"sync-watermark", std::to_string(store.next_sync_stream_id)});
+    std::ranges::sort(rows);
+    return rows;
+}
+
+} // namespace
+
+SCENARIO("DB-6 PostgreSQL inbound admission rejects escaped NUL state keys before any write",
+         "[database][postgresql][integration][db6][db6-postgresql-admission]")
+{
+    GIVEN("an explicitly configured PostgreSQL runtime with a persisted locally joined room")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const connection_file = PgAdmissionUriFile{uri};
+        auto started = merovingian::homeserver::start_runtime(pg_admission_config(connection_file.path()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room_id = seed_pg_admission_room(runtime);
+
+        WHEN("signed state events enter the production worker-to-main PDU ingestion handler")
+        {
+            THEN("a valid control persists but leading interior and trailing NUL keys leave every admission row "
+                 "unchanged")
+            {
+                namespace db = merovingian::database;
+                using merovingian::federation::PduIngestionStatus;
+                auto const valid_json = pg_admission_json(room_id, "valid", 40);
+                auto const valid_id = merovingian::federation::test::reference_hash_event_id(valid_json, "10");
+                auto const accepted = merovingian::homeserver::handle_pdu_ingest_request(
+                    runtime, pg_admission_frame(room_id, valid_json));
+                REQUIRE(accepted.status == PduIngestionStatus::accepted);
+                REQUIRE(accepted.accepted_stream_ordering > 0U);
+                REQUIRE(accepted.accepted_sync_stream_id > 0U);
+                {
+                    auto reopened = db::open_postgresql_persistent_store(uri);
+                    REQUIRE(reopened.ok);
+                    REQUIRE(std::ranges::any_of(reopened.store.events, [&](auto const& event) {
+                        return event.event_id == valid_id && event.status == "accepted" && event.json == valid_json;
+                    }));
+                    REQUIRE(std::ranges::any_of(reopened.store.state, [&](auto const& state) {
+                        return state.room_id == room_id && state.event_type == "org.example.db6.state" &&
+                               state.state_key == "valid" && state.event_id == valid_id;
+                    }));
+                    REQUIRE(std::ranges::any_of(reopened.store.event_state_groups, [&](auto const& group) {
+                        return group.event_id == valid_id;
+                    }));
+                }
+                auto timestamp = std::int64_t{41};
+                for (auto const& key :
+                     {std::string(1U, '\0') + "tail", std::string{"head"} + '\0' + "tail", std::string{"head"} + '\0'})
+                {
+                    auto const json = pg_admission_json(room_id, key, timestamp++);
+                    auto const event_id = merovingian::federation::test::reference_hash_event_id(json, "10");
+                    auto const before = pg_admission_snapshot(runtime.database.persistent_store);
+                    auto const next_stream_before = runtime.database.next_stream_ordering;
+                    auto durable_before = std::vector<std::string>{};
+                    {
+                        auto reopened = db::open_postgresql_persistent_store(uri);
+                        REQUIRE(reopened.ok);
+                        durable_before = pg_admission_snapshot(reopened.store);
+                    }
+                    db::enable_statement_capture(runtime.database.persistent_store, 256U);
+                    auto const rejected =
+                        merovingian::homeserver::handle_pdu_ingest_request(runtime, pg_admission_frame(room_id, json));
+                    CHECK(rejected.status == PduIngestionStatus::rejected_invalid);
+                    CHECK(rejected.accepted_stream_ordering == 0U);
+                    CHECK(rejected.accepted_sync_stream_id == 0U);
+                    CHECK(runtime.database.next_stream_ordering == next_stream_before);
+                    CHECK(runtime.database.persistent_store.captured_statements.empty());
+                    CHECK(bool{pg_admission_snapshot(runtime.database.persistent_store) == before});
+                    db::enable_statement_capture(runtime.database.persistent_store, 0U);
+                    auto reopened = db::open_postgresql_persistent_store(uri);
+                    REQUIRE(reopened.ok);
+                    CHECK(bool{pg_admission_snapshot(reopened.store) == durable_before});
+                    CHECK(std::ranges::none_of(reopened.store.events, [&](auto const& event) {
+                        return event.event_id == event_id;
+                    }));
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("DB-6 PostgreSQL admission preserves Unicode state keys escaped NUL content and binary media",
+         "[database][postgresql][integration][db6][db6-postgresql-admission][binary][unicode]")
+{
+    GIVEN("an explicitly configured PostgreSQL runtime and a persisted locally joined room")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const connection_file = PgAdmissionUriFile{uri};
+        auto started = merovingian::homeserver::start_runtime(pg_admission_config(connection_file.path()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room_id = seed_pg_admission_room(runtime);
+
+        WHEN("compatible signed state events and a binary media blob are persisted")
+        {
+            THEN("empty ordinary and Unicode keys survive reopen with NUL content and BYTEA bytes unchanged")
+            {
+                namespace db = merovingian::database;
+                auto timestamp = std::int64_t{50};
+                for (auto const& key : {std::string{}, std::string{"ordinary"}, std::string{"caf\u00e9/\u96ea"}})
+                {
+                    auto const json = pg_admission_json(room_id, key, timestamp++);
+                    REQUIRE(json.find("\\u0000") != std::string::npos);
+                    auto const event_id = merovingian::federation::test::reference_hash_event_id(json, "10");
+                    auto const result =
+                        merovingian::homeserver::handle_pdu_ingest_request(runtime, pg_admission_frame(room_id, json));
+                    REQUIRE(result.status == merovingian::federation::PduIngestionStatus::accepted);
+                    auto reopened = db::open_postgresql_persistent_store(uri);
+                    REQUIRE(reopened.ok);
+                    // Predicates emit only booleans, never event/signing payloads.
+                    REQUIRE(std::ranges::any_of(reopened.store.events, [&](auto const& event) {
+                        return event.event_id == event_id && event.status == "accepted" && event.json == json;
+                    }));
+                    REQUIRE(std::ranges::any_of(reopened.store.state, [&](auto const& state) {
+                        return state.room_id == room_id && state.event_type == "org.example.db6.state" &&
+                               state.state_key == key && state.event_id == event_id;
+                    }));
+                    REQUIRE(std::ranges::any_of(reopened.store.state_group_state, [&](auto const& state) {
+                        return state.event_type == "org.example.db6.state" && state.state_key == key &&
+                               state.event_id == event_id;
+                    }));
+                    REQUIRE(std::ranges::any_of(reopened.store.event_edges, [&](auto const& edge) {
+                        return edge.event_id == event_id && edge.prev_event_id == room_id + ":member";
+                    }));
+                }
+                auto payload = std::string(1U, '\0');
+                payload += "binary";
+                payload.push_back('\0');
+                payload.push_back(static_cast<char>(0xFF));
+                payload.push_back('\0');
+                auto const storage_id = "pg-db6-media-" + unique_test_suffix();
+                REQUIRE(db::store_media_blob(runtime.database.persistent_store,
+                                             {storage_id, "blake2b", std::string(64U, 'd'),
+                                              static_cast<std::uint64_t>(payload.size()), payload, 1U}));
+                auto reopened = db::open_postgresql_persistent_store(uri);
+                REQUIRE(reopened.ok);
+                auto const read = db::read_media_blob(db::prepare_media_blob_read(reopened.store, storage_id));
+                REQUIRE(read.has_value());
+                CHECK(read->size() == payload.size());
+                CHECK(bool{*read == payload});
             }
         }
     }

@@ -22,6 +22,7 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "../support/edu_relay_context.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/room_history_fixture.hpp"
@@ -715,6 +716,9 @@ SCENARIO("Sync long-poll wakes when a federation-relayed EDU reaches to_device_m
         // this exact runtime either way).
         merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
         REQUIRE(rt.homeserver.federation.edu_sink);
+        auto relay_channels = merovingian::tests::make_edu_relay_channels();
+        auto relay_context = merovingian::tests::EduRelayContext{*relay_channels.main, *relay_channels.worker};
+        REQUIRE(relay_context.establish("matrix.example.org"));
 
         WHEN("a worker relays an Olm-encrypted m.direct_to_device EDU mid-wait, the same way "
              "WorkerSupervisor::set_request_handler's \"edu_ingest\" branch does")
@@ -730,15 +734,18 @@ SCENARIO("Sync long-poll wakes when a federation-relayed EDU reaches to_device_m
                                       R"("origin":"matrix.example.org","content_json":)" +
                                       ipc_escape_json_string(content_json) + "}";
 
+            auto const wrapped_request = relay_context.wrap(request_json);
             auto producer = std::thread{[&] {
                 std::this_thread::sleep_for(std::chrono::milliseconds{40});
-                auto const response = merovingian::homeserver::handle_edu_ingest_request(rt.homeserver, request_json);
+                auto const response = merovingian::homeserver::handle_edu_ingest_request(rt.homeserver, wrapped_request,
+                                                                                         *relay_channels.main);
                 INFO("edu_ingest response: " << response);
             }};
             auto const before = std::chrono::steady_clock::now();
             auto const woke = rt.sync_notifier->wait_for_change(0U, before_id, std::chrono::milliseconds{2000});
             producer.join();
             auto const elapsed = std::chrono::steady_clock::now() - before;
+            REQUIRE(relay_context.finish());
 
             THEN("wait returns true well before the timeout, exactly as it does for a local to-device send")
             {

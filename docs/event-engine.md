@@ -55,6 +55,23 @@ Implemented now:
   rule 9.8 — a user at or above the sender's power cannot be changed or
   removed by a non-superior sender), state-default and events-default power
   enforcement.
+- **Legacy authorization boundaries (EVT-10, EVT-11, EVT-12(a,c)).**
+  In v3-v9, both state and message `events[type]` thresholds honor integer
+  strings (including a single sign, leading zeroes and surrounding ASCII
+  whitespace). Any present `content.third_party_invite` on an invite enters
+  third-party authorization; a scalar, null or array is rejected rather than
+  treated as an ordinary invite. In v3-v5 only, `m.room.aliases` is allowed
+  after the create/federation checks exactly when its `state_key` equals the
+  sender's complete domain, without a membership or power-level requirement.
+  Named inbound auth events with persistent status `rejected` are refused.
+  State resolution carries that trusted status separately from signed JSON and
+  skips rejected own-auth fallback entries without truncating auth-chain walks;
+  `soft_failed` and `outlier` are not rejection. This does not blanket-remove
+  rejected state-resolution candidates, which the spec can reauthorize.
+- **Remaining legacy compatibility gap (EVT-12(d)).** v3-v5 permit finite
+  floating power levels with truncation. The strict event parser and scalar
+  power-level validation still refuse these; this pass characterizes that
+  fail-closed divergence without relaxing the signed-event parsing boundary.
 - **rule 1 (`m.room.create`)**, complete since 0.12.4: no `prev_events`; the
   `room_id`/`sender` domain relationship for v1-v11 and the absence of
   `room_id` for v12 (MSC4291); a recognised `content.room_version`; and the
@@ -608,6 +625,31 @@ client as `OperationResult::errcode` and `LocalHttpResponse::errcode`. `createRo
 that cannot fit in any event (`name`, `topic`, `creation_content`, `power_level_content_override`,
 `initial_state`) before it stores the room; content that fits alone but not once signed is refused after the
 room exists, with the same error.
+
+NUL is not representable in PostgreSQL text state keys (DB-6). The shared
+`events::state_key_contains_nul` admission rule is used by inbound envelope
+parsing and local composition. Local composition reports `invalid_state_key`
+before any stream ordering is allocated; `send_event` maps it to
+`400 M_INVALID_PARAM`. `createRoom` scans the complete client initial-state
+list before persisting room/bootstrap state, so a bad later entry cannot
+leave earlier entries or an empty-key collision behind. Empty state keys and
+ordinary Unicode remain allowed. Escaped NUL inside JSON **content** is not a
+text state key and is not blanket-rejected by this policy. This is a storage-
+compatibility admission constraint, not a claim that all Matrix strings
+forbid NUL. The live PostgreSQL admission regression uses the real worker-
+relay `handle_pdu_ingest_request` and production-wired PDU sink, with a signed
+successfully persisted control. Leading/interior/trailing NUL state keys
+produce no captured statements or event/state/group/graph/membership/watermark
+changes, including after reopening the store. Separate positive coverage
+preserves empty/Unicode state keys, escaped-NUL JSON content and binary media.
+This supplies inbound storage verification, not proxy or whole-finding
+acceptance. Separate real no-proxy and healthy proxy/separate-worker socket
+coverage now verifies controlled NUL-path refusals and unchanged business
+rows/watermarks; its transport boundary and exclusions are described in
+[HTTP transport](http-transport.md#structured-errors). The choice to reject
+before mutation rather than rely on SQL binding, and to preserve one-pass
+path decoding without blanket payload filtering, is recorded in proposed
+[ADR-0137](adr/0137-reject-nul-before-mutation-and-path-decoding.md).
 
 `persist_composed_event` projects every `m.room.member` event it stores that is now the current state for its
 user (`project_local_membership`, ADR-0126): the `memberships` row, `LocalRoom.members`, device-list share

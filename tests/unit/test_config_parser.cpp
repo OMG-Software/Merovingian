@@ -997,3 +997,49 @@ SCENARIO("Key-value config parser accepts the full unsigned 64-bit range for a r
         }
     }
 }
+
+SCENARIO("Key-value config parser rejects negative token lifetimes", "[config][parser][ops4-negative-lifetime]")
+{
+    GIVEN("a healthy parsed default configuration and its two token lifetime fields")
+    {
+        auto const healthy = merovingian::config::parse_key_value_config("");
+        auto const fields =
+            std::vector<std::string>{"security.access_token_lifetime_ms", "security.refresh_token_lifetime_ms"};
+
+        WHEN("negative token lifetimes are parsed and validated for admission")
+        {
+            THEN("each negative lifetime is rejected with a finding for its exact field")
+            {
+                REQUIRE(healthy.findings.empty());
+                REQUIRE(merovingian::config::is_valid(healthy.config));
+                REQUIRE(healthy.config.security().access_token_lifetime_ms == 3600000);
+                REQUIRE(healthy.config.security().refresh_token_lifetime_ms == 2592000000);
+
+                auto const never_expiring = merovingian::config::parse_key_value_config(
+                    "security.access_token_lifetime_ms=0\nsecurity.refresh_token_lifetime_ms=0\n");
+                REQUIRE(never_expiring.findings.empty());
+                REQUIRE(merovingian::config::is_valid(never_expiring.config));
+                REQUIRE(never_expiring.config.security().access_token_lifetime_ms == 0);
+                REQUIRE(never_expiring.config.security().refresh_token_lifetime_ms == 0);
+
+                for (auto const& field : fields)
+                {
+                    for (auto const& value : std::vector<std::string>{"-1", "-9223372036854775808"})
+                    {
+                        auto const result = merovingian::config::parse_key_value_config(field + "=" + value + "\n");
+                        auto const findings = merovingian::config::validate(result.config);
+
+                        CHECK(
+                            std::any_of(result.findings.begin(), result.findings.end(), [&field](auto const& finding) {
+                                return finding.field == field;
+                            }));
+                        CHECK(std::any_of(findings.begin(), findings.end(), [&field](auto const& finding) {
+                            return finding.field == field;
+                        }));
+                        CHECK_FALSE(merovingian::config::is_valid(result.config));
+                    }
+                }
+            }
+        }
+    }
+}

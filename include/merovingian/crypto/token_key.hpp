@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/crypto/secure_key_bytes.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -22,14 +24,14 @@ namespace merovingian::crypto
 // whichever instance is left behind rather than relying on the caller.
 struct TokenHmacKey final
 {
-    std::array<unsigned char, crypto_generichash_KEYBYTES> bytes{};
+    SecureKeyBytes bytes{};
 
-    TokenHmacKey() noexcept = default;
-    TokenHmacKey(TokenHmacKey const& other) noexcept;
-    auto operator=(TokenHmacKey const& other) noexcept -> TokenHmacKey&;
-    TokenHmacKey(TokenHmacKey&& other) noexcept;
-    auto operator=(TokenHmacKey&& other) noexcept -> TokenHmacKey&;
-    ~TokenHmacKey();
+    TokenHmacKey() = default;
+    TokenHmacKey(TokenHmacKey const&) = default;
+    auto operator=(TokenHmacKey const&) -> TokenHmacKey& = default;
+    TokenHmacKey(TokenHmacKey&&) noexcept = default;
+    auto operator=(TokenHmacKey&&) noexcept -> TokenHmacKey& = default;
+    ~TokenHmacKey() = default;
 };
 
 // Derive an independent access-token HMAC key from master key material.

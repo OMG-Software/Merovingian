@@ -4,6 +4,7 @@
 
 #include "merovingian/federation/server_discovery.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -14,7 +15,7 @@
 namespace merovingian::federation
 {
 
-// Wraps a `ServerDiscoveryNetwork` with an in-memory, TTL-bounded cache of
+// Wraps a `ServerDiscoveryNetwork` with an in-memory, capacity-bounded cache of
 // `ServerDiscoveryResult` keyed by server name. `discover_server` is a free
 // function (not a virtual), so this wrapper is a plain owning class rather
 // than a `ServerDiscoveryNetwork` subclass.
@@ -35,9 +36,10 @@ class CachedServerDiscovery final
 public:
     // `now_ms` is the source of wall-clock milliseconds used for TTL checks;
     // injectable so unit tests can drive deterministic expiry boundaries. An
-    // empty callback is treated as "always 0" (every lookup is a miss).
-    CachedServerDiscovery(ServerDiscoveryNetwork& upstream, std::uint64_t ttl_ms,
-                          std::function<std::uint64_t()> now_ms);
+    // empty callback is treated as "always 0". Capacity defaults to 1024
+    // entries (positive and negative combined); zero disables caching.
+    CachedServerDiscovery(ServerDiscoveryNetwork& upstream, std::uint64_t ttl_ms, std::function<std::uint64_t()> now_ms,
+                          std::size_t capacity = 1024U);
 
     CachedServerDiscovery(CachedServerDiscovery const&) = delete;
     auto operator=(CachedServerDiscovery const&) -> CachedServerDiscovery& = delete;
@@ -49,6 +51,9 @@ public:
     // the cache when the entry is within TTL and calling the upstream network
     // (then storing the result) on a miss or stale entry.
     [[nodiscard]] auto discover(std::string_view server_name, std::uint32_t timeout_seconds) -> ServerDiscoveryResult;
+
+    // Number of retained entries; useful for monitoring the hard capacity bound.
+    [[nodiscard]] auto size() const -> std::size_t;
 
     // SSRF-safe address lookup. Calls the upstream resolver and then rejects
     // the result if any returned address is private, loopback, link-local, CGNAT,
@@ -74,7 +79,8 @@ private:
     ServerDiscoveryNetwork& upstream_;
     std::uint64_t ttl_ms_;
     std::function<std::uint64_t()> now_ms_;
-    std::mutex mutex_{};
+    std::size_t capacity_;
+    mutable std::mutex mutex_{};
     std::unordered_map<std::string, Entry> cache_{};
 };
 

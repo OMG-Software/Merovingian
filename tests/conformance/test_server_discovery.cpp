@@ -423,18 +423,17 @@ SCENARIO("Server discovery rejects private and loopback addresses before pinning
                 // Spec MUST: pinned_addresses MUST be empty when discovery is rejected.
                 // Do NOT remove/change - a non-empty list here would allow callers to bypass the rejection.
                 REQUIRE(rejected_v4.pinned_addresses.empty());
-                // Spec MUST: the rejection reason MUST mention "private" for diagnostic clarity.
-                // Do NOT remove/change - operators rely on this string to identify SSRF-blocked destinations.
-                REQUIRE(rejected_v4.reason.find("private") != std::string::npos);
+                // Project diagnostic, not a Matrix MUST: the shared rejection
+                // describes both built-in private and operator-denied addresses.
+                REQUIRE(rejected_v4.reason.find("disallowed") != std::string::npos);
                 // Spec MUST: discovery_allowed MUST be false for IPv6 link-local - SSRF prevention.
                 // Do NOT remove/change - fe80::/10 addresses are host-local and MUST never be federated to.
                 REQUIRE_FALSE(rejected_v6.discovery_allowed);
                 // Spec MUST: pinned_addresses MUST be empty when discovery is rejected (IPv6 case).
                 // Do NOT remove/change - consistency with the IPv4 rejection is required.
                 REQUIRE(rejected_v6.pinned_addresses.empty());
-                // Spec MUST: the IPv6 rejection reason MUST also mention "private".
-                // Do NOT remove/change - uniform error strings simplify log alerting.
-                REQUIRE(rejected_v6.reason.find("private") != std::string::npos);
+                // Both address families use the same disallowed-address diagnostic.
+                REQUIRE(rejected_v6.reason.find("disallowed") != std::string::npos);
             }
         }
     }

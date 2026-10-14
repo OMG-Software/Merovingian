@@ -146,19 +146,14 @@ struct FederationRateLimitBucket final
 using RemoteKeyResolver =
     std::function<std::optional<FederationRemoteRuntime>(std::string_view server_name, std::string_view key_id)>;
 
-// Answers "is a still-valid key for this (server_name, key_id) already in the
-// persistent key cache?" without touching the network. Used to decide whether a
-// resolution needs to be charged to the pre-authentication network budget: a
-// resolver call the key cache will serve does no outbound work and must not
-// consume a budget that exists to bound outbound work.
+// Optional legacy hint for a genuinely network-free, complete peer resolution.
+// A true answer must cover discovery metadata as well as the signing key: a
+// fresh persistent key alone does not prove that the full resolver avoids DNS
+// or HTTP. Production leaves this unset and uses cached_pdu_key_lookup for
+// key-only PDU verification and known-peer rotation instead.
 //
-// This matters because a FederationRemoteRuntime carries a single signing key, so
-// a peer that legitimately signs with a second published key takes the key-id
-// mismatch path on every such request. Without this probe those requests would
-// each be charged, and a peer alternating two valid keys would be rejected with
-// 429 once the per-source rate was reached despite every request being genuine.
-//
-// Optional: when unset, every resolution is charged, which is the safe default.
+// When unset, every full resolution is charged. An embedded full-resolution
+// cache may opt in, but must not use mere key freshness as the admission signal.
 using RemoteKeyCacheProbe = std::function<bool(std::string_view server_name, std::string_view key_id)>;
 
 // Result of a federation `query/directory` lookup. found=false means the alias
@@ -294,6 +289,10 @@ struct FederationRuntimeState final
     std::deque<observability::AuditLogEvent> audit_events{};
     std::size_t unsafe_audit_events{0U};
     RemoteKeyResolver remote_key_resolver{};
+    // Optional, strictly network-free lookup of a PDU verification key. Remote
+    // keys must satisfy the cache freshness policy; local retained keys stay local.
+    // A hit is still verified against the event timestamp by PDU authorization.
+    std::function<std::optional<FederationKeyRecord>(std::string_view, std::string_view)> cached_pdu_key_lookup{};
     RemoteKeyCacheProbe remote_key_cache_probe{};
     // Pre-authentication key-resolution budget state. Unlike rate_limit_buckets
     // above -- which is keyed on an already-verified origin and so bounded by
@@ -450,6 +449,21 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
 [[nodiscard]] auto parse_federation_pdu(std::string_view encoded) -> FederationPdu;
 [[nodiscard]] auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& version_resolver)
     -> FederationPdu;
+// Key-only verification at another trust boundary, including main's worker
+// relay re-verification. Matching cached material needs no discovery or slot;
+// misses share this runtime's source quota, slots and pair negative cache.
+// Callers must still verify the signature and event-time key validity. A local
+// denial is retryable overload, not evidence of a bad remote signature.
+struct VerificationKeyResolution final
+{
+    std::optional<FederationKeyRecord> key{};
+    bool locally_denied{false};
+};
+
+[[nodiscard]] auto resolve_verification_key(FederationRuntimeState& runtime, std::string_view source,
+                                            std::string_view server_name,
+                                            std::string_view key_id) -> VerificationKeyResolution;
+
 [[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
                                                      SignedFederationRequest const& request) -> FederationResponse;
 

@@ -817,7 +817,47 @@ The boundary provides these guarantees:
 - Multi-row runtime mutations commit through one backend transaction so partial
   login, room, or state-event writes are rolled back.
 - PostgreSQL connection strings are accepted only in explicit URI or libpq
-  key/value form, and password material is redacted from summaries.
+  key/value form. **Connection-opening diagnostics (DB-9)** use a fixed redacted
+  identity and generic parser/connection-status refusal reasons rather than
+  reconstructing a supplied option summary or forwarding library error text.
+  Host/database values are suppressed too because they can contain sensitive
+  material. The existing unit checks pass 6 / 1; new actual DEBUG-console
+  coverage passes 85 / 2, including malformed quoted options and four admitted
+  quoted/spaced/escaped/URI forms reaching a real libpq failure against an owned
+  private nonexistent socket path. It checks required records, whole/partial
+  marker absence, returned identity/reason and environment/stdout/owned-path
+  restoration. Normal database integration passes 2628 / 58; these are
+  first-GREEN coverage of the existing guard, not a new production repair.
+  Bounded independent source review passed without security or logic findings;
+  reviewed files match executed manifests. Current database units pass 18363 / 174,
+  DB-8 units 48 / 2 and DB-6 integration 2733 / 15. Fresh combined acceptance
+  passed 56 OK targets with all return codes zero, no failures/timeouts and 139
+  unchanged snapshotted files including all 30 focused sources. Source freeze
+  ended after completed-archive/current-source inspection. Native Windows socket
+  execution, live authentication/TLS/ready branches and
+  general SQL-result error confidentiality are not established by these checks.
+  See [ADR-0139](adr/0139-suppress-postgresql-connection-options-in-diagnostics.md).
+- **Remote PostgreSQL TLS admission (DB-8):** every effective host and host-address
+  entry is checked. Unless all destinations are local Unix sockets or recognized
+  loopback literals, parsed connection options must explicitly select `sslmode`
+  with the value `verify-full`. An omitted or empty mode cannot inherit its way
+  through admission via `PGSSLMODE`; the minimal worker environment deliberately
+  excludes that default. Service indirection and insecure remote opt-outs remain
+  unsupported. The opener disables preferential GSS encryption and database-name
+  expansion; private credential readers, role handling, binary bindings and
+  transaction semantics are unchanged. Certificate trust and sandbox accessibility
+  must be provisioned for each process. The new deterministic unit regression
+  failed 4 / 28 assertions before repair and passes 28 / 1 afterward; all DB-8
+  checks pass 48 / 2 and database units pass 18363 / 174. Live TLS/hostname/certificate
+  refusal and worker trust-file access are not proven by admission tests;
+  independent source review passed without security or logic findings. Fresh
+  combined acceptance passed 56 OK targets with all return codes zero, no
+  failures/timeouts and 135 unchanged snapshotted files, including all focused
+  sources; the source freeze ended after acceptance. Normal DB-6
+  integration passes 2733 / 15 and both isolated PostgreSQL modes pass 178 / 2
+  with verified teardown, fixture removal and current-source binding; these
+  local compatibility checks do not establish remote TLS transport. See
+  [ADR-0138](adr/0138-require-explicit-remote-postgresql-tls-policy.md).
 - Runtime startup requires `database.role=runtime`; offline migration planning
   requires `database.role=migration`.
 - No store function may clear a `revoked` flag once set — revocation is a

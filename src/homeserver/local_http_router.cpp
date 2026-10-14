@@ -391,6 +391,12 @@ namespace
             {
                 return AuthEventsSelectionCheck::unresolvable;
             }
+            if (it->status == "rejected")
+            {
+                // Auth rule 2.3: a receipt-rejected event cannot authorize another PDU.
+                // Soft-failed events and outliers are not receipt rejections.
+                return AuthEventsSelectionCheck::disallowed;
+            }
             if (it->room_id != room_id)
             {
                 return AuthEventsSelectionCheck::disallowed; // auth event from another room
@@ -2779,17 +2785,29 @@ namespace
                                                       std::chrono::system_clock::now().time_since_epoch())
                                                       .count());
             };
-            // Lets the inbound budget tell a cache-served resolution from one
-            // that will actually go to the network. Reads the same persistent
-            // store and freshness rule the resolver itself consults first, so the
-            // two cannot disagree about whether an outbound call is needed.
-            runtime.federation.remote_key_cache_probe = [&runtime, key_clock](std::string_view server_name,
-                                                                              std::string_view key_id) -> bool {
-                auto const cached_key =
-                    federation::find_cached_remote_key(runtime.database.persistent_store, server_name, key_id);
-                return cached_key.has_value() &&
-                       !federation::remote_key_needs_refresh(cached_key->valid_until_ts, key_clock());
+            // PDU verification needs a signing key, not discovery metadata.
+            // Read it directly so cached verification cannot accidentally run
+            // the full resolver's discovery cascade (FED-10).
+            runtime.federation.cached_pdu_key_lookup =
+                [&store = runtime.database.persistent_store, own_name = runtime.config.server().server_name,
+                 key_clock](std::string_view server_name,
+                            std::string_view key_id) -> std::optional<federation::FederationKeyRecord> {
+                if (server_name == own_name)
+                {
+                    return federation::find_own_server_signing_key(store, server_name, key_id);
+                }
+                auto key = federation::find_cached_remote_key(store, server_name, key_id);
+                if (key.has_value() && !federation::remote_key_needs_refresh(key->valid_until_ts, key_clock()))
+                {
+                    return key;
+                }
+                return std::nullopt;
             };
+
+            // A key-only cache hit says nothing about discovery. Production
+            // resolves known-peer key rotation directly from the cache above;
+            // every discovery-capable resolver call must still be admitted.
+            runtime.federation.remote_key_cache_probe = {};
             if (cached != nullptr)
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
@@ -2890,6 +2908,7 @@ namespace
         std::size_t calls{};
         std::size_t max_calls{};
         std::chrono::steady_clock::time_point deadline{};
+        bool key_resolution_locally_denied{};
 
         [[nodiscard]] auto within_deadline() const noexcept -> bool
         {
@@ -2898,7 +2917,7 @@ namespace
 
         [[nodiscard]] auto can_begin_call() const noexcept -> bool
         {
-            return calls < max_calls && within_deadline();
+            return !key_resolution_locally_denied && calls < max_calls && within_deadline();
         }
 
         [[nodiscard]] auto begin_call() noexcept -> bool
@@ -2922,6 +2941,12 @@ namespace
             auto const ceiling = static_cast<std::uint32_t>(std::max<std::int64_t>(1, rounded));
             return remote_timeout_seconds == 0U ? ceiling : std::min(remote_timeout_seconds, ceiling);
         }
+    };
+
+    struct BackfillResult final
+    {
+        bool stored_any{};
+        bool locally_denied{};
     };
 
     // Returns true when the store has an event with this event_id and it has a
@@ -3425,12 +3450,12 @@ namespace
     // it failed verification.
     [[nodiscard]] auto verify_and_store_backfilled_event(
         HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin, std::string_view event_json,
-        rooms::RoomVersionPolicy const& policy,
+        rooms::RoomVersionPolicy const& policy, BackfillBudget& budget,
         std::optional<std::vector<database::PersistentStateGroupStateEntry>> const& forced_state_before = std::nullopt,
         bool allow_auth_events_only = false) -> bool
     {
         std::ignore = origin;
-        if (event_json.empty() || event_json.front() != '{')
+        if (budget.key_resolution_locally_denied || event_json.empty() || event_json.front() != '{')
         {
             return false;
         }
@@ -3520,17 +3545,20 @@ namespace
             }
             return std::nullopt;
         }();
-        if (!key_id.has_value() || !runtime.federation.remote_key_resolver)
+        if (!key_id.has_value())
         {
             return false;
         }
-        auto const remote = runtime.federation.remote_key_resolver(sender_domain, *key_id);
-        if (!remote.has_value())
+        // No main-validated client address accompanies recovery frames. Share
+        // unknown-source admission; never let peer/worker origin choose a bucket.
+        auto const resolved = federation::resolve_verification_key(runtime.federation, {}, sender_domain, *key_id);
+        budget.key_resolution_locally_denied = resolved.locally_denied;
+        if (!resolved.key.has_value())
         {
             return false;
         }
         auto const signature_decision =
-            federation::authorize_federation_pdu(pdu, std::string{sender_domain}, remote->signing_key);
+            federation::authorize_federation_pdu(pdu, std::string{sender_domain}, *resolved.key);
         if (!signature_decision.accepted)
         {
             return false;
@@ -3801,7 +3829,7 @@ namespace
             auto seen = std::unordered_set<std::string>{};
             for (auto const& id : pdu_ids)
             {
-                if (!budget.within_deadline())
+                if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                 {
                     return false;
                 }
@@ -3813,7 +3841,7 @@ namespace
             }
             for (auto const& id : auth_chain_ids)
             {
-                if (!budget.within_deadline())
+                if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                 {
                     return false;
                 }
@@ -3836,7 +3864,7 @@ namespace
 
         for (auto const& id : needed_ids)
         {
-            if (!budget.within_deadline())
+            if (!budget.within_deadline() || budget.key_resolution_locally_denied)
             {
                 return false;
             }
@@ -3867,7 +3895,7 @@ namespace
             {
                 return false;
             }
-            if (verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy))
+            if (verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy, budget))
             {
                 continue;
             }
@@ -3913,18 +3941,19 @@ namespace
             }
             for (auto const& auth_json : *auth_pdus)
             {
-                if (!budget.within_deadline())
+                if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                 {
                     return false;
                 }
-                if (!verify_and_store_backfilled_event(runtime, room_id, origin, auth_json, policy, std::nullopt, true))
+                if (!verify_and_store_backfilled_event(runtime, room_id, origin, auth_json, policy, budget,
+                                                       std::nullopt, true))
                 {
                     LOG_WARNING("backfill_state_ids_snapshot: auth-chain PDU failed verification; room_id=" +
                                 std::string{room_id} + " snapshot_event_id=" + id);
                     return false;
                 }
             }
-            if (!verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy, std::nullopt, true))
+            if (!verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy, budget, std::nullopt, true))
             {
                 LOG_WARNING("backfill_state_ids_snapshot: snapshot event failed verification after /event_auth "
                             "fallback; room_id=" +
@@ -3944,7 +3973,7 @@ namespace
             auto seen_keys = std::unordered_set<std::string>{};
             for (auto const& id : pdu_ids)
             {
-                if (!budget.within_deadline())
+                if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                 {
                     return false;
                 }
@@ -4016,7 +4045,8 @@ namespace
             return false;
         }
 
-        return verify_and_store_backfilled_event(runtime, room_id, origin, *target_json, policy, snapshot_state);
+        return verify_and_store_backfilled_event(runtime, room_id, origin, *target_json, policy, budget,
+                                                 snapshot_state);
     }
 
     // Returns `events` ordered by ascending `depth`, keeping the response order
@@ -4050,10 +4080,10 @@ namespace
     // ADR-0064 phase C: fetch missing prev_events / auth_events from the sending
     // server, verify each returned event, and store the verified events as
     // outliers with state groups so a later ingestion attempt can resolve state.
-    // Returns true when at least one missing event was successfully stored.
+    // Preserve transient local key denial separately from an unresolved gap.
     [[nodiscard]] auto backfill_missing_pdu_references(HomeserverRuntime& runtime, std::string_view room_id,
                                                        federation::InboundPduEnvelope const& envelope,
-                                                       rooms::RoomVersionPolicy const& policy) -> bool
+                                                       rooms::RoomVersionPolicy const& policy) -> BackfillResult
     {
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto collect = [&]() {
@@ -4066,7 +4096,7 @@ namespace
         auto [missing_auth, missing_prev] = collect();
         if (missing_auth.empty() && missing_prev.empty())
         {
-            return true;
+            return {true, false};
         }
 
         auto outbound_calls = std::size_t{0U};
@@ -4092,11 +4122,11 @@ namespace
                 // is the remote's choice (0.12.13 audit item 9).
                 for (auto const& json : order_by_ascending_depth(*fetched, policy))
                 {
-                    if (!budget.within_deadline())
+                    if (!budget.within_deadline() || budget.key_resolution_locally_denied)
                     {
                         break;
                     }
-                    if (verify_and_store_backfilled_event(runtime, room_id, envelope.origin, json, policy))
+                    if (verify_and_store_backfilled_event(runtime, room_id, envelope.origin, json, policy, budget))
                     {
                         stored_any = true;
                     }
@@ -4113,7 +4143,8 @@ namespace
                 break;
             }
             auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls, budget);
-            if (json.has_value() && verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy))
+            if (json.has_value() &&
+                verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy, budget))
             {
                 stored_any = true;
             }
@@ -4125,7 +4156,8 @@ namespace
                 break;
             }
             auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls, budget);
-            if (json.has_value() && verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy))
+            if (json.has_value() &&
+                verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy, budget))
             {
                 stored_any = true;
             }
@@ -4154,7 +4186,7 @@ namespace
             LOG_WARNING("Backfill could not resolve all missing references for room_id=" + std::string{room_id} +
                         " event_id=" + envelope.event_id);
         }
-        return stored_any;
+        return {stored_any, budget.key_resolution_locally_denied};
     }
 
 } // namespace
@@ -4163,7 +4195,7 @@ namespace
 // this function takes any lock because resolving a key may go to the network:
 // federation::authorize_federation_pdu() in inbound_request.cpp on the
 // same-process path, and handle_pdu_ingest_request() in worker_pool.cpp, with
-// main's own remote_key_resolver, for a PDU relayed by a federation worker
+// main's own admitted key-only helper, for a PDU relayed by a federation worker
 // (ADR-0071). This function re-checks authorization and content-hash
 // integrity.
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
@@ -4305,7 +4337,11 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
             std::ignore = global_released;
             auto const stripe_released = ScopedStripeReacquire{stripe_guard};
             std::ignore = stripe_released;
-            std::ignore = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
+            auto const backfill = backfill_missing_pdu_references(runtime, room_id, envelope, *room_policy);
+            if (backfill.locally_denied)
+            {
+                return {federation::PduIngestionStatus::main_overloaded, "backfill key-resolution admission deferred"};
+            }
         }
     }
     {
@@ -4712,6 +4748,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     // notably a remote media fetch — can release it for the duration. See
     // RuntimeLockRelease in request_lock.hpp.
     auto const lock_scope = RequestLockScope{guard};
+    auto const encoded_path = std::string_view{request.target}.substr(0U, request.target.find('?'));
+    if (core::path_component_contains_nul(encoded_path))
+    {
+        auto refused = response(400U, "request path must not contain NUL");
+        refused.errcode = "M_INVALID_PARAM";
+        return refused;
+    }
     auto const correlation = observability::make_correlation_context(runtime.next_request_sequence++);
     [[maybe_unused]] auto const correlation_scope = observability::CorrelationScope{correlation};
     log_diagnostic("request.received",
@@ -5033,6 +5076,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - join_suffix.size()));
         auto const via_servers = parse_join_via_servers(request_query);
+        if (!via_servers.has_value())
+        {
+            auto invalid =
+                response(400U, matrix_error("M_INVALID_PARAM", "join server parameter must not contain NUL"));
+            invalid.errcode = "M_INVALID_PARAM";
+            return invalid;
+        }
         // Keep a copy of the parsed third_party_signed object alive while
         // join_room uses it. The lambda below only returns a pointer into this
         // local storage, so the optional must outlive the join call.
@@ -5068,13 +5118,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         log_diagnostic("room.join.dispatch",
                        {
                            {"room_id",            room_id,                                          false},
-                           {"via_count",          std::to_string(via_servers.size()),               false},
+                           {"via_count",          std::to_string(via_servers->size()),              false},
                            {"third_party_signed", third_party_signed == nullptr ? "false" : "true", false}
         });
         auto const result = [&] {
             auto const released = RuntimeLockRelease{guard};
             std::ignore = released;
-            return join_room(runtime, request.access_token, room_id, via_servers, third_party_signed);
+            return join_room(runtime, request.access_token, room_id, *via_servers, third_party_signed);
         }();
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {
@@ -5148,6 +5198,15 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
 [[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse
 {
+    auto const encoded_path = std::string_view{request.target}.substr(0U, request.target.find('?'));
+    if (core::path_component_contains_nul(encoded_path))
+    {
+        // Refuse before routing/decoding or verified-worker replay (DB-6).
+        // Keep the wire error structured and never reflect the target.
+        auto refused = response(400U, matrix_error("M_INVALID_PARAM", "request path must not contain NUL"));
+        refused.errcode = "M_INVALID_PARAM";
+        return refused;
+    }
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
     auto held_for_review = false;
     auto blocked_by_local_policy = false;
@@ -5202,6 +5261,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             req.canonical_json_verified = true;
             req.signature_verified = true;
             req.body = request.body;
+            req.remote_addr = rate_limit_client_key(request, runtime.config.server());
             signed_request_opt = std::move(req);
         }
         else
@@ -5225,6 +5285,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                                                             .count());
                 req.canonical_json_verified = true;
                 req.body = request.body;
+                req.remote_addr = rate_limit_client_key(request, runtime.config.server());
                 signed_request_opt = std::move(req);
             }
         }

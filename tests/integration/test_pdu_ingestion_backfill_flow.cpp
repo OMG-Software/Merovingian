@@ -35,6 +35,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <string>
 #include <thread>
@@ -363,6 +364,336 @@ inline auto run_body_aware_dispatch_tls_server(merovingian::net::TcpAcceptor& ac
     return serialized.output;
 }
 
+// These regressions observe the wired durable cache provider, not just the raw
+// resolver (which admission would suppress even if recovery kept attempting it).
+class BackfillAdmissionObservation final
+{
+public:
+    explicit BackfillAdmissionObservation(HomeserverRuntime& runtime)
+        : runtime_{runtime}
+        , cache_lookup_{runtime.federation.cached_pdu_key_lookup}
+        , released_{release_.get_future().share()}
+    {
+        runtime_.federation.cached_pdu_key_lookup = [this](std::string_view server, std::string_view id) {
+            if (server == remote_server)
+                cache_attempts.emplace_back(id);
+            return cache_lookup_(server, id);
+        };
+        runtime_.federation.remote_key_resolver =
+            [this](std::string_view server, std::string_view id) -> std::optional<federation::FederationRemoteRuntime> {
+            if (server == foreign_server && id == remote_key_id)
+            {
+                entered_.set_value();
+                // Even a broken cleanup cannot leave a test worker blocked forever.
+                if (released_.wait_for(std::chrono::seconds{10}) != std::future_status::ready)
+                    return std::nullopt;
+                auto remote = remote_runtime();
+                remote.server_name = foreign_server;
+                remote.signing_key.server_name = foreign_server;
+                return remote;
+            }
+            ++raw_calls;
+            if (server == remote_server && id == remote_key_id)
+                return remote_runtime();
+            return std::nullopt;
+        };
+    }
+
+    ~BackfillAdmissionObservation()
+    {
+        release_foreign();
+        runtime_.federation.cached_pdu_key_lookup = cache_lookup_;
+        runtime_.federation.remote_key_resolver = {};
+    }
+    BackfillAdmissionObservation(BackfillAdmissionObservation const&) = delete;
+    auto operator=(BackfillAdmissionObservation const&) -> BackfillAdmissionObservation& = delete;
+
+    [[nodiscard]] auto hold_foreign() -> bool
+    {
+        auto entered = entered_.get_future();
+        foreign_ = std::jthread{[this](std::stop_token stop) {
+            auto const on_stop = std::stop_callback{stop, [this] {
+                                                        release_.set_value();
+                                                    }};
+            foreign_result_ = federation::resolve_verification_key(runtime_.federation, "foreign-source",
+                                                                   foreign_server, remote_key_id);
+        }};
+        return entered.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+    }
+
+    auto release_foreign() -> void
+    {
+        if (foreign_.joinable())
+        {
+            foreign_.request_stop();
+            foreign_.join();
+        }
+    }
+
+    [[nodiscard]] auto foreign_succeeded() const -> bool
+    {
+        return foreign_result_.has_value() && foreign_result_->key.has_value() && !foreign_result_->locally_denied;
+    }
+
+    std::vector<std::string> cache_attempts{};
+    std::size_t raw_calls{};
+
+private:
+    static constexpr auto foreign_server = "held.example.org";
+    HomeserverRuntime& runtime_;
+    decltype(federation::FederationRuntimeState::cached_pdu_key_lookup) cache_lookup_;
+    std::promise<void> release_{};
+    std::promise<void> entered_{};
+    std::shared_future<void> released_;
+    std::optional<federation::VerificationKeyResolution> foreign_result_{};
+    std::jthread foreign_{};
+};
+
+// Keep a live peer available until ingestion finishes. Unexpected fallback
+// requests get a bounded 404 and are counted, rather than hanging in connect
+// or being hidden by a one-response server that has already exited.
+[[nodiscard]] auto ingest_with_bounded_backfill_peer(
+    HomeserverRuntime& runtime, InboundPduEnvelope const& pdu, net::TcpAcceptor& acceptor,
+    homeserver::TlsServerContext& tls_context, std::string const& response,
+    std::vector<std::string>& request_lines) -> federation::PduIngestionResult
+{
+    auto const not_found = tests::tls_mock::json_http_response("404 Not Found", R"({"errcode":"M_NOT_FOUND"})");
+    auto server = std::jthread{[&](std::stop_token stop) {
+        for (auto served = 0U; served < 16U && !stop.stop_requested();)
+        {
+            auto const fd = tests::tls_mock::accept_loopback(acceptor, 100);
+            if (fd < 0)
+                continue;
+            auto const owned_fd = core::SocketHandle{fd};
+            auto tls = homeserver::accept_tls_connection(tls_context, fd, 1000);
+            if (!tls.connection.has_value())
+                continue;
+            auto& connection = *tls.connection;
+            auto const request = read_full_http_request(connection);
+            auto const line = request.substr(0U, request.find("\r\n"));
+            request_lines.push_back(line);
+            ++served;
+            auto const missing = line.starts_with("POST /_matrix/federation/v1/get_missing_events/");
+            std::ignore = connection.write(missing ? response : not_found);
+        }
+    }};
+    auto const result = homeserver::ingest_pdu_event(runtime, pdu);
+    server.request_stop();
+    server.join();
+    return result;
+}
+
+[[nodiscard]] auto make_cache_signed_message_pdu(std::string const& room_id, std::vector<std::string> const& prev_ids,
+                                                 std::vector<std::string> const& auth_ids, std::int64_t depth,
+                                                 std::int64_t ts, std::string_view cache_key_id) -> InboundPduEnvelope
+{
+    auto parsed = canonicaljson::parse_lossless(make_remote_message_json(room_id, prev_ids, auth_ids, depth, ts));
+    REQUIRE(parsed.error == canonicaljson::ParseError::none);
+    auto object = std::get<canonicaljson::Object>(parsed.value.storage());
+    std::erase_if(object, [](auto const& member) {
+        return member.key == "hashes" || member.key == "signatures";
+    });
+    auto const unsigned_json = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(object)});
+    REQUIRE(unsigned_json.error == canonicaljson::CanonicalJsonError::none);
+    // The same legitimate public key can be published under a second key ID.
+    // The event really bears that ID; the cache is never a one-shot fake.
+    auto const signed_json = federation::test::make_signed_event_json(unsigned_json.output, remote_server, cache_key_id,
+                                                                      remote_key_seed, room_version);
+    auto envelope = federation::parse_inbound_pdu_envelope(signed_json, room_version);
+    REQUIRE(envelope.has_value());
+    envelope->origin = remote_server;
+    return *envelope;
+}
+
+auto exercise_sticky_backfill_denial(bool capacity_full, bool partial_progress) -> void
+{
+    // The certificate's RAII directory also owns SQLite and its sidecars; it
+    // outlives the runtime and all verification/network threads on every exit.
+    auto certificate = tests::tls_mock::write_test_tls_certificate("localhost");
+    auto const path = certificate.directory / "backfill.sqlite";
+    auto started = homeserver::start_runtime(config_with_sqlite(path));
+    REQUIRE(started.started);
+    auto& runtime = started.runtime;
+    homeserver::wire_federation_callbacks(runtime);
+    REQUIRE(static_cast<bool>(runtime.federation.cached_pdu_key_lookup));
+    auto const room_id = std::string{"!backfill-sticky-progress:local.example.org"};
+    seed_room_with_genesis_state_group(runtime, room_id);
+    auto const auth_ids = std::vector<std::string>{room_id + ":create", room_id + ":pl", room_id + ":member:bob"};
+    auto const cache_key_id = std::string{"ed25519:backfill-cached"};
+    auto const public_key = remote_runtime().signing_key;
+    REQUIRE(database::store_server_signing_key(runtime.database.persistent_store,
+                                               {std::string{remote_server}, cache_key_id,
+                                                events::matrix_base64_from_bytes(public_key.public_key_bytes),
+                                                public_key.valid_until_ts}));
+    auto const cached_key = runtime.federation.cached_pdu_key_lookup(remote_server, cache_key_id);
+    REQUIRE(cached_key.has_value());
+    REQUIRE_FALSE(runtime.federation.cached_pdu_key_lookup(remote_server, remote_key_id).has_value());
+    auto const first =
+        partial_progress ? make_cache_signed_message_pdu(room_id, {room_id + ":member"}, auth_ids, 4, 10, cache_key_id)
+                         : make_remote_message_pdu(room_id, {room_id + ":member"}, auth_ids, 4, 10);
+    auto const blocked = partial_progress
+                             ? make_remote_message_pdu(room_id, {first.event_id}, auth_ids, 5, 11)
+                             : make_cache_signed_message_pdu(room_id, {first.event_id}, auth_ids, 5, 11, cache_key_id);
+    auto const later = make_cache_signed_message_pdu(room_id, {blocked.event_id}, auth_ids, 6, 12, cache_key_id);
+    auto const pdu = make_remote_message_pdu(room_id, {later.event_id}, auth_ids, 7, 20);
+    REQUIRE(first.event_id != blocked.event_id);
+    REQUIRE(blocked.event_id != later.event_id);
+    REQUIRE(later.event_id != pdu.event_id);
+    for (auto const& event : {first, blocked, later, pdu})
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        REQUIRE(parsed.error == canonicaljson::ParseError::none);
+        REQUIRE(events::verify_pdu_content_hash(parsed.value));
+        CHECK(federation::test::reference_hash_event_id(event.json, room_version) == event.event_id);
+        auto const parsed_pdu = federation::parse_federation_pdu(event.json, [](std::string_view) {
+            return std::string{room_version};
+        });
+        auto const key = (event.event_id == later.event_id ||
+                          (partial_progress ? event.event_id == first.event_id : event.event_id == blocked.event_id))
+                             ? *cached_key
+                             : public_key;
+        REQUIRE(federation::authorize_federation_pdu(parsed_pdu, remote_server, key).accepted);
+    }
+    runtime.federation.config.backfill.max_outbound_calls = 8U;
+    runtime.federation.config.backfill.max_total_outbound_calls = 12U;
+    runtime.federation.config.backfill.max_snapshot_outbound_calls = 4U;
+    runtime.federation.config.backfill_timeout_seconds = 5U;
+    runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
+    runtime.federation.config.key_resolution_max_in_flight = 1U;
+    runtime.federation.key_resolution_buckets.push_back(
+        {"<unknown>", capacity_full ? 0U : 1U, std::chrono::steady_clock::now()});
+    auto observation = BackfillAdmissionObservation{runtime};
+    if (capacity_full)
+        REQUIRE(observation.hold_foreign());
+    REQUIRE(runtime.federation.key_resolutions_in_flight == (capacity_full ? 1U : 0U));
+    auto tls = homeserver::make_tls_server_context(certificate.certificate_file, certificate.private_key_file);
+    REQUIRE(tls.ok());
+    auto tls_context = std::move(*tls.context);
+    auto acceptor = net::TcpAcceptor{};
+    REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+    runtime.test_forced_outbound_resolution[remote_server] = homeserver::TestOnlyForcedOutboundResolution{
+        "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+    auto returned_events = canonicaljson::Array{};
+    // Deliberately reverse wire order: the real recovery depth ordering decides
+    // which verification has already made progress when admission refuses work.
+    for (auto const& event : {later, blocked, first})
+        returned_events.push_back(canonicaljson::parse_lossless(event.json).value);
+    auto body = canonicaljson::Object{};
+    body.push_back(canonicaljson::make_member("events", canonicaljson::Value{std::move(returned_events)}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(body)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    auto const response = tests::tls_mock::json_http_response("200 OK", serialized.output);
+    auto& store = runtime.database.persistent_store;
+    auto const events_before = store.events.size();
+    auto const groups_before = store.state_groups.size();
+    auto const links_before = store.event_state_groups.size();
+    auto const genesis_group = database::find_event_state_group(store, room_id + ":member");
+    REQUIRE(genesis_group.has_value());
+    auto const count_event = [](database::PersistentStore const& source, std::string const& id) {
+        return std::ranges::count(source.events, id, &database::PersistentEvent::event_id);
+    };
+    auto const count_mapping = [](database::PersistentStore const& source, std::string const& id) {
+        return std::ranges::count(source.event_state_groups, id, &database::PersistentEventStateGroup::event_id);
+    };
+    auto requests = std::vector<std::string>{};
+    auto const denied = ingest_with_bounded_backfill_peer(runtime, pdu, acceptor, tls_context, response, requests);
+    REQUIRE(denied.status == PduIngestionStatus::main_overloaded);
+    CHECK(requests.size() == 1U);
+    REQUIRE_FALSE(requests.empty());
+    CHECK(requests.front().starts_with("POST /_matrix/federation/v1/get_missing_events/"));
+    CHECK(runtime.federation.config.backfill.max_outbound_calls > requests.size());
+    CHECK(runtime.federation.config.backfill.max_total_outbound_calls > requests.size());
+    CHECK(observation.raw_calls == 0U);
+    auto const expected_attempts = partial_progress ? std::vector<std::string>{cache_key_id, remote_key_id}
+                                                    : std::vector<std::string>{remote_key_id};
+    CHECK(observation.cache_attempts == expected_attempts);
+    CHECK(runtime.federation.key_resolutions_in_flight == (capacity_full ? 1U : 0U));
+    CHECK(runtime.federation.key_resolution_failures.empty());
+    CHECK(store.events.size() == events_before + (partial_progress ? 1U : 0U));
+    CHECK(store.state_groups.size() == groups_before);
+    CHECK(store.event_state_groups.size() == links_before + (partial_progress ? 1U : 0U));
+    for (auto const& event : {first, blocked, later, pdu})
+    {
+        auto const retained = partial_progress && event.event_id == first.event_id;
+        CHECK(count_event(store, event.event_id) == (retained ? 1 : 0));
+        CHECK(count_mapping(store, event.event_id) == (retained ? 1 : 0));
+    }
+    {
+        auto disk = database::open_sqlite_persistent_store(path.string());
+        REQUIRE(disk.ok);
+        for (auto const& event : {first, blocked, later, pdu})
+        {
+            auto const retained = partial_progress && event.event_id == first.event_id;
+            CHECK(count_event(disk.store, event.event_id) == (retained ? 1 : 0));
+            CHECK(count_mapping(disk.store, event.event_id) == (retained ? 1 : 0));
+        }
+    }
+    observation.release_foreign();
+    if (capacity_full)
+        CHECK(observation.foreign_succeeded());
+    REQUIRE(runtime.federation.key_resolutions_in_flight == 0U);
+    CHECK(runtime.federation.key_resolution_failures.empty());
+    if (!partial_progress)
+        return;
+    auto const first_row = std::ranges::find(store.events, first.event_id, &database::PersistentEvent::event_id);
+    REQUIRE(first_row != store.events.end());
+    CHECK(first_row->status == "outlier");
+    auto const first_ordering = first_row->stream_ordering;
+    auto const first_group = database::find_event_state_group(store, first.event_id);
+    CHECK(first_group == genesis_group);
+    runtime.federation.key_resolution_buckets.clear();
+    observation.cache_attempts.clear();
+    requests.clear();
+    // Resend the very same const envelope, including unchanged JSON/event ID.
+    auto const retry = ingest_with_bounded_backfill_peer(runtime, pdu, acceptor, tls_context, response, requests);
+    REQUIRE(retry.status == PduIngestionStatus::accepted);
+    CHECK(requests.size() == 1U);
+    CHECK(observation.raw_calls == 1U);
+    CHECK(observation.cache_attempts == std::vector<std::string>{cache_key_id, remote_key_id, cache_key_id});
+    CHECK(runtime.federation.key_resolutions_in_flight == 0U);
+    CHECK(runtime.federation.key_resolution_failures.empty());
+    CHECK(store.events.size() == events_before + 4U);
+    // Messages preserve their parent's state: no new group is required, but
+    // each event (including the already retained outlier) has one mapping.
+    CHECK(store.state_groups.size() == groups_before);
+    CHECK(store.event_state_groups.size() == links_before + 4U);
+    CHECK(database::find_event_state_group(store, first.event_id) == first_group);
+    auto const retained_first = std::ranges::find(store.events, first.event_id, &database::PersistentEvent::event_id);
+    REQUIRE(retained_first != store.events.end());
+    CHECK(retained_first->stream_ordering == first_ordering);
+    CHECK(retained_first->status == "outlier");
+    for (auto const& event : {first, blocked, later, pdu})
+    {
+        CHECK(count_event(store, event.event_id) == 1);
+        CHECK(count_mapping(store, event.event_id) == 1);
+        CHECK(database::find_event_state_group(store, event.event_id) == genesis_group);
+    }
+    requests.clear();
+    observation.cache_attempts.clear();
+    auto const duplicate = ingest_with_bounded_backfill_peer(runtime, pdu, acceptor, tls_context, response, requests);
+    // This low-level persistence sink has no transaction replay dedup: an
+    // already stored event fails its pre-check. Row/state idempotency, not a
+    // second accepted result from that sink, is the regression contract here.
+    CHECK(duplicate.status == PduIngestionStatus::internal_error);
+    CHECK(requests.empty());
+    CHECK(observation.cache_attempts.empty());
+    CHECK(observation.raw_calls == 1U);
+    CHECK(store.events.size() == events_before + 4U);
+    CHECK(store.state_groups.size() == groups_before);
+    CHECK(store.event_state_groups.size() == links_before + 4U);
+    auto disk = database::open_sqlite_persistent_store(path.string());
+    REQUIRE(disk.ok);
+    for (auto const& event : {first, blocked, later, pdu})
+    {
+        CHECK(count_event(store, event.event_id) == 1);
+        CHECK(count_mapping(store, event.event_id) == 1);
+        CHECK(count_event(disk.store, event.event_id) == 1);
+        CHECK(count_mapping(disk.store, event.event_id) == 1);
+        CHECK(database::find_event_state_group(disk.store, event.event_id) == genesis_group);
+    }
+    CHECK(disk.store.state_groups.size() == groups_before);
+}
+
 } // namespace
 
 SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending server and accepts the PDU",
@@ -475,6 +806,150 @@ SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending serve
 // auth_events but fails against the state before it, it must be stored as
 // rejected and its after-state must exclude the event, so later PDUs that
 // reference it do not see its state.
+SCENARIO("Backfill verification obeys shared key admission and retries local denial",
+         "[pdu_ingestion][backfill][fed10][fed10-backfill-admission]")
+{
+    GIVEN("a signed missing predecessor returned over real loopback TLS")
+    {
+        WHEN("its verification key is cold or cached while main admission is exhausted")
+        {
+            THEN("cold work is deferred without persistence and cache-only work remains available")
+            {
+                for (auto const mode : {0U, 1U, 2U, 3U})
+                {
+                    CAPTURE(mode);
+                    auto const cached = mode >= 2U;
+                    auto const capacity_full = mode == 0U || mode == 2U;
+                    auto const path = unique_sqlite_path();
+                    std::filesystem::remove(path);
+                    auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+                    REQUIRE(started.started);
+                    auto& runtime = started.runtime;
+                    merovingian::homeserver::wire_federation_callbacks(runtime);
+                    auto const room_id = std::string{"!backfill-admission:local.example.org"};
+                    seed_room_with_genesis_state_group(runtime, room_id);
+                    auto const auth_ids =
+                        std::vector<std::string>{room_id + ":create", room_id + ":pl", room_id + ":member:bob"};
+                    auto const predecessor = make_remote_message_pdu(room_id, {room_id + ":member"}, auth_ids, 3, 10);
+                    auto const pdu = make_remote_message_pdu(room_id, {predecessor.event_id}, auth_ids, 4, 20);
+                    runtime.federation.config.backfill.max_outbound_calls = 1U;
+                    runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
+                    runtime.federation.config.key_resolution_max_in_flight = 1U;
+                    runtime.federation.key_resolution_buckets.push_back(
+                        {"<unknown>", capacity_full ? 0U : 1U, std::chrono::steady_clock::now()});
+                    runtime.federation.key_resolutions_in_flight = capacity_full ? 1U : 0U;
+                    auto raw_calls = std::size_t{};
+                    runtime.federation.remote_key_resolver = [&raw_calls](std::string_view server, std::string_view id)
+                        -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                        ++raw_calls;
+                        if (server == remote_server && id == remote_key_id)
+                            return remote_runtime();
+                        return std::nullopt;
+                    };
+                    runtime.federation.cached_pdu_key_lookup =
+                        [cached](std::string_view server,
+                                 std::string_view id) -> std::optional<merovingian::federation::FederationKeyRecord> {
+                        if (cached && server == remote_server && id == remote_key_id)
+                            return remote_runtime().signing_key;
+                        return std::nullopt;
+                    };
+                    if (mode == 3U)
+                        runtime.federation.remote_key_resolver = {};
+                    auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+                    auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                certificate.private_key_file);
+                    REQUIRE(tls.ok());
+                    auto tls_context = std::move(*tls.context);
+                    auto acceptor = merovingian::net::TcpAcceptor{};
+                    REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+                    runtime.test_forced_outbound_resolution[remote_server] =
+                        merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                            "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+                    auto const response = merovingian::tests::tls_mock::json_http_response(
+                        "200 OK", get_missing_events_response(predecessor.json));
+                    auto const perform = [&]() {
+                        auto thread = std::thread{[&]() {
+                            run_body_aware_tls_server(acceptor, tls_context, response);
+                        }};
+                        auto const joined = merovingian::tests::tls_mock::ScopedThreadJoin{thread};
+                        std::ignore = joined;
+                        return merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+                    };
+                    auto const events_before = runtime.database.persistent_store.events.size();
+                    auto const groups_before = runtime.database.persistent_store.state_groups.size();
+                    auto const links_before = runtime.database.persistent_store.event_state_groups.size();
+                    auto const result = perform();
+                    CHECK(raw_calls == 0U);
+                    CHECK(runtime.federation.key_resolutions_in_flight == (capacity_full ? 1U : 0U));
+                    CHECK(runtime.federation.key_resolution_failures.empty());
+                    if (cached)
+                    {
+                        CHECK(result.status == PduIngestionStatus::accepted);
+                        CHECK(merovingian::database::find_event_state_group(runtime.database.persistent_store,
+                                                                            predecessor.event_id)
+                                  .has_value());
+                    }
+                    else
+                    {
+                        CHECK(result.status == PduIngestionStatus::main_overloaded);
+                        CHECK(runtime.database.persistent_store.events.size() == events_before);
+                        CHECK(runtime.database.persistent_store.state_groups.size() == groups_before);
+                        CHECK(runtime.database.persistent_store.event_state_groups.size() == links_before);
+                        runtime.federation.key_resolutions_in_flight = 0U;
+                        runtime.federation.key_resolution_buckets.clear();
+                        auto const retry = perform();
+                        CHECK(retry.status == PduIngestionStatus::accepted);
+                        CHECK(raw_calls == 1U);
+                        CHECK(runtime.federation.key_resolutions_in_flight == 0U);
+                        CHECK(merovingian::database::find_event_state_group(runtime.database.persistent_store,
+                                                                            predecessor.event_id)
+                                  .has_value());
+                    }
+                    std::filesystem::remove(path);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Backfill local denial stops verification and HTTP with recovery capacity remaining",
+         "[pdu_ingestion][backfill][fed10][fed10-backfill-sticky]")
+{
+    GIVEN("three genuinely signed missing events and a durable cache-verifiable later event")
+    {
+        WHEN("the first cold verification lookup encounters local admission denial")
+        {
+            THEN("quota-full and foreign-slot-full both stop all later work without failure caching or storage")
+            {
+                for (auto const capacity_full : {false, true})
+                {
+                    CAPTURE(capacity_full);
+                    exercise_sticky_backfill_denial(capacity_full, false);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Backfill retains earlier outlier progress across local denial and unchanged-PDU retries",
+         "[pdu_ingestion][backfill][fed10][fed10-backfill-partial-progress]")
+{
+    GIVEN("a durable cached signing key for an earlier valid outlier and a cold key for its child")
+    {
+        WHEN("the later verification lookup encounters local admission denial")
+        {
+            THEN("quota-full and foreign-slot-full retain only earlier progress and retry without duplicate rows")
+            {
+                for (auto const capacity_full : {false, true})
+                {
+                    CAPTURE(capacity_full);
+                    exercise_sticky_backfill_denial(capacity_full, true);
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("A backfilled event passing its auth_events but failing state-before is stored rejected",
          "[pdu_ingestion][backfill][conformance]")
 {

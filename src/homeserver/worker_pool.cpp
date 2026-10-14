@@ -19,6 +19,7 @@
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/net/thread_pool.hpp"
 #include "merovingian/observability/logger.hpp"
+#include "merovingian/platform/file_metadata.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -635,6 +636,7 @@ namespace
         // The event ID the signed event hashes to; empty when refused.
         std::string event_id{};
         std::string refusal{};
+        bool locally_denied{false};
     };
 
     [[nodiscard]] auto verify_relayed_event_signature(HomeserverRuntime& runtime, std::string_view event_json,
@@ -656,18 +658,19 @@ namespace
         {
             return {{}, "relayed event has no signature from its sender's server"};
         }
-        if (!runtime.federation.remote_key_resolver)
-        {
-            return {{}, "remote key resolver not wired"};
-        }
-        auto const remote = [&]() {
+        auto const resolution = [&]() {
             auto const unlocked = RuntimeLockRelease{};
             std::ignore = unlocked;
-            return runtime.federation.remote_key_resolver(sender_server, signature->key_id);
+            // No trustworthy client address travels in these relay frames.
+            // All main relay misses share the bounded unknown-source bucket;
+            // never let a worker choose a source to evade main's quota.
+            return federation::resolve_verification_key(runtime.federation, {}, sender_server, signature->key_id);
         }();
-        auto const key = remote.has_value() ? std::optional<federation::FederationKeyRecord>{remote->signing_key}
-                                            : std::optional<federation::FederationKeyRecord>{};
-        auto const decision = federation::authorize_federation_pdu(pdu, sender_server, key);
+        if (resolution.locally_denied)
+        {
+            return {{}, "main key-resolution admission overloaded", true};
+        }
+        auto const decision = federation::authorize_federation_pdu(pdu, sender_server, resolution.key);
         if (!decision.accepted)
         {
             return {{}, "relayed event failed signature verification: " + decision.reason};
@@ -680,6 +683,7 @@ namespace
         // Set only when the frame passed; otherwise `refusal` says why.
         std::optional<federation::InboundPduEnvelope> envelope{};
         std::string refusal{};
+        bool locally_denied{false};
     };
 
     // Rebuilds the envelope from the verified event JSON rather than taking
@@ -694,7 +698,7 @@ namespace
         auto const signature = verify_relayed_event_signature(runtime, frame.json, room_version);
         if (!signature.refusal.empty())
         {
-            return {std::nullopt, signature.refusal};
+            return {std::nullopt, signature.refusal, signature.locally_denied};
         }
         auto envelope = federation::parse_inbound_pdu_envelope(frame.json, room_version);
         if (!envelope.has_value())
@@ -748,7 +752,9 @@ auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     if (!relayed.envelope.has_value())
     {
         log_relay_refused("pdu_ingest", frame.event_id, relayed.refusal);
-        return {federation::PduIngestionStatus::rejected_invalid, relayed.refusal};
+        return {relayed.locally_denied ? federation::PduIngestionStatus::main_overloaded
+                                       : federation::PduIngestionStatus::rejected_invalid,
+                relayed.refusal};
     }
     // The default sink reserves stream_ordering internally and returns it in
     // accepted_stream_ordering. It also publishes the sync notification, so the
@@ -780,7 +786,7 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
     if (!relayed.envelope.has_value())
     {
         log_relay_refused("membership_ingest", frame.event_id, relayed.refusal);
-        result.status = 403U;
+        result.status = relayed.locally_denied ? 503U : 403U;
         result.reason = relayed.refusal;
         return serialize_membership_ingest_result(result);
     }
@@ -791,7 +797,8 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
     return serialize_membership_ingest_result(result);
 }
 
-auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                               ipc::IpcChannel const& receiving_channel) -> std::string
 {
     // EDUs (typing, receipts, presence, m.direct_to_device, device list
     // updates) accepted by a worker must reach main's own edu_sink the same
@@ -811,6 +818,16 @@ auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     auto result = federation::EduDispositionResult{};
     {
         auto guard = std::unique_lock{runtime.mutex};
+        // Check after any runtime-lock wait. A channel-local parent ID is only a
+        // routing reference: it must still name a live main-verified origin on
+        // the exact channel that delivered this relay. The pending mutex is
+        // released before invoking the real sink (including persistence).
+        auto const parent_request_id = ipc::ipc_json_get_u64(request_json, "parent_request_id");
+        if (!receiving_channel.matches_pending_origin(parent_request_id, envelope->origin))
+        {
+            return serialize_edu_ingest_result({federation::EduDispositionStatus::rejected_invalid,
+                                                "edu_ingest has no matching live verified parent"});
+        }
         if (runtime.federation.edu_sink)
         {
             result = runtime.federation.edu_sink(*envelope);
@@ -855,7 +872,7 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
     if (!refusal.empty())
     {
         log_relay_refused("invite_ingest", request.event_id, refusal);
-        result.status = 403U;
+        result.status = signature.locally_denied ? 503U : 403U;
         result.reason = refusal;
         return serialize_invite_ingest_result(result);
     }
@@ -986,38 +1003,11 @@ auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_v
 namespace
 {
 
-    // Reads federation.worker.database_uri_file, ADR-0062 part 2's separate,
-    // least-privilege PostgreSQL connection URI for the worker. Mirrors
-    // runtime.cpp's read_database_uri_file (first line of the file, trimmed
-    // of its trailing newline by std::getline), but returns the bytes in a
-    // core::SecretBuffer and wipes the transient std::string copy, since
-    // unlike main's own database.uri_file this value is about to cross a
-    // process boundary. Returns nullopt on an empty path, a file that cannot
-    // be opened, or an empty first line -- the caller treats all three as
-    // "no URI available" and decides what that means from the surrounding
-    // config (required vs. an explicit shared-credentials opt-out).
+    // ADR-0062: validate the opened file and read directly into locked memory.
+    // No stream buffer or transient plaintext string crosses the IPC boundary.
     [[nodiscard]] auto read_worker_database_uri_file(std::string const& path) -> std::optional<core::SecretBuffer>
     {
-        if (path.empty())
-        {
-            return std::nullopt;
-        }
-        auto input = std::ifstream{path};
-        if (!input.is_open())
-        {
-            return std::nullopt;
-        }
-        auto value = std::string{};
-        std::getline(input, value);
-        if (value.empty())
-        {
-            return std::nullopt;
-        }
-        auto secret = core::SecretBuffer{
-            std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(value.data()), value.size()}
-        };
-        core::secure_zero(std::as_writable_bytes(std::span{value}));
-        return secret;
+        return platform::read_secure_secret_line(path, 4096U);
     }
 
 } // namespace
@@ -1149,13 +1139,14 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         // the frame and enqueues the real work on handler_pool_. Each task
         // holds its own ref-counted channel snapshot and sends the response
         // from the pool, so a slow handler can never stall later queued frames.
-        supervisor->set_request_handler([this, ptr = supervisor.get()](std::uint64_t id, std::string json) {
+        supervisor->set_channel_request_handler([this, shard_index = i](
+                                                    std::shared_ptr< // SHARED_PTR: reviewed - queued receiver.
+                                                        ipc::IpcChannel> const& ch,
+                                                    std::uint64_t id, std::string json) {
             auto const type = json_get_str(json, "type");
-            // Keep a ref-counted handle to the channel that received this
-            // request. The submitted task may outlive a concurrent worker
-            // restart, so it must hold its own reference rather than
-            // dereferencing the supervisor pointer.
-            auto const ch = ptr->channel_snapshot();
+            // The supervisor supplies the exact receiving channel. Capture it
+            // in each task: a later snapshot could be another worker generation
+            // with colliding channel-local parent IDs.
             // ADR-0078: frames a worker must never send are refused first,
             // inline, with no runtime lock, no handler-pool slot and no work.
             if (ch && refuse_forbidden_worker_request(*ch, id, type))
@@ -1205,7 +1196,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                         auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_edu_ingest_request(runtime_, json));
+                        ch->send_response(id, handle_edu_ingest_request(runtime_, json, *ch));
                     }))
                 {
                     ch->send_response(id, overload_response_for(type));
@@ -1284,7 +1275,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             }
             else
             {
-                LOG_WARNING("WorkerPool shard " + std::to_string(ptr == nullptr ? 0U : ptr->shard_index()) +
+                LOG_WARNING("WorkerPool shard " + std::to_string(shard_index) +
                             ": unexpected IPC request type: " + type);
             }
         });
@@ -1326,7 +1317,10 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
     auto const remote_seconds = remote_timeout.valid ? remote_timeout.seconds : cfg_.request_timeout_seconds;
     auto const ipc_timeout_seconds = std::max(cfg_.request_timeout_seconds, remote_seconds) + 10U;
     auto const timeout = std::chrono::seconds{ipc_timeout_seconds};
-    auto const reply = ch->send_request(ipc::serialize_fed_request(request), timeout);
+    // The proxy sets these fields only after main's signature verification.
+    // Ordinary/unsigned requests must not acquire an EDU-authorizing context.
+    auto const verified_origin = request.sig_verified ? std::string_view{request.verified_origin} : std::string_view{};
+    auto const reply = ch->send_request(ipc::serialize_fed_request(request), timeout, verified_origin);
     if (!reply.has_value())
     {
         LOG_WARNING("WorkerPool: shard " + std::to_string(index) + " request timed out or failed for " +

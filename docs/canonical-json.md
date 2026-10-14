@@ -17,8 +17,9 @@ Implemented now:
 - duplicate object-key rejection during parsing and serialization
 - UTF-8 validation for parsed strings
 - Unicode escape decoding, including surrogate pairs
-- JS-safe-integer range enforcement (`[-(2^53)+1, (2^53)-1]`) for the strict
-  signing parser
+- JS-safe-integer range enforcement (`[-(2^53)+1, (2^53)-1]`) for integer
+  values in both parsers; the general parser checks unsigned values before
+  converting them to signed storage
 - rejection of floating-point/exponent numbers in the strict signing parser
 - a second general-purpose parser (`parse_json()`, alongside the strict
   `parse_lossless()`) that preserves doubles and exponent notation; this is
@@ -80,7 +81,9 @@ function at all, because the underlying `yyjson` read is strict RFC 8259
 (`YYJSON_READ_NOFLAG`/`YYJSON_READ_NUMBER_AS_RAW`, no permissive extensions),
 which already excludes a leading `+` from being tokenized as a number. The
 separate general-purpose parser (`parse_json()`) accepts doubles and exponent
-notation for payloads that are never signed.
+notation for payloads that are never signed. Values parsed as integers outside the
+canonical range return `integer_out_of_range`, including `UINT64_MAX`; they
+never wrap to negative values (HTTP-7).
 
 The serializer mirrors this split: `serialize_canonical_strict()` rejects a
 `Value` tree containing any double with `CanonicalJsonError::float_not_allowed`

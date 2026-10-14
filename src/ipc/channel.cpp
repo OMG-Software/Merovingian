@@ -360,8 +360,22 @@ auto IpcChannel::report_oversize_drop(std::string_view json_body, char const* ki
                 " type=\"" + type + "\"");
 }
 
-auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout) -> std::optional<std::string>
+auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout,
+                              std::string_view verified_origin) -> std::optional<std::string>
 {
+    auto const now = std::chrono::steady_clock::now();
+    // Check conversion and addition before computing an absolute deadline.
+    if (timeout <= std::chrono::seconds::zero() ||
+        timeout > std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::duration::max()))
+    {
+        return std::nullopt;
+    }
+    auto const duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(timeout);
+    if (now.time_since_epoch() > std::chrono::steady_clock::duration::max() - duration)
+    {
+        return std::nullopt;
+    }
+    auto const deadline = now + duration;
     // Reject before build_frame so an oversize body never pins a huge allocation
     // (issue #325). The id/reply_to overhead is < 64 bytes, so a body within the
     // cap cannot push the frame materially over it; the edge case is caught by
@@ -375,8 +389,14 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
     auto const frame = build_frame(id, std::nullopt, json_body);
 
     auto entry = std::make_shared<PendingEntry>();
+    entry->verified_origin = verified_origin;
+    entry->deadline = deadline;
     {
         auto const lk = std::lock_guard{pending_mu_};
+        if (!running_.load() || !healthy_.load())
+        {
+            return std::nullopt;
+        }
         pending_[id] = entry;
     }
 
@@ -390,7 +410,6 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
         }
     }
 
-    auto const deadline = std::chrono::steady_clock::now() + timeout;
     auto lk = std::unique_lock{pending_mu_};
     auto const ok = entry->cv.wait_until(lk, deadline, [&] {
         return entry->ready;
@@ -401,6 +420,15 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
         return std::nullopt;
     }
     return std::move(entry->response);
+}
+
+auto IpcChannel::matches_pending_origin(std::uint64_t parent_request_id, std::string_view claimed_origin) const -> bool
+{
+    auto const lock = std::lock_guard{pending_mu_};
+    auto const found = pending_.find(parent_request_id);
+    return running_.load() && healthy_.load() && found != pending_.end() && !found->second->ready &&
+           !claimed_origin.empty() && found->second->verified_origin == claimed_origin &&
+           std::chrono::steady_clock::now() < found->second->deadline;
 }
 
 auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_body) -> void

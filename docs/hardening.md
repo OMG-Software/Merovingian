@@ -47,13 +47,15 @@ The project uses C++26 with strict rules that reduce memory-safety bugs:
 * Smart pointers for dynamic ownership; references preferred over pointers.
 * `core::FileDescriptor` is a move-only RAII wrapper that closes its fd on
   destruction and provides `set_cloexec()`.
-* `core::SecretBuffer` holds signing-key material mlocked via `sodium_mlock`
-  on construction and wiped on destruction with `sodium_munlock` (which
-  zeroises and unpins and is an optimisation barrier the compiler cannot
-  elide, unlike the prior `std::ranges::fill` dead store). Custom move-ctor
-  and move-assign transfer the mlock to the destination and wipe the source,
-  so the secret is never duplicated and never left pinned in a moved-from
-  object. It is move-only and non-copyable. `src/core` links libsodium.
+* `core::SecretBuffer` owns isolated `sodium_malloc` pages, explicitly checks
+  `sodium_mlock` success, and wipes/unlocks through `sodium_free` on destruction.
+  Moves transfer ownership and leave the source empty. Separate allocations do
+  not share data pages, so destroying one cannot unlock another live secret.
+  It is move-only and non-copyable. Derived 32-byte keys use `SecureKeyBytes`;
+  every copy must obtain its own locked allocation or fail. Linux kernel mapping
+  checks and forced locked-memory exhaustion cover the storage and both caches.
+  No key-derivation or new-token-issuance path silently accepts an unlocked key.
+  `src/core` links libsodium; historical derivations are retained (ADR-0128).
 
 ### Cryptographic boundary
 
@@ -79,6 +81,18 @@ own primitives.
   (`src/homeserver/auth_service.cpp` registration-token handling).
 * The seccomp-bpf allowlist permits `mlock`, `munlock`, `mlockall`,
   `munlockall`, and `getrandom` so libsodium can lock pages and fetch entropy.
+* Main alone admits `fchmod(fd, 0600)` for descriptor-bound SQLite permission
+  tightening; any other mode is denied. Federation and thumbnail profiles still
+  deny all `fchmod`, and path-based chmod remains denied.
+  The grant is mode-specific, not file-specific; database admission separately
+  validates descriptor ownership/type. See
+  [ADR-0129](adr/0129-restrict-main-fchmod-to-owner-only-database-mode.md).
+* Main also admits only `umask(0077)`: supervised executables inherit main's
+  seccomp across exec and must establish their private startup mask before their
+  own sandbox installation. Other masks remain denied in main, and both workers
+  deny every umask change once their stricter profiles are installed. Direct
+  launches still run the same private-mask startup call. See
+  [ADR-0130](adr/0130-admit-only-private-startup-umask-through-main-seccomp.md).
 
 ### Configuration and secret file permissions
 
@@ -198,7 +212,7 @@ child is killed without the call and that it survives with it.
 ### Out-of-process thumbnail worker sandbox
 
 The main server **never** decodes untrusted image bytes in-process. It spawns
-`merovingian-thumbnail-worker` via `fork()`/`execv()` (`src/media/thumbnailer.cpp`
+`merovingian-thumbnail-worker` via `fork()`/`execve()` (`src/media/thumbnailer.cpp`
 and `src/media/thumbnail_worker_main.cpp`):
 
 * Parent and child communicate through `O_CLOEXEC` pipes (`pipe2()` on Linux,
@@ -212,7 +226,13 @@ and `src/media/thumbnail_worker_main.cpp`):
   * skips `/dev/fd` directory walks on FreeBSD, NetBSD, and OpenBSD (those
     directories contain an entry for every *possible* fd, not only open ones);
   * falls back to a capped `fcntl(F_GETFD)` scan of at most 1024 descriptors.
-* Before `execv()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
+* The child executes with only `PATH=/usr/bin:/bin`, including the FreeBSD
+  descriptor-based `fexecve()` path. Parent environment entries are not inherited.
+  Before exec, fd 2 is redirected to an immutable, RAII-owned `/dev/null` sink
+  opened before filesystem sandboxing. Its original descriptor is CLOEXEC and
+  kept above stdio even when the service starts with stderr closed. A missing
+  sink or failed stderr duplication prevents execution with inherited diagnostics.
+* Before `execve()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
   so a compromised worker cannot escalate through setuid/setcap helpers.
 * Inside the worker, `main()` calls `media::apply_decoder_hardening()`
   (`include/merovingian/media/decoder_hardening.hpp`,
@@ -245,6 +265,11 @@ and `src/media/thumbnail_worker_main.cpp`):
     can assert the fail-closed sequencing and the failed-control name for
     every control without actually installing a broken sandbox in the test
     process.
+* The parent independently validates the complete PNG signature, the first
+  chunk's 13-byte IHDR framing and nonzero, legal dimensions, and their equality
+  to the worker's reported dimensions. A malformed or mismatched successful
+  response produces 502 without media bytes, content type or dimensions. This is
+  fixed-header validation, not parent-side decoding or CRC/image-data validation.
 * The worker rejects images whose width or height exceeds 4096 and whose pixel
   count exceeds the request's `max_pixels`.
 

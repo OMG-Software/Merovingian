@@ -113,6 +113,37 @@ namespace
         int count_;
     };
 
+    // Adopts an acquired scheduling permit. Moving ownership into a task and
+    // then onto its invocation stack releases on launch failure or resolver throw,
+    // independently of how long the future retains its callable.
+    class SenderResolutionPermit final
+    {
+    public:
+        explicit SenderResolutionPermit(PortableSemaphore& semaphore) noexcept
+            : semaphore_(semaphore)
+        {
+        }
+        SenderResolutionPermit(SenderResolutionPermit const&) = delete;
+        auto operator=(SenderResolutionPermit const&) -> SenderResolutionPermit& = delete;
+        SenderResolutionPermit(SenderResolutionPermit&& other) noexcept
+            : semaphore_(other.semaphore_)
+            , owns_(std::exchange(other.owns_, false))
+        {
+        }
+        auto operator=(SenderResolutionPermit&&) -> SenderResolutionPermit& = delete;
+        ~SenderResolutionPermit() noexcept
+        {
+            if (owns_)
+            {
+                semaphore_.release();
+            }
+        }
+
+    private:
+        PortableSemaphore& semaphore_;
+        bool owns_{true};
+    };
+
     // Builds the Matrix canonical-JSON object signed for an X-Matrix request:
     // {content?, destination, method, origin, uri}. `content` is the request
     // body parsed as JSON and is omitted entirely for a body-less request.
@@ -275,11 +306,19 @@ namespace
     // Pre-auth containers must be bounded: they are reachable before any
     // identity is verified, so an attacker chooses how many distinct keys go in.
 
-    // Result of the pre-authentication key-resolution budget check.
+    enum class KeyResolutionFailureKind : unsigned char
+    {
+        resolution_failed,
+        local_resource_denial,
+    };
+
+    // Result of the pre-authentication key-resolution budget check. Local
+    // admission policy is not evidence of a failed remote key resolution.
     struct KeyResolutionAdmission final
     {
         bool allowed{true};
         std::string reason{};
+        KeyResolutionFailureKind failure{KeyResolutionFailureKind::resolution_failed};
     };
 
     // Drops negative-cache entries whose TTL has elapsed. Caller holds the guard.
@@ -327,10 +366,9 @@ namespace
             KeyResolutionFailure{std::string{origin}, std::string{key_id}, now + std::chrono::seconds{ttl}});
     }
 
-    // True when the persistent key cache already holds a still-valid key for this
-    // pair, so the resolver will answer without any outbound call. Such a
-    // resolution must not be charged to a budget whose whole purpose is bounding
-    // outbound work. Absent probe => charge, which is the safe default.
+    // Legacy opt-in for a complete network-free resolution, including discovery.
+    // Mere key freshness is insufficient. Production does not set this hint;
+    // absent probe => charge, which is the safe default.
     [[nodiscard]] auto key_resolution_is_cache_served(FederationRuntimeState const& runtime, std::string_view origin,
                                                       std::string_view key_id) -> bool
     {
@@ -347,7 +385,7 @@ namespace
         if (!http::rate_limit_policy_is_valid(policy))
         {
             // Fail closed: an unresolvable policy must never mean "no limit".
-            return {false, "invalid key-resolution rate-limit policy"};
+            return {false, "invalid key-resolution rate-limit policy", KeyResolutionFailureKind::local_resource_denial};
         }
 
         // Reject a malformed origin or key ID before anything else. This is both
@@ -378,7 +416,7 @@ namespace
         {
             // Reject rather than queue: queuing converts an overload into a
             // slower overload while still holding the resources.
-            return {false, "too many key resolutions in flight"};
+            return {false, "too many key resolutions in flight", KeyResolutionFailureKind::local_resource_denial};
         }
 
         // An empty source (tests, and paths that never reach the network) all
@@ -404,7 +442,7 @@ namespace
         }
         if (iterator->resolutions_seen >= policy.max_requests)
         {
-            return {false, "key resolution rate exceeded for source"};
+            return {false, "key resolution rate exceeded for source", KeyResolutionFailureKind::local_resource_denial};
         }
         ++iterator->resolutions_seen;
         ++runtime.key_resolutions_in_flight;
@@ -431,8 +469,11 @@ namespace
         // destructor, so a nullable representation would add a state that cannot
         // legally occur. Deleting the copy and move operations is what makes the
         // reference member safe here.
-        explicit KeyResolutionSlot(FederationRuntimeState& runtime) noexcept
+        // A cache-only resolution never reserves a slot and must not release
+        // a reservation held by another concurrent lookup.
+        explicit KeyResolutionSlot(FederationRuntimeState& runtime, bool owns_slot = true) noexcept
             : m_runtime(runtime)
+            , m_owns_slot(owns_slot)
         {
         }
         KeyResolutionSlot(KeyResolutionSlot const&) = delete;
@@ -441,12 +482,87 @@ namespace
         auto operator=(KeyResolutionSlot&&) -> KeyResolutionSlot& = delete;
         ~KeyResolutionSlot() noexcept
         {
-            release_key_resolution(m_runtime);
+            if (m_owns_slot)
+            {
+                release_key_resolution(m_runtime);
+            }
         }
 
     private:
         FederationRuntimeState& m_runtime;
+        bool const m_owns_slot;
     };
+
+    // Sender lookup can perform discovery even when the persistent key is fresh.
+    // Unlike the origin bootstrap path, never exempt it on the boolean freshness
+    // probe alone. Share the source budget, in-flight slots and pair failure cache.
+    struct SenderKeyResolution final
+    {
+        std::optional<FederationKeyRecord> key{};
+        KeyResolutionFailureKind failure{KeyResolutionFailureKind::resolution_failed};
+    };
+
+    [[nodiscard]] auto resolve_admitted_sender_key(FederationRuntimeState& runtime, std::string_view source,
+                                                   std::string_view server_name,
+                                                   std::string_view key_id) -> SenderKeyResolution
+    {
+        if (runtime.cached_pdu_key_lookup)
+        {
+            auto key = runtime.cached_pdu_key_lookup(server_name, key_id);
+            if (key.has_value() && key->server_name == server_name && key->key_id == key_id)
+            {
+                return {std::move(*key)};
+            }
+        }
+        if (!runtime.remote_key_resolver)
+        {
+            return {std::nullopt, KeyResolutionFailureKind::resolution_failed};
+        }
+        auto const admission = admit_key_resolution(runtime, source, server_name, key_id);
+        if (!admission.allowed)
+        {
+            return {std::nullopt, admission.failure};
+        }
+        auto const slot = KeyResolutionSlot{runtime};
+        auto resolved = runtime.remote_key_resolver(server_name, key_id);
+        if (!resolved.has_value())
+        {
+            remember_key_resolution_failure(runtime, server_name, key_id, std::chrono::steady_clock::now());
+            return {std::nullopt, KeyResolutionFailureKind::resolution_failed};
+        }
+        return {std::move(resolved->signing_key)};
+    }
+
+    // The public authorization resolver predates admission and returns optional.
+    // Adapt only around its synchronous invocation: no denial flag is shared
+    // across the parallel sender tasks, which return their own explicit results.
+    [[nodiscard]] auto authorize_admitted_federation_pdu(
+        FederationRuntimeState& runtime, SignedFederationRequest const& request, FederationPdu const& pdu,
+        std::optional<FederationKeyRecord> const& key) -> FederationDecision
+    {
+        auto failure = std::optional<KeyResolutionFailureKind>{};
+        auto const resolver = [&runtime, &request,
+                               &failure](std::string_view server_name,
+                                         std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+            auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
+            if (!resolved.key.has_value())
+            {
+                failure = resolved.failure;
+                return std::nullopt;
+            }
+            auto remote = FederationRemoteRuntime{};
+            remote.server_name = std::string{server_name};
+            remote.signing_key = std::move(*resolved.key);
+            return remote;
+        };
+        auto verifier = FederationEd25519Verifier{};
+        auto const decision = authorize_federation_pdu(pdu, request.origin, key, resolver, verifier);
+        if (failure == KeyResolutionFailureKind::local_resource_denial)
+        {
+            return make_decision(false, 503U, "local signing-key resolution admission unavailable");
+        }
+        return decision;
+    }
 
     // Failed X-Matrix signatures are charged to the SOURCE ADDRESS, never to the
     // origin the request claims (FED-4, ADR-0081): until the signature verifies,
@@ -1115,9 +1231,15 @@ namespace
                 }
                 if (!key_id.empty())
                 {
-                    auto const resolved = runtime.remote_key_resolver(pdu_sender_dom, key_id);
-                    key_for_pdu =
-                        resolved.has_value() ? std::optional<FederationKeyRecord>{resolved->signing_key} : std::nullopt;
+                    auto const resolved =
+                        resolve_admitted_sender_key(runtime, request.remote_addr, pdu_sender_dom, key_id);
+                    if (!resolved.key.has_value() &&
+                        resolved.failure == KeyResolutionFailureKind::local_resource_denial)
+                    {
+                        return {503U, homeserver::matrix_error("M_UNKNOWN",
+                                                               "local signing-key resolution admission unavailable")};
+                    }
+                    key_for_pdu = resolved.key;
                 }
                 else
                 {
@@ -1127,15 +1249,14 @@ namespace
 
             // Signature verification (Ed25519 + key validity). For restricted joins
             // the authorising user's homeserver signature is also verified (EVT-1).
-            auto verifier = FederationEd25519Verifier{};
-            auto const pdu_decision =
-                authorize_federation_pdu(pdu, request.origin, key_for_pdu, runtime.remote_key_resolver, verifier);
+            auto const pdu_decision = authorize_admitted_federation_pdu(runtime, request, pdu, key_for_pdu);
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.membership_rejected", request.origin, request.target,
                                  pdu_decision.reason);
                 return {pdu_decision.status == 0U ? std::uint16_t{403U} : pdu_decision.status,
-                        homeserver::matrix_error("M_FORBIDDEN", pdu_decision.reason)};
+                        homeserver::matrix_error(pdu_decision.status == 503U ? "M_UNKNOWN" : "M_FORBIDDEN",
+                                                 pdu_decision.reason)};
             }
 
             // Content hash verification (spec: servers MUST verify content hash
@@ -1312,9 +1433,15 @@ namespace
                 }
                 if (!key_id.empty())
                 {
-                    auto const resolved = runtime.remote_key_resolver(pdu_sender_dom, key_id);
-                    key_for_pdu =
-                        resolved.has_value() ? std::optional<FederationKeyRecord>{resolved->signing_key} : std::nullopt;
+                    auto const resolved =
+                        resolve_admitted_sender_key(runtime, request.remote_addr, pdu_sender_dom, key_id);
+                    if (!resolved.key.has_value() &&
+                        resolved.failure == KeyResolutionFailureKind::local_resource_denial)
+                    {
+                        return {503U, homeserver::matrix_error("M_UNKNOWN",
+                                                               "local signing-key resolution admission unavailable")};
+                    }
+                    key_for_pdu = resolved.key;
                 }
                 else
                 {
@@ -1798,6 +1925,15 @@ namespace
     }
 
 } // namespace
+
+auto resolve_verification_key(FederationRuntimeState& runtime, std::string_view source, std::string_view server_name,
+                              std::string_view key_id) -> VerificationKeyResolution
+{
+    auto resolution = resolve_admitted_sender_key(runtime, source, server_name, key_id);
+    auto const locally_denied =
+        !resolution.key.has_value() && resolution.failure == KeyResolutionFailureKind::local_resource_denial;
+    return {std::move(resolution.key), locally_denied};
+}
 
 auto load_server_signing_key(std::string_view server_name, std::string_view key_id, std::string_view key_material)
     -> FederationSigningKey
@@ -2443,7 +2579,7 @@ namespace
                     .accepted = false, .error = {429U, admission.reason}
                 };
             }
-            auto const slot = KeyResolutionSlot{runtime};
+            auto const slot = KeyResolutionSlot{runtime, !cache_served};
             auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
             if (!resolved.has_value())
             {
@@ -2488,36 +2624,49 @@ namespace
             remote->signing_key.valid_until_ts != 0U && request.now_ts >= remote->signing_key.valid_until_ts;
         if (runtime.remote_key_resolver && (cached_key_id_mismatches || cached_key_expired))
         {
-            // Same budget as the unknown-remote path above: a stale or
-            // mismatched cached key sends us back to the network, so an attacker
-            // who can name an origin with an expired cached key would otherwise
-            // have an unbudgeted route to the same outbound call.
-            // A key-id mismatch is the common shape for a peer signing with a
-            // second published key, and a FederationRemoteRuntime holds only one.
-            // If the cache already has that key the resolver does no network work,
-            // so charging it here would reject a wholly legitimate peer.
-            auto const refresh_cache_served = key_resolution_is_cache_served(runtime, request.origin, request.key_id);
-            auto const refresh_admission = refresh_cache_served ? KeyResolutionAdmission{true, {}}
-                                                                : admit_key_resolution(runtime, request.remote_addr,
-                                                                                       request.origin, request.key_id);
-            if (!refresh_admission.allowed)
+            auto cached_key = runtime.cached_pdu_key_lookup
+                                  ? runtime.cached_pdu_key_lookup(request.origin, request.key_id)
+                                  : std::nullopt;
+            if (cached_key.has_value() && cached_key->server_name == request.origin &&
+                cached_key->key_id == request.key_id && !cached_key->public_key_bytes.empty() &&
+                (cached_key->valid_until_ts == 0U || request.now_ts < cached_key->valid_until_ts))
             {
-                log_diagnostic("key_resolution.throttled",
-                               {
-                                   {"origin", request.origin,           false},
-                                   {"reason", refresh_admission.reason, false}
-                },
-                               observability::LogEventSeverity::warning);
-                return {
-                    .accepted = false, .error = {429U, refresh_admission.reason}
-                };
-            }
-            auto const refresh_slot = KeyResolutionSlot{runtime};
-            auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
-            if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
-            {
-                remote->signing_key = std::move(refreshed->signing_key);
+                // A known peer already carries discovery/trust state. Rotate
+                // only its verification key without invoking discovery or
+                // acquiring (and therefore releasing) an outbound permit.
+                remote->signing_key = std::move(*cached_key);
                 persist_remote_signing_key(runtime, *remote);
+            }
+            else
+            {
+                // Every production resolver call here can perform discovery.
+                // The optional legacy hint may exempt only a genuinely complete,
+                // network-free resolution; persistent-key freshness alone cannot.
+                auto const refresh_cache_served =
+                    key_resolution_is_cache_served(runtime, request.origin, request.key_id);
+                auto const refresh_admission =
+                    refresh_cache_served
+                        ? KeyResolutionAdmission{true, {}}
+                        : admit_key_resolution(runtime, request.remote_addr, request.origin, request.key_id);
+                if (!refresh_admission.allowed)
+                {
+                    log_diagnostic("key_resolution.throttled",
+                                   {
+                                       {"origin", request.origin,           false},
+                                       {"reason", refresh_admission.reason, false}
+                    },
+                                   observability::LogEventSeverity::warning);
+                    return {
+                        .accepted = false, .error = {429U, refresh_admission.reason}
+                    };
+                }
+                auto const refresh_slot = KeyResolutionSlot{runtime, !refresh_cache_served};
+                auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
+                if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
+                {
+                    remote->signing_key = std::move(refreshed->signing_key);
+                    persist_remote_signing_key(runtime, *remote);
+                }
             }
         }
         auto const discovery = federation_discovery_policy(remote->discovery);
@@ -2928,6 +3077,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // Room-ACL denials are deliberately excluded — an ACL is local policy, not
     // evidence that the peer is misbehaving.
     auto pdu_trust_failures = std::size_t{0U};
+    auto local_key_resolution_denied = false;
     // Pre-resolve distinct relayed sender-domain signing keys in parallel so a
     // large inbound transaction carrying PDUs from many senders does not pay N
     // serial discovery+fetch round-trips. Each task writes a disjoint slot in
@@ -2937,7 +3087,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // Fan-out is capped by `join_parallelism` (the federation-wide concurrency
     // cap; see docs/user-manual.md). A configured value of 0 is clamped to 1
     // (sequential) — config validation already rejects 0, this is defensive.
-    auto sender_key_map = std::map<std::pair<std::string, std::string>, std::optional<FederationKeyRecord>>{};
+    auto sender_key_map = std::map<std::pair<std::string, std::string>, SenderKeyResolution>{};
     if (runtime.remote_key_resolver && !transaction.pdus.empty())
     {
         auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
@@ -2973,22 +3123,27 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         {
             auto const configured = runtime.config.join_parallelism;
             auto const parallelism = std::clamp<std::uint32_t>(configured == 0U ? 1U : configured, 1U, 64U);
-            auto resolved = std::vector<std::optional<FederationRemoteRuntime>>(distinct_pairs.size());
+            auto resolved = std::vector<SenderKeyResolution>(distinct_pairs.size());
             auto sem = PortableSemaphore{static_cast<int>(parallelism)};
             auto tasks = std::vector<std::future<void>>{};
             tasks.reserve(distinct_pairs.size());
-            auto const& resolver = runtime.remote_key_resolver;
+            auto const resolver = [&runtime, source = std::string{request.remote_addr}](std::string_view server,
+                                                                                        std::string_view id) {
+                return resolve_admitted_sender_key(runtime, source, server, id);
+            };
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
                 // Block until a concurrency slot is free, then launch the task.
                 // The task releases its slot on completion so the next acquire
                 // can proceed even if this thread is still inside std::async.
                 sem.acquire();
+                auto permit = SenderResolutionPermit{sem};
                 auto const pair = distinct_pairs[i];
-                tasks.push_back(std::async(std::launch::async, [&resolved, &sem, &resolver, pair, i]() {
-                    resolved[i] = resolver(pair.first, pair.second);
-                    sem.release();
-                }));
+                tasks.push_back(std::async(std::launch::async,
+                                           [&resolved, resolver, pair, i, permit = std::move(permit)]() mutable {
+                                               auto const active_permit = std::move(permit);
+                                               resolved[i] = resolver(pair.first, pair.second);
+                                           }));
             }
             // Join every task before reading `resolved` (disjoint slots, but
             // the vector must not be read while tasks are still writing).
@@ -2998,9 +3153,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             }
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
-                auto const& record = resolved[i];
-                sender_key_map[distinct_pairs[i]] =
-                    record.has_value() ? std::optional<FederationKeyRecord>{record->signing_key} : std::nullopt;
+                sender_key_map[distinct_pairs[i]] = std::move(resolved[i]);
             }
         }
     }
@@ -3063,7 +3216,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 // missed this pair (defensive — the pre-pass collects every
                 // relayed (sender_domain, key_id) pair), then apply the same
                 // fail-closed contract: no key → PDU rejected, not persisted.
-                auto resolved_key = std::optional<FederationKeyRecord>{};
+                auto resolved_key = SenderKeyResolution{};
                 auto const it = sender_key_map.find(std::pair<std::string, std::string>{pdu_sender_dom, sender_key_id});
                 if (it != sender_key_map.end())
                 {
@@ -3071,16 +3224,24 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 }
                 else
                 {
-                    auto resolved = runtime.remote_key_resolver(pdu_sender_dom, sender_key_id);
                     resolved_key =
-                        resolved.has_value() ? std::optional<FederationKeyRecord>{resolved->signing_key} : std::nullopt;
+                        resolve_admitted_sender_key(runtime, request.remote_addr, pdu_sender_dom, sender_key_id);
                 }
-                if (resolved_key.has_value())
+                if (resolved_key.key.has_value())
                 {
-                    key_for_pdu = *resolved_key;
+                    key_for_pdu = *resolved_key.key;
                 }
                 else
                 {
+                    if (resolved_key.failure == KeyResolutionFailureKind::local_resource_denial)
+                    {
+                        local_key_resolution_denied = true;
+                        auto const reason = std::string{"local signing-key resolution admission unavailable"};
+                        pdu_errors.push_back(canonicaljson::make_member(
+                            pdu.event_id, canonicaljson::Value{canonicaljson::Object{
+                                              canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
+                        continue;
+                    }
                     record_remote_trust_failure(remote.trust);
                     ++pdu_trust_failures;
                     auto const reason = std::string{"relayed PDU: could not resolve sender domain signing key"};
@@ -3099,13 +3260,18 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         }
         // Signature verification (Ed25519 + key validity). For restricted joins
         // the authorising user's homeserver signature is also verified (EVT-1).
-        auto verifier = FederationEd25519Verifier{};
-        auto const pdu_decision =
-            authorize_federation_pdu(pdu, request.origin, key_for_pdu, runtime.remote_key_resolver, verifier);
+        auto const pdu_decision = authorize_admitted_federation_pdu(runtime, request, pdu, key_for_pdu);
         if (!pdu_decision.accepted)
         {
-            record_remote_trust_failure(remote.trust);
-            ++pdu_trust_failures;
+            if (pdu_decision.status == 503U)
+            {
+                local_key_resolution_denied = true;
+            }
+            else
+            {
+                record_remote_trust_failure(remote.trust);
+                ++pdu_trust_failures;
+            }
             log_diagnostic("pdu.rejected", {
                                                {"origin",         request.origin,                      false},
                                                {"transaction_id", transaction.transaction_id,          false},
@@ -3188,6 +3354,12 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             // server retries the whole transaction instead of dropping the PDU.
             audit_federation(runtime, "federation.pdu_main_overloaded", request.origin, request.target,
                              ingestion.reason);
+            // A later local denial must not discard genuine failures already
+            // counted for earlier PDUs. Do not write/reset trust for denial alone.
+            if (pdu_trust_failures != 0U)
+            {
+                persist_remote_trust(runtime, remote);
+            }
             return {503U, homeserver::matrix_error("M_UNKNOWN", ingestion.reason)};
         case PduIngestionStatus::missing_prev_state:
             // ADR-0064 phase B1: not stored, not a rejection. Spec: a
@@ -3201,6 +3373,24 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                              ingestion.reason);
             break;
         }
+    }
+
+    if (local_key_resolution_denied)
+    {
+        // Preserve penalties for actual failures in a mixed transaction, but do
+        // not reset or write the peer's trust merely because local admission
+        // failed. The original transaction ID must remain retryable (SS v1.19).
+        if (pdu_trust_failures != 0U)
+        {
+            persist_remote_trust(runtime, remote);
+        }
+        auto const reason = std::string{"local signing-key resolution admission unavailable"};
+        audit_federation(runtime, "federation.key_resolution_overloaded", request.origin, request.target, reason);
+        return {503U, serialize_response_object(canonicaljson::Object{
+                          canonicaljson::make_member("errcode", canonicaljson::Value{std::string{"M_UNKNOWN"}}),
+                          canonicaljson::make_member("error", canonicaljson::Value{reason}),
+                          canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
+                      })};
     }
 
     auto edus_dispatched = std::size_t{0U};

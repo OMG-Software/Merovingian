@@ -1,3 +1,482 @@
+## 0.12.26
+
+Remaining low-severity findings from the 29 September 2026 security audit are being
+remediated on `fix/remaining-low-security-audit`. This section records accepted slices
+and explicitly marked pending verification, not a claim that the entire pass or
+combined test suite is complete.
+
+- **FIXED (HTTP-7):** permissive JSON parsing checks integer bounds before converting
+  unsigned values to signed values; values outside the canonical integer range are refused
+  with `integer_out_of_range` instead of wrapping.
+- **FIXED (EVT-10):** an invite with any `third_party_invite` property enters the
+  third-party authorization branch; malformed/non-object values cannot fall through to
+  ordinary invite authorization.
+- **FIXED (EVT-11):** legacy room versions honor string-valued thresholds in the nested
+  `events` power-level map for both state and message events, including the spec's allowed
+  whitespace, sign and leading zeroes.
+- **PARTIAL (EVT-12):** the v3–v5 aliases sender-domain rule runs before membership/power
+  checks; receipt-rejected events cannot be selected as named inbound auth events or as
+  own-auth fallback during state resolution. Trusted rejection metadata is carried outside
+  the event JSON and retained on materialization. Rejected candidates remain available for
+  auth-chain traversal and reauthorization. Legacy fractional power-level parsing remains
+  unresolved; the characterization test is not a closure claim.
+- **FIXED (OUT-6):** server discovery retains at most 1024 positive/negative entries by
+  default (constructor capacity zero disables caching), sweeps expired entries before hits
+  and insertion, rejects invalid server names before network/cache admission, and bounds
+  concurrent insertion. Oldest results are evicted at capacity.
+- **FIXED (OUT-8):** configured IPv4/IPv6 literals and CIDRs supplement the mandatory
+  SSRF blocks throughout discovery, cache, well-known pre-connect and filtered destination
+  resolution. The production discovery network owns the startup policy, including in workers.
+- **FIXED (CRY-3, CRY-4):** master roots shorter than 32 bytes or entirely zero are
+  refused; secret buffers and every derived-key/cached-key copy use isolated sodium
+  allocations with independently verified locking. Exhausted locked memory returns no
+  key. Historical BLAKE2b inputs and labels are unchanged so stored signing-key ciphertext
+  and token digests stay compatible; the audit's proposed in-place KDF switch is rejected
+  in ADR-0128 rather than silently invalidating persisted data.
+- **FIXED (CRY-5, CRY-6):** validation-session lookup and consumption use the
+  variable-length constant-time comparison boundary. New access/refresh token issuance
+  requires v4 and returns 503 on unavailable keys without adding credentials; failure to
+  copy a cached key into locked memory is covered explicitly.
+- **IN PROGRESS (FED-12):** reproduced wrong-origin and completed-parent EDU
+  persistence through real signature verification, authenticated encrypted IPC
+  and reopened SQLite: normal build succeeded; 97 / 109 assertions passed and
+  12 behavioral checks failed, with healthy delivery and signature controls
+  passing. Main-side remediation binds owned verified origin to the exact
+  channel's live pending parent and checks admission after the runtime-lock wait.
+  Ordinary requests cannot authorize a relay; pending locks never cover a sink.
+  Worker parent propagation and legitimate-fixture migration are implemented.
+  Normal post-format GREEN passes 109 assertions / 1 regression case; related
+  worker EDUs pass 173 / 5 and worker flows 2059 / 38. The actual socket-HTTP /
+  separate-worker mixed PDU/EDU control passes 262 / 1; proxy checks pass 12 / 2.
+  Supplemental lifecycle checks pass 49 / 2 (first-GREEN coverage, not a new RED),
+  IPC units 396 / 50, worker units 340 / 42 and sync handlers 382 / 16.
+  All 79 focused source bindings are stable; the 11-file owned-added-lines scan
+  has no pattern indicators and all 11 owned range-format checks pass.
+  Independent source review and fresh combined acceptance remain pending.
+  This is not whole-finding/release closure or signed-body binding. See proposed
+  ADR-0142.
+- **PARTIAL (OPS-4):** configuration parsing and typed validation now reject
+  negative access and refresh token lifetimes with field-specific findings rather
+  than silently disabling expiry. Zero remains the explicit no-expiry setting;
+  defaults and full signed numeric parsing are preserved. The actual parser
+  regression reproduced 12 rejection failures / 14 assertions with both healthy
+  control assertions passing before repair; it now passes 20 assertions / 1 case
+  including explicit default/zero controls. Signed-boundary checks pass 4 / 2
+  and normal configuration units 845 / 176 against 41 unchanged focused sources.
+  Stored sessions, expiry text and token digests are unchanged. Independent
+  source review passed without security or logic findings; parent inspection
+  bound the reviewed files to executed GREEN and verified preservation of prior
+  shared edits. The fresh combined test checkpoint passed 56 OK targets with
+  all return codes zero, no failures/timeouts and 150 unchanged snapshotted files
+  including all 41 focused sources. The source freeze ended after parent
+  inspection of completed archives and current-source binding. After renewed
+  explicit authorization, the added-line security scan checked both changed C++
+  files and reported no findings; all 41 focused code/test sources matched
+  the reviewed and tested state at that checkpoint. The bounded negative-admission
+  slice is accepted.
+  Refresh-enabled `/login` and `/refresh` now omit `expires_in_ms` when the
+  access lifetime is zero, as Matrix v1.19 requires; finite lifetimes retain
+  the positive expiry field. A new real SQLite/public-dispatcher conformance
+  scenario reproduced both omission failures (221 passing / 2 failing assertions)
+  before repair and now passes all 223 assertions / 1 case, including finite,
+  stored-expiry, token-usability and legacy-login controls. Related auth conformance
+  passed 243 / 4; all 48 focused sources were unchanged during those runs. The
+  added-line/complete-new-file security scan reported no findings in both C++ files,
+  and inverse-hunk checksum verification confirms all preceding shared production
+  edits are preserved. Bounded independent source review passed with no security,
+  logic or suggested changes. Parent inspection bound the reviewed production and
+  regression to executed GREEN and verified that the later OUT-3 registration entry
+  preserves the entire earlier Meson file. Fresh current-source conformance again
+  passed 223 / 1 and related auth 243 / 4 after the later OUT-3 and configuration
+  changes. The full checkpoint below accepts this bounded response slice; its
+  earlier 48-source snapshot remains historical, not a current whole-tree claim.
+  Positive lifetime admission now has project ceilings of 2,592,000,000 ms
+  (30 days) for access and 31,536,000,000 ms (365 days) for refresh. A registered
+  real parser/direct-typed matrix reproduced 20 missing-rejection failures with
+  126 passing assertions before repair, covering both fields, zero, one, defaults,
+  inclusive maxima, maximum-plus-one and the signed maximum. Exact typed values
+  survive parsing and validation even when policy rejects them. No stored sessions
+  are rewritten. ADR-0141 records these project limits, not Matrix requirements.
+  The upper-bound regression now passes 146 assertions / 1 case; negative admission
+  passes 20 / 1, signed-boundary parsing 4 / 2 and normal configuration units
+  991 / 177. The corrected exact-tag run completed with all statuses zero and
+  61 sources stable during execution. A two-file added-line/complete-new-test
+  scan reported no indicators; inverse-boundary checksums verify preceding shared
+  production and registration edits are preserved. Independent source review passed
+  without security, logic or suggested changes; parent checks bind all three
+  reviewed source/registration hashes to executed GREEN. The fresh full checkpoint
+  passed 56 OK targets, all return codes zero and no failures, timeouts or other
+  result categories, with 170 files unchanged throughout execution including all
+  61 focused sources. Parent independently reconciled fresh archived JSON/text
+  logs and current reviewed source bindings, then released the freeze. The bounded
+  upper-admission slice is accepted; subsequent changes are acceptance-status docs
+  only. Checked timestamp
+  arithmetic, direct typed runtime
+  snapshot/reload admission, registration response expiry and broader persisted
+  hydration remain unresolved or unverified; no whole-finding/release closure.
+- **PARTIAL (OUT-3):** added a real SQLite/public-dispatcher/loopback-TLS
+  recipient-isolation regression. Its healthy notification control, ten held
+  attacker gateways and cleanup passed before repair, while the other recipient's
+  notification failed (262 passing / 1 failing assertion). Delivery now uses
+  independently admitted recipient batches, a global bound and a per-recipient
+  cap of `G > 1 ? min(8, G - 1) : 1`, retaining valid serial behavior at `G=1`.
+  Move-only RAII permits release both atomic counters on completion and unwind;
+  future parking capacity is reserved before launch. No configuration key or
+  persistent pusher format changed. Normal integration now passes 263 assertions /
+  1 isolation case and 1,092 / 18 related push cases, with all 60 focused sources
+  stable during execution. A four-file added-line/complete-new-test scan reported
+  no indicators, and inverse-boundary checksums prove preceding shared production
+  edits are preserved. ADR-0140 records the policy. Independent source review
+  passed with no security or logic findings; parent checks bind all four reviewed
+  production/test hashes to executed GREEN and the scan. The same fresh 56-OK,
+  170-stable-file full checkpoint above includes all four reviewed files and
+  accepts the bounded recipient-isolation slice. Nonblocking suggestions cover
+  fault-injected allocation/launch/
+  work failures, zero/single/eight-slot boundaries, concurrent admission and churn.
+  Gateway circuits, registration quotas, mixed-recipient execution coverage and
+  whole-finding/release acceptance remain unestablished.
+- **PARTIAL (DB-8):** preserved the existing remote verified-TLS guard and
+  repaired its parent-default dependency. Remote connection options must now
+  explicitly select the verified mode; an omitted or empty mode cannot pass
+  only because the parent supplies `PGSSLMODE`. Local socket/loopback exemptions,
+  host/host-address checks, service refusal, private readers, roles and stored
+  formats are unchanged. A deterministic URI/keyword regression with healthy
+  controls failed 4 / 28 assertions before repair and passes 28 / 1 afterward;
+  all DB-8 checks pass 48 / 2, DB-9 checks 6 / 1 and database units 18363 / 174.
+  The user manual and persistence guide now document strict remote admission,
+  trust provisioning and the minimal worker environment; ADR-0138 records why
+  forwarding parent defaults or adding insecure opt-outs was rejected. Earlier
+  DB-8/DB-9 RED/GREEN logs were recovered as historical evidence. Independent
+  review passed with no security or logic findings; parent inspection bound the
+  reviewed files to executed GREEN and checked preservation of prior shared
+  edits against accepted source checksums. The fresh combined checkpoint passed
+  56 OK targets with all return codes zero, no failures/timeouts and 135 unchanged
+  snapshotted files. The source freeze ended after acceptance. Normal DB-6 integration
+  compatibility passes 2733 / 15; both isolated PostgreSQL modes pass 178 / 2
+  with verified shutdown/owned-fixture removal and tested-source binding.
+  TLS handshake/certificate/hostname and worker trust-file access are
+  not established by these tests. No whole-finding/release closure.
+- **PARTIAL (DB-9 verification):** retained the existing fixed PostgreSQL
+  diagnostic identity and generic parser/connection-status refusal reasons;
+  no new production defect was identified in the inspected opener paths. Added
+  registered actual DEBUG-console integration coverage for malformed quoted
+  options and four policy-admitted quoted/spaced/escaped/URI forms reaching real
+  libpq failure at an owned private nonexistent socket path. Runtime-only
+  whole/partial credential markers are absent from emitted records and returned
+  reason/identity, with event-presence controls and environment/stdout/owned-path
+  cleanup checks. The new tag passes 85 assertions / 2 cases and normal database
+  integration 2628 / 58 against 30 unchanged current sources; existing DB-9 units
+  pass 6 / 1. This is first-GREEN coverage, not a new RED/production-fix claim.
+  Persistence/dependency docs and ADR-0139 explain why all connection options,
+  including host/database values, remain suppressed rather than reconstructed.
+  Bounded independent source review passed without security or logic findings;
+  parent inspection bound the reviewed files to the same executed 30-source
+  manifests. Current database units pass 18363 / 174, DB-8 units 48 / 2 and DB-6
+  integration 2733 / 15. Fresh combined acceptance passed 56 OK targets with all
+  return codes zero, no failures/timeouts and 139 unchanged snapshotted files
+  including all 30 focused sources. Source freeze ended after parent inspection
+  of completed archives and current-source binding. Native
+  Windows socket execution, live authentication/TLS/ready paths, allocation and
+  startup fault injection, and general SQL-result error confidentiality remain
+  outside this coverage. No whole-finding/release closure.
+- **PARTIAL (ISO-7):** bounded master-key, registration-token, main/worker database URI
+  and bootstrap-password reads validate ownership, mode and regular-file type after
+  `O_NOFOLLOW|O_CLOEXEC` open and read the validated descriptor directly into locked
+  storage. Remaining TLS/private-key and cache identity/load race review is not a closure
+  claim.
+- **FIXED (OPS-6):** the bootstrap password is a bounded, service-owned mode-0400
+  non-symlink file read into locked storage and wiped after bootstrap. The manual now uses
+  a private temporary directory and correctly states that bootstrap continues serving.
+- **TESTS (crypto batch):** parent rebuilt focused crypto/auth regressions passed
+  777 assertions / 102 cases, including historical derivation compatibility and forced
+  locked-memory exhaustion for both caches. The new exhaustion regressions were observed
+  failing before their fixes. Combined-suite coverage is recorded in the successful
+  post-repair checkpoint below; the remaining audit pass is not complete.
+- **FIXED (ISO-5):** thumbnail exec receives only a fixed PATH, with stderr redirected
+  to a pre-opened, RAII-owned `/dev/null` sink on both exec paths. Parent-side PNG signature
+  and initial IHDR dimension checks refuse malformed or mismatched output with 502
+  and no media payload. No decoder or image-data validation moves into main.
+- **FIXED (FED-9):** only an explicitly present, empty `pdus`
+  array enables the EDU-only `/send` bypass. A malformed first PDU followed by real
+  PDUs retains an empty shard key and enters the worker instead of main; later PDUs
+  are not used to select a main-process failed-sync fallback. Parent source/proxy review
+  and independent normal-binary runs passed: 27 assertions / 1 `[fed9]` case and
+  167 assertions / 26 `[routing]` cases. ADR-0131. No dedicated live IPC regression ran.
+- **PARTIAL (FED-10):** relayed sender-key resolution now shares the source-address
+  rate budget, runtime-wide in-flight cap and server/key negative cache across
+  parallel pre-resolution and authorization fallback paths. A network-free key-only
+  provider preserves cached verification, retained local keys and known-peer rotation;
+  fresh keys no longer exempt production discovery. Raw/verified router paths retain
+  source identity. Cache-only origin lookups cannot release another request's slot;
+  asynchronous resolver exceptions release scheduling permits and keep callable
+  lifetimes valid. Normal-target verification passed 474 assertions / 5 unit cases,
+  41 / 3 real database/router integration cases and 963 / 54 related inbound cases.
+  Budget, cache, exception, concurrency and production-wiring behavioral RED evidence
+  is retained. ADR-0132. The reviewed overload-to-trust/replay regression is repaired:
+  explicit outcomes preserve local denial across parallel, direct and restricted-join
+  paths; 503 leaves the original transaction retryable without charging or resetting
+  trust. Actual/negative-cache failures retain penalties in mixed transactions, and
+  EDUs wait for retry. ADR-0133. Independent all-target build and fresh normal-binary
+  runs passed 681 assertions / 9 unit cases, 122 / 4 real database/router integration
+  cases and 1170 / 58 related inbound cases. Behavioral RED evidence is retained.
+  Independent review confirmed the core overload repair; the completed unified
+  WSL checkpoint passed 56 targets with zero failures/timeouts. Its separate main
+  IPC bypass is now repaired: PDU, membership and invite re-verification share the
+  admitted key-only helper, with all main relay misses using the common unknown
+  source quota rather than a worker-supplied address. Local denial returns the
+  existing PDU overload status or unaccepted 503 before mutation. A genuine
+  encrypted-IPC RED failed 94 assertions before implementation. Normal integration
+  runs then passed 1228 assertions / 3 new cases, 156 / 3 existing signature cases
+  and 1350 / 7 FED-10 cases. Cache identity/event-time validity, unchanged-relay
+  retry, foreign slot ownership and bounded pair negative caching are covered.
+  ADR-0134. A mixed negative-cache/EDU unit regression also exposed genuine trust
+  penalties being discarded by a later main-overload return. Its behavioral RED
+  failed one assertion; conditional persistence now retains only actual failures,
+  defers EDUs and leaves the unchanged transaction retryable. Final normal unit
+  FED-10 passed 716 assertions / 10 cases and related inbound 1205 / 59. The first
+  main full run had 55 OK / 1 failed fixture; its 50-PDU room-interest regression
+  now reads the already-known key from cache instead of spending discovery quota.
+  Production limits are unchanged. Fresh completed WSL CLI passed 56 targets,
+  zero failures/timeouts, with one skipped unit case; logs are archived and the
+  six focused source/test hashes remain unchanged. Independent source-only
+  review (deleg_18fcd7ae) approved this main slice with no material findings.
+  End-to-end worker HTTP overload propagation remains a coverage gap: the IPC
+  fixture substitutes PDU result serialization; production serialization,
+  worker decoding and HTTP propagation were source-traced only.
+  Backfill/snapshot/auth-chain key lookup now shares the admitted key-only
+  helper and unknown-source bucket. Local denial stops subsequent recovery
+  calls and preserves the existing PDU overload result instead of accepted
+  missing state; already-verified outliers are not rolled back. Genuine TLS/
+  SQLite RED failed 13 of 172 assertions before the fix; normal post-format
+  integration passed the new 172 / 1 case, all backfill 2173 / 17 and total
+  FED-10 1522 / 8. ADR-0135. Fresh post-backfill full CLI completed exit 0:
+  56 OK targets, zero failures/timeouts, one skipped unit case; archived logs
+  and eight unchanged source/test hashes confirm the tested snapshot.
+  Material review of the original production slice is accepted. The two later
+  test delegates failed provider limits, leaving unfinished fixtures; their
+  edits were preserved, inspected and repaired directly without loosening
+  production checks. Independent post-format normal integration passed actual
+  worker/socket-HTTP overload and unchanged-transaction retry (262 / 1), sticky
+  recovery denial (200 / 1), partial-progress retry/deduplication (314 / 1), all
+  backfill (2687 / 19) and FED-10 integration (2298 / 11). The fresh recovered
+  full checkpoint passed 56 OK targets, all return codes 0 and zero failures/
+  timeouts, with tracked source unchanged. This supplies separate-process
+  production serializer/worker decoder/HTTP execution evidence, not merely
+  the earlier substituted IPC fixture. Direct state/auth-chain denial and
+  backfill cache rejection/negative-hit cases remain unexecuted coverage
+  suggestions; aggregate cross-shard limits and whole-finding acceptance are
+  not established. No BSD claim.
+- **PARTIAL (DB-6):** local composition now uses the same NUL state-key
+  admission rule as inbound parsing, before allocating a stream ordering.
+  `createRoom` preflights the complete initial-state list before persisting
+  room/bootstrap state, including a bad entry after a valid one. Direct local
+  state sends answer `400 M_INVALID_PARAM`, not a late database refusal or a
+  successful in-memory mutation. Genuine local-admission RED failed 42 of
+  259 assertions; the repaired normal integration group passed 259 / 3 cases.
+  Public client and local-router entry points also reject literal or once-
+  decoded NUL in the path before a decoder can throw, with controlled
+  `400 M_INVALID_PARAM`; public responses retain configured CORS. The query
+  suffix is not part of this path guard, and `%2500` is not double-decoded.
+  Genuine HTTP RED failed 24 of 64 assertions; original repaired admission
+  passed 82 / 1 case and compatibility 4 / 1 (all DB-6 integration 345 / 5).
+  Additional explicit local errcode and configured Origin/Vary CORS checks
+  now pass 100 / 1. Source tracing after an incomplete independent review
+  exposed the same exception in recognized `via`/`server_name` join queries:
+  genuine RED failed 16 of 47 assertions; checked optional parsing now returns
+  `400 M_INVALID_PARAM`, with normal GREEN 63 / 1 and ordinary, `%2500` and
+  unrelated `%00` query positives. Local admission remains GREEN 259 / 3.
+  Real isolated PostgreSQL 16 inbound/compatibility tests passed 180 / 2,
+  both initially and after the join-query repair: a signed control persists,
+  NUL state keys cause no statements/event/state/graph/watermark writes, and
+  Unicode state keys, escaped-NUL content and binary BYTEA remain intact.
+  The private Unix-socket-only test database is stopped and removed after
+  each run; 14 tracked admission-source hashes remain stable. Initial
+  post-format unit DB-6 passed 9 / 3, query 127 / 12 and routing 167 / 26.
+  Startup/compilation failures were repaired as fixture/build failures, not
+  counted as behavioral RED. The first independent source review withheld
+  approval after a tool approval timeout, with no established implementation
+  defect; a bounded re-review is pending. Real no-proxy federation socket-
+  HTTP RED failed 16 of 216 assertions with authenticated controls reaching
+  the handler. The federation entry point now rejects NUL paths before
+  routing/replay with a structured `400 M_INVALID_PARAM`: normal GREEN
+  passed 246 / 1, including nine leading/interior/trailing malformed room,
+  member and event ID cases, same-socket keep-alive controls, `%2500`
+  positives and unchanged memory/reopened SQLite rows and watermarks.
+  The accompanying HTTP/local/join groups still pass 100 / 1, 259 / 3 and
+  63 / 1; 19 tracked source hashes remained stable during that run.
+  A second real healthy-proxy/separate-worker socket regression then exposed
+  main's earlier shard-key decoder: genuine RED failed 7 of 293 assertions.
+  A matching guard in `FederationProxy::handle`, before bypass/auth/routing,
+  now passes 311 / 1; combined transport passes 557 / 2. Controls are served
+  by the healthy worker without failed-room-sync fallback. The default
+  DB-6 integration filter passes 985 / 10 (including two opt-in PostgreSQL
+  fallback assertions, not live database proof); a separate post-proxy live
+  PostgreSQL run passes 180 / 2, with clean shutdown/removal and 19 stable
+  source hashes. Fresh unit groups remain 9 / 3, 127 / 12 and 167 / 26.
+  Independent source review approved the federation guard/socket slice;
+  parent verified its four reviewed source/registration hashes still match
+  the executed GREEN. A completed local/query/PostgreSQL review withheld
+  approval for path parsers that still decode unrelated query values,
+  unguarded direct-local join hints and a URI-only CI fixture mismatch.
+  The latter is reproduced against isolated real PostgreSQL: both opted-in
+  scenarios fail their missing-file prerequisite (2 assertions / 2 cases),
+  followed by verified shutdown/removal. The fresh combined attempt exited
+  before tests because the scratch CLI wrapper expanded an unset temporary-
+  directory variable; its archived stale logs are not acceptance evidence.
+  The wrapper was corrected and its actual CLI dry run succeeds, not a full
+  test pass. The review-confirmed gaps now have genuine regressions:
+  direct-local join hints failed 16 / 108 checks, then a checked optional
+  parser and controlled refusal passed both dispatchers. Stronger SQLite
+  snapshots cover event/signature/graph/membership/invite rows and both
+  watermarks; the current join group passes 188 / 1. Authenticated ordinary,
+  `%00`, `%2500` and literal-NUL unrelated-query cases exposed path mixing
+  across send, redact, state GET/PUT, report and typing (48 failed / 174).
+  Those parsers now take the path only; GREEN passes 230 / 1, including
+  original transaction idempotency, intended state keys, durable report
+  targets and typing subjects. A missing-header compilation attempt is
+  recorded as a build failure, not behavioral RED. PostgreSQL scenarios
+  now provision an exclusive, owner-only RAII connection file from the
+  same explicitly opted-in URI used by reopened-store checks; caller files
+  are not selected or modified. Both URI-only and URI-plus-file isolated
+  real runs pass 178 / 2, with owned-file cleanup and verified cluster
+  shutdown/removal. The two fewer assertions are the removed file-presence
+  prerequisites, not skipped admission checks. Normal DB-6 integration
+  passes 1340 / 11 (two opt-in fallback assertions, not live PostgreSQL),
+  including unchanged socket 557 / 2, local 259 / 3 and HTTP 100 / 1.
+  Unit groups remain 9 / 3, 127 / 12 and 167 / 26; 21 tracked admission
+  hashes are stable. Independent bounded repair re-review passed with no
+  security or logic findings; all seven reviewed files matched executed
+  GREEN. The fresh review-gap full CLI completed exit 0: 56 OK, zero
+  failures/timeouts, fresh archived text/JSON reports, all return codes
+  zero and 127 snapshotted files unchanged. This accepts that checkpoint,
+  not later edits. Further decoder tracing found raw query text still
+  reaching to-device, knock and user-metadata paths. A separate real
+  SQLite regression reproduced 34 failed / 169 assertions, with successful
+  no-query controls, original transaction replay, actual recipient queue
+  delivery, intended account-data/tag keys and durable knock membership.
+  Those three extraction boundaries now strip queries. The first GREEN
+  build failed before tests because the to-device helper referenced a
+  later declaration; local path-only slicing fixes that compilation error
+  without changing decoding semantics. The corrected GREEN rerun passes
+  255 / 1; original query paths 230 / 1, joins 188 / 1, HTTP 100 / 1,
+  compatibility 4 / 1 and real sockets 557 / 2 remain green. Current
+  normal DB-6 integration passes 1595 / 12 (two gated PostgreSQL fallback
+  assertions, not live database proof); unit groups pass 9 / 3, 127 / 12
+  and 167 / 26. Builds/runs exit 0 with stable admission source hashes.
+  Current isolated PostgreSQL URI-only and URI-plus-file reruns each pass
+  178 / 2 with owned connection-file cleanup, cluster shutdown/removal
+  and stable source snapshots. The scoped static scan has only the
+  unchanged, previously disposed OPS-2 marker false positive.
+  The next bounded review found no blocking defect in these three repairs
+  or their test, but rejected decoder completeness: public profile GET,
+  profile PUT, shared room action/receipt suffixes and presence still slice
+  raw targets. Parent source inspection corroborates these gaps, including
+  an ordinary receipt query entering the recorded event ID. A separate
+  registered real SQLite/password-authenticated regression then reproduced
+  206 failed / 691 assertions, after its mandatory complete no-query
+  control passed. All eight nonempty query/marker cases reached failures.
+  It checks public profile fields, intended profile/presence persistence,
+  whole state, exact receipt event IDs, durable fully-read markers and
+  leave-last membership. Only after that RED, four extraction boundaries
+  were changed to use the existing path-only request view. GREEN passes
+  733 / 1; current normal DB-6 integration passes 2328 / 13 (two gated
+  PostgreSQL fallback assertions). Earlier query/join/HTTP/socket groups
+  and unit 9 / 3, 127 / 12 and 167 / 26 remain green. Current isolated
+  PostgreSQL URI-only and URI-plus-file reruns each pass 178 / 2, with
+  verified owned-file cleanup and cluster shutdown/removal. At that
+  checkpoint, all 22 admission sources matched executed manifests. The
+  subsequent review found no remaining query-to-path-decoder feed in its
+  bounded inventory, but rejected an introduced `/members` regression:
+  recognized queries were still read from the now-clean room suffix.
+  Real-dispatch conformance reproduced 50 failed / 164 assertions (the
+  history group failed 52 / 1789). Separately extracting the original
+  query then passed 164 / 1. A separate test exposed the pre-existing
+  intersection of combined member filters: RED 16 / 73, then GREEN 73 / 1
+  after implementing the pinned specification's union semantics. Current
+  history conformance passes 1816 / 17; DB-6 integration remains 2328 / 13,
+  earlier focused/unit groups remain green, and both current isolated
+  PostgreSQL modes pass 178 / 2 with verified cleanup and teardown. All
+  23 current admission sources match conformance/integration/unit/both
+  PostgreSQL manifests; scoped static findings are unchanged and diff
+  checks pass. Fresh member-repair source review passed with no security
+  or logic findings; both reviewed files match executed GREEN. That
+  postmembers combined checkpoint completed with 56 OK targets, all return
+  codes zero, no failures/timeouts and 129 unchanged snapshotted files.
+  It accepts that earlier snapshot, not the subsequent repairs. The separate
+  device query regression required public HTTP login to populate the client
+  device cache; setup/compiler failures are not behavioral RED. Its healthy
+  control then passed, while all four unused-query cases reproduced 56 failed
+  / 216 assertions across GET, PUT and password-UIA DELETE. Path-only device
+  extraction now passes 224 / 1, including SQLite reopen, target-session
+  revocation and preservation of the owner's device/session. Independently,
+  backup-version DELETE reproduced 24 failed / 181 assertions with a healthy
+  no-query control: HTTP success could leave the intended version undeleted.
+  Extracting its version from the path now passes 181 / 1, including a surviving
+  second version, repeat deletion and reopened durable rows. Current normal
+  DB-6 integration passes 2733 / 15 (two gated PostgreSQL fallback assertions);
+  history conformance remains 1816 / 17 and unit groups remain green. Isolated
+  PostgreSQL admission/compatibility reruns each pass 178 / 2 with verified
+  owned-file cleanup and cluster shutdown/removal; all five execution manifests
+  match the same 23 current sources. These are not live PostgreSQL device/backup
+  regressions, wire/TLS checks, arbitrary encoded-device-ID support or backup
+  encryption/session-cascade coverage. Independent nondecoder source review
+  passed with no security or logic findings. The fresh combined checkpoint
+  passed 56 OK targets, all return codes zero and no failures/timeouts, with
+  130 unchanged snapshotted files; parent inspection bound the focused fixes
+  to that run. The source freeze ended after acceptance. DB-6 remains partial and
+  ADR-0137 proposed.
+- **IMPLEMENTED (OPS-2):** shared audit targets now discard the entire query
+  string and retain only a control-safe, UTF-8-safe 255-byte path/identifier.
+  The same policy protects durable and in-memory audit paths, actual
+  `audit.append` debug output, event construction, INSERT statements and summaries.
+  Known, unknown, encoded and duplicate parameter names cannot expose query values.
+  Constructor RED failed 20 assertions; separate SQLite/HTTP/sink RED failed 8.
+  Final focused unit OPS-2 passed 101 assertions / 2 cases, observability
+  10447 / 40 and audit 14263 / 45. Integration OPS-2 passed 44 / 2, including
+  actual rate limiting, unavailable-runtime rejection, SQLite reopen and exact
+  logger policy restoration. Independent review rejected the original capture
+  fixture; a genuine restoration/unwinding RED failed 4 of 6 assertions. Exact
+  threshold/optional-override exchanges, synchronous-writer checks and buffer
+  redirection after configuration repair it; the scope regression passed 20 / 1.
+  The first combined build failed the minimal logger fixture's missing encoder
+  linkage; tests/meson.build now supplies the existing pure bounded-text source.
+  A subsequent 56-target run preceded review correction and is not final acceptance.
+  ADR-0136 records the intentional loss of even safe query values; historical
+  rows, backups and logs are not rewritten. Independent re-review
+  (deleg_98159855) approved the repaired slice with no material findings. Its
+  first final full run had 55 OK / 1 unrelated to-device TTL fixture failure.
+  Its exact cause was not established; the previous test depended on a
+  1.2-second sleep to establish an expired-row precondition. The memory-store
+  regression now seeds a definitely old positive timestamp instead of depending
+  on wall-clock progress, proving already-expired non-delivery and purge rather
+  than enqueue timestamp correctness or exact TTL boundaries. Production TTL
+  logic is unchanged. Independent source-only fixture review (deleg_d766b186)
+  passed with no material findings; five focused runs and the related CSAZ-10
+  cases passed. The resumed full verification (proc_caf4c67c3b51) exited 0:
+  all 56 targets reported OK with return code 0, no failures or timeouts, and
+  all 95 snapshotted files were unchanged. Exact completed reports are archived;
+  the previous 55 OK / 1 failed run remains recorded rather than overwritten.
+  Audit-inventory reconciliation is still pending: its separate execution
+  approval timed out before the reconciliation script ran.
+- **HARDENING REGRESSIONS (ISO-6 / DB-10):** main's seccomp admits only descriptor-bound
+  `fchmod(0600)` and private `umask(0077)`. This permits SQLite admission and worker
+  startup under the inherited filter without broad metadata grants; both workers
+  still deny all fchmod/umask once their stricter profiles are installed. ADR-0129/0130.
+  These fixes do not close the remaining ISO-6 or DB-10 acceptance review.
+- **TESTS (decoder/platform batch):** ISO-5 passed independently in the normal
+  integration binary (554 assertions / 4 cases), including a separate closed-stderr
+  run (13 assertions / 1 case). New permission/mask kernel regressions were observed
+  RED then GREEN; the combined focused platform runs passed 378 assertions / 20 unit
+  cases and 606 assertions / 13 integration cases, including real hardened startup.
+  The earlier full run failed; the post-repair unified WSL rerun passed all 56
+  Meson targets with zero failures or timeouts. One Landlock ABI-6 unit case was
+  skipped on the available kernel; this is a checkpoint, not closure of remaining findings.
+- **TESTS:** new legacy event-auth, rejected-auth fallback, discovery bounds and denied-range
+  scenarios; updated canonical JSON and inbound PDU auth scenarios. Parent verification of
+  these exact tags passed: unit 1717 assertions / 15 cases; conformance 1331 assertions /
+  4 cases. These are also covered by the successful post-repair checkpoint above;
+  remaining remediation still needs final acceptance.
+
 ## 0.12.25
 
 CSAZ-6, CSAZ-9, CSAZ-11 and CSAZ-12 of the 29 September 2026 security audit are fixed.

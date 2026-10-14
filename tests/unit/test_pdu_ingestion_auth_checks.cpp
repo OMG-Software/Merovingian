@@ -25,6 +25,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -883,6 +884,51 @@ SCENARIO("A transaction mixing accepted, rejected, and soft-failed PDUs still re
             }
         }
 
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: Matrix v1.19 rooms/v10.md, Authorization rules 2.3 — entries rejected
+// under checks performed on receipt of a PDU must not be selected as auth events.
+SCENARIO("Inbound PDUs cannot select rejected auth events even when their content grants permission",
+         "[pdu_ingestion][auth][security][evt-12c-inbound]")
+{
+    GIVEN("a valid room and an independently stored power-level event with a receipt status")
+    {
+        using namespace merovingian;
+        auto const status = GENERATE("rejected", "accepted", "soft_failed", "outlier");
+        CAPTURE(status);
+        auto const path = unique_sqlite_path();
+        auto started = homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto const room_id = std::string{"!rejected-auth:local.example.org"};
+        auto const admin = std::string{"@admin:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, admin);
+        auto& store = started.runtime.database.persistent_store;
+        auto const named_pl_id = "$named-pl:local.example.org";
+        auto named_content = canonicaljson::Object{};
+        named_content.push_back(canonicaljson::make_member("state_default", canonicaljson::Value{std::int64_t{0}}));
+        auto const named_json = build_event_json(room_id, "m.room.power_levels", std::string{}, admin,
+                                                 std::move(named_content), {}, {genesis.create_id}, 1, 2);
+        store.events.push_back({named_pl_id, room_id, admin, named_json, 1U, 0U, {}, {genesis.create_id}, {}, status});
+        auto const auth_ids = std::vector<std::string>{genesis.create_id, named_pl_id, genesis.admin_member_id};
+        auto const json = build_event_json(room_id, "m.room.topic", std::string{}, admin, canonicaljson::Object{},
+                                           {genesis.admin_member_id}, auth_ids, 3, 4);
+        auto const envelope = make_envelope(room_id, "$topic:local.example.org", "m.room.topic", std::string{}, admin,
+                                            {genesis.admin_member_id}, auth_ids, 3, json);
+        WHEN("the new PDU selects this power-level event")
+        {
+            auto const result = homeserver::ingest_pdu_event(started.runtime, envelope);
+            THEN("only receipt rejection prevents it from being accepted")
+            {
+                REQUIRE(result.status == (std::string{status} == "rejected" ? PduIngestionStatus::rejected_auth
+                                                                            : PduIngestionStatus::accepted));
+                auto const topic = std::ranges::find_if(store.state, [&](auto const& state) {
+                    return state.room_id == room_id && state.event_type == "m.room.topic";
+                });
+                REQUIRE((topic != store.state.end()) == (std::string{status} != "rejected"));
+            }
+        }
         std::filesystem::remove(path);
     }
 }

@@ -182,6 +182,16 @@ Request flow:
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
 6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
 
+For `PUT /_matrix/federation/v1/send/{txnId}`, the EDU-only worker bypass requires
+a parsed object with an explicitly present, empty `pdus` array. A missing or
+malformed first-PDU room ID is only a missing shard hint, not proof of an empty
+transaction. Such nonempty transactions retain the empty key, skip the proxy's
+room-sync fallback and enter worker shard zero. Later PDUs are not searched for
+another room ID: that would risk selecting the main-process failed-sync fallback.
+Main still parses the JSON envelope; ordinary room routing, media bypass and
+worker-disabled deployments are unchanged. See
+[ADR-0131](adr/0131-keep-malformed-first-pdu-transactions-inside-worker-shard-zero.md).
+
 **Blocking network calls under the runtime mutex.** The recursive mutex above
 is held for the whole of each client-server and local-router request, and it
 also guards inbound federation handling — so whatever holds it stalls every
@@ -275,10 +285,18 @@ unboundedly over the runtime's lifetime. Push delivery additionally bounds
 `HomeserverRuntime::push_delivery_in_flight_`, a `std::atomic<std::size_t>`
 (tracked separately from the make_join race's use of the same vector so the
 two do not starve each other) checked against
-`server.push.max_in_flight_deliveries` (default 256) before a task is spawned; at
-capacity the delivery is dropped and logged rather than spawned, since a
-missed push is recoverable but unbounded thread creation is not (see
-`threat-model.md`, "Push delivery background tasks were unbounded"). The
+`server.push.max_in_flight_deliveries` (default 256) before a task is spawned.
+Each task holds one recipient's batch, avoiding same-event head-of-line blocking
+between recipients. Under `orphan_futures_mutex_`, global and shared per-recipient
+atomic counters jointly admit work; a recipient's cap is
+`G > 1 ? min(8, G - 1) : 1`. Zero counter entries are swept on dispatch. A move-only
+RAII permit releases both counters on completion or unwind, not on destruction
+of the parked future. Parking capacity is reserved before launch, preventing an
+allocation failure after launch from waiting on work while a request owns the
+runtime mutex. At either budget, only the affected recipient batch is dropped.
+There is no new queue or fairness guarantee; `G=1` remains serial. See
+[ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md) and
+`threat-model.md`, "Push delivery background tasks were unbounded". The
 dispatcher-side check-and-increment happens under `orphan_futures_mutex_`
 (already held there to reap `orphan_futures_`), but the background task's
 own decrement deliberately does not take that mutex: a task's completion
@@ -459,9 +477,35 @@ Room-scoped changes call `notify_room_changed(room_id)` after commit. The proxy 
 
 Shard selection must use the same decoded room ID string on both sides. Writer-side notifications use the internal room ID, while federation paths can percent-encode Matrix IDs; `federation_worker_room_id_from_request()` decodes path components before hashing. Routes without a room ID, including `GET /_matrix/federation/v1/query/directory` and `GET /_matrix/federation/v1/event/{eventId}`, cannot be sharded by room from the request path alone. Verified EDU-only `PUT /_matrix/federation/v1/send/{txnId}` transactions are handled in main rather than routed to shard 0, because they ultimately call main's `edu_sink` and include E2EE to-device key shares.
 
-Workers relay operations that must observe main's current global state or must commit to main exactly once. Relayed hooks include `pdu_sink`, `edu_sink`, `membership_acceptor`, `invite_handler`, `one_time_keys_claim_provider`, `user_devices_provider`, `device_keys_query_provider`, `profile_query_provider`, and `event_query_provider`. This keeps inbound PDUs/EDUs, federated joins/leaves/knocks, invites, one-time-key claims, device/profile reads, and event-by-ID reads consistent with the store that client `/sync` uses. Main does not trust the worker's signature check on a relayed PDU: `handle_pdu_ingest_request`, `handle_membership_ingest_request` and `handle_invite_ingest_request` re-verify the sender server's signature with main's own `remote_key_resolver`, before taking `runtime.mutex`, and build the envelope from the verified event (ADR-0071).
+Inbound signing-key resolution separates network-free verification-key reads from complete peer discovery (FED-10). `cached_pdu_key_lookup` reads owned local or fresh persistent remote keys; it also supports known-peer key rotation without changing discovery/trust state. Core inbound discovery-capable sender and origin resolution uses the source-address rate budget, per-runtime in-flight cap and bounded server/key failure cache. Parallel PDU sender pre-resolution and authorization fallbacks share that wrapper; per-transaction parallelism is not an admission grant. Admission guards release only owned reservations, and task scheduling permits/callables remain valid through asynchronous failure and unwind. These are per-runtime controls, not an aggregate cross-shard limiter. Local sender/authorising-key denial returns retryable 503 without charging or resetting relay trust or inserting accepted-transaction dedup; actual failures retain penalties even in mixed transactions. EDUs wait for retry, while already-ingested PDUs rely on event-ID idempotency. Main IPC PDU/membership/invite re-verification delegates to the same admitted key-only helper. Main relay cache misses share its common unknown-source bucket because these frames have no main-validated client address; worker-supplied source hints never choose the bucket. Local denial defers before acceptance/mutation. Backfilled-event, snapshot and auth-chain verification now share the admitted key-only helper. Request-local recovery provenance carries local denial to the existing main-overload result instead of ordinary missing state; further recovery calls stop. This slice passed fresh full-suite verification and independent source-only review. Additional sticky-denial/partial-progress tests and end-to-end worker socket-HTTP overload coverage remain before whole-finding closure; review is not transport runtime evidence (ADR-0135). No persisted or IPC format changes. See [ADR-0132](adr/0132-separate-cached-verification-keys-from-budgeted-discovery.md) and [ADR-0133](adr/0133-preserve-local-key-admission-denial-separately-from-remote-failure.md).
+
+Workers relay operations that must observe main's current global state or must commit to main exactly once. Relayed hooks include `pdu_sink`, `edu_sink`, `membership_acceptor`, `invite_handler`, `one_time_keys_claim_provider`, `user_devices_provider`, `device_keys_query_provider`, `profile_query_provider`, and `event_query_provider`. This keeps inbound PDUs/EDUs, federated joins/leaves/knocks, invites, one-time-key claims, device/profile reads, and event-by-ID reads consistent with the store that client `/sync` uses. Main does not trust the worker's signature check on a relayed PDU: `handle_pdu_ingest_request`, `handle_membership_ingest_request` and `handle_invite_ingest_request` re-verify the sender server's signature with main's own key-only cache/admission helper (`resolve_verification_key`), before taking `runtime.mutex`, and build the envelope from the verified event (ADR-0071).
 
 Worker request execution uses two pools. `local_pool` (`federation.worker.threads`) handles endpoints answered from the worker room snapshot: `make_join`, `make_leave`, `make_knock`, `backfill`, `query/directory`, `state`, `state_ids`, `get_missing_events`, `hierarchy`, and the no-op EDU route. `relay_pool` (`federation.worker.relay_threads`) handles endpoints that can block on main or outbound HTTP: PDU-bearing transactions, `send_join`, `send_leave`, `send_knock`, invites, key/profile/device relays, event-by-ID, and `outbound_http_request`. Every room-scoped read (`state`, `state_ids`, `backfill`, `get_missing_events` on the worker snapshot; event-by-ID relayed to main together with the verified origin) enforces the origin-in-room gate (FED-2), so it applies on whichever process answers. The split is driven by `federation::federation_endpoint_requires_main_relay(FederationEndpoint)` so slow relays cannot starve local room reads of worker threads.
+
+### Worker EDU origin correlation (FED-12; review/combined pending)
+
+The remediation binds main-owned signature-verified origin to the exact outbound
+channel's pending federation request before sending. An EDU relay carries the
+original numeric `parent_request_id`; main's mandatory handler receives the
+actual receiving channel rather than choosing the supervisor's latest snapshot.
+After acquiring the runtime lock, main checks running/healthy channel state,
+live non-ready pending entry, monotonic deadline and exact origin equality before
+calling the existing sink. The pending lock is released before the sink runs.
+Admission linearizes at this check, so already admitted work may complete after
+its parent; this is not database rollback or strict cancellation of admitted work.
+
+Worker propagation uses a per-task thread-local RAII parent scope, not a shared
+mutable origin or per-request rewiring of shared callbacks. Ordinary requests
+without main-owned identity cannot authorize EDUs. Parent IDs are routing values,
+not capabilities, and matching origin does not establish signed-body content
+binding. No persisted format or cryptographic derivation changes. Main/worker
+must restart together; missing parent fields fail closed. Normal post-format
+origin and lifecycle regressions, migrated worker/sync fixtures and the actual
+socket-HTTP/separate-worker mixed PDU/EDU control pass. Independent source review
+and fresh combined verification remain pending; this is not whole-finding
+acceptance or adversarial restart-race coverage.
+See [ADR-0142](adr/0142-bind-worker-edu-relays-to-live-main-verified-requests.md).
 
 ### IPC reader/dispatch split
 
@@ -469,7 +513,7 @@ Worker request execution uses two pools. `local_pool` (`federation.worker.thread
 
 ## Federation
 
-**Inbound** (`federation/inbound_request.hpp`, `inbound_ingestion.hpp`): `FederationRuntimeState` holds config, remote caches, accepted transactions, audit events, and injected function hooks: `remote_key_resolver`, `pdu_sink`, `edu_sink`, `state_conflict_resolver`, `membership_template_provider`, `membership_acceptor`, `invite_handler`, `backfill_provider`, `profile_query_provider`, E2EE key hooks, event-graph query hooks. Its federation-local mutex protects remote-cache/trust updates, accepted transaction IDs, and audit events when multiple federation requests run concurrently. `handle_inbound_federation_request()` parses X-Matrix auth, verifies signatures, and dispatches to endpoint handlers. `PUT /_matrix/federation/v1/send/{txnId}` follows the Matrix v1.19 transaction envelope: `origin`, `origin_server_ts`, and a `pdus` array are required, `edus` is optional but must be an array when present, empty `pdus: []` remains valid, and individual PDU failures are returned inside the `pdus` response object rather than as a non-200 transaction status. See [Server-Server API: Request Authentication](matrix-v1.19-spec/server-server-api.md#request-authentication), [Transactions](matrix-v1.19-spec/server-server-api.md#transactions), [Authorization rules](matrix-v1.19-spec/server-server-api.md#authorisation-rules), and [Signing Events](matrix-v1.19-spec/server-server-api.md#signing-events).
+**Inbound** (`federation/inbound_request.hpp`, `inbound_ingestion.hpp`): `FederationRuntimeState` holds config, remote caches, accepted transactions, audit events, and injected function hooks: `remote_key_resolver`, `pdu_sink`, `edu_sink`, `state_conflict_resolver`, `membership_template_provider`, `membership_acceptor`, `invite_handler`, `backfill_provider`, `profile_query_provider`, E2EE key hooks, event-graph query hooks. Its federation-local mutex protects remote-cache/trust updates, accepted transaction IDs, and audit events when multiple federation requests run concurrently. `handle_inbound_federation_request()` parses X-Matrix auth, verifies signatures, and dispatches to endpoint handlers. `PUT /_matrix/federation/v1/send/{txnId}` follows the Matrix v1.19 transaction envelope: `origin`, `origin_server_ts`, and a `pdus` array are required, `edus` is optional but must be an array when present, empty `pdus: []` remains valid, and individual PDU rejections are returned inside the normal `pdus` response object; local key-admission or main-ingestion overload instead returns retryable 503 without recording transaction acceptance. See [Server-Server API: Request Authentication](matrix-v1.19-spec/server-server-api.md#request-authentication), [Transactions](matrix-v1.19-spec/server-server-api.md#transactions), [Authorization rules](matrix-v1.19-spec/server-server-api.md#authorisation-rules), and [Signing Events](matrix-v1.19-spec/server-server-api.md#signing-events).
 
 Implemented endpoints: `PUT /send/{txnId}`, `GET/PUT /make_join`, `GET/PUT /make_leave`, `GET/PUT /make_knock`, `PUT /send_join` (v1/v2), `PUT /send_leave` (v1/v2), `PUT /send_knock` (v2), `PUT /invite` (v1/v2), `GET /event/{eventId}`, `GET /state/{roomId}`, `GET /state_ids/{roomId}`, `GET /backfill/{roomId}`, `POST /get_missing_events/{roomId}`, `GET /hierarchy/{roomId}`, `GET /query/directory`, `GET /query/profile`, `GET/POST /publicRooms`, E2EE device keys/OTK/claim/device-list routes, and `GET /_matrix/key/v2/server`. Backfill decodes URI path/query Matrix IDs before dispatch and walks stored `prev_events` from each requested event to return the requested PDU plus predecessors up to the request limit. See [Joining Rooms](matrix-v1.19-spec/server-server-api.md#joining-rooms), [Backfilling and retrieving missing events](matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events), [Room State Resolution](matrix-v1.19-spec/server-server-api.md#room-state-resolution), [Published Room Directory](matrix-v1.19-spec/server-server-api.md#published-room-directory), and [Retrieving server keys](matrix-v1.19-spec/server-server-api.md#retrieving-server-keys).
 

@@ -2121,7 +2121,8 @@ SCENARIO("PostgreSQL connection summaries redact credentials before logging", "[
                 REQUIRE(uri.find("secret") == std::string::npos);
                 REQUIRE(uri.find("redacted") != std::string::npos);
                 REQUIRE(key_value.find("secret") == std::string::npos);
-                REQUIRE(key_value.find("password=redacted") != std::string::npos);
+                REQUIRE(key_value.find("redacted") != std::string::npos);
+                REQUIRE(key_value.find("password=") == std::string::npos);
             }
         }
     }

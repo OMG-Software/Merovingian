@@ -35,6 +35,8 @@
 #include <png.h>
 #include <turbojpeg.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <tuple>
 
 namespace
 {
@@ -307,6 +309,7 @@ auto write_all_stdout(std::string const& bytes) -> void
 
 auto main() -> int
 {
+    std::ignore = ::umask(0077);
     // HTTP-5: a parent that closes its end of the pipe must produce an EPIPE
     // from write_all_stdout(), not a SIGPIPE. Done before hardening, which
     // installs the seccomp filter, and before any input is read. Fail closed.

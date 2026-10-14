@@ -23,6 +23,7 @@
 #include <vector>
 
 #include <libpq-fe.h>
+#include <arpa/inet.h>
 
 namespace merovingian::database
 {
@@ -146,65 +147,82 @@ namespace
         return starts_with(conninfo, "postgresql://") || starts_with(conninfo, "postgres://");
     }
 
-    [[nodiscard]] auto redact_uri_password(std::string_view conninfo) -> std::string
+    struct ConninfoDeleter final
     {
-        auto redacted = std::string{conninfo};
-        auto const scheme_end = redacted.find("://");
-        if (scheme_end == std::string::npos)
+        auto operator()(PQconninfoOption* options) const noexcept -> void
         {
-            return redacted;
+            PQconninfoFree(options);
         }
+    };
+    using ConninfoOptions = std::unique_ptr<PQconninfoOption, ConninfoDeleter>;
 
-        auto const authority_begin = scheme_end + 3U;
-        auto const authority_end = redacted.find_first_of("/?", authority_begin);
-        auto const userinfo_end = redacted.find('@', authority_begin);
-        if (userinfo_end == std::string::npos || (authority_end != std::string::npos && userinfo_end > authority_end))
+    [[nodiscard]] auto option_value(PQconninfoOption const* options, std::string_view keyword) -> std::string_view
+    {
+        if (options == nullptr)
         {
-            return redacted;
+            return {};
         }
-
-        auto const password_begin = redacted.find(':', authority_begin);
-        if (password_begin == std::string::npos || password_begin > userinfo_end)
+        for (auto const* option = options; option->keyword != nullptr; ++option)
         {
-            return redacted;
+            if (keyword == option->keyword && option->val != nullptr)
+            {
+                return option->val;
+            }
         }
-
-        redacted.replace(password_begin + 1U, userinfo_end - password_begin - 1U, "redacted");
-        return redacted;
+        return {};
     }
 
-    [[nodiscard]] auto redact_key_value_password(std::string_view conninfo) -> std::string
+    [[nodiscard]] auto parse_conninfo(std::string_view conninfo) -> ConninfoOptions
     {
-        auto redacted = std::string{conninfo};
-        auto cursor = std::size_t{0U};
-        while (cursor < redacted.size())
-        {
-            auto const password_key = redacted.find("password=", cursor);
-            if (password_key == std::string::npos)
-            {
-                break;
-            }
-
-            auto const value_begin = password_key + std::string_view{"password="}.size();
-            auto value_end = redacted.find(' ', value_begin);
-            if (value_end == std::string::npos)
-            {
-                value_end = redacted.size();
-            }
-            redacted.replace(value_begin, value_end - value_begin, "redacted");
-            cursor = value_begin + std::string_view{"redacted"}.size();
-        }
-        return redacted;
+        auto const input = std::string{conninfo};
+        auto* error = static_cast<char*>(nullptr);
+        auto options = ConninfoOptions{PQconninfoParse(input.c_str(), &error)};
+        // libpq parser diagnostics can contain arbitrary option values. Never emit them.
+        PQfreemem(error);
+        return options;
     }
 
-    [[nodiscard]] auto connection_error(PGconn& connection) -> std::string
+    [[nodiscard]] auto local_destination(std::string_view destination, bool address_only) -> bool
     {
-        auto const* error = PQerrorMessage(&connection);
-        if (error == nullptr || std::string_view{error}.empty())
+        if (destination.empty())
         {
-            return "PostgreSQL connection failed";
+            return true; // libpq's default Unix socket / matching host entry.
         }
-        return std::string{error};
+        if (!address_only && (destination.front() == '/' || destination.front() == '@' || destination == "localhost"))
+        {
+            return true;
+        }
+        auto const text = std::string{destination};
+        auto ipv4 = in_addr{};
+        if (::inet_pton(AF_INET, text.c_str(), &ipv4) == 1)
+        {
+            return (ntohl(ipv4.s_addr) >> 24U) == 127U;
+        }
+        auto ipv6 = in6_addr{};
+        return ::inet_pton(AF_INET6, text.c_str(), &ipv6) == 1 && IN6_IS_ADDR_LOOPBACK(&ipv6);
+    }
+
+    [[nodiscard]] auto local_destination_list(std::string_view destinations, bool address_only) -> bool
+    {
+        while (true)
+        {
+            auto const comma = destinations.find(',');
+            if (!local_destination(destinations.substr(0U, comma), address_only))
+            {
+                return false;
+            }
+            if (comma == std::string_view::npos)
+            {
+                return true;
+            }
+            destinations.remove_prefix(comma + 1U);
+        }
+    }
+
+    [[nodiscard]] auto connection_error(PGconn& /*connection*/) -> std::string
+    {
+        // The host, dbname, user and even malformed options may contain secrets.
+        return "PostgreSQL connection failed (connection details redacted)";
     }
 
     [[nodiscard]] auto result_error(PGresult& result) -> std::string
@@ -1752,13 +1770,37 @@ auto validate_postgresql_conninfo(std::string_view conninfo) -> PostgresqlConnec
     {
         return {false, "PostgreSQL connection info must use a PostgreSQL URI or key/value form"};
     }
+    auto options = parse_conninfo(conninfo);
+    auto defaults = ConninfoOptions{PQconndefaults()};
+    if (!options || !defaults)
+    {
+        return {false, "invalid PostgreSQL connection options (details redacted)"};
+    }
+    auto const effective = [&](std::string_view keyword) {
+        auto const explicit_value = option_value(options.get(), keyword);
+        return explicit_value.empty() ? option_value(defaults.get(), keyword) : explicit_value;
+    };
+    // Service files can override hosts after parsing. Reject indirection rather
+    // than validate one destination and let libpq connect to a different one.
+    if (!effective("service").empty())
+    {
+        return {false, "PostgreSQL service indirection is not supported; specify connection options directly"};
+    }
+    auto const local =
+        local_destination_list(effective("host"), false) && local_destination_list(effective("hostaddr"), true);
+    // Carry the remote TLS policy in the connection options themselves: the
+    // minimal worker environment intentionally does not inherit libpq defaults.
+    if (!local && option_value(options.get(), "sslmode") != "verify-full")
+    {
+        return {false, "remote PostgreSQL connections require explicit sslmode=verify-full"};
+    }
     return {true, {}};
 }
 
-auto redact_postgresql_conninfo(std::string_view conninfo) -> std::string
+auto redact_postgresql_conninfo(std::string_view /*conninfo*/) -> std::string
 {
-    auto redacted = looks_like_postgresql_uri(conninfo) ? redact_uri_password(conninfo) : std::string{conninfo};
-    return redact_key_value_password(redacted);
+    // Keep the compatibility API but do not try to redact arbitrary libpq syntax.
+    return "PostgreSQL [connection details redacted]";
 }
 
 auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
@@ -1800,7 +1842,24 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
     }
 
     auto conninfo_string = std::string{conninfo};
-    auto connection = PostgresqlConnectionPtr{PQconnectdb(conninfo_string.c_str())};
+    // Force TLS rather than libpq's preferential GSS encryption path when TLS
+    // verification is required. No service expansion, and no dbname expansion.
+    auto options = parse_conninfo(conninfo_string);
+    auto keywords = std::vector<char const*>{};
+    auto values = std::vector<char const*>{};
+    for (auto const* option = options.get(); option->keyword != nullptr; ++option)
+    {
+        if (option->val != nullptr && std::string_view{option->keyword} != "gssencmode")
+        {
+            keywords.push_back(option->keyword);
+            values.push_back(option->val);
+        }
+    }
+    keywords.push_back("gssencmode");
+    values.push_back("disable");
+    keywords.push_back(nullptr);
+    values.push_back(nullptr);
+    auto connection = PostgresqlConnectionPtr{PQconnectdbParams(keywords.data(), values.data(), 0)};
     if (connection == nullptr)
     {
         log_diagnostic("connection.rejected",

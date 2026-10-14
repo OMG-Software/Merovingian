@@ -75,8 +75,8 @@ SCENARIO("parse_join_via_servers extracts server_name and via query parameters",
         {
             THEN("no servers are returned")
             {
-                REQUIRE(parse_join_via_servers("").empty());
-                REQUIRE(parse_join_via_servers("limit=5&filter=x").empty());
+                REQUIRE(parse_join_via_servers("") == Servers{});
+                REQUIRE(parse_join_via_servers("limit=5&filter=x") == Servers{});
             }
         }
     }

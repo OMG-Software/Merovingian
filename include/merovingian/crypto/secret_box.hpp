@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/crypto/secure_key_bytes.hpp"
 
 #include <array>
 #include <cstddef>
@@ -23,14 +24,14 @@ namespace merovingian::crypto
 // whichever instance is left behind rather than relying on the caller.
 struct SecretBoxKey final
 {
-    std::array<std::uint8_t, 32U> bytes{};
+    SecureKeyBytes bytes{};
 
-    SecretBoxKey() noexcept = default;
-    SecretBoxKey(SecretBoxKey const& other) noexcept;
-    auto operator=(SecretBoxKey const& other) noexcept -> SecretBoxKey&;
-    SecretBoxKey(SecretBoxKey&& other) noexcept;
-    auto operator=(SecretBoxKey&& other) noexcept -> SecretBoxKey&;
-    ~SecretBoxKey();
+    SecretBoxKey() = default;
+    SecretBoxKey(SecretBoxKey const&) = default;
+    auto operator=(SecretBoxKey const&) -> SecretBoxKey& = default;
+    SecretBoxKey(SecretBoxKey&&) noexcept = default;
+    auto operator=(SecretBoxKey&&) noexcept -> SecretBoxKey& = default;
+    ~SecretBoxKey() = default;
 };
 
 // Nonce + XSalsa20-Poly1305 ciphertext, stored as raw bytes (caller encodes

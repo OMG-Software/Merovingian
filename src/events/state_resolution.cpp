@@ -142,10 +142,12 @@ namespace
     class AuthChainEventSource final
     {
     public:
-        AuthChainEventSource(EventJsonIndex const& known, EventLookupFn const& lookup, std::size_t budget) noexcept
+        AuthChainEventSource(EventJsonIndex const& known, EventLookupFn const& lookup, std::size_t budget,
+                             std::unordered_set<std::string> rejected_events = {}) noexcept
             : known_{known}
             , lookup_{lookup}
             , budget_{budget}
+            , rejected_events_{std::move(rejected_events)}
         {
         }
 
@@ -162,6 +164,11 @@ namespace
         [[nodiscard]] auto find_optional(std::string_view event_id) -> canonicaljson::Value const*
         {
             return fetch(event_id);
+        }
+
+        [[nodiscard]] auto is_rejected(std::string_view event_id) const -> bool
+        {
+            return rejected_events_.contains(std::string{event_id});
         }
 
         [[nodiscard]] auto missing() const noexcept -> bool
@@ -194,6 +201,10 @@ namespace
                 fetched_index_.emplace(std::string{event_id}, not_found);
                 return nullptr;
             }
+            if (fetched->rejected)
+            {
+                rejected_events_.emplace(event_id);
+            }
             fetched_.push_back(std::move(*fetched));
             auto const index = fetched_.size() - 1U;
             fetched_index_.emplace(std::string{event_id}, index);
@@ -207,6 +218,7 @@ namespace
         bool missing_{false};
         std::deque<StateEventReference> fetched_{};
         std::unordered_map<std::string, std::size_t> fetched_index_{};
+        std::unordered_set<std::string> rejected_events_{};
     };
 
     struct PowerLevelsAncestor final
@@ -617,6 +629,7 @@ namespace
         ref.origin_server_ts = origin_server_ts;
         ref.depth = 0U;
         ref.event_json = *json;
+        ref.rejected = source.is_rejected(event_id);
         return ref;
     }
 
@@ -778,7 +791,7 @@ namespace
                 continue;
             }
             auto const* candidate = source.find_optional(*id);
-            if (candidate == nullptr)
+            if (candidate == nullptr || source.is_rejected(*id))
             {
                 continue;
             }
@@ -1518,7 +1531,19 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     // chains are not silently ignored. Backed by the submitted state groups
     // plus request.event_lookup for anything else.
     auto const known_index = build_event_json_index(request.state_groups);
-    auto source = AuthChainEventSource{known_index, request.event_lookup, request.limits.max_auth_chain_walk_events};
+    auto rejected_events = std::unordered_set<std::string>{};
+    for (auto const& group : request.state_groups)
+    {
+        for (auto const& event : group.state)
+        {
+            if (event.rejected)
+            {
+                rejected_events.insert(event.event_id);
+            }
+        }
+    }
+    auto source = AuthChainEventSource{known_index, request.event_lookup, request.limits.max_auth_chain_walk_events,
+                                       std::move(rejected_events)};
 
     // Spec (rooms/v10.md — Definitions, "Auth difference"): "∪Ci − ∩Ci",
     // where Ci is the full auth chain of state group i.

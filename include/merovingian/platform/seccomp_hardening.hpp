@@ -107,9 +107,9 @@ struct TaskConfinement final
 // Fail-closed: SECCOMP_RET_KILL_PROCESS.
 [[nodiscard]] auto seccomp_default_action() noexcept -> std::uint32_t;
 
-// Returns true if `syscall_number` is present in the allowlist used by
-// apply_seccomp_filter(). Exposed for unit testing without installing the
-// filter in the test process.
+// Returns true if `syscall_number` is unconditionally allowed by
+// apply_seccomp_filter(). Argument-restricted entries require real kernel
+// tests. Exposed for unit testing without installing the filter in this process.
 [[nodiscard]] auto seccomp_is_syscall_allowed(int syscall_number) noexcept -> bool;
 
 // Returns the default seccomp-bpf action used by apply_worker_seccomp_filter().

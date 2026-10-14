@@ -450,6 +450,13 @@ struct HomeserverRuntime final
     // at_background_task_capacity() and k_max_in_flight_push_deliveries in
     // room_service.cpp.
     std::atomic<std::size_t> push_delivery_in_flight_{0U};
+    // Dispatcher-side lookup/admission/reaping is guarded by
+    // orphan_futures_mutex_. Tasks retain a shared atomic counter and release
+    // it without any completion-time lock. Zero entries are swept on dispatch;
+    // retained user entries are bounded by the global delivery budget.
+    // Runtime moves remain startup-only, like the captured-runtime futures.
+    std::unordered_map<std::string, std::shared_ptr<std::atomic<std::size_t>>> // SHARED_PTR: reviewed - task lifetime.
+        push_delivery_in_flight_by_user_{};
 };
 
 // Removes every already-completed future from `futures` in place, preserving

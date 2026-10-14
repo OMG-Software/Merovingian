@@ -155,7 +155,12 @@ auto make_store_event_lookup(database::PersistentStore const& store) -> events::
             return std::nullopt;
         }
         auto const& evt = store.events[it->second];
-        return parse_state_event_reference(evt.event_id, evt.json, evt.depth);
+        auto ref = parse_state_event_reference(evt.event_id, evt.json, evt.depth);
+        if (ref.has_value())
+        {
+            ref->rejected = evt.status == "rejected";
+        }
+        return ref;
     };
 }
 

@@ -47,13 +47,6 @@ namespace
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::int64_t const*
-    {
-        auto const* value = object_member(object, key);
-        return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
-    }
-
     [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Object const*
     {
@@ -165,13 +158,27 @@ namespace
         {
             return std::nullopt;
         }
-        // Only a plain optionally-signed decimal integer counts. from_chars
-        // rejects leading whitespace, "+", "0x" and trailing junk, and the
-        // end-pointer check rejects anything it stopped short on, so "10abc" and
-        // "1.5" are not power levels.
+        // Legacy room versions permit whitespace, leading zeroes and one sign.
+        // Trim before from_chars, which accepts '-' but not '+' itself.
+        auto token = std::string_view{*text};
+        auto const begin = token.find_first_not_of(" \x09\x0a\x0d\x0c\x0b");
+        if (begin == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        auto const end = token.find_last_not_of(" \x09\x0a\x0d\x0c\x0b");
+        token = token.substr(begin, end - begin + 1U);
+        if (token.starts_with('+'))
+        {
+            token.remove_prefix(1U);
+            if (token.empty() || token.front() < '0' || token.front() > '9')
+            {
+                return std::nullopt;
+            }
+        }
         auto parsed = std::int64_t{0};
-        auto const* first = text->data();
-        auto const* last = first + text->size();
+        auto const* first = token.data();
+        auto const* last = first + token.size();
         auto const result = std::from_chars(first, last, parsed);
         if (result.ec != std::errc{} || result.ptr != last)
         {
@@ -911,8 +918,7 @@ auto required_state_event_power(canonicaljson::Value const& power_levels_event, 
     {
         return state_default;
     }
-    auto const* level = integer_member(*events, event_type);
-    return level != nullptr ? *level : state_default;
+    return power_level_member(*events, event_type, !policy.power_levels_require_integers).value_or(state_default);
 }
 
 auto domain_of(std::string_view matrix_id) noexcept -> std::string_view
@@ -1059,6 +1065,22 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         {
             return make_denied("3", "sender domain does not match creator domain");
         }
+    }
+
+    // Room v3-v5 rule 4 predates the normal membership/power checks.
+    // A server may maintain aliases for its own domain without joining.
+    if (*event_type == "m.room.aliases" && policy.auth_rules == rooms::AuthRules::room_v1)
+    {
+        auto const* state_key = string_member(*obj, "state_key");
+        if (state_key == nullptr)
+        {
+            return make_denied("4", "m.room.aliases requires a state_key");
+        }
+        if (*state_key != domain_of(*sender))
+        {
+            return make_denied("4", "aliases state_key does not match sender domain");
+        }
+        return make_allowed("4");
     }
 
     // Steps 4-9: m.room.member events
@@ -1281,7 +1303,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const* content_obj = object_member_as_object(*obj, "content");
             auto const* third_party_invite_value =
                 content_obj == nullptr ? nullptr : object_member(*content_obj, "third_party_invite");
-            if (third_party_invite_value != nullptr && value_is_object(*third_party_invite_value) != nullptr)
+            if (third_party_invite_value != nullptr)
             {
                 return authorize_third_party_invite(*third_party_invite_value, *state_key, *sender,
                                                     target_current_membership, auth_events.third_party_invite);
@@ -1680,8 +1702,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         {
             return events_default;
         }
-        auto const* level = integer_member(*events, *event_type);
-        return level != nullptr ? *level : events_default;
+        return power_level_member(*events, *event_type, !policy.power_levels_require_integers).value_or(events_default);
     }()
         : events_default;
 

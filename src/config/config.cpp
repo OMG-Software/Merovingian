@@ -8,6 +8,7 @@
 #include "merovingian/http/keep_alive.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <string_view>
@@ -554,6 +555,27 @@ auto log_level_name(observability::LogLevel level) noexcept -> std::string_view
 auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 {
     auto findings = std::vector<ConfigValidationFinding>{};
+
+    // Project admission limits, not Matrix protocol maxima or a substitute
+    // for checked clock arithmetic. Zero keeps its explicit no-expiry meaning.
+    constexpr auto max_access_token_lifetime_ms = std::int64_t{2'592'000'000};   // 30 days
+    constexpr auto max_refresh_token_lifetime_ms = std::int64_t{31'536'000'000}; // 365 days
+    if (config.security().access_token_lifetime_ms < 0)
+    {
+        findings.push_back({"security.access_token_lifetime_ms", "must be non-negative; 0 disables expiry"});
+    }
+    else if (config.security().access_token_lifetime_ms > max_access_token_lifetime_ms)
+    {
+        findings.push_back({"security.access_token_lifetime_ms", "must not exceed 2592000000 ms (30 days)"});
+    }
+    if (config.security().refresh_token_lifetime_ms < 0)
+    {
+        findings.push_back({"security.refresh_token_lifetime_ms", "must be non-negative; 0 disables expiry"});
+    }
+    else if (config.security().refresh_token_lifetime_ms > max_refresh_token_lifetime_ms)
+    {
+        findings.push_back({"security.refresh_token_lifetime_ms", "must not exceed 31536000000 ms (365 days)"});
+    }
 
     if (config.server().server_name.empty())
     {

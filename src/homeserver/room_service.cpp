@@ -59,6 +59,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <future>
 #include <limits>
 #include <map>
@@ -241,11 +243,13 @@ namespace
     // Why compose_signed_event produced no event. too_large means the event would
     // break the spec's size limits (CSAZ-9) and is the client's to fix, so callers
     // answer 400 M_TOO_LARGE; rejected covers everything else (malformed input,
-    // authorization, signing).
+    // authorization, signing); invalid_state_key is refused with 400 before
+    // composition can allocate any stream ordering or persistence state.
     enum class ComposeFailure : std::uint8_t
     {
         none,
         too_large,
+        invalid_state_key,
         rejected,
     };
 
@@ -267,6 +271,13 @@ namespace
         result.errcode = "M_TOO_LARGE";
         return result;
     }
+    [[nodiscard]] auto invalid_state_key_result() -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, "state_key must not contain NUL", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
+
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view sender, ComposedEvent const& composed) -> bool;
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
@@ -1372,6 +1383,10 @@ namespace
             }
             return std::nullopt;
         }();
+        if (event_state_key.has_value() && events::state_key_contains_nul(*event_state_key))
+        {
+            return ComposeResult{std::nullopt, ComposeFailure::invalid_state_key};
+        }
         // CSAZ-9. Spec v1.19 "Size limits": "`state_key` MUST NOT exceed 255 bytes" and "`type`
         // MUST NOT exceed 255 bytes". Refused here, before anything is composed or stored.
         if (event_type.size() > events::max_event_type_length_bytes ||
@@ -2712,6 +2727,16 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    // Preflight the complete initial-state list before creating the room or
+    // persisting any earlier bootstrap/initial-state event (DB-6).
+    if (std::ranges::any_of(options.initial_state, [](canonicaljson::Value const& entry) {
+            auto const* object = std::get_if<canonicaljson::Object>(&entry.storage());
+            auto const* state_key = object == nullptr ? nullptr : string_member(*object, "state_key");
+            return state_key != nullptr && events::state_key_contains_nul(*state_key);
+        }))
+    {
+        return invalid_state_key_result();
+    }
     if (create_room_options_exceed_size_limits(options))
     {
         log_diagnostic("room.create.rejected", {
@@ -3209,7 +3234,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     return make_operation_result(true, room_id);
 }
 
-auto parse_join_via_servers(std::string_view query) -> std::vector<std::string>
+auto parse_join_via_servers(std::string_view query) -> std::optional<std::vector<std::string>>
 {
     auto servers = std::vector<std::string>{};
     while (!query.empty())
@@ -3227,7 +3252,12 @@ auto parse_join_via_servers(std::string_view query) -> std::vector<std::string>
         {
             continue;
         }
-        auto decoded = core::percent_decode_path_component(pair.substr(eq + 1U));
+        auto const encoded = pair.substr(eq + 1U);
+        if (core::path_component_contains_nul(encoded))
+        {
+            return std::nullopt;
+        }
+        auto decoded = core::percent_decode_path_component(encoded);
         if (!decoded.empty() && std::ranges::find(servers, decoded) == servers.end())
         {
             servers.push_back(std::move(decoded));
@@ -6134,14 +6164,72 @@ namespace
         }
     }
 
-    // Bounds the number of concurrently in-flight push-delivery background
-    // tasks (see HomeserverRuntime::push_delivery_in_flight_). Each
-    // dispatch_push_deliveries call spawns exactly one OS thread regardless
-    // of how many individual notifications it carries — run_pending_push_
-    // deliveries loops over every PendingPushDelivery sequentially within
-    // that one task — so this is a per-event, not per-notification, cap.
-    // The configured cap bounds thread creation against high send rates while
-    // remaining adjustable for the deployment's available resources.
+    // A permit counts one recipient batch against both budgets. Completion
+    // uses only atomics: no waiter-held mutex is needed to return admission.
+    class PushDeliveryPermit final
+    {
+    public:
+        PushDeliveryPermit(std::atomic<std::size_t>& global,
+                           std::shared_ptr<std::atomic<std::size_t>> // SHARED_PTR: reviewed - permit lifetime.
+                               recipient) noexcept
+            : global_{global}
+            , recipient_{std::move(recipient)}
+        {
+            ++global_.get();
+            ++*recipient_;
+        }
+
+        ~PushDeliveryPermit() noexcept
+        {
+            if (active_)
+            {
+                --*recipient_;
+                --global_.get();
+            }
+        }
+
+        PushDeliveryPermit(PushDeliveryPermit const&) = delete;
+        auto operator=(PushDeliveryPermit const&) -> PushDeliveryPermit& = delete;
+        PushDeliveryPermit(PushDeliveryPermit&& other) noexcept
+            : global_{other.global_}
+            , recipient_{std::move(other.recipient_)}
+            , active_{std::exchange(other.active_, false)}
+        {
+        }
+        auto operator=(PushDeliveryPermit&&) -> PushDeliveryPermit& = delete;
+
+    private:
+        std::reference_wrapper<std::atomic<std::size_t>> global_;
+        std::shared_ptr<std::atomic<std::size_t>> // SHARED_PTR: reviewed - permit lifetime.
+            recipient_;
+        bool active_{true};
+    };
+
+    auto log_push_delivery_drop(std::string_view scope, std::size_t in_flight, std::size_t cap,
+                                std::size_t deliveries) noexcept -> void
+    {
+        try
+        {
+            log_diagnostic("push.delivery.dropped",
+                           {
+                               {"scope",      std::string{scope},         false},
+                               {"in_flight",  std::to_string(in_flight),  false},
+                               {"cap",        std::to_string(cap),        false},
+                               {"deliveries", std::to_string(deliveries), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        catch (...)
+        {
+            // Logging is best-effort, especially when admission failed due
+            // to allocation exhaustion. Never fail a persisted event for it.
+        }
+    }
+
+    // OUT-3: one independently admitted task per recipient, not per event.
+    // A recipient may hold at most eight batches and, for global budgets
+    // above one, never every slot. G=1 retains its existing serial/drop policy.
+    // The global configured cap and per-recipient pusher truncation remain.
 
     // Dispatches `deliveries` asynchronously (see run_pending_push_deliveries)
     // and parks the future in runtime.orphan_futures_. No-op when there is
@@ -6164,38 +6252,77 @@ namespace
         {
             return;
         }
+
+        auto batches = std::map<std::string, std::vector<PendingPushDelivery>>{};
+        auto const max_in_flight = static_cast<std::size_t>(runtime.config.server().push.max_in_flight_deliveries);
+        auto const recipient_cap = max_in_flight > 1U ? std::min(std::size_t{8U}, max_in_flight - 1U) : 1U;
+        try
         {
-            auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
-            reap_completed_futures(runtime.orphan_futures_);
-            auto const max_in_flight = static_cast<std::size_t>(runtime.config.server().push.max_in_flight_deliveries);
-            if (at_background_task_capacity(runtime.push_delivery_in_flight_, max_in_flight))
+            for (auto& delivery : deliveries)
             {
-                log_diagnostic("push.delivery.dropped",
-                               {
-                                   {"in_flight",  std::to_string(runtime.push_delivery_in_flight_), false},
-                                   {"cap",        std::to_string(max_in_flight),                    false},
-                                   {"deliveries", std::to_string(deliveries.size()),                false}
-                },
-                               observability::LogEventSeverity::warning);
-                return;
+                auto& batch = batches[delivery.pusher.user_id];
+                batch.push_back(std::move(delivery));
             }
-            ++runtime.push_delivery_in_flight_;
         }
-        auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(deliveries)]() mutable {
-            run_pending_push_deliveries(runtime, std::move(deliveries));
-            // Deliberately NOT under orphan_futures_mutex_: this task's
-            // completion must never depend on acquiring the same mutex a
-            // waiter (HomeserverRuntime::~HomeserverRuntime(),
-            // wait_for_background_tasks() in test_push_delivery_flow.cpp)
-            // might hold while blocked in future.wait() on this very task —
-            // that combination deadlocks. push_delivery_in_flight_ is a
-            // std::atomic for exactly this reason; the increment and cap
-            // check above remain under the mutex since that read-modify-write
-            // must stay atomic against concurrent dispatchers.
-            --runtime.push_delivery_in_flight_;
-        });
-        auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
-        runtime.orphan_futures_.push_back(std::move(push_future));
+        catch (std::exception const&)
+        {
+            log_push_delivery_drop("allocation", runtime.push_delivery_in_flight_.load(), max_in_flight,
+                                   deliveries.size());
+            return;
+        }
+
+        for (auto& [recipient, batch] : batches)
+        {
+            auto const delivery_count = batch.size();
+            try
+            {
+                auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
+                reap_completed_futures(runtime.orphan_futures_);
+                std::erase_if(runtime.push_delivery_in_flight_by_user_, [](auto const& entry) {
+                    return entry.second->load() == 0U;
+                });
+                if (at_background_task_capacity(runtime.push_delivery_in_flight_, max_in_flight))
+                {
+                    log_push_delivery_drop("global", runtime.push_delivery_in_flight_.load(), max_in_flight,
+                                           delivery_count);
+                    continue;
+                }
+
+                auto user = runtime.push_delivery_in_flight_by_user_.find(recipient);
+                if (user == runtime.push_delivery_in_flight_by_user_.end())
+                {
+                    auto counter = std::make_shared<std::atomic<std::size_t>>(0U);
+                    user = runtime.push_delivery_in_flight_by_user_.emplace(recipient, std::move(counter)).first;
+                }
+                if (at_background_task_capacity(*user->second, recipient_cap))
+                {
+                    log_push_delivery_drop("recipient", user->second->load(), recipient_cap, delivery_count);
+                    continue;
+                }
+
+                // Reserve BEFORE launch and keep the parking mutex held. The
+                // following future insertion then needs no allocation, so an
+                // allocation failure cannot wait on a running future while
+                // this request still owns runtime.mutex.
+                runtime.orphan_futures_.reserve(runtime.orphan_futures_.size() + 1U);
+                auto permit = PushDeliveryPermit{runtime.push_delivery_in_flight_, user->second};
+                auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(batch),
+                                                                   permit = std::move(permit)]() mutable {
+                    // Return the counters on work completion (or throw),
+                    // not on destruction of the future's retained closure.
+                    auto const completion = std::move(permit);
+                    run_pending_push_deliveries(runtime, std::move(deliveries));
+                });
+                runtime.orphan_futures_.push_back(std::move(push_future));
+            }
+            catch (std::exception const&)
+            {
+                // Failed allocation/launch is best-effort delivery loss. The
+                // permit, if acquired, restores both counters during unwind.
+                log_push_delivery_drop("admission", runtime.push_delivery_in_flight_.load(), max_in_flight,
+                                       delivery_count);
+            }
+        }
     }
 
     // Builds one Application Service API ClientEvent from a persisted
@@ -6530,6 +6657,10 @@ namespace
     }
 
     auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json);
+    if (composition.failure == ComposeFailure::invalid_state_key)
+    {
+        return invalid_state_key_result();
+    }
     if (composition.failure == ComposeFailure::too_large)
     {
         return event_too_large_result();

@@ -143,8 +143,17 @@ public:
     // Sends a request and blocks until a matching reply_to frame arrives.
     // Returns nullopt on timeout or channel failure.
     // json_body: a JSON object WITHOUT "id" or "reply_to".
-    [[nodiscard]] auto send_request(std::string_view json_body, std::chrono::seconds timeout = std::chrono::seconds{30})
-        -> std::optional<std::string>;
+    // verified_origin is main-owned identity from signature verification, never
+    // worker JSON. Empty identity cannot authorize a worker EDU relay. The
+    // monotonic deadline starts before publication/write, not after a blocked write.
+    [[nodiscard]] auto send_request(std::string_view json_body, std::chrono::seconds timeout = std::chrono::seconds{30},
+                                    std::string_view verified_origin = {}) -> std::optional<std::string>;
+
+    // EDU admission linearizes at this locked check, after the caller has acquired
+    // its runtime lock. No pending lock escapes this call or covers a sink callback.
+    // An already admitted operation may finish after its parent completes/stops.
+    [[nodiscard]] auto matches_pending_origin(std::uint64_t parent_request_id, std::string_view claimed_origin) const
+        -> bool;
 
     // Sends a response to an inbound request. json_body: without "id"/"reply_to".
     auto send_response(std::uint64_t reply_to, std::string_view json_body) -> void;
@@ -208,9 +217,11 @@ private:
     {
         std::optional<std::string> response{};
         bool ready{false};
+        std::string verified_origin{};
+        std::chrono::steady_clock::time_point deadline{};
         std::condition_variable cv{};
     };
-    std::mutex pending_mu_{};
+    mutable std::mutex pending_mu_{};
     // Reader thread and waiting caller each hold a reference; the map entry is
     // erased while the caller still holds its copy, so the entry is destroyed
     // only after the waiter has consumed the response.

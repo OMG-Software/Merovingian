@@ -25,6 +25,7 @@
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 
@@ -116,14 +117,13 @@ namespace
 
     [[nodiscard]] auto read_database_uri_file(std::string const& path) -> std::string
     {
-        auto input = std::ifstream{path};
-        if (!input.is_open())
+        auto const secret = platform::read_secure_secret_line(path, 4096U);
+        if (!secret)
         {
             return {};
         }
-        auto value = std::string{};
-        std::getline(input, value);
-        return value;
+        auto const bytes = secret->bytes();
+        return {reinterpret_cast<char const*>(bytes.data()), bytes.size()};
     }
 
     auto hydrate_media_repository(media::LocalMediaRepository& repository,
@@ -426,6 +426,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , argon2id_admission(std::move(other.argon2id_admission))
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
+    , push_delivery_in_flight_by_user_(std::move(other.push_delivery_in_flight_by_user_))
 {
     other.crypto_provider = nullptr;
 }
@@ -471,6 +472,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     argon2id_admission = std::move(other.argon2id_admission);
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
+    push_delivery_in_flight_by_user_ = std::move(other.push_delivery_in_flight_by_user_);
     return *this;
 }
 
@@ -622,7 +624,7 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     switch (config.database().backend)
     {
     case config::DatabaseBackend::sqlite:
-        opened = database::open_sqlite_persistent_store(config.database().sqlite_path);
+        opened = database::open_sqlite_persistent_store(config.database().sqlite_path, profile);
         break;
     case config::DatabaseBackend::memory:
         opened = database::open_persistent_store(std::move(existing_state));
@@ -842,7 +844,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
 
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
-    runtime.discovery_network = federation::make_system_server_discovery_network();
+    runtime.discovery_network =
+        federation::make_system_server_discovery_network(runtime.federation.config.deny_ip_ranges);
     if (runtime.discovery_network != nullptr)
     {
         // Wrap the raw network with a 60s TTL cache so repeated lookups for the

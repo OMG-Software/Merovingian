@@ -21,8 +21,13 @@ management, parameterized execution, and PostgreSQL error reporting.
 
 - Connection strings are accepted only in explicit PostgreSQL URI or libpq
   key/value form.
-- Connection summaries redact passwords before they can be logged or surfaced in
-  diagnostics.
+- Connection-opening diagnostics use a fixed redacted identity and generic
+  parser/connection-status refusal reasons, not a reconstructed option summary
+  or forwarded library error text. Host/database values are suppressed too.
+  Actual DEBUG-console and returned-diagnostic confidentiality checks cover
+  malformed quoted input and policy-admitted private missing-socket failures;
+  they do not establish general SQL-result error or live authentication/TLS
+  confidentiality. See [ADR-0139](../adr/0139-suppress-postgresql-connection-options-in-diagnostics.md).
 - `PGconn` ownership is RAII-managed with `PQfinish`.
 - `PGresult` ownership is RAII-managed with `PQclear`.
 - Statement execution uses `PQexecParams` so parameter values stay separate from

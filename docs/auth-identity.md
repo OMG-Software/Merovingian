@@ -104,31 +104,24 @@ production-gated.
 - Login failures for unknown users, wrong passwords, and locked accounts
   collapse to the same external `invalid login` result while still recording
   the internal rejection reason in audit logs.
-- Newly issued access and refresh tokens are persisted as keyed digests derived
-  from the operator's master key file via domain-separated BLAKE2b. With a master
-  key configured, issuance uses the `token-hash:v4:` scheme; the legacy
-  `token-hash:v3:` scheme is retained only for validation and is itself now
-  master-key-derived (distinct domain separator `merovingian:access-token-hmac:legacy-v3:1`)
-  — it is no longer backed by the Ed25519 signing seed (issue #322, cryptographic
-  key separation). **Breaking (v0.10.9):** pre-#322 `token-hash:v3:` hashes were
-  derived from the Ed25519 signing seed and no longer validate under the new
-  master-key-derived v3 key; affected sessions fail closed and must re-login,
-  after which they are issued v4 tokens. Without a master key configured, both
-  v3 and v4 are unavailable and issuance falls back to the unkeyed
-  `token-hash:v2:` hash so local operations keep working — configure a master
-  key for hardened token hashing (the federation worker already requires one).
-  **(issue #436)** Every time a new token is issued under this fallback, a
-  `token.unkeyed_hash_fallback` diagnostic is logged at `warning` so operators
-  notice the degraded mode instead of discovering it in a post-breach audit
-  (a DB leak of unkeyed v2 hashes is offline-brute-forceable).
-- The v3 and v4 HMAC keys are derived from the master key file once and
-  cached (`token_hmac_keys`, `src/homeserver/auth_service.cpp`) rather than
-  re-read and re-derived on every request — every authenticated request
-  previously performed two blocking reads of the operator's root secret and
-  two `sodium_mlock`/`munlock` cycles. The cache is invalidated on the file's
-  `(path, size, mtime)` identity, so replacing the master key still takes
-  effect without a restart. See `docs/crypto-boundary.md` for why this
-  matters as a crypto-boundary property, not just a performance one.
+- Newly issued access and refresh tokens require the current master-key-derived
+  `token-hash:v4:` keyed digest. A missing, unreadable, insecure, invalid or
+  unlockable master key, including failure to allocate a locked copy of a cached
+  key, makes issuance return HTTP 503 without adding a session or refresh row.
+  New issuance never falls back to unkeyed v2 or legacy v3. Legacy v2 validation
+  and the existing master-key-derived v3 validation format remain separate;
+  accepted legacy access tokens may still be upgraded to v4.
+  **Breaking (v0.10.9):** pre-#322 `token-hash:v3:` hashes used the Ed25519 signing
+  seed and cannot validate under the later, domain-separated master-derived v3
+  key. Those sessions must re-login. The 0.12.26 storage hardening does not
+  change any of the existing derivation labels, BLAKE2b inputs or persisted
+  digest formats; see [ADR-0128](adr/0128-lock-derived-key-storage-without-changing-persisted-derivations.md).
+- The v3 and v4 HMAC keys are derived together and cached
+  (`token_hmac_keys`, `src/homeserver/auth_service.cpp`). Cache identity includes
+  path, device, inode, size, modification/change timestamps (with nanoseconds),
+  mode and owner; an insecure or missing file cannot reuse a cache entry.
+  Every returned copy has its own locked allocation. Allocation failure
+  returns no keys rather than throwing through credential issuance.
 - `redacted_token_for_log()` (issue #437) discloses only a coarse size bucket
   (`tiny`/`short`/`medium`/`long`), never the exact byte length — the precise
   length was a minor side channel that let an observer of logs distinguish
@@ -201,10 +194,36 @@ production-gated.
   `PersistentRefreshToken`, and `LocalSession` carry an `expires_at` field set at issuance from
   configurable `security.access_token_lifetime_ms` (default 1h) and
   `security.refresh_token_lifetime_ms` (default 30d); `0` disables expiry for that kind.
+  Configuration parsing and typed validation report field-specific findings for
+  negative values and values above the project maxima: 2,592,000,000 ms (30 days)
+  for access and 31,536,000,000 ms (365 days) for refresh. Zero and defaults retain
+  their meanings; signed parsing preserves the exact configured value, including
+  a representable value rejected by policy. Stored expiry values, refresh
+  predecessor links and historical token digests remain unchanged. The upper-bound
+  regression reproduced 20 failed rejection checks with 126 passing controls;
+  focused upper-bound GREEN passes 146 assertions / 1 case and related normal
+  configuration units pass 991 / 177, with 61 sources stable during execution.
+  Independent source review passed without findings; parent checks bind the
+  reviewed production, regression and registration to executed GREEN. Fresh full
+  acceptance passed 56 targets with all return codes zero, no failures/timeouts
+  and 170 stable files including all 61 focused sources. Parent independently
+  inspected fresh archived JSON/text and current reviewed-source bindings before
+  accepting the bounded upper-admission slice. Only status docs changed afterward.
+  [ADR-0141](adr/0141-bound-configured-token-lifetimes-without-coercion.md) records
+  these project limits, not Matrix maxima. Checked timestamp arithmetic, direct
+  typed runtime snapshot/reload admission and broader persisted-expiry hydration
+  remain separate OPS-4 requirements.
   `find_session` and the refresh-token lookup reject expired tokens (failing closed toward
-  re-login/refresh) even when the session is not revoked, and the advertised `expires_in_ms`
-  reads from the configured access-token lifetime so advertised == enforced. Legacy/no-expiry
-  rows (`expires_at` empty / `nullopt`) remain valid.
+  re-login/refresh) even when the session is not revoked. For refresh-enabled `/login`
+  and `/refresh`, a positive configured access lifetime is advertised as `expires_in_ms`;
+  zero omits this optional field, whose absence means no expiry in Matrix v1.19.
+  Actual SQLite/public-dispatcher conformance covers both responses, finite-lifetime
+  controls, usable issued tokens and legacy non-refresh login. Bounded independent
+  source review passed without findings. Current-source conformance again passed
+  223 / 1 and related auth 243 / 4; the fresh 56-target full checkpoint also accepts
+  this bounded response repair. Registration-response expiry is not covered.
+  Legacy/no-expiry rows (`expires_at` empty /
+  `nullopt`) remain valid.
 - Token-hash lookups route through constant-time comparison (`crypto::constant_time_equal` /
   `auth::constant_time_equal`, backed by `sodium_memcmp`) on every fixed-length hash match —
   the access/refresh store lookups and the in-memory session match — not just the canonical
@@ -258,6 +277,21 @@ production-gated.
   (session/room/batch), `get_room_key_backup_batch`, `delete_room_key_backup`,
   `delete_room_key_backup_room`, and `delete_room_key_backup_batch`, all reading/writing real
   session rows from `persistent_store.key_backup_sessions`.
+
+## Federation worker request identity
+
+For worker-relayed EDUs, encrypted IPC authenticates the worker, not the remote
+federation origin. Main retains an owned copy of its signature-verified origin
+on the exact channel's pending request. After taking the runtime lock, EDU
+admission requires that parent to remain live, non-ready and nonexpired on a
+running, healthy channel, with exact origin equality. Ordinary requests carry
+no such authority. A parent ID is a routing reference, not a capability or proof
+that an EDU belonged to the signed request body. Already admitted operations
+may finish after parent completion; no persisted identity or derivation changes.
+Normal focused regressions and the legitimate separate-worker control pass;
+independent review and fresh combined acceptance remain pending. Main and worker
+must restart together. See
+[ADR-0142](adr/0142-bind-worker-edu-relays-to-live-main-verified-requests.md).
 
 ## Identity server client (3PID invites)
 
@@ -670,6 +704,13 @@ reached only with a valid access token, so it has its own counter, keyed on
   spending it does not lock the owner out of logging in.
 
 A correct password clears the device's UIA counter.
+
+Single-device management selects the device ID from the HTTP path before `?`;
+unrelated query text cannot become part of that identity. Password-UIA DELETE
+retains the same authorization requirement and revokes the selected device's
+sessions while preserving other devices. Real SQLite regressions exercise
+public device login, the missing-proof challenge, successful deletion and
+reopened device/session state.
 
 ### Audit
 

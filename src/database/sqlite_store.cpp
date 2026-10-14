@@ -3,12 +3,15 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <cstdint>
+#include <array>
+#include <cerrno>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -20,6 +23,9 @@
 #include <vector>
 
 #include <sqlite3.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace merovingian::database
 {
@@ -129,23 +135,70 @@ namespace
         return reinterpret_cast<sqlite3_destructor_type>(-1);
     }
 
-    [[nodiscard]] auto open_sqlite_connection(std::string const& path) -> std::optional<SqliteConnection>
+    // Create each missing directory with its final mode, never chmod an
+    // operator's existing directory. Descriptor-relative traversal refuses
+    // directory symlinks as well as a symlink in the final database component.
+    [[nodiscard]] auto prepare_sqlite_file(std::string const& path) -> bool
     {
-        try
+        if (path.empty() || path.find('\0') != std::string::npos)
         {
-            auto const parent = std::filesystem::path{path}.parent_path();
-            if (!parent.empty())
+            return false;
+        }
+        auto const target = std::filesystem::path{path};
+        auto directory = core::FileDescriptor{::open(target.is_absolute() ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+        if (!directory.valid() || target.filename().empty())
+        {
+            return false;
+        }
+        for (auto const& component : target.parent_path().relative_path())
+        {
+            auto const name = component.string();
+            if (::mkdirat(directory.get(), name.c_str(), 0700) != 0 && errno != EEXIST)
             {
-                std::filesystem::create_directories(parent);
+                return false;
+            }
+            auto next = core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
+            if (!next.valid())
+            {
+                return false;
+            }
+            directory = std::move(next);
+        }
+        auto const name = target.filename().string();
+        auto file = core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
+        if (!file.valid() && errno == EEXIST)
+        {
+            file.reset(::openat(directory.get(), name.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC));
+        }
+        struct stat metadata{};
+        return file.valid() && ::fstat(file.get(), &metadata) == 0 && S_ISREG(metadata.st_mode) &&
+               metadata.st_uid == ::geteuid() && ::fchmod(file.get(), 0600) == 0;
+    }
+
+    [[nodiscard]] auto open_sqlite_connection(std::string const& path, bool read_only = false) -> std::optional<SqliteConnection>
+    {
+        if (read_only)
+        {
+            // READONLY alone can write a WAL shared-memory index. Refuse WAL
+            // before SQLite opens it; immutable=1 would silently ignore WAL.
+            auto file = core::FileDescriptor{::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)};
+            auto header = std::array<unsigned char, 20>{};
+            struct stat metadata{};
+            if (path.empty() || path.find('\0') != std::string::npos || !file.valid() ||
+                ::fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+                ::pread(file.get(), header.data(), header.size(), 0) != static_cast<ssize_t>(header.size()) ||
+                header[18] != 1U || header[19] != 1U)
+            {
+                return std::nullopt;
             }
         }
-        catch (std::filesystem::filesystem_error const&)
+        else if (!prepare_sqlite_file(path))
         {
             return std::nullopt;
         }
-
         auto* raw = static_cast<sqlite3*>(nullptr);
-        if (sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+        auto const mode = read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
+        if (sqlite3_open_v2(path.c_str(), &raw, mode | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX,
                             nullptr) != SQLITE_OK)
         {
             sqlite3_close(raw);
@@ -164,8 +217,10 @@ namespace
         // environment that loads global default pragmas could silently
         // weaken them. Every connection this process opens states its
         // requirements instead of trusting the environment.
-        if (sqlite3_exec(raw, "PRAGMA synchronous = FULL", nullptr, nullptr, nullptr) != SQLITE_OK ||
-            sqlite3_exec(raw, "PRAGMA journal_mode = DELETE", nullptr, nullptr, nullptr) != SQLITE_OK)
+        if (sqlite3_exec(raw, "PRAGMA secure_delete = ON", nullptr, nullptr, nullptr) != SQLITE_OK ||
+            sqlite3_exec(raw, "PRAGMA trusted_schema = OFF", nullptr, nullptr, nullptr) != SQLITE_OK ||
+            sqlite3_exec(raw, "PRAGMA synchronous = FULL", nullptr, nullptr, nullptr) != SQLITE_OK ||
+            (!read_only && sqlite3_exec(raw, "PRAGMA journal_mode = DELETE", nullptr, nullptr, nullptr) != SQLITE_OK))
         {
             sqlite3_close(raw);
             return std::nullopt;
@@ -1010,6 +1065,10 @@ namespace
 
     [[nodiscard]] auto execute_prepared(sqlite3& connection, PreparedStatement const& prepared) -> bool
     {
+        if (!prepared_statement_is_valid(prepared).valid)
+        {
+            return false;
+        }
         auto statement = prepare(connection, prepared.sql);
         if (!statement.has_value())
         {
@@ -1038,12 +1097,13 @@ namespace
 
 } // namespace
 
-auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult
+auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile profile) -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
                                         {"path", path, false}
     });
-    auto connection = open_sqlite_connection(path);
+    auto const read_only = profile == TableLoadProfile::federation_worker;
+    auto connection = open_sqlite_connection(path, read_only);
     if (!connection.has_value())
     {
         log_diagnostic("store.rejected",
@@ -1063,7 +1123,7 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
         });
         return {false, "unable to configure SQLite persistent store", {}};
     }
-    if (load_table_names(sqlite).empty() && !initialize_current_schema(sqlite))
+    if (!read_only && load_table_names(sqlite).empty() && !initialize_current_schema(sqlite))
     {
         log_diagnostic("store.rejected",
                        {
@@ -1077,6 +1137,7 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     store.open = true;
     store.backend = PersistentStoreBackend::sqlite;
     store.sqlite_path = path;
+    store.sqlite_read_only = read_only;
     store.schema = load_schema_state(sqlite);
     log_diagnostic("store.schema_loaded",
                    {
@@ -1085,6 +1146,10 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     });
     if (store.schema.version < current_schema_version())
     {
+        if (read_only)
+        {
+            return {false, "SQLite worker requires main to initialize/migrate the database in DELETE journal mode", {}};
+        }
         log_diagnostic("store.migrating", {
                                               {"path",            path,                                     false},
                                               {"current_version", std::to_string(store.schema.version),     false},
@@ -1149,6 +1214,10 @@ namespace detail
     auto persist_transaction_to_backend(PersistentStore& store, std::vector<PreparedStatement> const& statements)
         -> bool
     {
+        if (store.sqlite_read_only)
+        {
+            return false;
+        }
         if (store.backend == PersistentStoreBackend::memory)
         {
             // Test-only failure injection. Production never sets these fields.
@@ -1201,7 +1270,7 @@ namespace detail
         {
             return std::nullopt;
         }
-        auto connection = open_sqlite_connection(path);
+        auto connection = open_sqlite_connection(path, true);
         if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON"))
         {
             return std::nullopt;
@@ -1215,7 +1284,7 @@ namespace detail
         {
             return std::nullopt;
         }
-        auto connection = open_sqlite_connection(path);
+        auto connection = open_sqlite_connection(path, true);
         if (!connection.has_value())
         {
             return std::nullopt;
@@ -1240,7 +1309,7 @@ namespace detail
         {
             return std::nullopt;
         }
-        auto connection = open_sqlite_connection(path);
+        auto connection = open_sqlite_connection(path, true);
         if (!connection.has_value())
         {
             return std::nullopt;

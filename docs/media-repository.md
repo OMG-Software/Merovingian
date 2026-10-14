@@ -227,14 +227,23 @@ surface), so it runs in a short-lived, sandboxed child process:
   `UINT32_MAX` — callers treat this as a 413 or internal error respectively.
 - The parent (`media::generate_thumbnail`) creates its worker pipes with
   `O_CLOEXEC`, closes every non-stdio descriptor in the child after `dup2()`-ing
-  the pipe ends to stdin/stdout, and sets `PR_SET_NO_NEW_PRIVS` before `execv()`.
+  the pipe ends to stdin/stdout, and sets `PR_SET_NO_NEW_PRIVS` before `execve()`.
+  Exec receives only a fixed `PATH=/usr/bin:/bin`, not the server's environment;
+  fd 2 is duplicated onto a pre-opened `/dev/null` sink. The same isolation
+  applies to the FreeBSD `fexecve()` path. Sink unavailability fails closed.
 - Before reading any input the worker clamps its own address space, CPU time,
   output file size, and descriptor count via `setrlimit`, sets
   `PR_SET_NO_NEW_PRIVS`/`PR_SET_DUMPABLE=0`, and installs the seccomp-bpf filter
-  (`platform::apply_seccomp_filter`).
+  (`platform::apply_decoder_seccomp_filter`).
 - The parent (`media::generate_thumbnail`) enforces a wall-clock timeout, an
   input-size limit, an output-size cap, and a pixel-count decode-bomb guard, and
   SIGKILLs a worker that overruns.
+- A worker's successful response is still untrusted: the parent checks the full
+  PNG signature, initial 13-byte IHDR framing, and legal nonzero dimensions
+  matching the reported dimensions. A malformed or mismatched PNG returns 502
+  without bytes, content type or dimensions. No image decoder or CRC/image-data
+  validation runs in the parent. Reported dimensions need not equal requested
+  dimensions: an aspect-ratio-preserving scale can legitimately be smaller.
 - The worker path defaults to the build-time install location
   (`-DMEROVINGIAN_THUMBNAIL_WORKER_PATH`, mirroring `MEROVINGIAN_SYSCONFDIR`).
   When the worker is missing, the content type is unsupported (only PNG and JPEG

@@ -11,43 +11,6 @@
 namespace merovingian::crypto
 {
 
-IpcAuthKey::IpcAuthKey(IpcAuthKey const& other) noexcept
-    : bytes(other.bytes)
-{
-}
-
-auto IpcAuthKey::operator=(IpcAuthKey const& other) noexcept -> IpcAuthKey&
-{
-    if (this != &other)
-    {
-        sodium_memzero(bytes.data(), bytes.size());
-        bytes = other.bytes;
-    }
-    return *this;
-}
-
-IpcAuthKey::IpcAuthKey(IpcAuthKey&& other) noexcept
-    : bytes(other.bytes)
-{
-    sodium_memzero(other.bytes.data(), other.bytes.size());
-}
-
-auto IpcAuthKey::operator=(IpcAuthKey&& other) noexcept -> IpcAuthKey&
-{
-    if (this != &other)
-    {
-        sodium_memzero(bytes.data(), bytes.size());
-        bytes = other.bytes;
-        sodium_memzero(other.bytes.data(), other.bytes.size());
-    }
-    return *this;
-}
-
-IpcAuthKey::~IpcAuthKey()
-{
-    sodium_memzero(bytes.data(), bytes.size());
-}
-
 namespace
 {
 
@@ -65,6 +28,7 @@ namespace
 } // namespace
 
 auto derive_ipc_auth_key(std::span<std::uint8_t const> master_key_material) noexcept -> std::optional<IpcAuthKey>
+try
 {
     if (!sodium_is_ready() || master_key_material.empty())
     {
@@ -79,8 +43,13 @@ auto derive_ipc_auth_key(std::span<std::uint8_t const> master_key_material) noex
     }
     return key;
 }
+catch (std::bad_alloc const&)
+{
+    return std::nullopt;
+}
 
 auto ipc_auth_key_from_bytes(std::span<std::uint8_t const> key_bytes) noexcept -> std::optional<IpcAuthKey>
+try
 {
     if (key_bytes.size() != kIpcAuthKeyBytes)
     {
@@ -89,6 +58,10 @@ auto ipc_auth_key_from_bytes(std::span<std::uint8_t const> key_bytes) noexcept -
     auto key = IpcAuthKey{};
     std::copy(key_bytes.begin(), key_bytes.end(), key.bytes.begin());
     return key;
+}
+catch (std::bad_alloc const&)
+{
+    return std::nullopt;
 }
 
 } // namespace merovingian::crypto

@@ -20,12 +20,12 @@
 
 #include <algorithm>
 #include <array>
-#include <ranges>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,6 +34,8 @@
 #include <vector>
 
 #include <sodium.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace
@@ -540,7 +542,7 @@ SCENARIO("derive_token_hmac_key_v3 is domain-separated from v4 and from the Ed25
             THEN("the v3 key differs from the v4 key and from the raw seed key")
             {
                 // Spec MUST (#322): full key separation from the Ed25519 seed.
-                REQUIRE(v3_key->bytes != old_seed_key);
+                REQUIRE_FALSE(std::ranges::equal(v3_key->bytes, old_seed_key));
                 // Domain separation: v3 and v4 derive independent keys from the same master material.
                 REQUIRE(v3_key->bytes != v4_key->bytes);
                 // Consequently the token hashes under each key are all distinct.
@@ -809,16 +811,254 @@ namespace
     auto stream = std::ofstream{path, std::ios::binary};
     stream.write(content.data(), static_cast<std::streamsize>(content.size()));
     stream.close();
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read);
     return path;
 }
 
 } // namespace
 
+namespace
+{
+[[nodiscard]] auto mapping_is_locked(void const* address) -> bool
+{
+#if defined(__linux__)
+    auto maps = std::ifstream{"/proc/self/smaps"};
+    auto line = std::string{};
+    auto found = false;
+    while (std::getline(maps, line))
+    {
+        unsigned long start{}, end{};
+        if (std::sscanf(line.c_str(), "%lx-%lx", &start, &end) == 2)
+        {
+            auto const value = reinterpret_cast<std::uintptr_t>(address);
+            found = value >= start && value < end;
+        }
+        else if (found && line.starts_with("VmFlags:"))
+        {
+            return line.find(" lo ") != std::string::npos || line.ends_with(" lo");
+        }
+    }
+    return false;
+#else
+    return true;
+#endif
+}
+} // namespace
+
+SCENARIO("Live secret allocations remain independently locked", "[core][crypto][cry4]")
+{
+    GIVEN("two live small secret allocations")
+    {
+        auto survivor = merovingian::core::SecretBuffer{32U};
+        auto other = std::optional<merovingian::core::SecretBuffer>{std::in_place, 32U};
+        REQUIRE(survivor.is_locked());
+        REQUIRE(other->is_locked());
+        auto const page_size = static_cast<std::uintptr_t>(::sysconf(_SC_PAGESIZE));
+        auto const independently_allocated = reinterpret_cast<std::uintptr_t>(survivor.bytes().data()) / page_size !=
+                                             reinterpret_cast<std::uintptr_t>(other->bytes().data()) / page_size;
+        CHECK(independently_allocated);
+        WHEN("one allocation is destroyed")
+        {
+            other.reset();
+            THEN("the kernel still reports the survivor's mapping locked")
+            {
+                REQUIRE(mapping_is_locked(survivor.bytes().data()));
+            }
+        }
+    }
+}
+
+SCENARIO("Derived keys and their copies occupy locked allocations", "[crypto][cry4]")
+{
+    GIVEN("master material for all key purposes")
+    {
+        auto material = std::array<std::uint8_t, 32U>{};
+        material.fill(42U);
+        auto box = merovingian::crypto::derive_secret_box_key(material);
+        auto token = merovingian::crypto::derive_token_hmac_key(material);
+        auto legacy = merovingian::crypto::derive_token_hmac_key_v3(material);
+        auto ipc = merovingian::crypto::derive_ipc_auth_key(material);
+        REQUIRE(box.has_value());
+        REQUIRE(token.has_value());
+        REQUIRE(legacy.has_value());
+        REQUIRE(ipc.has_value());
+        WHEN("cache values are copied and the originals are destroyed")
+        {
+            auto box_copy = *box;
+            auto token_copy = *token;
+            auto legacy_copy = *legacy;
+            auto ipc_copy = *ipc;
+            box.reset();
+            token.reset();
+            legacy.reset();
+            ipc.reset();
+            THEN("each surviving copy is locked by the kernel")
+            {
+                REQUIRE(mapping_is_locked(box_copy.bytes.data()));
+                REQUIRE(mapping_is_locked(token_copy.bytes.data()));
+                REQUIRE(mapping_is_locked(legacy_copy.bytes.data()));
+                REQUIRE(mapping_is_locked(ipc_copy.bytes.data()));
+            }
+        }
+    }
+}
+
+#if defined(__linux__)
+SCENARIO("Signing box cache fails closed when its key copy cannot be locked", "[crypto][cry4-cache]")
+{
+    GIVEN("a secure master file with a warmed signing-box cache")
+    {
+        auto const path = write_master_key_file(std::string(32U, 'k'));
+        REQUIRE(merovingian::crypto::signing_secret_box_key(path.string()).has_value());
+        WHEN("a child exhausts its locked-memory budget")
+        {
+            auto const child = ::fork();
+            REQUIRE(child >= 0);
+            if (child == 0)
+            {
+                auto const limit = rlimit{0, 0};
+                if (::setrlimit(RLIMIT_MEMLOCK, &limit) != 0)
+                {
+                    ::_exit(20);
+                }
+                try
+                {
+                    auto const result = merovingian::crypto::signing_secret_box_key(path.string());
+                    ::_exit(result.has_value() ? 21 : 0);
+                }
+                catch (...)
+                {
+                    ::_exit(22);
+                }
+            }
+            auto status = int{};
+            REQUIRE(::waitpid(child, &status, 0) == child);
+            std::filesystem::remove(path);
+            THEN("the cache returns no key without throwing or creating an unlocked copy")
+            {
+                REQUIRE(WIFEXITED(status));
+                REQUIRE(WEXITSTATUS(status) == 0);
+            }
+        }
+    }
+}
+#endif
+
+SCENARIO("Locked-key storage retains every historical domain-separated derivation", "[crypto][cry3-compat]")
+{
+    GIVEN("valid root material and the pre-hardening derivation format")
+    {
+        auto material = std::array<std::uint8_t, 32U>{};
+        material.fill(42U);
+        WHEN("the signing, current token, legacy token and IPC keys are derived")
+        {
+            auto const box = merovingian::crypto::derive_secret_box_key(material);
+            auto const current = merovingian::crypto::derive_token_hmac_key(material);
+            auto const legacy = merovingian::crypto::derive_token_hmac_key_v3(material);
+            auto const ipc = merovingian::crypto::derive_ipc_auth_key(material);
+            THEN("their bytes match the historical BLAKE2b message/key orientation and labels")
+            {
+                auto check = [&material](std::string_view label, auto const& key) {
+                    REQUIRE(key.has_value());
+                    auto expected = std::array<unsigned char, 32U>{};
+                    REQUIRE(crypto_generichash(expected.data(), expected.size(), material.data(), material.size(),
+                                               reinterpret_cast<unsigned char const*>(label.data()),
+                                               label.size()) == 0);
+                    REQUIRE(std::ranges::equal(key->bytes, expected));
+                };
+                check("merovingian:signing-secret:1", box);
+                check("merovingian:access-token-hmac:1", current);
+                check("merovingian:access-token-hmac:legacy-v3:1", legacy);
+                check("merovingian:ipc-channel-auth:1", ipc);
+            }
+        }
+    }
+}
+
+SCENARIO("Master key reads reject insecure paths and permissions", "[crypto][iso7]")
+{
+    GIVEN("an otherwise valid master key file")
+    {
+        auto const path = write_master_key_file(std::string(32U, 'k'));
+        auto const link = std::filesystem::path{path.string() + ".link"};
+        std::filesystem::create_symlink(path, link);
+        WHEN("the key is read through a symlink or with unsafe permissions")
+        {
+            auto const linked = merovingian::crypto::load_master_key_material(link.string()).has_value();
+            std::filesystem::remove(link);
+            std::filesystem::permissions(path,
+                                         std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+            auto const writable = merovingian::crypto::load_master_key_material(path.string()).has_value();
+            std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::group_read);
+            auto const shared = merovingian::crypto::load_master_key_material(path.string()).has_value();
+            std::filesystem::remove(path);
+            THEN("none of those files yields root material")
+            {
+                CHECK_FALSE(linked);
+                CHECK_FALSE(writable);
+                CHECK_FALSE(shared);
+            }
+        }
+    }
+}
+
+SCENARIO("Validation session secret checks use the constant-time boundary", "[crypto][cry5]")
+{
+    GIVEN("the live validation session implementation")
+    {
+#ifdef MEROVINGIAN_TEST_SOURCE_ROOT
+        auto const root = std::filesystem::path{MEROVINGIAN_TEST_SOURCE_ROOT};
+#else
+        auto const root = std::filesystem::current_path();
+#endif
+        auto source = std::ifstream{root / "src/homeserver/client_server.cpp"};
+        REQUIRE(source.is_open());
+        auto text = std::string{std::istreambuf_iterator<char>{source}, std::istreambuf_iterator<char>{}};
+        WHEN("the lookup and erase validation sinks are inspected")
+        {
+            auto const lookup = text.find("auto find_registration_validation_session_by_sid");
+            auto const erase = text.find("auto consume_registration_validation_session");
+            THEN("plaintext comparisons cannot bypass the variable-length constant-time helper")
+            {
+                REQUIRE(lookup != std::string::npos);
+                REQUIRE(erase != std::string::npos);
+                CHECK(text.find("session.client_secret != client_secret") == std::string::npos);
+                CHECK(text.find("session.client_secret == client_secret") == std::string::npos);
+                auto const helper = std::string_view{
+                    "crypto::constant_time_equal_variable_length(session.client_secret, client_secret)"};
+                CHECK(text.find(helper, lookup) < text.find("\n    [[nodiscard]]", lookup + 1U));
+                CHECK(text.find(helper, erase) < text.find("\n    [[nodiscard]]", erase + 1U));
+            }
+        }
+    }
+}
+
+SCENARIO("Master key files reject short and zero root material", "[crypto][master_key][cry3]")
+{
+    GIVEN("an operator supplied short or zero master key")
+    {
+        WHEN("root material is loaded")
+        {
+            THEN("every invalid input is refused before any dependent key can be derived")
+            {
+                for (auto const& content :
+                     {std::string(24U, 'k'), std::string(31U, 'k'), std::string(32U, '\0'), std::string(4096U, '\0')})
+                {
+                    auto const path = write_master_key_file(content);
+                    auto const material = merovingian::crypto::load_master_key_material(path.string());
+                    std::filesystem::remove(path);
+                    REQUIRE_FALSE(material.has_value());
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("load_master_key_material returns a SecretBuffer with the file's exact bytes", "[crypto][master_key]")
 {
     GIVEN("a master key file containing arbitrary binary content, including embedded NUL bytes")
     {
-        auto const content = std::string{"\x00\x01\xffsome-master-key-bytes", 24U};
+        auto const content = std::string{"\x00\x01\xff", 3U} + std::string(29U, 'k');
         auto const path = write_master_key_file(content);
 
         WHEN("the material is loaded")
@@ -921,7 +1161,7 @@ SCENARIO("load_master_key_material's output derives working keys through every d
 {
     GIVEN("a real master key file")
     {
-        auto const path = write_master_key_file("integration-master-key-material");
+        auto const path = write_master_key_file("integration-master-key-material-32");
 
         WHEN("the material is loaded and used to derive each dependent key")
         {
@@ -1437,7 +1677,7 @@ SCENARIO("The signing-secret box key is cached rather than re-derived from the m
             return;
         }
 
-        auto const path = write_master_key_file("cache-probe-master-key-material");
+        auto const path = write_master_key_file("cache-probe-master-key-material-32");
         auto const first = merovingian::crypto::signing_secret_box_key(path.string());
         REQUIRE(first.has_value());
 
@@ -1451,10 +1691,9 @@ SCENARIO("The signing-secret box key is cached rather than re-derived from the m
 
             auto const second = merovingian::crypto::signing_secret_box_key(path.string());
 
-            THEN("the same derived key is returned without re-reading the file")
+            THEN("the cache refuses material whose secure permissions can no longer be validated")
             {
-                REQUIRE(second.has_value());
-                REQUIRE(second->bytes == first->bytes);
+                REQUIRE_FALSE(second.has_value());
             }
 
             std::filesystem::permissions(path, std::filesystem::perms::owner_read |
@@ -1470,7 +1709,7 @@ SCENARIO("A replaced master key file invalidates the cached signing-secret box k
 {
     GIVEN("a derived key cached from one master key file")
     {
-        auto const path = write_master_key_file("original-master-key-material");
+        auto const path = write_master_key_file("original-master-key-material-32-bytes");
         auto const original = merovingian::crypto::signing_secret_box_key(path.string());
         REQUIRE(original.has_value());
 
@@ -1481,7 +1720,7 @@ SCENARIO("A replaced master key file invalidates the cached signing-secret box k
             // and a cache keyed on the path alone would serve the retired key
             // indefinitely.
             std::filesystem::remove(path);
-            auto const replaced = write_master_key_file("replacement-master-key-material");
+            auto const replaced = write_master_key_file("replacement-master-key-material-32");
 
             auto const derived = merovingian::crypto::signing_secret_box_key(replaced.string());
 

@@ -73,8 +73,10 @@ struct RemoteTrustDecision final
 // True when the set is non-empty and every address is public (not private,
 // loopback, link-local, CGNAT, NAT64, multicast, or reserved). Used by the
 // SSRF-safe discovery path to reject a host whose resolution includes any
-// non-public address.
-[[nodiscard]] auto address_set_allowed(std::vector<std::string> const& addresses) noexcept -> bool;
+// non-public address. Configured IPv4/IPv6 literals or CIDRs add restrictions;
+// they never replace the built-in blocks. Invalid addresses/ranges fail closed.
+[[nodiscard]] auto address_set_allowed(std::vector<std::string> const& addresses,
+                                       std::vector<std::string> const& denied_ranges = {}) noexcept -> bool;
 // Strict syntactic IPv4/IPv6 literal check (via inet_pton). Used to validate
 // operator-facing values derived from untrusted headers (e.g. X-Forwarded-For)
 // before they are trusted as an effective client address.

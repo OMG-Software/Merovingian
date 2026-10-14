@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/crypto/secure_key_bytes.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -24,14 +26,14 @@ namespace merovingian::crypto
 // whichever instance is left behind rather than relying on the caller.
 struct IpcAuthKey final
 {
-    std::array<unsigned char, crypto_auth_KEYBYTES> bytes{};
+    SecureKeyBytes bytes{};
 
-    IpcAuthKey() noexcept = default;
-    IpcAuthKey(IpcAuthKey const& other) noexcept;
-    auto operator=(IpcAuthKey const& other) noexcept -> IpcAuthKey&;
-    IpcAuthKey(IpcAuthKey&& other) noexcept;
-    auto operator=(IpcAuthKey&& other) noexcept -> IpcAuthKey&;
-    ~IpcAuthKey();
+    IpcAuthKey() = default;
+    IpcAuthKey(IpcAuthKey const&) = default;
+    auto operator=(IpcAuthKey const&) -> IpcAuthKey& = default;
+    IpcAuthKey(IpcAuthKey&&) noexcept = default;
+    auto operator=(IpcAuthKey&&) noexcept -> IpcAuthKey& = default;
+    ~IpcAuthKey() = default;
 };
 
 // Size in bytes of an IpcAuthKey (== crypto_auth_KEYBYTES), exposed as a plain

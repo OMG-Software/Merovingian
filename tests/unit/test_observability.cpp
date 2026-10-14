@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/database/statement.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -281,6 +282,96 @@ SCENARIO("Diagnostic log summaries preserve join context while redacting unsafe 
                 REQUIRE(summary.find("raw-json") == std::string::npos);
                 REQUIRE(summary.find("body=<redacted>") != std::string::npos);
                 REQUIRE(summary.find("body_bytes=123") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Audit target path retention is bounded and UTF-8 safe", "[observability][audit][security][ops2]")
+{
+    GIVEN("long paths, control characters and a query beyond the retained byte ceiling")
+    {
+        auto const paths = std::vector<std::string>{
+            {},
+            "@alice:example.org",
+            std::string(65536U, 'p') + "?token=value",
+            std::string(254U, 'p') + "\xc3\xa9",
+            std::string{"/path\n\0x", 8U},
+            std::string(250U, 'p') + "?unrecognised=value",
+            std::string(254U, 'p') + "?token=value",
+            std::string(255U, 'p') + "?token=value",
+            std::string(256U, 'p') + "?token=value",
+            std::string{"/path\x80\xc3\xa9?token=value"},
+        };
+
+        WHEN("the audit target policy is applied twice")
+        {
+            THEN("it remains idempotent, query-free, bounded and identical to bounded path encoding")
+            {
+                for (auto const& path : paths)
+                {
+                    auto const expected =
+                        merovingian::database::bounded_utf8(std::string_view{path}.substr(0U, path.find('?')),
+                                                            merovingian::database::max_audit_field_bytes);
+                    auto const target = merovingian::observability::sanitized_audit_target(path);
+                    CHECK(target == expected);
+                    CHECK(target.size() <= merovingian::database::max_audit_field_bytes);
+                    CHECK(target.find('?') == std::string::npos);
+                    CHECK(target.find('\n') == std::string::npos);
+                    CHECK(target.find('\0') == std::string::npos);
+                    CHECK(merovingian::observability::sanitized_audit_target(target) == target);
+                    auto direct = merovingian::observability::AuditLogEvent{};
+                    direct.target = path;
+                    direct.reason_code = "review";
+                    CHECK(merovingian::observability::audit_log_insert_statement(direct).parameters.at(3U).value ==
+                          expected);
+                    CHECK(merovingian::observability::audit_event_summary(direct).find(
+                              " target=" + expected + " reason=review") != std::string::npos);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Audit targets omit query values at construction and rendering boundaries",
+         "[observability][audit][security][ops2]")
+{
+    GIVEN("request targets with credential-bearing and unrecognised query parameters")
+    {
+        auto const marker = std::string(32U, 'q');
+        auto const path = std::string{"/_matrix/client/v1/register/m.login.registration_token/validity"};
+        auto const queries = std::vector<std::string>{
+            "?token=" + marker,
+            "?%74oken=" + marker,
+            "?TOKEN=" + marker + "&token=" + marker,
+            "?unrecognised=" + marker,
+        };
+
+        WHEN("each target is used to construct, persist, or summarise an audit event")
+        {
+            THEN("all audit representations contain only the path and retain non-HTTP identifiers")
+            {
+                for (auto const& query : queries)
+                {
+                    auto const event = merovingian::observability::make_audit_event(
+                        merovingian::observability::AuditCategory::auth, "request.rejected", "<unknown>", path + query,
+                        "429", "request");
+                    CHECK(event.target == path);
+                    auto const statement = merovingian::observability::audit_log_insert_statement(event);
+                    CHECK(statement.parameters.at(3U).value == path);
+                    CHECK(merovingian::observability::audit_event_summary(event).find(marker) == std::string::npos);
+                    // Aggregate initialisation must not bypass the output boundary.
+                    auto direct = event;
+                    direct.target = path + query;
+                    CHECK(merovingian::observability::audit_log_insert_statement(direct).parameters.at(3U).value ==
+                          path);
+                    CHECK(merovingian::observability::audit_event_summary(direct).find(marker) == std::string::npos);
+                }
+                auto const identifier = std::string{"@alice:example.org"};
+                CHECK(merovingian::observability::make_audit_event(merovingian::observability::AuditCategory::admin,
+                                                                   "admin.action", "admin", identifier, "review",
+                                                                   "request")
+                          .target == identifier);
             }
         }
     }

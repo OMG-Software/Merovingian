@@ -4,8 +4,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
-#include <vector>
 
 namespace merovingian::core
 {
@@ -57,11 +57,12 @@ public:
     [[nodiscard]] auto is_locked() const noexcept -> bool;
 
 private:
-    // Zeroise (and unpin, if mlocked) the current buffer in place. Used by the
-    // destructor and move-assignment before the buffer is replaced or freed.
-    auto wipe_current() noexcept -> void;
-
-    std::vector<std::uint8_t> m_buffer{};
+    struct SodiumDeleter final
+    {
+        auto operator()(std::uint8_t* buffer) const noexcept -> void;
+    };
+    std::unique_ptr<std::uint8_t, SodiumDeleter> m_buffer{};
+    std::size_t m_size{0U};
     bool m_mlocked{false};
 };
 

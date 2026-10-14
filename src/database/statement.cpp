@@ -126,6 +126,13 @@ auto prepared_statement_is_valid(PreparedStatement const& statement) -> Statemen
         return {false, "SQL placeholder arity does not match bound parameters"};
     }
 
+    for (auto const& parameter : statement.parameters)
+    {
+        if (!parameter.binary && parameter.value.find('\0') != std::string::npos)
+        {
+            return {false, "text statement parameter contains NUL"};
+        }
+    }
     return {true, {}};
 }
 

@@ -16,6 +16,15 @@ file for join-failure triage. Low-severity log batches now flush every 1 second
 or every 100 messages, whichever comes first, so a quiet debug session does not
 wait indefinitely for a severity bump or a large burst of traffic.
 
+## Push overload diagnostics
+
+`push.delivery.dropped` is a warning, not debug-only. `scope=global` or
+`scope=recipient` identifies the exhausted budget; numeric `in_flight`, `cap` and
+`deliveries` describe that budget and the dropped recipient batch.
+`scope=allocation` or `scope=admission` reports resource/launch failure with global
+budget counts. The record excludes recipient identities, gateway URLs and pusher
+credentials. Logging failure does not fail the already-persisted event.
+
 ## Sliding Sync response diagnostics (0.10.41)
 
 Starting the server with --debug additionally enables the
