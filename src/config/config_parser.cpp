@@ -519,6 +519,27 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.push.max_pushers_per_user")
+        {
+            if (!parse_u32_value(value, server.push.max_pushers_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.push.gateway_failure_threshold")
+        {
+            if (!parse_u32_value(value, server.push.gateway_failure_threshold))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "server.push.gateway_cooldown_seconds")
+        {
+            if (!parse_u32_value(value, server.push.gateway_cooldown_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.client_api.max_body_size")
         {
             server.client_api.max_body_size = std::string{value};

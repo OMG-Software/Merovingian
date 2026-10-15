@@ -145,6 +145,7 @@
 * [0148 - Packaging paths pass `--buildtype=release` explicitly; `default_options` keeps Meson's default](0148-packaging-paths-pass-buildtype-release-explicitly.md)
 * [0149 - Membership rows commit with their event, and are reconciled from current state at startup](0149-membership-rows-commit-with-their-event-and-are-reconciled-at-startup.md)
 * [0150 - Legacy float power levels are read by the auth rules, but never hashed](0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)
+* [0151 - Cap pusher registration and break the circuit to failing gateways](0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md)
 
 ## Proposed Records
 
@@ -161,6 +162,7 @@
 
 ## Superseded Records
 
+* [0029 - Bound pusher delivery rather than registration](0029-bound-pusher-delivery-rather-than-registration.md) — superseded by ADR-0151 for registration: distinct pushers per user are now capped; the per-delivery bound remains
 * [0027 - Bound the connection queue but not the IPC queue](0027-bound-the-connection-queue-but-not-the-ipc-queue.md) — superseded by ADR-0065 for the IPC pools only; the connection-queue half remains accepted
 
 ## Deprecated Records

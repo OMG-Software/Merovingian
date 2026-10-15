@@ -700,6 +700,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                    4096U);
     validate_count("server.push.max_pushers_per_delivery", config.server().push.max_pushers_per_delivery, 256U);
     validate_count("server.push.max_in_flight_deliveries", config.server().push.max_in_flight_deliveries, 4096U);
+    validate_count("server.push.max_pushers_per_user", config.server().push.max_pushers_per_user, 1000U);
+    validate_count("server.push.gateway_failure_threshold", config.server().push.gateway_failure_threshold, 100U);
+    validate_count("server.push.gateway_cooldown_seconds", config.server().push.gateway_cooldown_seconds, 86400U);
     validate_bytes("server.client_api.max_body_size", config.server().client_api.max_body_size, 67108864U);
     validate_bytes("server.http.max_body_size", config.server().http.max_body_size, 67108864U);
     validate_bytes("security.federation.backfill.response_max_size",

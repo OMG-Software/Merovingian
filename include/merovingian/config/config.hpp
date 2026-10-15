@@ -211,6 +211,12 @@ struct PushConfig final
     std::uint32_t total_timeout_seconds{30U};
     std::uint32_t max_pushers_per_delivery{25U};
     std::uint32_t max_in_flight_deliveries{256U};
+    // OUT-3, ADR-0151: distinct pushers one user may register, and the circuit
+    // breaker for a gateway host that keeps failing (consecutive transport
+    // failures, timeouts or 5xx before it opens; seconds it then stays open).
+    std::uint32_t max_pushers_per_user{20U};
+    std::uint32_t gateway_failure_threshold{3U};
+    std::uint32_t gateway_cooldown_seconds{300U};
 };
 
 // Deployment work budgets, not protocol maxima. Startup snapshots these

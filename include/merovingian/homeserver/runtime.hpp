@@ -24,6 +24,7 @@
 #include "merovingian/observability/audit_rate_gate.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/push/gateway_circuit_breaker.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
@@ -457,6 +458,10 @@ struct HomeserverRuntime final
     // Runtime moves remain startup-only, like the captured-runtime futures.
     std::unordered_map<std::string, std::shared_ptr<std::atomic<std::size_t>>> // SHARED_PTR: reviewed - task lifetime.
         push_delivery_in_flight_by_user_{};
+    // OUT-3, ADR-0151: skips a push gateway host that keeps failing. Internally
+    // locked; shared by every delivery task. Behind a pointer so the runtime
+    // stays movable (its mutex is not).
+    std::unique_ptr<push::GatewayCircuitBreaker> push_gateway_breaker_{std::make_unique<push::GatewayCircuitBreaker>()};
 };
 
 // Removes every already-completed future from `futures` in place, preserving

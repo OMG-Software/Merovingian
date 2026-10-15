@@ -5,6 +5,19 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (OUT-3):** one user's push gateways could still tie up delivery: registrations
+  were unbounded and a gateway host that stalled or failed was contacted again for every
+  event, holding a delivery slot for its full timeout. New `server.push.max_pushers_per_user`
+  (20): `POST /pushers/set` refuses a new pusher beyond it with 400 `M_INVALID_PARAM`
+  (updates and deletes still allowed). New `push::GatewayCircuitBreaker`: after
+  `server.push.gateway_failure_threshold` (3) consecutive transport failures, timeouts or 5xx
+  responses, a host is skipped for `server.push.gateway_cooldown_seconds` (300), then probed
+  once per cooldown; skipped deliveries log `push.delivery.circuit_open`. The per-recipient
+  in-flight cap already existed and now has a test. ADR-0151 supersedes ADR-0029's
+  "registration stays unbounded". Tests: three `[out3]` scenarios in
+  `test_push_delivery_flow.cpp` and new `test_push_gateway_circuit_breaker.cpp`. RED: a 21st
+  pusher was accepted and all five notifications reached a gateway answering 500.
+
 - **FIXED (ISO-7):** the remaining two re-opens of a secret are gone. The TLS private key
   was checked at startup by path and then loaded by OpenSSL from the path again
   (`SSL_CTX_use_PrivateKey_file`); `make_tls_server_context` now reads it through one

@@ -670,6 +670,12 @@ server.http.max_body_size=1MiB
 # server.push
 server.push.max_pushers_per_delivery=25
 server.push.max_in_flight_deliveries=256
+# Distinct pushers one user may register; /pushers/set refuses a new one beyond it.
+server.push.max_pushers_per_user=20
+# A gateway host is skipped for gateway_cooldown_seconds after this many failures
+# (transport errors, timeouts or 5xx) in a row, then probed once per cooldown.
+server.push.gateway_failure_threshold=3
+server.push.gateway_cooldown_seconds=300
 
 # security.federation.backfill
 security.federation.backfill.max_missing_events=20

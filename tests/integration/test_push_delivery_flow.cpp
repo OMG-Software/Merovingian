@@ -41,11 +41,16 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace
@@ -1687,6 +1692,203 @@ SCENARIO("a message body naming the recipient (room-specific or stale account-wi
                 REQUIRE(notifications != nullptr);
                 REQUIRE(notifications_contain_event(*notifications, *stale_event_id));
                 REQUIRE_FALSE(notification_actions_have_highlight(*notifications, *stale_event_id));
+            }
+        }
+    }
+}
+
+// ── OUT-3 (29 Sep 2026 audit): one user's gateways cannot exhaust delivery ──
+// A user's pusher registrations are capped, a gateway host that keeps failing
+// is skipped for a cooldown, and each recipient has an in-flight cap of their
+// own, so one user's stalled gateways never consume every user's deliveries.
+
+// Spec: Matrix CS API v1.19 POST /_matrix/client/v3/pushers/set — 400 "One or
+// more of the pusher values were invalid." The spec sets no per-user limit;
+// this server caps distinct pushers per user (server.push.max_pushers_per_user,
+// default 20, ADR-0151) and updating an existing pusher stays allowed.
+SCENARIO("a user cannot register more pushers than server.push.max_pushers_per_user", "[integration][push][out3]")
+{
+    GIVEN("bob, who has registered the default maximum of 20 pushers")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const carol = register_and_login(started.runtime, "carol");
+        auto const url = std::string{"https://push-out3-cap.localhost.test/_matrix/push/v1/notify"};
+        for (auto i = 0U; i < 20U; ++i)
+        {
+            register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-out3-" + std::to_string(i), url);
+        }
+        auto const pusher_body = [&url](std::string const& pushkey, std::string const& display) {
+            return std::string{R"({"app_id":"org.matrix.integration","pushkey":")"} + pushkey +
+                   R"(","kind":"http","app_display_name":"Integration App","device_display_name":")" + display +
+                   R"(","lang":"en","data":{"url":")" + url + R"("}})";
+        };
+
+        WHEN("he registers a 21st distinct pusher")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/pushers/set", bob, pusher_body("bob-out3-20", "New")});
+
+            THEN("it is refused with 400 M_INVALID_PARAM and he still has 20")
+            {
+                CHECK(response.response.status == 400U);
+                CHECK(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+                CHECK(pusher_count(started.runtime, bob) == 20U);
+            }
+        }
+
+        WHEN("he updates one of his existing pushers, and carol registers her first")
+        {
+            auto const update = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/pushers/set", bob, pusher_body("bob-out3-0", "Renamed")});
+            auto const other = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", carol, pusher_body("carol-out3-0", "Carol")});
+
+            THEN("both succeed: the cap counts distinct pushers per user")
+            {
+                CHECK(update.response.status == 200U);
+                CHECK(other.response.status == 200U);
+                CHECK(pusher_count(started.runtime, bob) == 20U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Push Gateway API v1.19 POST /_matrix/push/v1/notify. A gateway
+// host that fails server.push.gateway_failure_threshold (3) times in a row is
+// not contacted again until server.push.gateway_cooldown_seconds (300) pass.
+SCENARIO("a push gateway host that keeps failing is skipped for a cooldown", "[integration][push][out3]")
+{
+    GIVEN("alice and bob in a room, and bob's only pusher on a gateway that answers every notify with 500")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        auto const gateway_host = std::string{"push-out3-breaker.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-out3-breaker", gateway_url);
+
+        auto constexpr events_sent = 5U;
+        auto const failure = merovingian::tests::tls_mock::json_http_response("500 Internal Server Error", "{}");
+        auto path_responses = std::vector<std::pair<std::string, std::string>>{};
+        for (auto i = 0U; i < events_sent; ++i)
+        {
+            path_responses.emplace_back("/_matrix/push/v1/notify", failure);
+        }
+        auto captured_requests = std::vector<std::string>{};
+        auto server_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, *tls_ctx.context, path_responses,
+                                                                       &captured_requests);
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("alice sends five messages, each delivery finishing before the next")
+        {
+            for (auto i = 0U; i < events_sent; ++i)
+            {
+                auto const send = send_text_message(started.runtime, alice, room_id, "txn-out3-" + std::to_string(i),
+                                                    "hello " + std::to_string(i));
+                REQUIRE(send.response.status == 200U);
+                wait_for_background_tasks(started.runtime.homeserver);
+            }
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("only the first three reached the gateway; the circuit was open for the rest")
+            {
+                CHECK(captured_requests.size() == 3U);
+            }
+        }
+    }
+}
+
+// The per-recipient in-flight cap: a recipient whose deliveries are all stuck
+// (here, a saturated counter) is dropped alone; another recipient of the same
+// event is still dispatched.
+SCENARIO("one recipient's stalled deliveries do not stop another recipient's", "[integration][push][out3]")
+{
+    GIVEN("alice, bob and carol in a room, bob at his in-flight cap and carol with a working gateway")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const carol = register_and_login(started.runtime, "carol");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                      R"({"user_id":"@carol:example.org"})"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", carol, "{}"})
+                    .response.status == 200U);
+
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-out3-stalled",
+                             "https://push-out3-must-not-be-contacted.invalid/_matrix/push/v1/notify");
+        auto const gateway_host = std::string{"push-out3-carol.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+        register_http_pusher(started.runtime, carol, "org.matrix.integration", "carol-out3", gateway_url);
+
+        // Bob's eight in-flight deliveries are stuck: his counter sits at the
+        // per-recipient cap (min(8, max_in_flight_deliveries - 1)).
+        auto const bob_in_flight = std::make_shared<std::atomic<std::size_t>>(8U);
+        {
+            auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
+            started.runtime.homeserver.push_delivery_in_flight_ = 8U;
+            started.runtime.homeserver.push_delivery_in_flight_by_user_["@bob:example.org"] = bob_in_flight;
+        }
+
+        auto const ok_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+        auto path_responses = std::vector<std::pair<std::string, std::string>>{
+            {"/_matrix/push/v1/notify", ok_response}
+        };
+        auto captured_requests = std::vector<std::string>{};
+        auto server_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, *tls_ctx.context, path_responses,
+                                                                       &captured_requests);
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("alice sends a message that notifies both")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-out3-iso", "hello both");
+            REQUIRE(send.response.status == 200U);
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("carol's gateway was notified and bob's delivery was dropped without touching his counter")
+            {
+                CHECK(captured_requests.size() == 1U);
+                CHECK(bob_in_flight->load() == 8U);
             }
         }
     }

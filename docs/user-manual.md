@@ -525,6 +525,17 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 |---|---|---|
 | `max_pushers_per_delivery` | `25` | 1..256 |
 | `max_in_flight_deliveries` | `256` | 1..4,096 |
+| `max_pushers_per_user` | `20` | 1..1,000 |
+| `gateway_failure_threshold` | `3` | 1..100 |
+| `gateway_cooldown_seconds` | `300` | 1..86,400 |
+
+`max_pushers_per_user` caps the distinct pushers (`app_id`, `pushkey`) one user may
+register: `POST /pushers/set` refuses a new one beyond it with 400 `M_INVALID_PARAM`;
+updating or deleting an existing pusher is always allowed. A gateway host that fails
+`gateway_failure_threshold` times in a row (a transport error, a timeout or a 5xx) is
+not contacted for `gateway_cooldown_seconds`; after that one delivery per cooldown is
+let through as a probe until one succeeds, and deliveries skipped meanwhile are dropped
+and logged (`push.delivery.circuit_open`). OUT-3, ADR-0151.
 
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each

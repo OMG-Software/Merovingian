@@ -6164,9 +6164,31 @@ namespace
         auto client =
             push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
                                     &runtime.test_forced_push_gateway_resolution};
+        auto const& push_config = runtime.config.server().push;
+        auto const breaker_policy = push::GatewayCircuitBreakerPolicy{
+            push_config.gateway_failure_threshold, std::chrono::seconds{push_config.gateway_cooldown_seconds}};
         for (auto const& delivery : deliveries)
         {
+            // OUT-3, ADR-0151: a host that keeps failing is skipped for a
+            // cooldown, so its stalled requests stop holding delivery capacity.
+            auto const host = push::push_gateway_host(delivery.pusher.data_url);
+            if (host.has_value() && runtime.push_gateway_breaker_ != nullptr &&
+                !runtime.push_gateway_breaker_->allow(*host, std::chrono::steady_clock::now(), breaker_policy))
+            {
+                log_diagnostic("push.delivery.circuit_open",
+                               {
+                                   {"gateway_host", *host,                   false},
+                                   {"recipient",    delivery.pusher.user_id, false}
+                },
+                               observability::LogEventSeverity::warning);
+                continue;
+            }
             auto const result = client.notify(delivery.pusher.data_url, delivery.notification);
+            if (host.has_value() && runtime.push_gateway_breaker_ != nullptr && !result.disabled)
+            {
+                runtime.push_gateway_breaker_->record(*host, result.ok && result.status < 500U,
+                                                      std::chrono::steady_clock::now(), breaker_policy);
+            }
             if (result.ok && !result.rejected_pushkeys.empty())
             {
                 auto lock = std::unique_lock<RuntimeMutex>{runtime.mutex};

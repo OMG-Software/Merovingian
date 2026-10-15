@@ -781,6 +781,18 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.push.max_in_flight_deliveries");
     }
+    if (current.server().push.max_pushers_per_user != next.server().push.max_pushers_per_user)
+    {
+        add_change(plan, "server.push.max_pushers_per_user");
+    }
+    if (current.server().push.gateway_failure_threshold != next.server().push.gateway_failure_threshold)
+    {
+        add_change(plan, "server.push.gateway_failure_threshold");
+    }
+    if (current.server().push.gateway_cooldown_seconds != next.server().push.gateway_cooldown_seconds)
+    {
+        add_change(plan, "server.push.gateway_cooldown_seconds");
+    }
     if (current.server().client_api.max_body_size != next.server().client_api.max_body_size)
     {
         add_change(plan, "server.client_api.max_body_size");

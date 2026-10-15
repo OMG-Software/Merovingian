@@ -427,6 +427,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
     , push_delivery_in_flight_by_user_(std::move(other.push_delivery_in_flight_by_user_))
+    , push_gateway_breaker_(std::move(other.push_gateway_breaker_))
 {
     other.crypto_provider = nullptr;
 }
@@ -473,6 +474,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
     push_delivery_in_flight_by_user_ = std::move(other.push_delivery_in_flight_by_user_);
+    push_gateway_breaker_ = std::move(other.push_gateway_breaker_);
     return *this;
 }
 

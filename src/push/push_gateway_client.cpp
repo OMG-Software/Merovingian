@@ -288,6 +288,12 @@ PushGatewayClient::PushGatewayClient(
 {
 }
 
+auto push_gateway_host(std::string_view gateway_url) -> std::optional<std::string>
+{
+    auto const parsed = parse_push_gateway_url(gateway_url);
+    return parsed.has_value() ? std::optional<std::string>{parsed->host} : std::nullopt;
+}
+
 auto PushGatewayClient::notify(std::string_view gateway_url, PushGatewayNotification const& notification)
     -> PushGatewayResult
 {

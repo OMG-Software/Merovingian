@@ -88,6 +88,10 @@ struct PushGatewayRejection final
 // wrong-typed `rejected`).
 [[nodiscard]] auto parse_notify_response(std::string_view body) -> std::optional<PushGatewayRejection>;
 
+// The host of a pusher's gateway URL, as notify() would contact it, or nullopt
+// for a URL notify() would refuse. Keys the gateway circuit breaker (OUT-3).
+[[nodiscard]] auto push_gateway_host(std::string_view gateway_url) -> std::optional<std::string>;
+
 // Outcome of one PushGatewayClient::notify() call.
 //   - `disabled == true` means config.enabled was false and no network call
 //     was made at all (the config-gate fail-closed path).

@@ -12315,6 +12315,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // (store_pusher/delete_pusher each commit and update the in-memory
         // mirror independently), so ordering is the fix rather than a new
         // transaction primitive.
+        // OUT-3, ADR-0151: a user's distinct pushers are capped. Only a new
+        // (app_id, pushkey) counts; updating an existing pusher is allowed.
+        auto const max_pushers = rt.homeserver.config.server().push.max_pushers_per_user;
+        if (!database::find_pusher(store, *user, body->app_id, body->pushkey).has_value() &&
+            std::ranges::count_if(store.pushers, [&user](database::PersistentPusher const& existing) {
+                return existing.user_id == *user;
+            }) >= static_cast<std::ptrdiff_t>(max_pushers))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "this account already has the maximum of " + std::to_string(max_pushers) +
+                                    " pushers; remove one before adding another");
+        }
         auto const stored = database::store_pusher(
             store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
                                               body->device_display_name, body->profile_tag, body->lang, body->data_url,

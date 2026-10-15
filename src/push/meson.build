@@ -1,4 +1,5 @@
 push_sources = files(
+  'gateway_circuit_breaker.cpp',
   'push_gateway_client.cpp',
   'push_rules.cpp',
 )
