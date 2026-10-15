@@ -1188,3 +1188,13 @@ one transaction. `reconcile_memberships_with_current_state` runs at main's hydra
 current member event's membership when the row is missing, says `join` while the event does not, or is older
 than the event; a newer row is kept. Corrected rows get a fresh stream ordering and are corrected in memory
 even if the write fails. No schema change (ADR-0149).
+
+### Write connection pool (DB-7, 0.12.26)
+
+Persisted writes reuse connections from a per-store `ConnectionPool` instead of opening one per
+transaction: at most `database.pool_size` (16) are in use at once, and a write waits for a free one.
+PostgreSQL connections assume the runtime role once when opened; a pooled one is reused only while idle
+(`PQTRANS_IDLE`) with nothing to read on its socket, so one the server has closed is replaced. SQLite
+connections keep their pragmas and `foreign_keys=ON`. Reads, migrations and the worker's read-only store
+still open their own connections. `write_connections_opened` reports how many the pool has opened
+(ADR-0154).

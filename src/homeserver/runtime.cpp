@@ -681,6 +681,8 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
 
     database.opened = true;
     database.persistent_store = std::move(opened.store);
+    // DB-7, ADR-0154: persisted writes reuse at most database.pool_size connections.
+    database::set_write_connection_limit(database.persistent_store, config.database().pool_size);
     database.persistent_store.max_to_device_messages_per_user_device =
         config.server().client_api.max_to_device_messages_per_user_device;
     database.persistent_store.to_device_message_ttl_seconds = config.server().client_api.to_device_message_ttl_seconds;

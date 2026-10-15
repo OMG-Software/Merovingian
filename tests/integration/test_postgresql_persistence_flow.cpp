@@ -621,6 +621,8 @@ SCENARIO("A PostgreSQL-backed runtime reloads its own signing key after a restar
             auto output = std::ofstream{uri_file};
             output << uri << '\n';
         }
+        // The runtime reads its database URI only from an owner-read-only file (ISO-7).
+        std::filesystem::permissions(uri_file, std::filesystem::perms::owner_read);
 
         // A fresh server name keeps this scenario independent of signing keys
         // other runs left in the shared test database, which were encrypted
@@ -1530,9 +1532,7 @@ public:
         {
             throw std::runtime_error{"cannot protect PostgreSQL test connection file"};
         }
-        struct stat metadata
-        {
-        };
+        struct stat metadata{};
         if (::fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_uid != ::geteuid() ||
             (metadata.st_mode & 0777) != 0400)
         {
@@ -1633,8 +1633,8 @@ private:
     return room_id;
 }
 
-[[nodiscard]] auto pg_admission_json(std::string const& room_id, std::string const& key,
-                                     std::int64_t timestamp) -> std::string
+[[nodiscard]] auto pg_admission_json(std::string const& room_id, std::string const& key, std::int64_t timestamp)
+    -> std::string
 {
     namespace rr = merovingian::tests::remote_room;
     namespace cj = merovingian::canonicaljson;

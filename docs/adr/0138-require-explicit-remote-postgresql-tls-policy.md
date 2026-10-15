@@ -1,6 +1,6 @@
 # Require explicit remote PostgreSQL TLS policy
 
-* Status: proposed
+* Status: accepted
 * Date: 2026-10-13
 
 ## Context and Problem Statement

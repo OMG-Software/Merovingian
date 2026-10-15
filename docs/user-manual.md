@@ -785,7 +785,7 @@ federation port `8448`.
 | `database.role` | `runtime` | Use `migration` only with `merovingian-db-migrate`. |
 | `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
 | `database.runtime_role` | (empty) | PostgreSQL role assumed to serve requests, dropping DDL rights. Both empty issues no `SET ROLE`, leaving an existing single-role deployment unchanged. |
-| `database.pool_size` | `16` | Tune based on workload; reloadable. |
+| `database.pool_size` | `16` | Database connections persisted writes keep and use at once; a write waits for a free one rather than opening another (DB-7, ADR-0154). Requires restart. |
 | `database.sqlite_path` | `/var/lib/merovingian/merovingian.sqlite3` | Path for SQLite single-file store. Commented out in the shipped example, which defaults to PostgreSQL. |
 
 #### PostgreSQL TLS admission
@@ -1410,7 +1410,7 @@ only reports what *would* happen.
 | `server.identity_server.*` | Restart required |
 | `server.push.*` | Restart required |
 | `appservice.*` | Restart required |
-| `database.pool_size` | Reloadable |
+| `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |

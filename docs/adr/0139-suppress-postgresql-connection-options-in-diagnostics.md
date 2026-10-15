@@ -1,6 +1,6 @@
 # Suppress all PostgreSQL connection options in diagnostics
 
-* Status: proposed
+* Status: accepted
 * Date: 2026-10-13
 
 ## Context and Problem Statement

@@ -5,6 +5,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/database/connection_pool.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -22,8 +23,9 @@
 #include <utility>
 #include <vector>
 
-#include <libpq-fe.h>
 #include <arpa/inet.h>
+#include <libpq-fe.h>
+#include <poll.h>
 
 namespace merovingian::database
 {
@@ -1756,6 +1758,44 @@ auto PostgresqlConnection::execute_transaction(std::vector<PreparedStatement> co
     return open() && execute_postgresql_transaction(*handle_->connection, statements);
 }
 
+auto PostgresqlConnection::reusable() noexcept -> bool
+{
+    if (!open() || PQtransactionStatus(handle_->connection.get()) != PQTRANS_IDLE)
+    {
+        return false;
+    }
+    // An idle connection has nothing to read: this server never LISTENs, so
+    // readable means the server has sent something unasked, which in practice
+    // is a termination notice followed by end-of-file (restart, idle reaper,
+    // pg_terminate_backend). Such a connection is replaced, not reused.
+    auto readiness = ::pollfd{PQsocket(handle_->connection.get()), POLLIN, 0};
+    return readiness.fd >= 0 && ::poll(&readiness, 1U, 0) == 0;
+}
+
+namespace detail
+{
+
+    struct PostgresqlWritePool final
+    {
+        explicit PostgresqlWritePool(std::uint32_t limit)
+            : pool{limit}
+        {
+        }
+        ConnectionPool<PostgresqlConnection> pool;
+    };
+
+    auto set_write_pool_limit(PostgresqlWritePool& pool, std::uint32_t limit) -> void
+    {
+        pool.pool.set_limit(limit);
+    }
+
+    auto write_pool_opened(PostgresqlWritePool const& pool) -> std::uint64_t
+    {
+        return pool.pool.opened_total();
+    }
+
+} // namespace detail
+
 auto validate_postgresql_conninfo(std::string_view conninfo) -> PostgresqlConnectionPolicyResult
 {
     if (conninfo.empty())
@@ -1956,6 +1996,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     store.open = true;
     store.backend = PersistentStoreBackend::postgresql;
     store.postgresql_conninfo = std::string{conninfo};
+    store.postgresql_write_pool = std::make_shared<detail::PostgresqlWritePool>(store.write_connection_limit);
     store.schema = std::move(*schema);
     // 0.12.5 audit, finding 18: DDL runs as migration_role, not as the login
     // role. Until then the login role -- which carries every privilege both
@@ -2295,21 +2336,39 @@ namespace detail
         {
             return false;
         }
-        auto opened = open_postgresql_connection(store.postgresql_conninfo);
-        if (!opened.ok)
+        // Every connection assumes the runtime role before its first statement,
+        // not just the bootstrap one. A failure refuses the write rather than
+        // performing it with the login role's wider privileges.
+        auto const open_writer = [&store]() -> std::optional<PostgresqlConnection> {
+            auto opened = open_postgresql_connection(store.postgresql_conninfo);
+            if (!opened.ok || (!store.postgresql_runtime_role.empty() &&
+                               !set_postgresql_role(opened.connection, store.postgresql_runtime_role)))
+            {
+                return std::nullopt;
+            }
+            return std::move(opened.connection);
+        };
+        if (store.postgresql_write_pool == nullptr)
+        {
+            auto connection = open_writer();
+            return connection.has_value() && connection->execute_transaction(statements);
+        }
+        // DB-7, ADR-0154: reuse a pooled connection. One the server has closed
+        // (restart, idle reaper) is detected before use and replaced, and one
+        // left unusable by a failed transaction is closed rather than returned.
+        auto lease = store.postgresql_write_pool->pool.acquire(open_writer, [](PostgresqlConnection& connection) {
+            return connection.reusable();
+        });
+        if (!lease.has_value())
         {
             return false;
         }
-        // Every connection assumes the runtime role, not just the bootstrap one:
-        // these are opened per operation, so a role set once at startup would
-        // constrain nothing afterwards. A failure here refuses the write rather
-        // than performing it with the login role's wider privileges.
-        if (!store.postgresql_runtime_role.empty() &&
-            !set_postgresql_role(opened.connection, store.postgresql_runtime_role))
+        auto const committed = lease->get().execute_transaction(statements);
+        if (!committed && !lease->get().reusable())
         {
-            return false;
+            lease->discard();
         }
-        return opened.connection.execute_transaction(statements);
+        return committed;
     }
 
     auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,

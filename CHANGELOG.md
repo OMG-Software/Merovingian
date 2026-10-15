@@ -5,6 +5,30 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (DB-7):** every persisted write opened a fresh database connection (an SQLite
+  open with its no-follow checks, or a PostgreSQL connect, TLS and `SET ROLE`), usually
+  with the runtime mutex held. Writes now lease connections from a per-store
+  `database::ConnectionPool` capped at `database.pool_size` (16), which is now
+  restart-required; a write waits for a free connection rather than opening another.
+  A PostgreSQL connection takes the runtime role once and is reused only while idle with
+  nothing to read on its socket, so one the server has closed (restart, idle reaper) is
+  replaced instead of failing a write; reads and migrations are unchanged (ADR-0154).
+  Also fixed: `PersistentStore`'s copy constructor and assignment did not copy
+  `postgresql_runtime_role`, so a copied store would have written as the login role; and
+  the PostgreSQL signing-key restart test wrote its URI file group-readable, which the
+  ISO-7 reader rightly refuses (it only runs with `MEROVINGIAN_TEST_POSTGRESQL_URI`). Tests:
+  new `test_security_audit_write_pool_flow.cpp` (`[db7]`, 64 concurrent writers on real
+  SQLite and PostgreSQL with a limit of four, then every pooled backend killed). RED: the
+  pool API did not exist; a first version that trusted `PQconsumeInput` lost 4 of 64
+  writes after the kill, which the socket-readiness check fixed.
+- **ACCEPTED (FED-12, DB-6, DB-8, DB-9, OPS-2, OPS-4):** implemented earlier on this branch
+  (entries below) and now accepted: each fix was checked against its finding, and the
+  regressions re-run at `cc7e1ee7`: unit `[fed-12-live-context]` 49 / 2, `[ops2]` 101 / 2,
+  `[ops4-negative-lifetime]` 20 / 1, `[ops-4-upper-bound]` 146 / 1, `[db6]` 9 / 3, `[db8]`
+  48 / 2, `[db9]` 6 / 1; integration `[fed-12-origin-binding]` 109 / 1, `[ops2]` 44 / 2,
+  `[db6]` 2909 / 15; conformance `[ops-4]` 223 / 1. ADR-0137, ADR-0138, ADR-0139 and ADR-0142
+  are accepted. The audit report now lists every low finding as fixed.
+
 - **FIXED (FED-10):** the last part of FED-10, aggregate admission across worker shards.
   Each federation worker shard had its own copy of the key-resolution budgets
   (`key_resolution_max_in_flight`, `key_resolution_per_ip_rate`), so `federation.worker.shards`

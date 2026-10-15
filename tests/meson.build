@@ -460,6 +460,7 @@ shell = find_program('sh')
       'integration/test_security_audit_auth_4_admission_flow.cpp',
       'integration/test_security_audit_media_write_failures_flow.cpp',
       'integration/test_security_audit_membership_atomicity_flow.cpp',
+      'integration/test_security_audit_write_pool_flow.cpp',
       'integration/test_security_audit_federated_to_device_flow.cpp',
       'integration/test_security_audit_worker_snapshot_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',

@@ -137,6 +137,12 @@
 * [0134 - Share key-resolution admission with main's worker-relay verification](0134-share-key-admission-with-main-worker-relay-verification.md)
 * [0135 - Preserve key-admission denial through backfill recovery](0135-preserve-key-admission-denial-through-backfill-recovery.md)
 * [0136 - Retain path-only, bounded audit targets](0136-retain-path-only-bounded-audit-targets.md)
+* [0137 - Reject NUL before mutation and path decoding](0137-reject-nul-before-mutation-and-path-decoding.md)
+* [0138 - Require explicit remote PostgreSQL TLS policy](0138-require-explicit-remote-postgresql-tls-policy.md)
+* [0139 - Suppress PostgreSQL connection options in diagnostics](0139-suppress-postgresql-connection-options-in-diagnostics.md)
+* [0140 - Isolate push delivery capacity per recipient](0140-isolate-push-delivery-capacity-per-recipient.md)
+* [0141 - Bound configured token lifetimes without coercion](0141-bound-configured-token-lifetimes-without-coercion.md)
+* [0142 - Bind worker EDU relays to live main-verified requests](0142-bind-worker-edu-relays-to-live-main-verified-requests.md)
 * [0143 - Bound thumbnail crop intermediates by the existing pixel budget](0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md)
 * [0144 - Apply the shared media policy before federation media reads](0144-apply-shared-media-policy-before-federation-media-reads.md)
 * [0145 - Bind local thumbnail disclosure to source record identity](0145-bind-local-thumbnail-disclosure-to-source-record-identity.md)
@@ -148,15 +154,11 @@
 * [0151 - Cap pusher registration and break the circuit to failing gateways](0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md)
 * [0152 - Cache thumbnails in memory and cap concurrent decodes per requester](0152-cache-thumbnails-in-memory-and-cap-concurrent-decodes-per-requester.md)
 * [0153 - Split the key-resolution budgets across federation worker shards](0153-split-key-resolution-budgets-across-worker-shards.md)
+* [0154 - Pool database write connections up to database.pool_size](0154-pool-database-write-connections.md)
 
 ## Proposed Records
 
-* [0137 - Reject NUL before mutation and path decoding](0137-reject-nul-before-mutation-and-path-decoding.md)
-* [0138 - Require explicit remote PostgreSQL TLS policy](0138-require-explicit-remote-postgresql-tls-policy.md)
-* [0139 - Suppress PostgreSQL connection options in diagnostics](0139-suppress-postgresql-connection-options-in-diagnostics.md)
-* [0140 - Isolate push delivery capacity per recipient](0140-isolate-push-delivery-capacity-per-recipient.md)
-* [0141 - Bound configured token lifetimes without coercion](0141-bound-configured-token-lifetimes-without-coercion.md)
-* [0142 - Bind worker EDU relays to live main-verified requests](0142-bind-worker-edu-relays-to-live-main-verified-requests.md)
+* None
 
 ## Rejected Records
 

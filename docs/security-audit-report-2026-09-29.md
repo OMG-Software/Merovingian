@@ -155,8 +155,13 @@ the rows from current state (ADR-0149). Fresh full WSL run: 57 OK, 0 failed, 0 t
 **Update:** 15 October 2026 — the five partly fixed lows are fixed: EVT-12 (d) (ADR-0150),
 ISO-7, OUT-3 (ADR-0151), MED-4 (ADR-0152) and FED-10's cross-shard aggregate (ADR-0153).
 
+**Update:** 15 October 2026 — the last seven lows are fixed. DB-7 is new (pooled write
+connections, ADR-0154); FED-12, DB-6, DB-8, DB-9, OPS-2 and OPS-4 were implemented earlier on this
+branch and are accepted after their fixes were checked against each finding and their regressions
+re-run (ADR-0137, ADR-0138, ADR-0139 and ADR-0142 accepted).
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 39 are fixed, none is partly fixed and 7 are open.
+fixed. All 46 low findings are fixed.
 
 ### Fixed
 
@@ -297,6 +302,18 @@ Residual notes on fixed findings:
 | MED-4 | Decoding already ran unlocked (0.12.20) with local records revalidated after it (ADR-0145). Now: `media::ThumbnailCache`, an in-memory LRU (`security.media.thumbnail_cache_size`, 64 MiB) keyed by source record, size and method, served only after the record is checked servable; `security.media.thumbnail_max_concurrent_per_user` (2) caps decodes in flight per user or client address (429 `M_LIMIT_EXCEEDED` beyond it); a remote thumbnail carries the cached local record its bytes were admitted as and is revalidated like a local one, and every thumbnail re-checks the media policy after the decode (ADR-0152). Tested with the real worker and the gate (`[med-4-cache]`, `[med-4-concurrency]`, `[med-4-remote]`) and LRU unit cases. RED: repeat thumbnail 404 without the worker; a third concurrent decode entered the decoder; a quarantined remote record's thumbnail was served. |
 | FED-10 | Every network-capable sender/origin key resolution (direct, relayed, IPC re-verification, backfill/state/auth-chain) is admitted against the source-address budget, the in-flight cap and the server/key failure cache, as recorded in the earlier FED-10 entries (ADR-0132 to ADR-0135). The remaining aggregate gap is closed: each federation worker shard starts with its share of `key_resolution_max_in_flight` and the per-IP rate (`federation::shard_key_resolution_budget`, limit / shards rounded down, at least 1), so all shards together stay within the configured limits; main keeps the whole budget (ADR-0153). Tested `[fed10-shards]`; RED: the split did not exist. Residual: main's own budget is separate, so main plus workers may reach twice the limits; the earlier direct state/auth-chain denial and backfill negative-cache coverage suggestions remain coverage, not open defects. |
 
+### Fixed — low, previously open, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| FED-12 | A worker's `edu_ingest` relay must name a live, still-pending request on the exact IPC channel that delivered it whose origin main itself verified (`IpcChannel::matches_pending_origin`, checked after the runtime-lock wait); a wrong origin, a completed or expired parent, or an ordinary unsigned request authorises nothing. Main verifies every signed request before forwarding, and EDU-only transactions bypass the worker. Tested through real signature verification, encrypted IPC and reopened SQLite (`[fed-12-origin-binding]`, `[fed-12-live-context]`). ADR-0142 (accepted). Residual: EDU content is bound to the verified origin, not to the signed transaction body. |
+| DB-6 | A `state_key` containing NUL is rejected in event validation (`state_key_contains_nul`) and before local composition or `createRoom` persists anything; NUL in percent-decoded path components is refused (`path_component_contains_nul`); text `BoundValue`s with NUL are refused by `prepared_statement_is_valid`. Tested by real SQLite/HTTP admission, query-path and gated PostgreSQL scenarios (`[db6]`). ADR-0137 (accepted). |
+| DB-7 | Persisted writes lease connections from a per-store `ConnectionPool` capped at `database.pool_size` (now restart-required) instead of opening one per transaction. PostgreSQL connections take the runtime role once and are reused only while idle with nothing to read, so a server-closed connection is replaced. Tested with 64 concurrent writers against real SQLite and PostgreSQL (at most four connections opened; all pooled backends killed between rounds without a failed write) (`[db7]`). ADR-0154. |
+| DB-8 | A non-loopback PostgreSQL connection must state `sslmode=verify-full` explicitly; an omitted or parent-default mode, service indirection and insecure opt-outs are refused at the single connect choke point. Documented in the user manual and persistence guide (`[db8]`). ADR-0138 (accepted). |
+| DB-9 | No connection string or option is ever logged or returned: diagnostics carry a fixed redacted identity and generic reasons, which is stricter than logging host and database. Tested with quoted, spaced, escaped and URI passwords reaching real libpq failure at DEBUG (`[db9]`). ADR-0139 (accepted). |
+| OPS-2 | `make_audit_event` drops the whole query string and keeps a control-safe, UTF-8-safe 255-byte path for every audit target, so durable rows, the in-memory window and the `audit.append` debug line never carry `?token=`. Tested with real rate limiting, an unavailable runtime and SQLite reopen (`[ops2]`). |
+| OPS-4 | Negative token lifetimes are refused with field-specific findings; access lifetimes are capped at 30 days and refresh at 365, so no conversion overflows; `/login` and `/refresh` omit `expires_in_ms` when the access lifetime is 0 (`/register` issues no refresh tokens). Tested by parser/typed matrices and a real SQLite dispatcher conformance scenario (`[ops4-negative-lifetime]`, `[ops-4-upper-bound]`, `[ops-4]`). ADR-0141. |
+
 ### FED-10 history — low, federation key admission, 11 October 2026 (fixed 15 October, see completed partials)
 
 | ID | Resolution |
@@ -311,8 +328,7 @@ None.
 
 No low finding is partly fixed.
 
-Open, with no accepted implementation yet: FED-12, DB-6, DB-7, DB-8, DB-9, OPS-2, OPS-4.
-In-progress changes in the branch do not count as accepted fixes.
+No low finding is open.
 
 
 The `deny_ip_ranges` documentation correction (OUT-8) and fail-closed token issuance

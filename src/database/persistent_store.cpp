@@ -539,6 +539,25 @@ namespace
     return {true, {}};
 }
 
+auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> void
+{
+    store.write_connection_limit = std::max(limit, std::uint32_t{1U});
+    if (store.sqlite_write_pool != nullptr)
+    {
+        detail::set_write_pool_limit(*store.sqlite_write_pool, store.write_connection_limit);
+    }
+    if (store.postgresql_write_pool != nullptr)
+    {
+        detail::set_write_pool_limit(*store.postgresql_write_pool, store.write_connection_limit);
+    }
+}
+
+auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
+{
+    return (store.sqlite_write_pool != nullptr ? detail::write_pool_opened(*store.sqlite_write_pool) : 0U) +
+           (store.postgresql_write_pool != nullptr ? detail::write_pool_opened(*store.postgresql_write_pool) : 0U);
+}
+
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool
 {

@@ -1,6 +1,6 @@
 # Reject NUL before mutation and path decoding
 
-* Status: proposed
+* Status: accepted
 * Date: 2026-10-12
 
 Technical Story: DB-6 in the 2026-09-29 security audit; reviewed admission checkpoint passed a fresh combined suite, with extended decoder-consumer verification still outstanding.

@@ -32,7 +32,8 @@ SCENARIO("Config reload policies reflect runtime ownership", "[config][reload]")
                 REQUIRE(transaction_size_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(federation_timeout_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(media_timeout_policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(database_pool_policy == merovingian::config::ReloadPolicy::reloadable);
+                // DB-7, ADR-0154: the write connection pool is built when the store opens.
+                REQUIRE(database_pool_policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }
@@ -69,7 +70,7 @@ SCENARIO("Config group reload policies distinguish startup snapshots", "[config]
             auto all_policies_match = true;
             for (auto const key : keys)
             {
-                auto const expected = key.starts_with("security.federation.")
+                auto const expected = key.starts_with("security.federation.") || key == "database.pool_size"
                                           ? merovingian::config::ReloadPolicy::restart_required
                                           : merovingian::config::ReloadPolicy::reloadable;
                 all_policies_match = all_policies_match && merovingian::config::reload_policy_for_key(key) == expected;

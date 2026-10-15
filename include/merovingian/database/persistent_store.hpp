@@ -821,6 +821,18 @@ struct RedactionState final
 
 struct PersistentStore;
 
+namespace detail
+{
+    // DB-7, ADR-0154: each backend's pool of write connections, defined in its
+    // own source file. Shared, not copied, by copies of a store.
+    struct SqliteWritePool;
+    struct PostgresqlWritePool;
+    auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void;
+    auto set_write_pool_limit(PostgresqlWritePool& pool, std::uint32_t limit) -> void;
+    [[nodiscard]] auto write_pool_opened(SqliteWritePool const& pool) -> std::uint64_t;
+    [[nodiscard]] auto write_pool_opened(PostgresqlWritePool const& pool) -> std::uint64_t;
+} // namespace detail
+
 // Called after an event has been added to `PersistentStore::events`, with the event's ID. The
 // homeserver installs the redaction reconciler here (see homeserver/redaction_service.hpp).
 using RedactionObserver = std::function<void(PersistentStore&, std::string const&)>;
@@ -832,6 +844,7 @@ struct PersistentStore final
         : open{other.open}
         , backend{other.backend}
         , postgresql_conninfo{other.postgresql_conninfo}
+        , postgresql_runtime_role{other.postgresql_runtime_role}
         , sqlite_path{other.sqlite_path}
         , sqlite_read_only{other.sqlite_read_only}
         , schema{other.schema}
@@ -891,6 +904,9 @@ struct PersistentStore final
         , force_next_persist_failures{other.force_next_persist_failures}
         , force_failure_statement_names{other.force_failure_statement_names}
         , statement_capture_mutex{std::make_unique<std::mutex>()}
+        , write_connection_limit{other.write_connection_limit}
+        , sqlite_write_pool{other.sqlite_write_pool}
+        , postgresql_write_pool{other.postgresql_write_pool}
         , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
@@ -908,6 +924,7 @@ struct PersistentStore final
         open = other.open;
         backend = other.backend;
         postgresql_conninfo = other.postgresql_conninfo;
+        postgresql_runtime_role = other.postgresql_runtime_role;
         sqlite_path = other.sqlite_path;
         sqlite_read_only = other.sqlite_read_only;
         schema = other.schema;
@@ -972,6 +989,9 @@ struct PersistentStore final
         event_stream_watermark = other.event_stream_watermark;
         max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
         to_device_message_ttl_seconds = other.to_device_message_ttl_seconds;
+        write_connection_limit = other.write_connection_limit;
+        sqlite_write_pool = other.sqlite_write_pool;
+        postgresql_write_pool = other.postgresql_write_pool;
         return *this;
     }
     auto operator=(PersistentStore&& other) noexcept -> PersistentStore& = default;
@@ -1083,6 +1103,14 @@ struct PersistentStore final
     // stripe locks because capture access is independent of any room. Wrapped
     // in unique_ptr so PersistentStore remains moveable.
     mutable std::unique_ptr<std::mutex> statement_capture_mutex{std::make_unique<std::mutex>()};
+    // DB-7, ADR-0154: persisted writes reuse at most this many connections
+    // (database.pool_size, applied by set_write_connection_limit), instead of
+    // opening one per transaction. The pool of the store's backend is created
+    // when the store is opened; copies share it.
+    std::uint32_t write_connection_limit{16U};
+    std::shared_ptr<detail::SqliteWritePool> sqlite_write_pool{}; // SHARED_PTR: reviewed - shared by store copies.
+    std::shared_ptr<detail::PostgresqlWritePool> // SHARED_PTR: reviewed - shared by store copies.
+        postgresql_write_pool{};
     // Guards server_signing_keys. The remote-key resolver stores and reads
     // keys from federation relay threads and from backfill, both with the
     // runtime mutex released, so after start-up hydration every access goes
@@ -1148,6 +1176,12 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto validate_persistent_store(PersistentStore const& store) -> MigrationValidationResult;
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
+// DB-7, ADR-0154: caps the connections persisted writes keep and use at once
+// (database.pool_size). A write waits for a free connection rather than opening
+// another. Takes effect for the next write.
+auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> void;
+// Connections ever opened for persisted writes (both backends' pools).
+[[nodiscard]] auto write_connections_opened(PersistentStore const& store) -> std::uint64_t;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
 [[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
     -> bool;

@@ -35,6 +35,11 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    hydrate through `remember_audit_event`, never `push_back`. `append_audit_event` bounds
    `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`bounded_utf8`).
 
+7. **Persisted writes lease a pooled connection; nothing else opens one per write.** `commit_persistent_transaction`
+   goes through the store's `ConnectionPool` (at most `database.pool_size` in use, ADR-0154). Hold a lease for exactly
+   one transaction and never take another lease while holding one, or writers can deadlock waiting for each other.
+   A PostgreSQL connection is reused only while idle with nothing to read on its socket.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).

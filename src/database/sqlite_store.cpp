@@ -4,14 +4,15 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/database/connection_pool.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
-#include <cstdint>
 #include <array>
 #include <cerrno>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -22,8 +23,8 @@
 #include <utility>
 #include <vector>
 
-#include <sqlite3.h>
 #include <fcntl.h>
+#include <sqlite3.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -145,7 +146,8 @@ namespace
             return false;
         }
         auto const target = std::filesystem::path{path};
-        auto directory = core::FileDescriptor{::open(target.is_absolute() ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+        auto directory =
+            core::FileDescriptor{::open(target.is_absolute() ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
         if (!directory.valid() || target.filename().empty())
         {
             return false;
@@ -157,7 +159,8 @@ namespace
             {
                 return false;
             }
-            auto next = core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
+            auto next = core::FileDescriptor{
+                ::openat(directory.get(), name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
             if (!next.valid())
             {
                 return false;
@@ -165,7 +168,8 @@ namespace
             directory = std::move(next);
         }
         auto const name = target.filename().string();
-        auto file = core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
+        auto file = core::FileDescriptor{
+            ::openat(directory.get(), name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
         if (!file.valid() && errno == EEXIST)
         {
             file.reset(::openat(directory.get(), name.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC));
@@ -175,7 +179,8 @@ namespace
                metadata.st_uid == ::geteuid() && ::fchmod(file.get(), 0600) == 0;
     }
 
-    [[nodiscard]] auto open_sqlite_connection(std::string const& path, bool read_only = false) -> std::optional<SqliteConnection>
+    [[nodiscard]] auto open_sqlite_connection(std::string const& path, bool read_only = false)
+        -> std::optional<SqliteConnection>
     {
         if (read_only)
         {
@@ -198,8 +203,8 @@ namespace
         }
         auto* raw = static_cast<sqlite3*>(nullptr);
         auto const mode = read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
-        if (sqlite3_open_v2(path.c_str(), &raw, mode | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX,
-                            nullptr) != SQLITE_OK)
+        if (sqlite3_open_v2(path.c_str(), &raw, mode | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX, nullptr) !=
+            SQLITE_OK)
         {
             sqlite3_close(raw);
             return std::nullopt;
@@ -772,10 +777,11 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.profiles.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
-               load_rows(connection, "SELECT room_alias, room_id, creator_user_id FROM room_aliases ORDER BY room_alias",
-                         [&store](sqlite3_stmt& row) {
-                             store.room_aliases.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
-                         }) &&
+               load_rows(
+                   connection, "SELECT room_alias, room_id, creator_user_id FROM room_aliases ORDER BY room_alias",
+                   [&store](sqlite3_stmt& row) {
+                       store.room_aliases.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                   }) &&
                load_rows(connection, "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids",
                          [&store](sqlite3_stmt& row) {
                              store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1),
@@ -1097,6 +1103,30 @@ namespace
 
 } // namespace
 
+namespace detail
+{
+
+    struct SqliteWritePool final
+    {
+        explicit SqliteWritePool(std::uint32_t limit)
+            : pool{limit}
+        {
+        }
+        ConnectionPool<SqliteConnection> pool;
+    };
+
+    auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void
+    {
+        pool.pool.set_limit(limit);
+    }
+
+    auto write_pool_opened(SqliteWritePool const& pool) -> std::uint64_t
+    {
+        return pool.pool.opened_total();
+    }
+
+} // namespace detail
+
 auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile profile) -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
@@ -1138,6 +1168,10 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
     store.backend = PersistentStoreBackend::sqlite;
     store.sqlite_path = path;
     store.sqlite_read_only = read_only;
+    if (!read_only)
+    {
+        store.sqlite_write_pool = std::make_shared<detail::SqliteWritePool>(store.write_connection_limit);
+    }
     store.schema = load_schema_state(sqlite);
     log_diagnostic("store.schema_loaded",
                    {
@@ -1243,9 +1277,26 @@ namespace detail
         {
             return false;
         }
-        auto connection = open_sqlite_connection(store.sqlite_path);
-        return connection.has_value() && execute_sql(**connection, "PRAGMA foreign_keys = ON") &&
-               execute_transaction(**connection, statements);
+        auto const open_writer = [&store]() -> std::optional<SqliteConnection> {
+            auto connection = open_sqlite_connection(store.sqlite_path);
+            if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON"))
+            {
+                return std::nullopt;
+            }
+            return connection;
+        };
+        if (store.sqlite_write_pool == nullptr)
+        {
+            // A store assembled by hand rather than opened: one connection per write.
+            auto connection = open_writer();
+            return connection.has_value() && execute_transaction(**connection, statements);
+        }
+        // DB-7, ADR-0154: reuse a pooled connection; a SQLite handle stays usable
+        // after a failed transaction (execute_transaction rolls back).
+        auto lease = store.sqlite_write_pool->pool.acquire(open_writer, [](SqliteConnection const&) {
+            return true;
+        });
+        return lease.has_value() && execute_transaction(*lease->get(), statements);
     }
 
     auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)

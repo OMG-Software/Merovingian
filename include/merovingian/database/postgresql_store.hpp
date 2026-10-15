@@ -50,6 +50,9 @@ public:
     [[nodiscard]] auto open() const noexcept -> bool;
     [[nodiscard]] auto execute(PreparedStatement const& statement) -> QueryResult override;
     [[nodiscard]] auto execute_transaction(std::vector<PreparedStatement> const& statements) -> bool;
+    // DB-7: open, idle and not closed by the server, so it can serve another
+    // transaction from the write pool.
+    [[nodiscard]] auto reusable() noexcept -> bool;
 
 private:
     friend auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult;

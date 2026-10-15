@@ -1,6 +1,6 @@
 # Bind worker EDU relays to live main-verified requests
 
-* Status: proposed
+* Status: accepted
 * Date: 2026-10-14
 
 ## Context and Problem Statement
