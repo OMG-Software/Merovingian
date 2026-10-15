@@ -513,6 +513,10 @@ struct RuntimeStartOptions final
     // its worker filter denies setrlimit (ISO-2, ADR-0112), so re-applying
     // the main profile's core-dump limit here kills the worker with SIGSYS.
     bool process_hardening_applied_by_caller{false};
+    // FED-10, ADR-0153: the number of federation worker shards this runtime is
+    // one of. A worker passes federation.worker.shards so its key-resolution
+    // budgets are its share of the configured ones; main leaves it at 1.
+    std::uint32_t key_resolution_shards{1U};
 };
 
 struct RuntimeStartResult final

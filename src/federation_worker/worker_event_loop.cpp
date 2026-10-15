@@ -665,6 +665,9 @@ auto WorkerEventLoop::run() -> void
         // on. Re-applying the main-process profile would call setrlimit,
         // which the worker filter denies (ISO-2, ADR-0112).
         .process_hardening_applied_by_caller = config_.federation_worker().apply_hardening,
+        // FED-10, ADR-0153: each shard resolves keys within its share of the
+        // configured budgets, so all shards together stay within them.
+        .key_resolution_shards = config_.federation_worker().shards,
     });
     if (!started.started)
     {

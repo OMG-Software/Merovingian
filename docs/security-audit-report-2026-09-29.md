@@ -152,8 +152,11 @@ through `scripts/check-startup-hardening-gate.sh` (ADR-0148).
 change commit in the event's own transaction on both backends, and hydration reconciles
 the rows from current state (ADR-0149). Fresh full WSL run: 57 OK, 0 failed, 0 timed out.
 
+**Update:** 15 October 2026 — the five partly fixed lows are fixed: EVT-12 (d) (ADR-0150),
+ISO-7, OUT-3 (ADR-0151), MED-4 (ADR-0152) and FED-10's cross-shard aggregate (ADR-0153).
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 38 are fixed, 1 are partly fixed and 7 are open.
+fixed. Of the 46 low findings, 39 are fixed, none is partly fixed and 7 are open.
 
 ### Fixed
 
@@ -292,8 +295,9 @@ Residual notes on fixed findings:
 | ISO-7 | Master, registration-token, main/worker database URI and bootstrap-password reads were already descriptor-bound. The TLS private key is now read the same way (`O_NOFOLLOW`, regular, owned by this user, mode 0400, into locked memory) and passed to OpenSSL from a memory BIO instead of `SSL_CTX_use_PrivateKey_file`. The signing-secret-box and token-HMAC caches took the master key's identity and its bytes from two separate opens, so a file swapped in between could leave a key from one file cached under the other's identity; `crypto::open_master_key_file` now supplies both from one descriptor. Tested: a group-readable or symlinked TLS key is refused, a 0400 key loads, and material read from an opened master key file is that file's even after a rename replaces the path (`[iso7]`). RED: both TLS refusals failed; the master-key API did not exist. |
 | OUT-3 | The per-recipient in-flight cap (min(8, max_in_flight - 1) batches) was already in place and is now tested. New `server.push.max_pushers_per_user` (20): `POST /pushers/set` refuses a new pusher beyond it (400 `M_INVALID_PARAM`; updates allowed). New `push::GatewayCircuitBreaker` keyed by gateway host: after `server.push.gateway_failure_threshold` (3) consecutive transport failures, timeouts or 5xx it skips the host for `server.push.gateway_cooldown_seconds` (300), then probes once per cooldown; at most 4096 hosts tracked. Tested (`[out3]`): a 21st pusher refused, five events to a failing gateway reach it three times, a saturated recipient does not block another; breaker unit cases. ADR-0151 (supersedes ADR-0029's unbounded registration). RED: 21st pusher accepted; 5 of 5 notifies sent. |
 | MED-4 | Decoding already ran unlocked (0.12.20) with local records revalidated after it (ADR-0145). Now: `media::ThumbnailCache`, an in-memory LRU (`security.media.thumbnail_cache_size`, 64 MiB) keyed by source record, size and method, served only after the record is checked servable; `security.media.thumbnail_max_concurrent_per_user` (2) caps decodes in flight per user or client address (429 `M_LIMIT_EXCEEDED` beyond it); a remote thumbnail carries the cached local record its bytes were admitted as and is revalidated like a local one, and every thumbnail re-checks the media policy after the decode (ADR-0152). Tested with the real worker and the gate (`[med-4-cache]`, `[med-4-concurrency]`, `[med-4-remote]`) and LRU unit cases. RED: repeat thumbnail 404 without the worker; a third concurrent decode entered the decoder; a quarantined remote record's thumbnail was served. |
+| FED-10 | Every network-capable sender/origin key resolution (direct, relayed, IPC re-verification, backfill/state/auth-chain) is admitted against the source-address budget, the in-flight cap and the server/key failure cache, as recorded in the earlier FED-10 entries (ADR-0132 to ADR-0135). The remaining aggregate gap is closed: each federation worker shard starts with its share of `key_resolution_max_in_flight` and the per-IP rate (`federation::shard_key_resolution_budget`, limit / shards rounded down, at least 1), so all shards together stay within the configured limits; main keeps the whole budget (ADR-0153). Tested `[fed10-shards]`; RED: the split did not exist. Residual: main's own budget is separate, so main plus workers may reach twice the limits; the earlier direct state/auth-chain denial and backfill negative-cache coverage suggestions remain coverage, not open defects. |
 
-### Partial — low, federation key admission, 11 October 2026
+### FED-10 history — low, federation key admission, 11 October 2026 (fixed 15 October, see completed partials)
 
 | ID | Resolution |
 |----|------------|
@@ -305,9 +309,7 @@ None.
 
 ### Outstanding — low
 
-| ID | State | What remains |
-|----|-------|--------------|
-| FED-10 | Partial | Core overload repair is independently reviewed; main IPC PDU/membership/invite admission and mixed-failure/EDU retry are now repaired with genuine RED evidence. Normal unit FED-10 passed 716 assertions / 10 cases and related inbound 1205 / 59; latest post-backfill integration passed 1522 / 8 (new admission regression 172 / 1, all backfill 2173 / 17). The pre-backfill WSL checkpoint passed 56 targets with zero failures/timeouts; one unit case remained skipped. Independent source-only review (deleg_18fcd7ae) approved the unchanged main slice. Actual separate-process worker/socket-HTTP overload propagation is now verified (262 / 1); the earlier substituted IPC fixture remains narrower evidence. Backfill/snapshot/auth-chain admission now has genuine RED/GREEN and a fresh 56-target full pass. Independent source-only backfill review (deleg_97884571) passed with no material findings. Both later test delegates failed provider limits; preserved fixtures were repaired directly and independently passed sticky denial 200 / 1, partial-progress retry 314 / 1, all backfill 2687 / 19 and total FED-10 integration 2298 / 11. Fresh recovered full checkpoint: 56 OK, zero failed/timed-out targets, all return codes 0, ten tracked hashes unchanged. Aggregate cross-shard limits remain unestablished. Direct state/auth-chain denial and backfill-specific cache rejection/negative-hit cases remain coverage suggestions, not executed proof; whole-finding acceptance remains pending. |
+No low finding is partly fixed.
 
 Open, with no accepted implementation yet: FED-12, DB-6, DB-7, DB-8, DB-9, OPS-2, OPS-4.
 In-progress changes in the branch do not count as accepted fixes.

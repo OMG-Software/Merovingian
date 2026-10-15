@@ -5,6 +5,16 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (FED-10):** the last part of FED-10, aggregate admission across worker shards.
+  Each federation worker shard had its own copy of the key-resolution budgets
+  (`key_resolution_max_in_flight`, `key_resolution_per_ip_rate`), so `federation.worker.shards`
+  workers allowed that many times the configured outbound key fetches. A worker now
+  starts with its share (`federation::shard_key_resolution_budget`: the limit divided by the
+  shard count, rounded down, at least 1) through `RuntimeStartOptions::key_resolution_shards`;
+  main keeps the whole budget (ADR-0153). Tests: new `test_security_audit_fed_10_shards.cpp`
+  (`[fed10-shards]`). RED: the split function and the start option did not exist, so every
+  shard started with the full budget.
+
 - **FIXED (MED-4):** thumbnails were decoded with the lock released (0.12.20) and local
   ones revalidated after the decode (ADR-0145), but every request forked the decoder
   again, one client could run any number of decodes at once, and a remote thumbnail was

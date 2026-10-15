@@ -94,6 +94,13 @@ struct FederationServerPolicyDecision final
 };
 
 [[nodiscard]] auto make_runtime_federation_config(config::Config const& config) -> RuntimeFederationConfig;
+// FED-10, ADR-0153: one federation worker shard's share of the network key
+// resolution budgets (key_resolution_max_in_flight and the per-source-IP rate's
+// max_requests), so `shards` workers together stay within the configured
+// limits. Each share is rounded down but never below 1; with more shards than
+// a limit, the total is `shards`. Every other field is unchanged.
+[[nodiscard]] auto shard_key_resolution_budget(RuntimeFederationConfig config, std::uint32_t shards)
+    -> RuntimeFederationConfig;
 [[nodiscard]] auto federation_summary(RuntimeFederationConfig const& config) -> std::string;
 [[nodiscard]] auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)
     -> FederationServerPolicyDecision;

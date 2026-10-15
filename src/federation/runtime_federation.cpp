@@ -6,6 +6,8 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,6 +43,20 @@ namespace
     }
 
 } // namespace
+
+auto shard_key_resolution_budget(RuntimeFederationConfig config, std::uint32_t shards) -> RuntimeFederationConfig
+{
+    if (shards <= 1U)
+    {
+        return config;
+    }
+    auto const share = [shards](std::uint32_t limit) {
+        return std::max(limit / shards, std::uint32_t{1U});
+    };
+    config.key_resolution_max_in_flight = share(config.key_resolution_max_in_flight);
+    config.key_resolution_per_ip_rate.max_requests = share(config.key_resolution_per_ip_rate.max_requests);
+    return config;
+}
 
 auto make_runtime_federation_config(config::Config const& config) -> RuntimeFederationConfig
 {

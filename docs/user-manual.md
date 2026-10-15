@@ -1031,8 +1031,8 @@ events for many users and an abusive remote can rotate sender IDs.
 | `security.federation.per_origin_edu_rate` | `12000/60s` | Weighted EDU budget per verified remote origin per window. |
 | `security.federation.per_origin_request_rate` | `3000/60s` | Per-origin cap on inbound federation requests **outside** `/send` (query, backfill, membership, key and state endpoints). `/send` counts only against the weighted trio above, so a transaction and its contents are never double-counted. |
 
-| `security.federation.key_resolution_per_ip_rate` | `30/60s` | Per-**source-IP** cap on network-capable origin and relayed-PDU sender-key resolutions. Direct verification-key cache reads do not spend it. **Requires restart.** |
-| `security.federation.key_resolution_max_in_flight` | `16` | Process-wide cap on concurrent key resolutions; over it, requests are rejected rather than queued. **Requires restart.** |
+| `security.federation.key_resolution_per_ip_rate` | `30/60s` | Per-**source-IP** cap on network-capable origin and relayed-PDU sender-key resolutions. Direct verification-key cache reads do not spend it. Each federation worker shard gets this divided by `federation.worker.shards` (at least 1), so all shards together stay within it (FED-10, ADR-0153). **Requires restart.** |
+| `security.federation.key_resolution_max_in_flight` | `16` | Cap on concurrent key resolutions; over it, requests are rejected rather than queued. Main has the whole cap; each federation worker shard gets it divided by `federation.worker.shards` (at least 1) (FED-10, ADR-0153). **Requires restart.** |
 | `security.federation.key_resolution_failure_ttl` | `60s` | How long a failed `(server_name, key_id)` resolution is remembered; includes relayed PDU senders. `0s` disables. Admission overload is not a failed lookup. **Requires restart.** |
 
 The three `key_resolution_*` keys bound network-capable resolutions both

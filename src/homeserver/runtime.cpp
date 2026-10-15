@@ -867,7 +867,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         runtime.database.mutual_rooms_token_key = core::SecretBuffer{*token_key_material};
     }
 
-    runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
+    runtime.federation = federation::make_federation_runtime_state(federation::shard_key_resolution_budget(
+        federation::make_runtime_federation_config(config), opts.key_resolution_shards));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
     runtime.discovery_network =
         federation::make_system_server_discovery_network(runtime.federation.config.deny_ip_ranges);
