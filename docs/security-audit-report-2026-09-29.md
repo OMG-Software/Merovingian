@@ -143,8 +143,13 @@ umask and package-script parts were on the branch already and were reviewed; the
 `--log-file` sink, the worker's socket-family filter and the systemd directives are new
 (ADR-0146, ADR-0147). Fresh full WSL run: 56 OK, 0 failed, 0 timed out.
 
+**Update:** 15 October 2026 — OPS-5 is fixed. Every packaging path builds
+`--buildtype=release`; the Dockerfile pins its base by digest and ships both workers and
+their libraries; the packages workflow boots the installed deb and the Docker image
+through `scripts/check-startup-hardening-gate.sh` (ADR-0148).
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 32 are fixed, 5 are partly fixed and 9 are open.
+fixed. Of the 46 low findings, 33 are fixed, 5 are partly fixed and 8 are open.
 
 ### Fixed
 
@@ -263,6 +268,12 @@ Residual notes on fixed findings:
 | ISO-8 | The worker filter admits `socket()` for `AF_UNIX`/`AF_INET`/`AF_INET6`, answers `AF_NETLINK` with `EAFNOSUPPORT`, and kills on any other family; `socketpair()` is `AF_UNIX` only. The unit adds `RestrictAddressFamilies=`, `RestrictNamespaces=` and the kernel-protection directives. The `peer`-authentication caveat is documented. Tested in forked children against the real kernel (`[iso8]`). ADR-0147. |
 | DB-10 | SQLite opens with `SQLITE_OPEN_NOFOLLOW` after descriptor-relative, no-follow traversal; files are 0600; `secure_delete=ON` and `trusted_schema=OFF` (`[db10]`). Residual: the path is reopened by name after the checks. |
 
+### Fixed — low, packaging, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| OPS-5 | `scripts/build-deb.sh`, the three BSD package scripts and the `Dockerfile` pass `--buildtype=release` (the static script already did; the RPM specs get `-O2` from `%optflags`); `meson.build` keeps Meson's `debug` default for development builds and warns when hardening meets `optimization=0` (ADR-0148). The Dockerfile pins `debian:trixie-slim` by index digest, builds with libpq, OpenSSL, libpng and libturbojpeg, ships `merovingian-db-migrate`, `merovingian-fed-worker` and `merovingian-thumbnail-worker` with their runtime libraries, and fails its own build on an unresolved `ldd` entry. `scripts/check-startup-hardening-gate.sh` boots a packaged server and passes only when every startup hardening check reports `enabled` and it stops cleanly; the `deb`, `debian-pkg` and new `docker-image` jobs run it against the installed package and the built image. Tested by `test_packages_workflow.py` and `test_startup_hardening_gate.py`. The BSD package jobs do not run the gate yet. |
+
 ### Partial — low, federation key admission, 11 October 2026
 
 | ID | Resolution |
@@ -284,7 +295,7 @@ None.
 | ISO-7 | Partial | Master, registration-token, main/worker database URI and bootstrap-password reads use owner/mode/type-validated descriptors and locked buffers. TLS/private-key handoff and the separate cache-identity/load association still need review; no whole-finding closure is claimed. |
 
 Open, with no accepted implementation yet: FED-12, DB-4, DB-6, DB-7, DB-8, DB-9, OPS-2,
-OPS-4, OPS-5. In-progress changes in the branch do not count as accepted fixes.
+OPS-4. In-progress changes in the branch do not count as accepted fixes.
 
 
 The `deny_ip_ranges` documentation correction (OUT-8) and fail-closed token issuance

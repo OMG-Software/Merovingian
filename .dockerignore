@@ -1,0 +1,20 @@
+# The Dockerfile configures a fresh `build` directory; local Meson build
+# directories, package staging trees and editor state must not leak into the
+# build context, where a stale `build/` would make `meson setup build` fail.
+.git
+.claude
+.idea
+.vscode
+.worktrees
+.clwb
+.pytest_cache
+build
+build-*
+buildDir
+staging-*
+pkg-build
+*.deb
+*.rpm
+*.pkg
+*.tgz
+**/__pycache__

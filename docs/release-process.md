@@ -137,6 +137,29 @@ rolling `latest` GitHub prerelease, and uploads fresh package checksums:
 | NetBSD `.tgz` | `netbsd-pkg` (retried once on QEMU infrastructure failure) |
 | Portable static Linux tarball (musl) | `static-linux-fallback` |
 
+Every packaging script configures Meson with `--buildtype=release`. Meson's
+default `debug` build has no `_FORTIFY_SOURCE`, and the server refuses to start
+when its startup hardening self-check cannot confirm it
+([ADR-0148](adr/0148-packaging-paths-pass-buildtype-release-explicitly.md)).
+A new packaging path must do the same, and be added to `PACKAGING_SCRIPTS` in
+`tests/tooling/test_packages_workflow.py`.
+
+Before attesting, the `deb` and `debian-pkg` jobs install the package they
+built and run `scripts/check-startup-hardening-gate.sh` against the installed
+`/usr/bin/merovingian-server`, as the `merovingian` user with an empty
+capability bounding set. The job fails unless every startup hardening check
+reports `enabled` and the server stops cleanly. The `docker-image` job does the
+same for the `Dockerfile`: it builds the image and runs the gate inside it with
+`--cap-drop=ALL --security-opt=no-new-privileges`. The image is not published;
+the job is a gate on the recipe.
+
+The `Dockerfile` pins `debian:trixie-slim` by the digest of its
+multi-architecture index. To move to a newer base, read the current digest
+(for example `docker buildx imagetools inspect debian:trixie-slim`, the
+`Digest:` line of the index, not a per-platform manifest), replace it in both
+`FROM` lines, and let the `docker-image` job prove the new image still passes
+the gate.
+
 Each package is individually attested with
 `actions/attest-build-provenance` before upload, verifiable with:
 

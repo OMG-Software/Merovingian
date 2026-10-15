@@ -142,6 +142,7 @@
 * [0145 - Bind local thumbnail disclosure to source record identity](0145-bind-local-thumbnail-disclosure-to-source-record-identity.md)
 * [0146 - Open the log file without following links, owner-only, and keep truncating it](0146-open-the-log-file-without-following-links-and-owner-only.md)
 * [0147 - Filter the worker's socket families, and restrict them in the systemd unit](0147-filter-worker-socket-families-and-restrict-systemd-address-families.md)
+* [0148 - Packaging paths pass `--buildtype=release` explicitly; `default_options` keeps Meson's default](0148-packaging-paths-pass-buildtype-release-explicitly.md)
 
 ## Proposed Records
 

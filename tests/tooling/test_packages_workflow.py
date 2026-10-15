@@ -8,6 +8,39 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "packages.yml"
+DOCKERFILE = REPO_ROOT / "Dockerfile"
+GATE_SCRIPT = "scripts/check-startup-hardening-gate.sh"
+
+# Every script that builds a shipped artifact with a bare `meson setup`. The RPM
+# specs are not listed: the distribution `%meson` macro pins its own buildtype
+# and supplies optimisation and FORTIFY flags through `%optflags`.
+PACKAGING_SCRIPTS = (
+    "scripts/build-deb.sh",
+    "scripts/build-freebsd-pkg.sh",
+    "scripts/build-netbsd-pkg.sh",
+    "scripts/build-openbsd-pkg.sh",
+    "scripts/build-static-linux.sh",
+)
+
+
+def meson_setup_commands(text: str) -> list[str]:
+    """Return each `meson setup` invocation with its continuation lines joined."""
+    joined = re.sub(r"\\\r?\n", " ", text)
+    return [line for line in joined.splitlines() if "meson setup" in line]
+
+
+def dockerfile_stages(text: str) -> list[str]:
+    """Split a Dockerfile into its build stages, one string per FROM."""
+    stages = re.split(r"(?m)^(?=FROM\s)", text)
+    return [stage for stage in stages if stage.startswith("FROM")]
+
+
+def workflow_job(workflow: str, job: str) -> str:
+    """Return the text of one top-level job in a workflow file."""
+    match = re.search(rf"(?ms)^  {re.escape(job)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", workflow)
+    if match is None:
+        raise AssertionError(f"workflow job {job} is missing")
+    return match.group(1)
 
 
 def project_version() -> str:
@@ -182,6 +215,117 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \\", workflow)
         self.assertIn("gmake openssl libsodium postgresql17-client python3", workflow)
         self.assertNotIn("postgresql17-client curl sqlite3 catch2", workflow)
+
+    def test_every_packaging_script_configures_a_release_buildtype(self) -> None:
+        # GIVEN Meson builds `debug` (-O0) when no buildtype is given, and
+        # glibc only honours _FORTIFY_SOURCE when optimising, so a debug
+        # binary fails the FORTIFY_SOURCE startup check and refuses to start.
+        for script in PACKAGING_SCRIPTS:
+            with self.subTest(script=script):
+                content = (REPO_ROOT / script).read_text(encoding="utf-8")
+
+                # WHEN the script configures the build that it packages.
+                commands = meson_setup_commands(content)
+
+                # THEN every configure step asks for a release buildtype.
+                self.assertTrue(commands, f"{script} has no meson setup step")
+                for command in commands:
+                    self.assertIn("--buildtype=release", command)
+
+    def test_docker_base_images_are_pinned_by_digest(self) -> None:
+        # GIVEN the published container recipe.
+        self.assertTrue(DOCKERFILE.is_file(), "Dockerfile is missing")
+        stages = dockerfile_stages(DOCKERFILE.read_text(encoding="utf-8"))
+
+        # WHEN a stage names its base image.
+        # THEN the image is pinned to an immutable digest, not a mutable tag.
+        self.assertGreaterEqual(len(stages), 2, "Dockerfile must build in a separate stage")
+        for stage in stages:
+            from_line = stage.splitlines()[0]
+            with self.subTest(from_line=from_line):
+                self.assertRegex(from_line, r"^FROM \S+@sha256:[0-9a-f]{64}(\s|$)")
+
+    def test_docker_build_stage_configures_a_hardened_release_build(self) -> None:
+        # GIVEN the Dockerfile build stage.
+        build_stage = dockerfile_stages(DOCKERFILE.read_text(encoding="utf-8"))[0]
+
+        # WHEN it configures Meson.
+        commands = meson_setup_commands(build_stage)
+
+        # THEN the build is a hardened release build without test targets, so
+        # the shipped server passes its own startup hardening gate.
+        self.assertEqual(len(commands), 1, "build stage must configure Meson exactly once")
+        for flag in ("--buildtype=release", "-Dhardening=true", "-Dbuild_tests=false"):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, commands[0])
+
+    def test_docker_build_stage_installs_every_linked_library(self) -> None:
+        # GIVEN the server links libpq and OpenSSL, and the thumbnail worker is
+        # only built when libpng and libturbojpeg are found.
+        build_stage = dockerfile_stages(DOCKERFILE.read_text(encoding="utf-8"))[0]
+
+        # WHEN the build stage installs its development packages.
+        # THEN every library the shipped binaries link is present.
+        for package in (
+            "libpq-dev",
+            "libssl-dev",
+            "libsodium-dev",
+            "libcurl4-openssl-dev",
+            "libpng-dev",
+            "libturbojpeg0-dev",
+        ):
+            with self.subTest(package=package):
+                self.assertRegex(build_stage, rf"(?m)^\s+{re.escape(package)}\b")
+
+    def test_docker_runtime_stage_ships_both_workers_and_their_libraries(self) -> None:
+        # GIVEN the Dockerfile runtime stage.
+        runtime_stage = dockerfile_stages(DOCKERFILE.read_text(encoding="utf-8"))[-1]
+
+        # WHEN it copies binaries out of the build stage.
+        # THEN the server, the federation worker it spawns by default, and the
+        # thumbnail worker are all shipped at their libexec paths.
+        for binary in (
+            "/usr/bin/merovingian-server",
+            "/usr/libexec/merovingian/merovingian-fed-worker",
+            "/usr/libexec/merovingian/merovingian-thumbnail-worker",
+        ):
+            with self.subTest(binary=binary):
+                self.assertRegex(runtime_stage, rf"(?m)^COPY --from=build \S*{re.escape(binary)} {re.escape(binary)}$")
+
+        # THEN the runtime libraries those binaries link are installed.
+        for package in ("libpq5", "libturbojpeg0", "libsodium23"):
+            with self.subTest(package=package):
+                self.assertRegex(runtime_stage, rf"\b{re.escape(package)}\b")
+
+        # THEN the image build fails if any shipped binary has an unresolved
+        # shared library, rather than shipping a binary that cannot start.
+        self.assertIn("ldd", runtime_stage)
+        self.assertIn("not found", runtime_stage)
+
+    def test_packaged_server_startup_gate_runs_in_ci(self) -> None:
+        # GIVEN the startup hardening gate script.
+        self.assertTrue((REPO_ROOT / GATE_SCRIPT).is_file(), f"{GATE_SCRIPT} is missing")
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN CI builds the Debian packages.
+        # THEN each job installs the package and runs the gate against the
+        # installed binary as an unprivileged user with no bounding set.
+        for job in ("deb", "debian-pkg"):
+            with self.subTest(job=job):
+                body = workflow_job(workflow, job)
+                self.assertIn("apt-get install -y --no-install-recommends ./merovingian_", body)
+                self.assertIn("--bounding-set=-all", body)
+                self.assertIn(f"{GATE_SCRIPT} /usr/bin/merovingian-server", body)
+
+        # WHEN CI builds the Docker image.
+        # THEN it runs the gate inside the image with every capability dropped,
+        # as the image's own unprivileged user.
+        body = workflow_job(workflow, "docker-image")
+        self.assertIn("docker build", body)
+        self.assertIn("--cap-drop=ALL", body)
+        self.assertIn("--security-opt=no-new-privileges", body)
+        self.assertIn("check-startup-hardening-gate.sh", body)
+        self.assertIn("/usr/bin/merovingian-server", body)
 
 
 if __name__ == "__main__":

@@ -734,6 +734,50 @@ advertises:
   pass the same flags and strip conflicting `_FORTIFY_SOURCE` definitions from
   the distribution's `%optflags`.
 
+Every packaging path also asks for an optimised build (0.12.26, audit OPS-5).
+Meson builds `debug` (`-O0`) when no buildtype is given, `_FORTIFY_SOURCE` is
+only defined when optimising, and the startup self-check refuses to start a
+binary whose `FORTIFY_SOURCE` check is not `enabled`. So:
+
+* `scripts/build-deb.sh`, `scripts/build-freebsd-pkg.sh`,
+  `scripts/build-netbsd-pkg.sh`, `scripts/build-openbsd-pkg.sh`,
+  `scripts/build-static-linux.sh` and the `Dockerfile` pass
+  `--buildtype=release`. The RPM specs use the distribution `%meson` macro,
+  whose `%optflags` supply `-O2`. `meson.build` keeps Meson's `debug` default
+  for development and test builds ([ADR-0148](adr/0148-packaging-paths-pass-buildtype-release-explicitly.md)),
+  and warns at configure time when hardening is on at `optimization=0`.
+* `tests/tooling/test_packages_workflow.py` fails if any of those scripts, or
+  the Dockerfile, configures Meson without `--buildtype=release`.
+
+The `Dockerfile`:
+
+* pins both stages' `debian:trixie-slim` base by the digest of its
+  multi-architecture index, so a re-pushed tag cannot change the image;
+* builds with libpq, OpenSSL, libpng and libturbojpeg, so the thumbnail worker
+  is built rather than silently skipped;
+* ships `merovingian-server`, `merovingian-db-migrate`, and both workers
+  (`/usr/libexec/merovingian/merovingian-fed-worker`, the path the server
+  spawns by default, and `merovingian-thumbnail-worker`), with their runtime
+  libraries, and fails the image build if `ldd` finds an unresolved library in
+  any of them;
+* runs as the unprivileged `merovingian` user. A non-root process cannot drop
+  its own capability bounding set, so the container must be started with
+  `--cap-drop=ALL` (and should be started with
+  `--security-opt=no-new-privileges`), or the `capability bounding` check
+  stays `unknown` and the server refuses to start. The systemd unit gets the
+  same result from `CapabilityBoundingSet=`.
+
+`scripts/check-startup-hardening-gate.sh` proves a packaged binary actually
+passes the gate. It boots the server against a throwaway SQLite config bound
+to loopback with a fresh owner-only master key, waits for the final self-check,
+and passes only when every check reports `enabled`, the number of `enabled`
+checks equals the number the server says it ran, readiness is
+`ready=true blockers=0`, and the server then exits 0 on `SIGTERM`. Unless
+`--federation-worker` is given it leaves the worker path to the binary's
+built-in libexec default, so a pass also proves the package installed the
+worker where the server looks for it. Its decisions are covered by
+`tests/tooling/test_startup_hardening_gate.py` against a fake server.
+
 ## CI gates
 
 Hardening is exercised by automated tests:
@@ -782,6 +826,13 @@ Hardening is exercised by automated tests:
   against every shipped binary in the `ubuntu-hardened-listener-coverage`
   CI job and per-platform in `.github/workflows/release.yml` via
   `scripts/collect-release-evidence.sh`.
+* `scripts/check-startup-hardening-gate.sh` (0.12.26, audit OPS-5) runs the
+  real startup gate against what is shipped. In
+  `.github/workflows/packages.yml` the `deb` and `debian-pkg` jobs install the
+  built `.deb` and run it as the `merovingian` user under
+  `setpriv --bounding-set=-all`, and the `docker-image` job builds the
+  `Dockerfile` and runs it inside the image with `--cap-drop=ALL
+  --security-opt=no-new-privileges`. The BSD package jobs do not run it yet.
 
 Because seccomp/pledge/unveil are permanent in-process, the test suite sets
 `MEROVINGIAN_TEST_DISABLE_HARDENING=1` when invoking `meson test`. The build

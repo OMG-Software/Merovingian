@@ -70,6 +70,12 @@ shell = find_program('sh')
   )
 
   test(
+    'startup-hardening-gate-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],
+  )
+
+  test(
     'example-config-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_example_config.py'],

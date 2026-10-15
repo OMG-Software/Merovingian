@@ -25,7 +25,11 @@ rm -rf "${STAGE}" build-netbsd-pkg pkg-build "+CONTENTS" "+COMMENT" "+DESC" "+BU
 
 # 1. Configure + build with NetBSD/pkgsrc prefix conventions. forcefallback
 #    vendors sqlite/yyjson; libcurl is a system dependency on every platform.
+#    --buildtype=release: Meson otherwise builds `debug` (-O0), where
+#    _FORTIFY_SOURCE has no effect and the server's startup hardening gate
+#    refuses to start (ADR-0148).
 meson setup build-netbsd-pkg \
+    --buildtype=release \
     --prefix="${PREFIX}" \
     --sysconfdir="${PREFIX}/etc" \
     --wrap-mode=forcefallback \

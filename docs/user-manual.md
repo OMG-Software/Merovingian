@@ -1483,6 +1483,21 @@ scaffolds until the production gates in
 do not publish them as a production release while runtime listeners, durable
 storage, federation verification, or hardening checks remain incomplete.
 
+The server refuses to start unless every check in the table above reports
+`enabled`, and two deployment details decide that:
+
+* **Build optimised.** Meson's default buildtype is `debug` (`-O0`), which
+  leaves `_FORTIFY_SOURCE` undefined, so the `FORTIFY_SOURCE` check stays
+  `unknown`. The packaging scripts and the `Dockerfile` pass
+  `--buildtype=release`; if you build from source, do the same
+  (`meson setup build --buildtype=release -Dhardening=true`). Meson prints a
+  warning at configure time if you do not.
+* **Run with no capabilities.** A non-root process cannot drop its own
+  capability bounding set. The systemd unit empties it with
+  `CapabilityBoundingSet=`; for the Docker image, start the container with
+  `docker run --cap-drop=ALL --security-opt=no-new-privileges ...`, or the
+  `capability bounding` check stays `unknown`.
+
 ## Database backends
 
 ### SQLite (development and evaluation)

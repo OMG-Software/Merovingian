@@ -15,7 +15,11 @@ PREFIX=/usr/local
 rm -rf "${STAGE}" build-openbsd-pkg pkg-plist-openbsd "merovingian-${VERSION}.tgz"
 
 # 1. Configure + build with OpenBSD prefix conventions.
+#    --buildtype=release: Meson otherwise builds `debug` (-O0), where
+#    _FORTIFY_SOURCE has no effect and the server's startup hardening gate
+#    refuses to start (ADR-0148).
 meson setup build-openbsd-pkg \
+    --buildtype=release \
     --prefix="${PREFIX}" \
     --sysconfdir=/etc \
     --wrap-mode=forcefallback \

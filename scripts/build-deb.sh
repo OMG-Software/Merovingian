@@ -12,7 +12,11 @@ STAGING="staging-deb"
 #    source-pinned wraps; OS-supplied libraries (OpenSSL, libsodium, libpq,
 #    libcurl) are resolved from the system with allow_fallback=false.
 #    -pie: position-independent executable so the kernel applies ASLR.
+#    --buildtype=release: Meson otherwise builds `debug` (-O0), where
+#    _FORTIFY_SOURCE has no effect and the server's startup hardening gate
+#    refuses to start (ADR-0148).
 CC=clang CXX=clang++ meson setup build-deb \
+    --buildtype=release \
     --prefix=/usr \
     --sysconfdir=/etc \
     --wrap-mode=forcefallback \

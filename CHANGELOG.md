@@ -5,6 +5,29 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (OPS-5):** the Docker image and the deb and BSD packages built at Meson's
+  default `debug` buildtype (`-O0`), so `_FORTIFY_SOURCE` was never defined and every
+  shipped server refused to start at its startup hardening gate. `scripts/build-deb.sh`,
+  `build-freebsd-pkg.sh`, `build-netbsd-pkg.sh`, `build-openbsd-pkg.sh` and the
+  `Dockerfile` now pass `--buildtype=release`; `meson.build` keeps the `debug` default
+  for development builds and warns at configure time when hardening meets
+  `optimization=0` (ADR-0148). The `Dockerfile` pins `debian:trixie-slim` by index
+  digest in both stages, installs `libpq-dev`/`libpq5` and the other libraries the
+  binaries link (with trixie's `t64` runtime names), ships `merovingian-db-migrate`,
+  `merovingian-fed-worker` and `merovingian-thumbnail-worker`, and fails its own build
+  if `ldd` finds an unresolved library; a new `.dockerignore` keeps local build
+  directories out of the context. New `scripts/check-startup-hardening-gate.sh` boots
+  a packaged server against a throwaway SQLite config and passes only when every
+  hardening check reports `enabled`, the count matches, and the server exits 0 on
+  `SIGTERM`. `packages.yml` runs it against the installed `.deb` in the `deb` and
+  `debian-pkg` jobs (as `merovingian`, `setpriv --bounding-set=-all`) and inside the
+  image in a new `docker-image` job (`--cap-drop=ALL
+  --security-opt=no-new-privileges`). The BSD package jobs do not run it yet. Tests:
+  `test_packages_workflow.py` gains six scenarios (buildtype per script, digest pins,
+  Dockerfile build flags and libraries, shipped workers, CI wiring); new
+  `test_startup_hardening_gate.py` (registered as `startup-hardening-gate-tooling`)
+  covers the gate's seven decisions against a fake server. RED: 18 packaging subtests
+  failed and the gate script did not exist.
 - **FIXED (ISO-8):** the federation worker's seccomp profile argument-checks
   `socket()`: `AF_UNIX`, `AF_INET` and `AF_INET6` are allowed, `AF_NETLINK` answers
   `EAFNOSUPPORT` so glibc's `getaddrinfo` address-sorting probe falls back, and any
