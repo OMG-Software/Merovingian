@@ -173,11 +173,13 @@ SCENARIO("Reauthorized auth-difference candidates retain trusted receipt metadat
     }
 }
 
-// Characterization only, NOT a conformance claim or an EVT-12(d) fix.
-// Matrix v1.19 rooms/v3.md-v5.md allow finite float levels with truncation;
-// the existing strict event pipeline still rejects them and is left unchanged.
-SCENARIO("Legacy floating power levels remain a fail-closed compatibility gap",
-         "[events][security][evt-12d-characterization]")
+// EVT-12 (d), ADR-0150. Matrix v1.19 rooms/v3.md-v5.md allow finite float
+// levels, read by truncation, and the auth rules now do. Hashing is unchanged:
+// Canonical JSON has no floats and the spec defines no encoding for them, so
+// the strict parser used for event IDs and content hashes still refuses the
+// event, and such an event cannot arrive over federation.
+SCENARIO("Legacy floating power levels are read by truncation but still refused by Canonical JSON",
+         "[events][security][evt12]")
 {
     GIVEN("a legacy power-level event with a finite fractional scalar")
     {
@@ -201,10 +203,9 @@ SCENARIO("Legacy floating power levels remain a fail-closed compatibility gap",
         WHEN("authorization receives the fractional scalar")
         {
             auto const result = events::authorize_event_against_auth_events(parsed.value, policy, auth);
-            THEN("the existing implementation refuses it rather than granting permission")
+            THEN("the auth rules accept it, and Canonical JSON parsing still refuses it")
             {
-                REQUIRE_FALSE(result.allowed);
-                REQUIRE(result.reason == "state_default must be an integer");
+                REQUIRE(result.allowed);
                 REQUIRE(canonicaljson::parse_lossless(json).error == canonicaljson::ParseError::invalid_number);
             }
         }

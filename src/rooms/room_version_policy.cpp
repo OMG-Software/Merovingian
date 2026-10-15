@@ -16,6 +16,8 @@ namespace
     //   create_event_is_room_id, privilege_room_creators: v12 (MSC4291, MSC4289).
     //   power_levels_require_integers: v10+ (rooms/v10.md, "Values in
     //     m.room.power_levels events must be integers").
+    //   power_levels_accept_floats: v1-v5 (rooms/v3.md, "m.room.power_levels
+    //     events accept values as floats"; v6 enforces Canonical JSON).
     //   Join rules: knock v7+, restricted v8+, knock_restricted v10+.
     //   redaction_keeps_aliases: v1-v5 (rooms/v6.md removed m.room.aliases
     //     from the redaction algorithm).
@@ -34,6 +36,7 @@ namespace
                           .redaction_rules = RedactionRules::room_v1_v7,
                           .auth_rules = AuthRules::room_v1,
                           .stable = true,
+                          .power_levels_accept_floats = true,
                           .redaction_keeps_aliases = true,
                           .ignores_key_validity = true,
                           .event_id_url_safe_base64 = false},
@@ -41,12 +44,14 @@ namespace
                           .redaction_rules = RedactionRules::room_v1_v7,
                           .auth_rules = AuthRules::room_v1,
                           .stable = true,
+                          .power_levels_accept_floats = true,
                           .redaction_keeps_aliases = true,
                           .ignores_key_validity = true},
         RoomVersionPolicy{.id = "5",
                           .redaction_rules = RedactionRules::room_v1_v7,
                           .auth_rules = AuthRules::room_v1,
                           .stable = true,
+                          .power_levels_accept_floats = true,
                           .redaction_keeps_aliases = true},
         RoomVersionPolicy{.id = "6", .redaction_rules = RedactionRules::room_v1_v7, .stable = true},
         RoomVersionPolicy{

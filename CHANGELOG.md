@@ -5,6 +5,19 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (EVT-12 (d)):** room versions 3-5 refused a float power level, which
+  `rooms/v3.md` allows ("exponential notation is applied ... the value is truncated at the
+  decimal point"). New `RoomVersionPolicy::power_levels_accept_floats` (v3-v5) and
+  `events::PowerLevelEncoding` replace the `allow_string_values` flag, so the auth rules, the
+  state resolver's power ordering, redaction judgement and push all read integers, integer
+  strings (v1-v9) and truncated floats (v1-v5) by the room's own version. Infinity, NaN and
+  values beyond int64 are refused. Hashing is unchanged: Canonical JSON defines no float
+  encoding, so such an event still cannot be parsed for its event ID or content hash
+  (ADR-0150). Tests: three `[evt12]` conformance scenarios in `test_event_auth_rules.cpp`
+  (v5 truncation, v4 `1.0E2` honoured, v6 refused); the unit characterization in
+  `test_event_auth_rejected_fallback.cpp` now asserts the new contract. RED: both v5
+  acceptance cases were refused.
+
 - **FIXED (DB-4):** a ban could commit while the banned user's `membership` row still
   said `join`, and every restart rebuilt the room's roster from that row, so the user
   could read `/joined_members` again. Every path that stores an `m.room.member` event

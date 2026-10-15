@@ -153,7 +153,7 @@ change commit in the event's own transaction on both backends, and hydration rec
 the rows from current state (ADR-0149). Fresh full WSL run: 57 OK, 0 failed, 0 timed out.
 
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 34 are fixed, 5 are partly fixed and 7 are open.
+fixed. Of the 46 low findings, 35 are fixed, 4 are partly fixed and 7 are open.
 
 ### Fixed
 
@@ -284,6 +284,12 @@ Residual notes on fixed findings:
 |----|------------|
 | DB-4 | `database::MembershipProjection` writes the `membership` row (upsert) and the invite change (upsert, or keyed delete for join/leave/ban) in the same transaction as the member event and its `current_state` row, on SQLite and PostgreSQL. Every member-event path passes one: `persist_composed_event`, the federated `join_room`, inbound `send_join`/`send_leave`/`send_knock`, `/invite` and `/send` PDUs; a federated leave and `/invite` for a held room use `store_membership_projection`. `hydrate_local_database` runs `reconcile_memberships_with_current_state` for main's full load profile only (never in the federation worker) before building the roster: a missing row, a `join` row the current member event does not support, or a row older than that event is rewritten; a newer row is kept. Tested by a tampered SQLite store restarted through the client API, a SQLite trigger refusing the row during a ban, a gated PostgreSQL trigger variant (run against the local test database) and in-memory reconciliation cases (`[db4]`). ADR-0149. Residual: state-group, extremity and recomputed current-state rows still commit separately from the event. |
 
+### Fixed — low, completed partials, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| EVT-12 | (a), (b) and (c) as before. (d): `RoomVersionPolicy::power_levels_accept_floats` (v3–v5) and `events::PowerLevelEncoding` (integers / plus strings in v1–v9 / plus floats in v1–v5, derived only by `power_level_encoding(policy)`) make the auth rules, the state resolver's power sort, redaction judgement and push read a float power level as `rooms/v3.md` says: truncated, Infinity/NaN rejected; a value beyond int64 is also refused (fails closed). Hashing stays strict: Canonical JSON defines no float encoding, so a float-bearing event still cannot be parsed for its event ID or content hash (ADR-0150). Tested by conformance scenarios for v4/v5 acceptance and honouring and v6 rejection (`[evt12]`); RED: the two acceptance cases were refused. |
+
 ### Partial — low, federation key admission, 11 October 2026
 
 | ID | Resolution |
@@ -299,7 +305,6 @@ None.
 | ID | State | What remains |
 |----|-------|--------------|
 | FED-10 | Partial | Core overload repair is independently reviewed; main IPC PDU/membership/invite admission and mixed-failure/EDU retry are now repaired with genuine RED evidence. Normal unit FED-10 passed 716 assertions / 10 cases and related inbound 1205 / 59; latest post-backfill integration passed 1522 / 8 (new admission regression 172 / 1, all backfill 2173 / 17). The pre-backfill WSL checkpoint passed 56 targets with zero failures/timeouts; one unit case remained skipped. Independent source-only review (deleg_18fcd7ae) approved the unchanged main slice. Actual separate-process worker/socket-HTTP overload propagation is now verified (262 / 1); the earlier substituted IPC fixture remains narrower evidence. Backfill/snapshot/auth-chain admission now has genuine RED/GREEN and a fresh 56-target full pass. Independent source-only backfill review (deleg_97884571) passed with no material findings. Both later test delegates failed provider limits; preserved fixtures were repaired directly and independently passed sticky denial 200 / 1, partial-progress retry 314 / 1, all backfill 2687 / 19 and total FED-10 integration 2298 / 11. Fresh recovered full checkpoint: 56 OK, zero failed/timed-out targets, all return codes 0, ten tracked hashes unchanged. Aggregate cross-shard limits remain unestablished. Direct state/auth-chain denial and backfill-specific cache rejection/negative-hit cases remain coverage suggestions, not executed proof; whole-finding acceptance remains pending. |
-| EVT-12 | Partial | (a) v3–v5 aliases domain authorization and (c) rejection-aware inbound auth selection / resolver fallback are implemented and tested; (b) was already fixed. (d) legacy finite fractional power levels remain rejected by the strict pipeline, contrary to the legacy spec, and remain unresolved. |
 | OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
 | MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). Since 0.12.26 a local thumbnail is published only if its source record is still available, bound to the same blob and visible on the endpoint used, checked after the decode with the lock re-taken; a test holds the real worker at a gate while `/versions` and admin quarantine/removal proceed (ADR-0145). There is still no thumbnail cache and no per-user concurrency cap, and remote thumbnails are not revalidated against a local identity. |
 | ISO-7 | Partial | Master, registration-token, main/worker database URI and bootstrap-password reads use owner/mode/type-validated descriptors and locked buffers. TLS/private-key handoff and the separate cache-identity/load association still need review; no whole-finding closure is claimed. |

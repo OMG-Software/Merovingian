@@ -144,6 +144,7 @@
 * [0147 - Filter the worker's socket families, and restrict them in the systemd unit](0147-filter-worker-socket-families-and-restrict-systemd-address-families.md)
 * [0148 - Packaging paths pass `--buildtype=release` explicitly; `default_options` keeps Meson's default](0148-packaging-paths-pass-buildtype-release-explicitly.md)
 * [0149 - Membership rows commit with their event, and are reconciled from current state at startup](0149-membership-rows-commit-with-their-event-and-are-reconciled-at-startup.md)
+* [0150 - Legacy float power levels are read by the auth rules, but never hashed](0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)
 
 ## Proposed Records
 

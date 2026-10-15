@@ -98,7 +98,7 @@ Implemented now:
   `state_default`, so a level-50 moderator could rewrite a room whose
   `events["m.room.power_levels"]` was 100 (the createRoom default), and
   conformant peers rejected the event. The `events` value is read with the room
-  version's rules (string-encoded before v10).
+  version's rules (string-encoded before v10; float before v6, truncated, ADR-0150).
 - **A negative `users` entry is the user's level.** The `users` lookup returns
   `std::optional<int64_t>` and `users_default` applies only when the user is
   absent from `users`. Before this fix a `-1` sentinel meant "absent", so a user
@@ -446,7 +446,9 @@ stating explicitly, because all three were defects (the first two until
   the authorization path already parses them, so an integer-only read in the
   resolver silently demoted such a sender to `users_default` and let a
   lower-power event win. `reverse_topological_power_sort` therefore takes a
-  `RoomVersionPolicy` and honours `power_levels_require_integers`. **The
+  `RoomVersionPolicy` and reads levels through `effective_sender_power`, which
+  follows `events::power_level_encoding(policy)` (integers; plus strings in
+  v1-v9; plus floats, truncated, in v1-v5: EVT-12 (d), ADR-0150). **The
   resolver and `authorization.cpp` must agree on this**: if they disagree,
   events are ordered by a power level the auth rules cannot see.
 - **The auth-event map built from resolved state includes

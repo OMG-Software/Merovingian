@@ -92,7 +92,7 @@ auto sender_meets_redact_level(canonicaljson::Value const& redaction_event, Reda
     }
     auto const redact_level = has_content(context.power_levels)
                                   ? extract_power_level_key(context.power_levels, "redact", default_redact_level,
-                                                            !policy.power_levels_require_integers)
+                                                            power_level_encoding(policy))
                                   : default_redact_level;
     return effective_sender_power(context.power_levels, *sender, context.create, policy) >= redact_level;
 }
