@@ -84,8 +84,12 @@ server=$1
 
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/merovingian-gate.XXXXXX")
 chmod 0700 "$workdir"
-config="$workdir/merovingian.conf"
-master_key="$workdir/master.key"
+# Config, database and secret each get their own directory, as in a real
+# deployment: the federation worker's Landlock rules cover the config and
+# database directories, and it refuses to start if a secret file sits in one.
+mkdir -m 0700 "$workdir/etc" "$workdir/data" "$workdir/secrets"
+config="$workdir/etc/merovingian.conf"
+master_key="$workdir/secrets/master.key"
 log="$workdir/server.log"
 pid_file="$workdir/server.pid"
 status_file="$workdir/server.status"
@@ -116,7 +120,7 @@ chmod 0400 "$master_key"
     echo "listeners.federation.bind=127.0.0.1:${federation_port}"
     echo "listeners.federation.tls=false"
     echo "database.backend=sqlite"
-    echo "database.sqlite_path=${workdir}/merovingian.sqlite3"
+    echo "database.sqlite_path=${workdir}/data/merovingian.sqlite3"
     echo "security.secrets.master_key_file=${master_key}"
     # The gate is about the main process's self-check. Landlock is still
     # applied to the worker wherever the kernel (or container seccomp profile)

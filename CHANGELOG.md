@@ -50,8 +50,18 @@ combined test suite is complete.
   `test_packages_workflow.py` gains six scenarios (buildtype per script, digest pins,
   Dockerfile build flags and libraries, shipped workers, CI wiring); new
   `test_startup_hardening_gate.py` (registered as `startup-hardening-gate-tooling`)
-  covers the gate's seven decisions against a fake server. RED: 18 packaging subtests
-  failed and the gate script did not exist.
+  covers the gate's eight decisions against a fake server. RED: 18 packaging subtests
+  failed and the gate script did not exist. Run against a real `--buildtype=release
+  -Dhardening=true` server (non-root, empty bounding set via a user namespace) the
+  gate first failed because the master key shared the config's directory, which the
+  federation worker's Landlock guard rightly refuses; config, database and key now get
+  separate directories (new scenario, RED then GREEN). It then passed with all 15
+  checks `enabled` and a clean `SIGTERM` exit, and against a `debug` build it failed
+  on `FORTIFY_SOURCE=unknown` and `compiler hardening=unknown`, the audit's
+  reproduction. Full hardened WSL run at the first commit: 56 OK, 1 Fail
+  (`conformance-tests`: "GET /sync returns spec-shaped room category objects" gets a
+  500 from `createRoom` with an invite; it fails 2 of 20 times run alone and is
+  unrelated to this change, which touches no C++), 0 timed out.
 - **FIXED (ISO-8):** the federation worker's seccomp profile argument-checks
   `socket()`: `AF_UNIX`, `AF_INET` and `AF_INET6` are allowed, `AF_NETLINK` answers
   `EAFNOSUPPORT` so glibc's `getaddrinfo` address-sorting probe falls back, and any

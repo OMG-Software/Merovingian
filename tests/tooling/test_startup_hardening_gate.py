@@ -34,6 +34,7 @@ FAKE_SERVER = textwrap.dedent(
         shift
     done
     cp "$config" "$FAKE_OUT/config"
+    printf '%s\\n' "$config" > "$FAKE_OUT/config_path"
     key=$(sed -n 's/^security\\.secrets\\.master_key_file=//p' "$config")
     wc -c < "$key" | tr -d ' ' > "$FAKE_OUT/key_bytes"
     ls -l "$key" | cut -c1-10 > "$FAKE_OUT/key_mode"
@@ -125,6 +126,27 @@ class StartupHardeningGateTests(unittest.TestCase):
         self.assertRegex(config, r"(?m)^listeners\.federation\.bind=127\.0\.0\.1:\d+$")
         self.assertEqual((self.out / "key_bytes").read_text(encoding="utf-8").strip(), "32")
         self.assertEqual((self.out / "key_mode").read_text(encoding="utf-8").strip(), "-r--------")
+
+    def test_keeps_the_master_key_out_of_the_config_and_database_directories(self) -> None:
+        # GIVEN the federation worker refuses to start when its Landlock rule
+        # for the config or database directory would also cover a secret.
+        # WHEN the gate writes the server's config.
+        self.run_gate("ready")
+
+        # THEN the master key lives in a directory of its own.
+        config = (self.out / "config").read_text(encoding="utf-8")
+        config_dir = Path((self.out / "config_path").read_text(encoding="utf-8").strip()).parent
+
+        def setting(key: str) -> str:
+            prefix = f"{key}="
+            return next(line[len(prefix):] for line in config.splitlines() if line.startswith(prefix))
+
+        key_dir = Path(setting("security.secrets.master_key_file")).parent
+        database_dir = Path(setting("database.sqlite_path")).parent
+        self.assertNotEqual(key_dir, config_dir)
+        self.assertNotEqual(key_dir, database_dir)
+        self.assertNotIn(config_dir, key_dir.parents)
+        self.assertNotIn(database_dir, key_dir.parents)
 
     def test_uses_the_packaged_federation_worker_unless_told_otherwise(self) -> None:
         # GIVEN no explicit worker path.
