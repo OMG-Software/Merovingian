@@ -184,9 +184,14 @@ struct StateBeforeResult final
 // Local events are authorised by the caller's own checks
 // (events::authorize_event_against_auth_events, already run during
 // composition); this function does not re-authorise.
+//
+// DB-4: `membership`, for an m.room.member event, is committed in the same
+// transaction as the event and its current_state row (see
+// database::MembershipProjection).
 [[nodiscard]] auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
                                      database::PersistentEvent event,
                                      std::optional<database::PersistentStateEvent> state,
-                                     events::StateResolutionLimits const& limits = {}) -> bool;
+                                     events::StateResolutionLimits const& limits = {},
+                                     std::optional<database::MembershipProjection> membership = std::nullopt) -> bool;
 
 } // namespace merovingian::homeserver

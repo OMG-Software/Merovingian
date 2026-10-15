@@ -143,6 +143,7 @@
 * [0146 - Open the log file without following links, owner-only, and keep truncating it](0146-open-the-log-file-without-following-links-and-owner-only.md)
 * [0147 - Filter the worker's socket families, and restrict them in the systemd unit](0147-filter-worker-socket-families-and-restrict-systemd-address-families.md)
 * [0148 - Packaging paths pass `--buildtype=release` explicitly; `default_options` keeps Meson's default](0148-packaging-paths-pass-buildtype-release-explicitly.md)
+* [0149 - Membership rows commit with their event, and are reconciled from current state at startup](0149-membership-rows-commit-with-their-event-and-are-reconciled-at-startup.md)
 
 ## Proposed Records
 
@@ -172,3 +173,4 @@
 * [0032 - Throttle failed logins per claimed account](0032-throttle-failed-logins-per-claimed-account.md) — Refined by ADR-0122: failures are counted per (account, source) with an account-wide ceiling
 * [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md) — Superseded by ADR-0121 for remote media downloads and thumbnails, which run on their own pool; directory lookups keep this budget
 * [0015 - Keep the signing secret out of the federation worker](0015-keep-the-signing-secret-out-of-the-federation-worker.md) — Superseded by ADR-0078 for the signing-oracle part (the `sign_request` frame); the signing secret still never enters the worker
+* [0126 - Local membership is projected once, at the local-event choke point](0126-local-membership-is-projected-once-at-the-local-event-choke-point.md) — Refined by ADR-0149: the projection commits in the event's own transaction, and a row is realigned if resolution leaves another member event current

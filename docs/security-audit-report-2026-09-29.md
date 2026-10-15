@@ -148,8 +148,12 @@ umask and package-script parts were on the branch already and were reviewed; the
 their libraries; the packages workflow boots the installed deb and the Docker image
 through `scripts/check-startup-hardening-gate.sh` (ADR-0148).
 
+**Update:** 15 October 2026 — DB-4 is fixed. A member event's `membership` row and invite
+change commit in the event's own transaction on both backends, and hydration reconciles
+the rows from current state (ADR-0149). Fresh full WSL run: 57 OK, 0 failed, 0 timed out.
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 33 are fixed, 5 are partly fixed and 8 are open.
+fixed. Of the 46 low findings, 34 are fixed, 5 are partly fixed and 7 are open.
 
 ### Fixed
 
@@ -274,6 +278,12 @@ Residual notes on fixed findings:
 |----|------------|
 | OPS-5 | `scripts/build-deb.sh`, the three BSD package scripts and the `Dockerfile` pass `--buildtype=release` (the static script already did; the RPM specs get `-O2` from `%optflags`); `meson.build` keeps Meson's `debug` default for development builds and warns when hardening meets `optimization=0` (ADR-0148). The Dockerfile pins `debian:trixie-slim` by index digest, builds with libpq, OpenSSL, libpng and libturbojpeg, ships `merovingian-db-migrate`, `merovingian-fed-worker` and `merovingian-thumbnail-worker` with their runtime libraries, and fails its own build on an unresolved `ldd` entry. `scripts/check-startup-hardening-gate.sh` boots a packaged server and passes only when every startup hardening check reports `enabled` and it stops cleanly; the `deb`, `debian-pkg` and new `docker-image` jobs run it against the installed package and the built image. Tested by `test_packages_workflow.py` and `test_startup_hardening_gate.py`. The BSD package jobs do not run the gate yet. |
 
+### Fixed — low, membership atomicity, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| DB-4 | `database::MembershipProjection` writes the `membership` row (upsert) and the invite change (upsert, or keyed delete for join/leave/ban) in the same transaction as the member event and its `current_state` row, on SQLite and PostgreSQL. Every member-event path passes one: `persist_composed_event`, the federated `join_room`, inbound `send_join`/`send_leave`/`send_knock`, `/invite` and `/send` PDUs; a federated leave and `/invite` for a held room use `store_membership_projection`. `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the roster: a missing row, a `join` row the current member event does not support, or a row older than that event is rewritten; a newer row is kept. Tested by a tampered SQLite store restarted through the client API, a SQLite trigger refusing the row during a ban, a gated PostgreSQL trigger variant (run against the local test database) and in-memory reconciliation cases (`[db4]`). ADR-0149. Residual: state-group, extremity and recomputed current-state rows still commit separately from the event. |
+
 ### Partial — low, federation key admission, 11 October 2026
 
 | ID | Resolution |
@@ -294,8 +304,8 @@ None.
 | MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). Since 0.12.26 a local thumbnail is published only if its source record is still available, bound to the same blob and visible on the endpoint used, checked after the decode with the lock re-taken; a test holds the real worker at a gate while `/versions` and admin quarantine/removal proceed (ADR-0145). There is still no thumbnail cache and no per-user concurrency cap, and remote thumbnails are not revalidated against a local identity. |
 | ISO-7 | Partial | Master, registration-token, main/worker database URI and bootstrap-password reads use owner/mode/type-validated descriptors and locked buffers. TLS/private-key handoff and the separate cache-identity/load association still need review; no whole-finding closure is claimed. |
 
-Open, with no accepted implementation yet: FED-12, DB-4, DB-6, DB-7, DB-8, DB-9, OPS-2,
-OPS-4. In-progress changes in the branch do not count as accepted fixes.
+Open, with no accepted implementation yet: FED-12, DB-6, DB-7, DB-8, DB-9, OPS-2, OPS-4.
+In-progress changes in the branch do not count as accepted fixes.
 
 
 The `deny_ip_ranges` documentation correction (OUT-8) and fail-closed token issuance

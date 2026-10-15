@@ -223,12 +223,19 @@ API's `error_code_for()` and `wrap()` return it. Do not encode an errcode into t
 `event_too_large_result()` (`400 M_TOO_LARGE`), never the 403 or 500 it uses for other failures. The limits are
 checked on the signed canonical JSON, so do not add a cheaper pre-check on the request body in their place.
 
-## Membership projection (CSAZ-6, ADR-0126)
+## Membership projection (CSAZ-6, DB-4, ADR-0126, ADR-0149)
 
-`persist_composed_event` projects every `m.room.member` event it stores that became current state
-(`project_local_membership`: the `memberships` row, `LocalRoom.members`, device-list share changes, invite
+`persist_composed_event` projects every `m.room.member` event it stores (`local_membership_projection` and
+`finish_local_membership`: the `memberships` row, `LocalRoom.members`, device-list share changes, invite
 metadata). A new membership path stores its event through `persist_composed_event` and does not touch those
 itself; projecting twice allocates a second stream ordering and duplicates device-list changes.
+
+The `memberships` row and invite change are never written in a transaction of their own after the event: pass
+a `database::MembershipProjection` to `store_event_with_state` / `prepare_store_event_with_state` (or
+`store_local_event`), so they commit with the event and its `current_state` row. A membership change with no
+event stored here (a federated leave, `/invite` for a room whose state this server holds) uses
+`store_membership_projection`. Writing the row separately is how a ban became durable while the row still
+said `join` (DB-4). Hydration reconciles the rows from current state before building the roster.
 
 ## Gates that stand for a state event (CSAZ-12, ADR-0127)
 

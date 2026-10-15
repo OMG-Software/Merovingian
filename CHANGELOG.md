@@ -5,6 +5,30 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (DB-4):** a ban could commit while the banned user's `membership` row still
+  said `join`, and every restart rebuilt the room's roster from that row, so the user
+  could read `/joined_members` again. Every path that stores an `m.room.member` event
+  wrote the event and its `current_state` row in one transaction and the row and invite
+  metadata in later ones. The row and invite change are now a
+  `database::MembershipProjection` committed in the event's own transaction on both
+  backends: local membership changes (`persist_composed_event`), the federated
+  `join_room`, inbound `send_join`/`send_leave`/`send_knock`, `/invite` and PDUs over
+  `/send`. A federated leave, and `/invite` for a room this server holds, write row and
+  invite together with `store_membership_projection`. At startup
+  `hydrate_local_database` reconciles the rows from current state before building the
+  roster: a row is rewritten when it is missing, says `join` while the current member
+  event does not, or is older than that event; a newer row (a federated leave or an
+  `/invite` whose event has not arrived) is kept. Inbound PDUs no longer log and drop a
+  failed membership write after accepting the event. ADR-0149 (refines ADR-0126); no
+  schema change. Tests: new `test_security_audit_membership_atomicity_flow.cpp`
+  (`[db4]`: a tampered SQLite store regains no access after a restart; a SQLite trigger
+  that refuses bob's row leaves no ban event or state; the PostgreSQL variant, gated on
+  `MEROVINGIAN_TEST_POSTGRESQL_URI`, with a real trigger) and new
+  `test_security_audit_db_4.cpp` (reconciliation rule and projection atomicity on the
+  in-memory store). RED: after a restart bob's `/joined_members` returned 200 and alice's
+  roster listed him, and with his row refused the ban event and its current state were
+  still durable (5 failed assertions).
+
 - **FIXED (OPS-5):** the Docker image and the deb and BSD packages built at Meson's
   default `debug` buildtype (`-O0`), so `_FORTIFY_SOURCE` was never defined and every
   shipped server refused to start at its startup hardening gate. `scripts/build-deb.sh`,

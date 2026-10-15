@@ -401,9 +401,17 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/homeserver/AGENTS.md`.
 
 - **A locally created `m.room.member` event is projected into the membership tables only by
-  `persist_composed_event`, and only when it became current state.**
+  `persist_composed_event`, and the row follows current state.**
   Why: when each endpoint projected for itself, a ban sent through the state API changed room
   state but left the user listed as joined, able to rejoin (audit CSAZ-6, ADR-0126).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A `memberships` row and its invite change commit in the same transaction as the member
+  event and its `current_state` row (`database::MembershipProjection`), never after it; startup
+  reconciles the rows from current state before building the roster.**
+  Why: written separately, a fault between the two left a durable ban with a row still saying
+  `join`, and hydration made the banned user a member again on every restart (audit DB-4,
+  ADR-0149).
   Source: `src/homeserver/AGENTS.md`.
 
 ## Federation (the highest-risk surface — all input comes from untrusted remote servers)

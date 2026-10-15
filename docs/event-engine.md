@@ -651,10 +651,16 @@ before mutation rather than rely on SQL binding, and to preserve one-pass
 path decoding without blanket payload filtering, is recorded in proposed
 [ADR-0137](adr/0137-reject-nul-before-mutation-and-path-decoding.md).
 
-`persist_composed_event` projects every `m.room.member` event it stores that is now the current state for its
-user (`project_local_membership`, ADR-0126): the `memberships` row, `LocalRoom.members`, device-list share
-changes and invite metadata. That covers the membership APIs and `PUT /state/m.room.member` alike; callers do
-not project on their own.
+`persist_composed_event` projects every `m.room.member` event it stores (ADR-0126): the `memberships` row,
+`LocalRoom.members`, device-list share changes and invite metadata. That covers the membership APIs and
+`PUT /state/m.room.member` alike; callers do not project on their own. The row and the invite change are a
+`database::MembershipProjection` committed in the event's own transaction, with its `current_state` row
+(`local_membership_projection`, DB-4, ADR-0149); `finish_local_membership` then updates the roster and
+device lists, and realigns the row if state resolution left a different member event current. Inbound member
+events (`send_join`, `send_leave`, `send_knock`, `/invite`, PDUs over `/send`) pass a projection the same
+way. At startup `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
+roster: a row is rewritten to the current member event when it is missing, when it says `join` and the event
+does not, or when the event is newer; a row newer than its event (a federated leave, an `/invite`) is kept.
 
 ### Phase B2: the receipt-order auth checks themselves (ADR-0064)
 

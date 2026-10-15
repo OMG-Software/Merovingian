@@ -533,6 +533,45 @@ auto hydrate_local_database(LocalDatabase& database) -> void
                                      token.predecessor_refresh_hash});
     }
 
+    database.next_session_id = static_cast<std::uint64_t>(database.sessions.size()) + 1U;
+    database.next_event_id = static_cast<std::uint64_t>(database.persistent_store.events.size()) + 1U;
+    for (auto const& event : database.persistent_store.events)
+    {
+        if (event.stream_ordering >= database.next_stream_ordering)
+        {
+            database.next_stream_ordering = event.stream_ordering + 1U;
+        }
+    }
+    // Some stream_ordering allocations (membership stream positions) are not
+    // backed by a persisted event row, so the counter rebuilt from events
+    // alone can lag the previous lifetime's — which would put clients'
+    // persisted pos/since tokens ahead of the live stream and invalidate
+    // them all on every restart. Merge in the persisted watermark, then
+    // persist the resulting floor so it exists even on fresh upgrades.
+    if (database.persistent_store.event_stream_watermark >= database.next_stream_ordering)
+    {
+        database.next_stream_ordering = database.persistent_store.event_stream_watermark + 1U;
+    }
+
+    // DB-4: the `membership` rows are what the roster below is built from, so
+    // first make them agree with each room's current m.room.member state. A
+    // store written before membership rows shared the event's transaction may
+    // hold a durable ban whose row still says join; without this the banned
+    // user would be a member again after every restart.
+    auto const reconciled = database::reconcile_memberships_with_current_state(database.persistent_store, [&database] {
+        return database.next_stream_ordering++;
+    });
+    if (reconciled > 0U)
+    {
+        log_diagnostic("database.memberships.reconciled",
+                       {
+                           {"count", std::to_string(reconciled), false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    std::ignore =
+        database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
+
     database.rooms.reserve(database.persistent_store.rooms.size());
     for (auto const& room : database.persistent_store.rooms)
     {
@@ -567,28 +606,6 @@ auto hydrate_local_database(LocalDatabase& database) -> void
             room->events.push_back(event.json);
         }
     }
-
-    database.next_session_id = static_cast<std::uint64_t>(database.sessions.size()) + 1U;
-    database.next_event_id = static_cast<std::uint64_t>(database.persistent_store.events.size()) + 1U;
-    for (auto const& event : database.persistent_store.events)
-    {
-        if (event.stream_ordering >= database.next_stream_ordering)
-        {
-            database.next_stream_ordering = event.stream_ordering + 1U;
-        }
-    }
-    // Some stream_ordering allocations (membership stream positions) are not
-    // backed by a persisted event row, so the counter rebuilt from events
-    // alone can lag the previous lifetime's — which would put clients'
-    // persisted pos/since tokens ahead of the live stream and invalidate
-    // them all on every restart. Merge in the persisted watermark, then
-    // persist the resulting floor so it exists even on fresh upgrades.
-    if (database.persistent_store.event_stream_watermark >= database.next_stream_ordering)
-    {
-        database.next_stream_ordering = database.persistent_store.event_stream_watermark + 1U;
-    }
-    std::ignore =
-        database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
 
     log_diagnostic("database.hydrated",
                    {

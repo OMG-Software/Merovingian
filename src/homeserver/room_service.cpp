@@ -886,30 +886,30 @@ namespace
         return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
     }
 
+    // `pending_invite_json` is the invitee's m.room.member event when it is about
+    // to be stored with this metadata (DB-4): it stands in for the invitee's
+    // current member entry, where that entry is, or comes last, where the
+    // stored event will go.
     [[nodiscard]] auto invite_state_events_for_room(database::PersistentStore const& store, std::string_view room_id,
-                                                    std::string_view invitee) -> std::vector<std::string>
+                                                    std::string_view invitee,
+                                                    std::optional<std::string_view> pending_invite_json = std::nullopt)
+        -> std::vector<std::string>
     {
         auto events = std::vector<std::string>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id)
-            {
-                continue;
-            }
-            auto const event_json = event_json_for_id(store, state.event_id);
+        auto const strip = [&](std::optional<std::string> const& event_json) {
             if (!event_json.has_value())
             {
-                continue;
+                return;
             }
             auto const parsed = canonicaljson::parse_lossless(*event_json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
-                continue;
+                return;
             }
             auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
             if (event == nullptr)
             {
-                continue;
+                return;
             }
             auto const* type = string_member(*event, "type");
             auto const* state_key = string_member(*event, "state_key");
@@ -918,7 +918,7 @@ namespace
             if (type == nullptr || state_key == nullptr || sender == nullptr || content == nullptr ||
                 !std::holds_alternative<canonicaljson::Object>(content->storage()))
             {
-                continue;
+                return;
             }
             // Matrix v1.19 #stripped-state: persist a room summary, not the roster
             // or private state. The exact type allowlist is our disclosure policy.
@@ -928,7 +928,7 @@ namespace
                                        *type == "m.room.canonical_alias" || *type == "m.room.encryption");
             if (!is_summary && !(*type == "m.room.member" && *state_key == invitee))
             {
-                continue;
+                return;
             }
             auto stripped = canonicaljson::Object{};
             stripped.push_back(canonicaljson::make_member("sender", canonicaljson::Value{*sender}));
@@ -940,6 +940,25 @@ namespace
             {
                 events.push_back(*serialized);
             }
+        };
+        auto pending_used = false;
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id)
+            {
+                continue;
+            }
+            if (pending_invite_json.has_value() && state.event_type == "m.room.member" && state.state_key == invitee)
+            {
+                strip(std::string{*pending_invite_json});
+                pending_used = true;
+                continue;
+            }
+            strip(event_json_for_id(store, state.event_id));
+        }
+        if (pending_invite_json.has_value() && !pending_used)
+        {
+            strip(std::string{*pending_invite_json});
         }
         return events;
     }
@@ -974,23 +993,6 @@ namespace
         }
         return result != database::MembershipStoreResult::already_exists ||
                database::update_membership(store, room_id, user_id, membership, stream_ordering);
-    }
-
-    [[nodiscard]] auto upsert_local_invite_metadata(database::PersistentStore& store, std::string_view room_id,
-                                                    std::string_view sender_user_id, std::string_view target_user_id,
-                                                    std::uint64_t stream_ordering) -> bool
-    {
-        auto const invite_state = membership_state_entry(store, room_id, target_user_id);
-        if (!invite_state.has_value())
-        {
-            return false;
-        }
-        auto const invite_json = event_json_for_id(store, invite_state->event_id);
-        return invite_json.has_value() &&
-               database::upsert_invite(store,
-                                       {std::string{room_id}, std::string{target_user_id}, std::string{sender_user_id},
-                                        invite_state->event_id, *invite_json,
-                                        invite_state_events_for_room(store, room_id, target_user_id), stream_ordering});
     }
 
     // Forward declaration: defined further down this file, after
@@ -1636,40 +1638,75 @@ namespace
         };
     }
 
-    // CSAZ-6: the one place a locally created m.room.member event becomes the
-    // user's membership. persist_composed_event calls it for every such event,
-    // whichever endpoint sent it: the membership APIs, PUT /state/m.room.member,
-    // createRoom and join alike. Before this only the membership APIs updated the
-    // projections, so a ban sent through the state API changed room state but
-    // left the user in `memberships` and `LocalRoom.members`, which the read gates
-    // and join_room trust. Callers must not repeat any of this.
-    //
-    // Nothing is projected unless the event is now the current state for its
-    // user: an event that state resolution did not pick is not their membership.
-    [[nodiscard]] auto project_local_membership(HomeserverRuntime& runtime, std::string_view room_id,
-                                                std::string_view sender, ComposedEvent const& composed) -> bool
+    // CSAZ-6 / DB-4: the one place a locally created m.room.member event becomes
+    // the user's membership. persist_composed_event builds this for every such
+    // event, whichever endpoint sent it: the membership APIs, PUT
+    // /state/m.room.member, createRoom and join alike. Before CSAZ-6 only the
+    // membership APIs updated the projections, so a ban sent through the state API
+    // changed room state but left the user in `memberships` and
+    // `LocalRoom.members`, which the read gates and join_room trust. Before DB-4
+    // the row was written in a transaction of its own after the event's, so a
+    // fault between the two left a durable ban with a row still saying join.
+    // The projection is now committed in the event's own transaction. Callers
+    // must not repeat any of this.
+    [[nodiscard]] auto local_membership_projection(HomeserverRuntime& runtime, std::string_view room_id,
+                                                   std::string_view sender, ComposedEvent const& composed)
+        -> std::optional<database::MembershipProjection>
     {
-        auto& store = runtime.database.persistent_store;
-        auto const& target = *composed.state_key;
-        auto const current = membership_state_entry(store, room_id, target);
-        if (!current.has_value() || current->event_id != composed.event_id)
-        {
-            return true;
-        }
         auto const parsed = canonicaljson::parse_lossless(composed.json);
         auto const membership = events::extract_content_membership(parsed.value);
         if (parsed.error != canonicaljson::ParseError::none || membership.empty())
         {
-            return false;
+            return std::nullopt;
+        }
+        auto const& target = *composed.state_key;
+        auto projection = database::MembershipProjection{target, std::string{membership},
+                                                         allocate_stream_ordering(runtime.database), std::nullopt};
+        if (projection.membership == "invite")
+        {
+            projection.invite = database::PersistentInvite{
+                std::string{room_id},
+                target,
+                std::string{sender},
+                composed.event_id,
+                composed.json,
+                invite_state_events_for_room(runtime.database.persistent_store, room_id, target, composed.json),
+                projection.stream_ordering};
+        }
+        return projection;
+    }
+
+    // The runtime half of a stored member event: the live roster and the device
+    // list changes. The durable row was committed with the event. If state
+    // resolution did not leave the event current (a fork with more forward
+    // extremities than one event may cite), the event is not the user's
+    // membership: the row is put back to whatever is current, and that is what
+    // the roster follows.
+    [[nodiscard]] auto finish_local_membership(HomeserverRuntime& runtime, std::string_view room_id,
+                                               ComposedEvent const& composed, std::string membership) -> bool
+    {
+        auto& store = runtime.database.persistent_store;
+        auto const& target = *composed.state_key;
+        auto const current = membership_state_entry(store, room_id, target);
+        if (current.has_value() && current->event_id != composed.event_id)
+        {
+            auto const current_json = event_json_for_id(store, current->event_id);
+            if (!current_json.has_value())
+            {
+                return false;
+            }
+            auto const parsed = canonicaljson::parse_lossless(*current_json);
+            membership = std::string{events::extract_content_membership(parsed.value)};
+            if (parsed.error != canonicaljson::ParseError::none || membership.empty() ||
+                !database::store_membership_projection(
+                    store, room_id, {target, membership, allocate_stream_ordering(runtime.database), std::nullopt}))
+            {
+                return false;
+            }
         }
 
         auto const* room = find_room(runtime.database, room_id);
         auto const was_joined = room != nullptr && room_has_member(*room, target);
-        auto const membership_stream = allocate_stream_ordering(runtime.database);
-        if (!store_or_update_membership(store, room_id, target, membership, membership_stream))
-        {
-            return false;
-        }
         // Device lists (spec v1.19 "Tracking the device list for a user"): leaving
         // the room's joined set is recorded while the user is still in it, joining
         // once they are, matching what each helper reads.
@@ -1678,19 +1715,7 @@ namespace
             return false;
         }
         apply_runtime_membership(runtime.database, room_id, target, membership);
-        if (!was_joined && membership == "join" && !record_room_share_started_device_changes(runtime, room_id, target))
-        {
-            return false;
-        }
-        if (membership == "invite")
-        {
-            return upsert_local_invite_metadata(store, room_id, sender, target, membership_stream);
-        }
-        if (membership == "join" || membership == "leave" || membership == "ban")
-        {
-            return database::delete_invite(store, room_id, target);
-        }
-        return true;
+        return was_joined || membership != "join" || record_room_share_started_device_changes(runtime, room_id, target);
     }
 
     // Composes, signs, and persists a single room state event.  Used by create_room to
@@ -1720,6 +1745,17 @@ namespace
             state = database::PersistentStateEvent{std::string{room_id}, composed.event_type, *composed.state_key,
                                                    composed.event_id};
         }
+        auto const is_member_event = composed.event_type == "m.room.member" && composed.state_key.has_value();
+        auto membership = std::optional<database::MembershipProjection>{};
+        if (is_member_event)
+        {
+            membership = local_membership_projection(runtime, room_id, sender, composed);
+            if (!membership.has_value())
+            {
+                return false;
+            }
+        }
+        auto committed_membership = membership.has_value() ? membership->membership : std::string{};
         auto event = database::PersistentEvent{};
         event.event_id = composed.event_id;
         event.room_id = std::string{room_id};
@@ -1731,12 +1767,12 @@ namespace
         event.auth_event_ids = composed.auth_event_ids;
         event.signatures = composed.signatures;
         if (!store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state),
-                               state_resolution_limits(runtime.config.security().federation.state_resolution)))
+                               state_resolution_limits(runtime.config.security().federation.state_resolution),
+                               std::move(membership)))
         {
             return false;
         }
-        return composed.event_type != "m.room.member" || !composed.state_key.has_value() ||
-               project_local_membership(runtime, room_id, sender, composed);
+        return !is_member_event || finish_local_membership(runtime, room_id, composed, std::move(committed_membership));
     }
 
     // CSAZ-9: true when createRoom content the client supplied cannot fit in an
@@ -4547,10 +4583,19 @@ namespace
             // store_event_with_state either inserts a new state row or UPDATEs the
             // existing one (invite → join).  Either path leaves current_state pointing
             // at the join event at membership_stream, which joined_membership_changed_since
-            // then detects correctly.
+            // then detects correctly. DB-4: the user's membership row and the end of
+            // their invite are committed in the same transaction.
             auto const join_event_id = join_pe.event_id;
-            if (!database::store_event_with_state(runtime.database.persistent_store, std::move(join_pe), join_state))
+            if (!database::store_event_with_state(
+                    runtime.database.persistent_store, std::move(join_pe), join_state,
+                    database::MembershipProjection{*user_id, "join", membership_stream, std::nullopt}))
             {
+                log_diagnostic("room.join.rejected", {
+                                                         {"actor",   *user_id,                        false},
+                                                         {"room_id", std::string{room_id},            false},
+                                                         {"status",  "500",                           false},
+                                                         {"reason",  "join event persistence failed", false}
+                });
                 return make_operation_result(false, {}, "join event persistence failed", 500U);
             }
             {
@@ -4595,30 +4640,6 @@ namespace
         }
         // GCOVR_EXCL_STOP
 
-        auto const membership_result = database::store_membership(
-            runtime.database.persistent_store, {std::string{room_id}, *user_id, "join", membership_stream});
-        if (membership_result == database::MembershipStoreResult::error)
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                        false},
-                                                     {"room_id", std::string{room_id},            false},
-                                                     {"status",  "500",                           false},
-                                                     {"reason",  "membership persistence failed", false}
-            });
-            return make_operation_result(false, {}, "membership persistence failed", 500U);
-        }
-        if (membership_result == database::MembershipStoreResult::already_exists &&
-            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join",
-                                         membership_stream))
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                   false},
-                                                     {"room_id", std::string{room_id},       false},
-                                                     {"status",  "500",                      false},
-                                                     {"reason",  "membership update failed", false}
-            });
-            return make_operation_result(false, {}, "membership update failed", 500U);
-        }
         for (auto const& joined_member : joined_members)
         {
             if (joined_member == *user_id)
@@ -4633,16 +4654,6 @@ namespace
                 std::ignore = database::update_membership(runtime.database.persistent_store, room_id, joined_member,
                                                           "join", joined_member_stream);
             }
-        }
-        if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                         false},
-                                                     {"room_id", std::string{room_id},             false},
-                                                     {"status",  "500",                            false},
-                                                     {"reason",  "invite metadata cleanup failed", false}
-            });
-            return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
         }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
         if (!record_room_share_started_device_changes(runtime, room_id, *user_id))
@@ -5206,10 +5217,11 @@ namespace
             return make_operation_result(false, {}, "send_leave failed: " + send_body, 502U);
         }
 
-        // Step 5: update local membership, device lists and in-memory state.
+        // Step 5: update local membership, device lists and in-memory state. DB-4:
+        // the row and the end of any invite commit together.
         auto const membership_stream = allocate_stream_ordering(runtime.database);
-        if (!store_or_update_membership(runtime.database.persistent_store, room_id, *user_id, "leave",
-                                        membership_stream))
+        if (!database::store_membership_projection(runtime.database.persistent_store, room_id,
+                                                   {*user_id, "leave", membership_stream, std::nullopt}))
         {
             log_diagnostic("room.leave.rejected", {
                                                       {"actor",   *user_id,                        false},
@@ -5230,7 +5242,6 @@ namespace
             return make_operation_result(false, {}, "device list change persistence failed", 500U);
         }
         apply_runtime_membership(runtime.database, room_id, *user_id, "leave");
-        std::ignore = database::delete_invite(runtime.database.persistent_store, room_id, *user_id);
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {

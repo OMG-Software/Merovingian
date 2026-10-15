@@ -730,23 +730,6 @@ namespace
         return "10"; // Oldest advertised version; safe fallback for legacy rooms.
     }
 
-    [[nodiscard]] auto upsert_membership(database::PersistentStore& store, std::string_view room_id,
-                                         std::string_view user_id, std::string_view membership,
-                                         std::uint64_t stream_ordering) -> bool
-    {
-        auto const result = database::store_membership(
-            store, {std::string{room_id}, std::string{user_id}, std::string{membership}, stream_ordering});
-        if (result == database::MembershipStoreResult::stored)
-        {
-            return true;
-        }
-        if (result == database::MembershipStoreResult::already_exists)
-        {
-            return database::update_membership(store, room_id, user_id, membership, stream_ordering);
-        }
-        return false;
-    } // end emit_state
-
     [[nodiscard]] auto membership_for_endpoint(federation::FederationEndpoint endpoint) -> std::string_view
     {
         switch (endpoint)
@@ -2357,7 +2340,24 @@ namespace
             }
             auto const accepted_event_id = event.event_id;
             auto const accepted_prev_event_ids = event.prev_event_ids;
-            if (!database::store_event_with_state(store, std::move(event), state))
+            // A rejected or soft-failed membership never flips the live
+            // membership view: that is precisely what stops a join that
+            // references pre-ban history from re-admitting a banned user.
+            // DB-4: an accepted one's row and invite change commit with the
+            // event and its current_state row.
+            auto membership = std::string{};
+            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value() &&
+                outcome == MembershipReceiptOutcome::accepted)
+            {
+                membership = std::string{events::extract_content_membership(membership_effective_pdu)};
+            }
+            auto projection = std::optional<database::MembershipProjection>{};
+            if (!membership.empty())
+            {
+                projection = database::MembershipProjection{*envelope.state_key, membership, event_stream_ordering,
+                                                            std::nullopt};
+            }
+            if (!database::store_event_with_state(store, std::move(event), state, std::move(projection)))
             {
                 return {false, 500U, "event persistence failed", {}, {}};
             }
@@ -2388,31 +2388,13 @@ namespace
                                 accepted_event_id + " room_id=" + std::string{room_id});
                 }
             }
-            auto membership_changed = false;
-            // A rejected or soft-failed membership never flips the live
-            // membership view: that is precisely what stops a join that
-            // references pre-ban history from re-admitting a banned user.
-            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value() &&
-                outcome == MembershipReceiptOutcome::accepted)
+            auto const membership_changed = !membership.empty();
+            if (membership_changed)
             {
-                auto const membership = events::extract_content_membership(membership_effective_pdu);
-                if (!membership.empty())
+                apply_runtime_membership(rt->database, room_id, *envelope.state_key, membership);
+                if (membership == "join")
                 {
-                    if (!upsert_membership(store, room_id, *envelope.state_key, membership, event_stream_ordering))
-                    {
-                        return {false, 500U, "membership persistence failed", {}, {}};
-                    }
-                    if ((membership == "join" || membership == "leave" || membership == "ban") &&
-                        !database::delete_invite(store, room_id, *envelope.state_key))
-                    {
-                        return {false, 500U, "invite metadata cleanup failed", {}, {}};
-                    }
-                    apply_runtime_membership(rt->database, room_id, *envelope.state_key, membership);
-                    if (membership == "join")
-                    {
-                        broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
-                    }
-                    membership_changed = true;
+                    broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
                 }
             }
             auto sync_stream_id = rt->database.persistent_store.next_sync_stream_id;
@@ -2604,26 +2586,30 @@ namespace
                 }
             }
             auto const stream_ordering = allocate_stream_ordering(rt->database);
-            if (!upsert_membership(rt->database.persistent_store, invite.room_id, *target_user, "invite",
-                                   stream_ordering))
-            {
-                return {false, 500U, "invite membership persistence failed", {}};
-            }
-            if (!database::upsert_invite(rt->database.persistent_store,
-                                         {invite.room_id, *target_user, *sender, invite.event_id, *signed_event,
-                                          invite.invite_room_state_json, stream_ordering}))
-            {
-                return {false, 500U, "invite metadata persistence failed", {}};
-            }
+            // DB-4: the membership row and the invite metadata commit together,
+            // and with the invite event itself when it is stored below.
+            auto projection = database::MembershipProjection{
+                *target_user, "invite", stream_ordering,
+                database::PersistentInvite{invite.room_id, *target_user, *sender, invite.event_id, *signed_event,
+                                           invite.invite_room_state_json, stream_ordering}
+            };
             // For a room whose state we hold, stop here (audit FED-5). Spec: "if
             // the remote homeserver is already in the room, it will receive the
             // invite event twice; once through this endpoint, and again through
             // a federation transaction". The transaction path does the full
             // PDU checks and is what updates room state, and storing the event
             // here would make that later copy fail to persist (the store refuses
-            // an event ID it already holds; ADR-0085). The membership row and invite metadata above
+            // an event ID it already holds; ADR-0085). The membership row and invite metadata
             // are all the invitee needs in order to see the invite.
-            if (!room_known_locally)
+            if (room_known_locally)
+            {
+                if (!database::store_membership_projection(rt->database.persistent_store, invite.room_id,
+                                                           std::move(projection)))
+                {
+                    return {false, 500U, "invite membership persistence failed", {}};
+                }
+            }
+            else
             {
                 // Store the invite event in the persistent event graph so it is
                 // reachable during auth-chain BFS walks on subsequent send_join
@@ -2645,7 +2631,7 @@ namespace
                     database::PersistentStateEvent{invite.room_id, "m.room.member", *target_user, invite.event_id}
                 };
                 if (!database::store_event_with_state(rt->database.persistent_store, std::move(invite_pdu),
-                                                      std::move(invite_state)))
+                                                      std::move(invite_state), std::move(projection)))
                 {
                     return {false, 500U, "invite event persistence failed", {}};
                 }
@@ -4504,8 +4490,33 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
                    : outcome == ReceiptOutcome::soft_failed ? "soft_failed"
                                                             : "accepted";
 
-    auto prepared =
-        database::prepare_store_event_with_state(runtime.database.persistent_store, std::move(event), state);
+    // Membership bookkeeping (the runtime's live-member cache and
+    // store.memberships) mirrors current_state, so it only runs for an
+    // event that was actually accepted: a soft-failed or rejected
+    // membership change must not flip the live cache directly. A
+    // soft-failed one only takes effect through recompute_current_state
+    // below, if resolution later admits it (and the membership table follows
+    // at the next startup's reconciliation). DB-4: an accepted one's row and
+    // invite change commit in the event's own transaction, so a ban is never
+    // durable while the row still says join.
+    auto membership = std::string{};
+    if (outcome == ReceiptOutcome::accepted && envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+    {
+        auto const* mem_obj = std::get_if<canonicaljson::Object>(&effective_pdu.storage());
+        auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
+        if (membership_str != nullptr)
+        {
+            membership = *membership_str;
+        }
+    }
+    auto projection = std::optional<database::MembershipProjection>{};
+    if (!membership.empty())
+    {
+        projection = database::MembershipProjection{*envelope.state_key, membership, stream_ordering, std::nullopt};
+    }
+
+    auto prepared = database::prepare_store_event_with_state(runtime.database.persistent_store, std::move(event), state,
+                                                             std::move(projection));
     if (!prepared.has_value())
     {
         return {federation::PduIngestionStatus::internal_error, "event persistence pre-check failed"};
@@ -4574,54 +4585,29 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     result.accepted_stream_ordering = stream_ordering;
     result.accepted_sync_stream_id = sync_stream_id;
 
-    // Membership bookkeeping (the runtime's live-member cache and
-    // store.memberships) mirrors current_state, so it only runs for an
-    // event that was actually accepted: a soft-failed or rejected
-    // membership change must not flip the live cache directly. A
-    // soft-failed one only takes effect through recompute_current_state
-    // above, if resolution later admits it.
-    if (outcome == ReceiptOutcome::accepted && envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+    // The live roster follows the membership committed with the event above.
+    if (!membership.empty())
     {
-        auto const* mem_obj = std::get_if<canonicaljson::Object>(&effective_pdu.storage());
-        auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
-        if (membership_str != nullptr)
+        auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
+            return r.room_id == room_id;
+        });
+        if (room_it != runtime.database.rooms.end())
         {
-            // The PDU has already been committed and applied above. Returning a
-            // failure here would tell the upstream server the event was rejected,
-            // which is incorrect and can cause retries even though the event is
-            // already in our store. Log the error but keep the accepted result.
-            auto const store_ok = upsert_membership(runtime.database.persistent_store, room_id, *envelope.state_key,
-                                                    *membership_str, stream_ordering);
-            if (!store_ok)
+            auto& members = room_it->members;
+            if (membership == "join")
             {
-                LOG_WARNING("Membership persistence failed after PDU was accepted; event_id=" + envelope.event_id +
-                            " room_id=" + room_id + " user_id=" + *envelope.state_key +
-                            " membership=" + std::string{*membership_str});
+                if (!std::ranges::any_of(members, [&](std::string const& m) {
+                        return m == *envelope.state_key;
+                    }))
+                {
+                    members.push_back(*envelope.state_key);
+                }
+                broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
             }
             else
             {
-                auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
-                    return r.room_id == room_id;
-                });
-                if (room_it != runtime.database.rooms.end())
-                {
-                    auto& members = room_it->members;
-                    if (*membership_str == "join")
-                    {
-                        if (!std::ranges::any_of(members, [&](std::string const& m) {
-                                return m == *envelope.state_key;
-                            }))
-                        {
-                            members.push_back(*envelope.state_key);
-                        }
-                        broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
-                    }
-                    else
-                    {
-                        auto const to_erase = std::ranges::remove(members, *envelope.state_key);
-                        members.erase(to_erase.begin(), to_erase.end());
-                    }
-                }
+                auto const to_erase = std::ranges::remove(members, *envelope.state_key);
+                members.erase(to_erase.begin(), to_erase.end());
             }
         }
     }

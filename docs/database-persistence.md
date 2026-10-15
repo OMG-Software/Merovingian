@@ -1176,3 +1176,15 @@ separate, operator-run provisioning script, never a file under
 ### Security audit follow-up (0.12.17)
 
 Schema 18 adds `rooms.directory_public` as TEXT NOT NULL DEFAULT false. It is independent of room join rules; existing rooms remain unpublished because their prior publication intent was not durable (ADR-0099). Creation persists publication with the room and initial membership. Visibility changes commit before updating the store and runtime mirrors. PostgreSQL scoped snapshots bind one room ID and join relation tables to events, avoiding the 128-parameter ceiling for large rooms. Media moderation commits flags, removal blob state and required administrative audit rows together; mirrors change only after commit (ADR-0100).
+
+### Membership rows commit with their event (DB-4, 0.12.26)
+
+`database::MembershipProjection` carries the `membership` row, and the invite metadata change, that an
+`m.room.member` event implies. `store_event_with_state` and `prepare_store_event_with_state` take one and
+write it in the event's own transaction (an upsert on `membership`, and an upsert or keyed delete on
+`invites`), so the event, its `current_state` row, the row and the invite change are durable together or
+not at all, on both backends. `store_membership_projection` writes a row and invite change with no event in
+one transaction. `reconcile_memberships_with_current_state` runs at hydration: a row is rewritten to the
+current member event's membership when the row is missing, says `join` while the event does not, or is older
+than the event; a newer row is kept. Corrected rows get a fresh stream ordering and are corrected in memory
+even if the write fails. No schema change (ADR-0149).
