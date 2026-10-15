@@ -240,6 +240,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   comparison doesn't leak the secret's *length* through an early size check.
   Source: `src/crypto/AGENTS.md`, `src/auth/AGENTS.md`.
 
+- **A secret is checked and read through one descriptor; a derived-key cache takes the master
+  key's identity and bytes from one open (`crypto::open_master_key_file`).**
+  Why: checking a path and then opening it again, or taking a cache identity from one open and
+  the key material from another, lets a file swapped in between be used: the TLS private key
+  was loaded by path after its startup check, and a cache could hold a key derived from a
+  different file than its identity described (audit ISO-7).
+  Source: `src/crypto/AGENTS.md`.
+
 - **Fail closed. If the signing key is unavailable, signing must fail — never fall back to
   an unsigned output or a weaker operation.**
   Why: a silent downgrade to unsigned data breaks the integrity guarantee every downstream

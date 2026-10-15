@@ -225,6 +225,8 @@ struct FileDeleter final
 
     cert_file.reset();
     key_file.reset();
+    // ISO-7: the server reads its TLS key only from an owner-read-only file.
+    std::filesystem::permissions(output.private_key_file, std::filesystem::perms::owner_read);
 
     output.certificate_pem = read_file_into_string(output.certificate_file);
     return output;
@@ -346,8 +348,8 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
     return parsed.value;
 }
 
-[[nodiscard]] auto object_member_count(merovingian::canonicaljson::Value const& value,
-                                       std::string_view key) -> std::size_t
+[[nodiscard]] auto object_member_count(merovingian::canonicaljson::Value const& value, std::string_view key)
+    -> std::size_t
 {
     auto const* object = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
     REQUIRE(object != nullptr);
@@ -443,10 +445,11 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
 // signed event as a parsed canonicaljson::Value ready to drop into a state or
 // auth_chain array. sign_test_event below does the same with the keypair
 // derived from a seed.
-[[nodiscard]] auto sign_test_event_with_secret(
-    std::string const& raw_event_json, merovingian::rooms::RoomVersionPolicy const& policy,
-    std::string const& claimed_server, std::string const& claimed_key_id,
-    std::span<std::uint8_t const> secret_key) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto sign_test_event_with_secret(std::string const& raw_event_json,
+                                               merovingian::rooms::RoomVersionPolicy const& policy,
+                                               std::string const& claimed_server, std::string const& claimed_key_id,
+                                               std::span<std::uint8_t const> secret_key)
+    -> merovingian::canonicaljson::Value
 {
     REQUIRE(secret_key.size() == crypto_sign_SECRETKEYBYTES);
     auto const parsed = merovingian::canonicaljson::parse_lossless(raw_event_json);
@@ -479,9 +482,10 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
 // Signs `raw_event_json` with this runtime's own current server signing key,
 // under the key ID the server publishes — an event this server genuinely
 // authored, as a resident server would echo it back in a send_join response.
-[[nodiscard]] auto sign_with_local_server_key(
-    merovingian::homeserver::HomeserverRuntime& runtime, std::string const& raw_event_json,
-    merovingian::rooms::RoomVersionPolicy const& policy) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto sign_with_local_server_key(merovingian::homeserver::HomeserverRuntime& runtime,
+                                              std::string const& raw_event_json,
+                                              merovingian::rooms::RoomVersionPolicy const& policy)
+    -> merovingian::canonicaljson::Value
 {
     auto const own_key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
     REQUIRE(own_key.has_value());

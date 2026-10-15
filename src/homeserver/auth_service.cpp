@@ -222,17 +222,20 @@ namespace
         static auto cached_identity = std::string{};
         static auto cached_keys = TokenHmacKeys{};
 
-        auto const identity = crypto::master_key_file_identity(path);
+        // ISO-7: identity and material from one open, so the cached keys are
+        // always the ones derived from the file the cached identity describes.
+        auto const opened = crypto::open_master_key_file(path);
         auto guard = std::lock_guard{cache_mutex};
-        // An unreadable file yields an empty identity, which never matches the
-        // cached one, so this falls through to a fresh (and failing) load rather
-        // than serving keys for a file that has since become unreadable.
-        if (!identity.empty() && identity == cached_identity)
+        // An unreadable file has no identity, so this falls through to a fresh
+        // (and failing) load rather than serving keys for a file that has since
+        // become unreadable.
+        if (opened.has_value() && opened->identity == cached_identity)
         {
             return cached_keys;
         }
 
-        auto const material = crypto::load_master_key_material(path);
+        auto const material =
+            opened.has_value() ? crypto::load_master_key_material(*opened) : crypto::load_master_key_material(path);
         if (!material.has_value())
         {
             cached_identity.clear();
@@ -242,7 +245,7 @@ namespace
         auto keys = TokenHmacKeys{crypto::derive_token_hmac_key_v3(material->bytes()),
                                   crypto::derive_token_hmac_key(material->bytes())};
         cached_keys = std::move(keys);
-        cached_identity = identity;
+        cached_identity = opened->identity;
         return cached_keys;
     }
     catch (std::bad_alloc const&)

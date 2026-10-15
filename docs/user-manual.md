@@ -757,7 +757,9 @@ listeners.federation.tls_private_key_file=/etc/merovingian/federation.key
 
 Configured certificate files must be regular, non-executable, and not
 group/other-writable. Configured private-key files must additionally be
-owner-only. Startup loads the certificate chain and private key, verifies
+owner-only: a regular file (not a symlink) owned by the service user with mode
+`0400`. The key is read through the descriptor that was checked, so it cannot be
+swapped between the check and the load (ISO-7). Startup loads the certificate chain and private key, verifies
 the key matches the certificate, and fails closed if OpenSSL rejects either
 file. The client listener defaults to `127.0.0.1:8008`; the federation
 listener defaults to `127.0.0.1:8009` so a reverse proxy can own the public

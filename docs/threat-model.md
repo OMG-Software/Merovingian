@@ -914,9 +914,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   material (CRY-3), without silently changing persisted derivations (ADR-0128).
   Validation-session lookup and consumption use the variable-length
   constant-time helper (CRY-5). Descriptor-bound text secret readers validate
-  mode, ownership and type and refuse symlinked final components, but the whole
-  secret-file finding remains partial pending TLS/cache association review
-  (ISO-7). `src/homeserver/room_service.cpp`'s duplicate root loader remains
+  mode, ownership and type and refuse symlinked final components (ISO-7). The TLS
+  private key is read the same way and handed to OpenSSL from memory, and every
+  master-key derived-key cache takes the file identity and the key material from
+  one descriptor (`crypto::open_master_key_file`), so a cached key is always the
+  one derived from the file its identity describes. `src/homeserver/room_service.cpp`'s duplicate root loader remains
   removed in favor of the single `src/crypto/` implementation.
 
 - **Outbound identity-server `store-invite` SSRF and trust-bypass surface

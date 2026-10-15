@@ -153,7 +153,7 @@ change commit in the event's own transaction on both backends, and hydration rec
 the rows from current state (ADR-0149). Fresh full WSL run: 57 OK, 0 failed, 0 timed out.
 
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 35 are fixed, 4 are partly fixed and 7 are open.
+fixed. Of the 46 low findings, 36 are fixed, 3 are partly fixed and 7 are open.
 
 ### Fixed
 
@@ -289,6 +289,7 @@ Residual notes on fixed findings:
 | ID | Resolution |
 |----|------------|
 | EVT-12 | (a), (b) and (c) as before. (d): `RoomVersionPolicy::power_levels_accept_floats` (v3–v5) and `events::PowerLevelEncoding` (integers / plus strings in v1–v9 / plus floats in v1–v5, derived only by `power_level_encoding(policy)`) make the auth rules, the state resolver's power sort, redaction judgement and push read a float power level as `rooms/v3.md` says: truncated, Infinity/NaN rejected; a value beyond int64 is also refused (fails closed). Hashing stays strict: Canonical JSON defines no float encoding, so a float-bearing event still cannot be parsed for its event ID or content hash (ADR-0150). Tested by conformance scenarios for v4/v5 acceptance and honouring and v6 rejection (`[evt12]`); RED: the two acceptance cases were refused. |
+| ISO-7 | Master, registration-token, main/worker database URI and bootstrap-password reads were already descriptor-bound. The TLS private key is now read the same way (`O_NOFOLLOW`, regular, owned by this user, mode 0400, into locked memory) and passed to OpenSSL from a memory BIO instead of `SSL_CTX_use_PrivateKey_file`. The signing-secret-box and token-HMAC caches took the master key's identity and its bytes from two separate opens, so a file swapped in between could leave a key from one file cached under the other's identity; `crypto::open_master_key_file` now supplies both from one descriptor. Tested: a group-readable or symlinked TLS key is refused, a 0400 key loads, and material read from an opened master key file is that file's even after a rename replaces the path (`[iso7]`). RED: both TLS refusals failed; the master-key API did not exist. |
 
 ### Partial — low, federation key admission, 11 October 2026
 
@@ -307,7 +308,6 @@ None.
 | FED-10 | Partial | Core overload repair is independently reviewed; main IPC PDU/membership/invite admission and mixed-failure/EDU retry are now repaired with genuine RED evidence. Normal unit FED-10 passed 716 assertions / 10 cases and related inbound 1205 / 59; latest post-backfill integration passed 1522 / 8 (new admission regression 172 / 1, all backfill 2173 / 17). The pre-backfill WSL checkpoint passed 56 targets with zero failures/timeouts; one unit case remained skipped. Independent source-only review (deleg_18fcd7ae) approved the unchanged main slice. Actual separate-process worker/socket-HTTP overload propagation is now verified (262 / 1); the earlier substituted IPC fixture remains narrower evidence. Backfill/snapshot/auth-chain admission now has genuine RED/GREEN and a fresh 56-target full pass. Independent source-only backfill review (deleg_97884571) passed with no material findings. Both later test delegates failed provider limits; preserved fixtures were repaired directly and independently passed sticky denial 200 / 1, partial-progress retry 314 / 1, all backfill 2687 / 19 and total FED-10 integration 2298 / 11. Fresh recovered full checkpoint: 56 OK, zero failed/timed-out targets, all return codes 0, ten tracked hashes unchanged. Aggregate cross-shard limits remain unestablished. Direct state/auth-chain denial and backfill-specific cache rejection/negative-hit cases remain coverage suggestions, not executed proof; whole-finding acceptance remains pending. |
 | OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
 | MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). Since 0.12.26 a local thumbnail is published only if its source record is still available, bound to the same blob and visible on the endpoint used, checked after the decode with the lock re-taken; a test holds the real worker at a gate while `/versions` and admin quarantine/removal proceed (ADR-0145). There is still no thumbnail cache and no per-user concurrency cap, and remote thumbnails are not revalidated against a local identity. |
-| ISO-7 | Partial | Master, registration-token, main/worker database URI and bootstrap-password reads use owner/mode/type-validated descriptors and locked buffers. TLS/private-key handoff and the separate cache-identity/load association still need review; no whole-finding closure is claimed. |
 
 Open, with no accepted implementation yet: FED-12, DB-6, DB-7, DB-8, DB-9, OPS-2, OPS-4.
 In-progress changes in the branch do not count as accepted fixes.

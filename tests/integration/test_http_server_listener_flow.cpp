@@ -483,6 +483,9 @@ struct FileDeleter final
     auto key_file = std::unique_ptr<std::FILE, FileDeleter>{std::fopen(output.private_key_file.c_str(), "wb")};
     REQUIRE(key_file != nullptr);
     REQUIRE(PEM_write_PrivateKey(key_file.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1);
+    key_file.reset();
+    // ISO-7: the server reads its TLS key only from an owner-read-only file.
+    std::filesystem::permissions(output.private_key_file, std::filesystem::perms::owner_read);
 
     return output;
 }

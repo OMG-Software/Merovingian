@@ -224,6 +224,8 @@ struct FileDeleter final
     // Flush the FILE handles before reading the cert back as a string.
     cert_file.reset();
     key_file.reset();
+    // ISO-7: the server reads its TLS key only from an owner-read-only file.
+    std::filesystem::permissions(output.private_key_file, std::filesystem::perms::owner_read);
 
     output.certificate_pem = read_file_into_string(output.certificate_file);
     return output;

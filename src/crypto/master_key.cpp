@@ -17,9 +17,11 @@
 #include <mutex>
 #include <string>
 #include <tuple>
+#include <utility>
 
 #include <sodium.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace merovingian::crypto
 {
@@ -29,10 +31,10 @@ auto master_key_material_is_acceptable(bool locked) noexcept -> bool
     return locked;
 }
 
-auto load_master_key_material(std::string_view path) -> std::optional<core::SecretBuffer>
+namespace
 {
-    auto loaded = platform::read_secure_secret_file(path, 4096U);
-    if (!loaded)
+
+    auto log_unreadable_master_key() -> void
     {
         observability::log_diagnostic(
             "crypto", "master_key.load_failed",
@@ -40,6 +42,29 @@ auto load_master_key_material(std::string_view path) -> std::optional<core::Secr
                 {"reason", "master key requires a secure mode-0400 file containing 32 to 4096 bytes", false}
         },
             observability::LogEventSeverity::error);
+    }
+
+} // namespace
+
+auto load_master_key_material(std::string_view path) -> std::optional<core::SecretBuffer>
+{
+    auto const opened = open_master_key_file(path);
+    if (!opened.has_value())
+    {
+        log_unreadable_master_key();
+        return std::nullopt;
+    }
+    return load_master_key_material(*opened);
+}
+
+auto load_master_key_material(OpenedMasterKeyFile const& opened) -> std::optional<core::SecretBuffer>
+{
+    // From the start of the file however often the same descriptor is read.
+    auto loaded = ::lseek(opened.file.get(), 0, SEEK_SET) == 0 ? platform::read_secure_secret_file(opened.file, 4096U)
+                                                               : std::optional<core::SecretBuffer>{};
+    if (!loaded)
+    {
+        log_unreadable_master_key();
         return std::nullopt;
     }
     auto material = std::move(*loaded);
@@ -73,7 +98,7 @@ auto load_master_key_material(std::string_view path) -> std::optional<core::Secr
                 "crypto", "master_key.not_mlocked",
                 {
                     {"reason", "sodium_mlock failed; refusing to use a master key that may be paged to swap", false},
-                    {"action", "raise RLIMIT_MEMLOCK for the service or grant CAP_IPC_LOCK",                   false}
+                    {"action", "raise RLIMIT_MEMLOCK for the service or grant CAP_IPC_LOCK",                  false}
             },
                 observability::LogEventSeverity::error);
         }
@@ -82,26 +107,33 @@ auto load_master_key_material(std::string_view path) -> std::optional<core::Secr
     return material;
 }
 
-auto master_key_file_identity(std::string_view path) -> std::string
+auto open_master_key_file(std::string_view path) -> std::optional<OpenedMasterKeyFile>
 {
-    auto const path_string = std::string{path};
-    auto const file = platform::open_secure_secret_file(path);
+    auto file = platform::open_secure_secret_file(path);
     struct stat info{};
     if (!file || ::fstat(file->get(), &info) != 0)
     {
-        return {};
+        return std::nullopt;
     }
     auto const field = [](auto value) {
         return std::to_string(static_cast<std::uint64_t>(value));
     };
-    return path_string + '\0' + field(info.st_dev) + '\0' + field(info.st_ino) + '\0' + field(info.st_size) + '\0' +
-           field(info.st_mtime) + '\0' + field(info.st_ctime) + '\0' + field(info.st_mode) + '\0' + field(info.st_uid)
+    auto identity = std::string{path} + '\0' + field(info.st_dev) + '\0' + field(info.st_ino) + '\0' +
+                    field(info.st_size) + '\0' + field(info.st_mtime) + '\0' + field(info.st_ctime) + '\0' +
+                    field(info.st_mode) + '\0' + field(info.st_uid)
 #if defined(__APPLE__)
-           + '\0' + field(info.st_mtimespec.tv_nsec) + '\0' + field(info.st_ctimespec.tv_nsec)
+                    + '\0' + field(info.st_mtimespec.tv_nsec) + '\0' + field(info.st_ctimespec.tv_nsec)
 #else
-           + '\0' + field(info.st_mtim.tv_nsec) + '\0' + field(info.st_ctim.tv_nsec)
+                    + '\0' + field(info.st_mtim.tv_nsec) + '\0' + field(info.st_ctim.tv_nsec)
 #endif
         ;
+    return OpenedMasterKeyFile{std::move(*file), std::move(identity)};
+}
+
+auto master_key_file_identity(std::string_view path) -> std::string
+{
+    auto const opened = open_master_key_file(path);
+    return opened.has_value() ? opened->identity : std::string{};
 }
 
 auto signing_secret_box_key(std::string_view path) -> std::optional<SecretBoxKey>
@@ -118,14 +150,20 @@ try
     static auto cached_identity = std::string{};
     static auto cached_key = std::optional<SecretBoxKey>{};
 
-    auto const identity = master_key_file_identity(path);
+    // ISO-7: identity and material from one open, so the cached key is always
+    // the one derived from the file the cached identity describes.
+    auto const opened = open_master_key_file(path);
     auto guard = std::lock_guard{cache_mutex};
-    if (!identity.empty() && identity == cached_identity && cached_key.has_value())
+    if (opened.has_value() && opened->identity == cached_identity && cached_key.has_value())
     {
         return cached_key;
     }
 
-    auto const material = load_master_key_material(path);
+    auto const material = opened.has_value() ? load_master_key_material(*opened) : std::nullopt;
+    if (!opened.has_value())
+    {
+        log_unreadable_master_key();
+    }
     if (!material.has_value())
     {
         // Drop the stale entry: the master key file has been removed, made
@@ -145,7 +183,7 @@ try
         return std::nullopt;
     }
     cached_key = std::move(key);
-    cached_identity = identity;
+    cached_identity = opened->identity;
     return cached_key;
 }
 catch (std::bad_alloc const&)

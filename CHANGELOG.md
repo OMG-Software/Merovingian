@@ -5,6 +5,18 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (ISO-7):** the remaining two re-opens of a secret are gone. The TLS private key
+  was checked at startup by path and then loaded by OpenSSL from the path again
+  (`SSL_CTX_use_PrivateKey_file`); `make_tls_server_context` now reads it through one
+  validated descriptor (`O_NOFOLLOW`, regular, owned by this user, mode 0400) into locked
+  memory and gives OpenSSL a memory BIO. The signing-secret-box and token-HMAC caches took the
+  master key file's identity from one open and its bytes from another, so a swap in between
+  could cache a key from one file under another's identity; new
+  `crypto::open_master_key_file` returns the descriptor and identity together, and both caches
+  read the bytes from it. Test fixtures now write TLS keys 0400, as production already
+  required. Tests: new `test_security_audit_iso_7.cpp` (`[iso7]`). RED: a 0640 key and a
+  symlinked key were both loaded; the single-open master-key API did not exist.
+
 - **FIXED (EVT-12 (d)):** room versions 3-5 refused a float power level, which
   `rooms/v3.md` allows ("exponential notation is applied ... the value is truncated at the
   decimal point"). New `RoomVersionPolicy::power_levels_accept_floats` (v3-v5) and
