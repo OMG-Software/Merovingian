@@ -1097,6 +1097,13 @@ namespace
                                            out_result.response.body);
     }
 
+    struct LocalThumbnailSource final
+    {
+        std::string media_id{};
+        std::string storage_id{};
+        bool legacy_endpoint{false};
+    };
+
     // Resamples media bytes in the sandboxed worker. Anything the worker cannot
     // handle (unsupported format, worker not installed, decode failure) degrades
     // to a 404 so a thumbnail request never hard-fails by serving the original
@@ -1104,7 +1111,9 @@ namespace
     [[nodiscard]] auto generate_thumbnail_for_media(HomeserverRuntime& runtime, std::string_view media_id,
                                                     std::string_view content_type, std::string_view bytes,
                                                     std::uint32_t width, std::uint32_t height,
-                                                    media::ThumbnailMethod method) -> OperationResult
+                                                    media::ThumbnailMethod method,
+                                                    std::optional<LocalThumbnailSource> local_source = std::nullopt)
+        -> OperationResult
     {
         auto const& media_config = runtime.media_repository.config;
         auto thumbnailer_config = media::ThumbnailerConfig{};
@@ -1132,6 +1141,15 @@ namespace
             }();
             if (result.ok)
             {
+                // The local record, not a shared blob or an earlier admission,
+                // authorizes disclosure after the unlocked decode. Remote
+                // sources do not yet carry this local identity through fetch.
+                if (local_source.has_value() &&
+                    !media::local_media_still_servable(runtime.media_repository, local_source->media_id,
+                                                       local_source->storage_id, local_source->legacy_endpoint))
+                {
+                    return make_operation_result(false, {}, "thumbnail source no longer available", 404U);
+                }
                 ++runtime.media_repository.metrics.thumbnails_served;
                 log_diagnostic("thumbnail.resampled", {
                                                           {"media_id", std::string{media_id},         false},
@@ -1351,6 +1369,11 @@ namespace
     // without the runtime mutex; it used to be read here unlocked.
     auto guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const scope = RequestLockScope{guard};
+    auto const decision = media_policy_decision(runtime, media_id);
+    if (!decision.allowed)
+    {
+        return {false, 403U, {}, {}, decision.reason.public_summary};
+    }
     auto const target = media::resolve_local_media_download(runtime.media_repository, media_id, false);
     if (!target.ok)
     {
@@ -1425,8 +1448,10 @@ namespace
         });
         return make_operation_result(false, {}, "thumbnail not found", 404U);
     }
+    auto const local_source = LocalThumbnailSource{std::string{media_id}, record->storage_id, legacy_endpoint};
     auto const content_type = record->content_type;
-    auto const bytes = read_servable_media_bytes(runtime, media_id, record->storage_id, legacy_endpoint);
+    auto const bytes = read_servable_media_bytes(runtime, local_source.media_id, local_source.storage_id,
+                                                 local_source.legacy_endpoint);
     if (!bytes.has_value())
     {
         log_diagnostic("thumbnail.blob_missing", {
@@ -1435,7 +1460,8 @@ namespace
         return make_operation_result(false, {}, "thumbnail data not found", 404U);
     }
 
-    return generate_thumbnail_for_media(runtime, media_id, content_type, *bytes, width, height, method);
+    return generate_thumbnail_for_media(runtime, media_id, content_type, *bytes, width, height, method,
+                                        std::move(local_source));
 }
 
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,

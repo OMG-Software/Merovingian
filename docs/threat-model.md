@@ -80,6 +80,33 @@ flowchart TB
 
 ## Mitigations applied
 
+- **MED-4, local thumbnail revalidation in progress:** moderation could complete
+  while an unlocked decoder was running, yet its finished PNG was returned from
+  an earlier admission. Local thumbnail requests now retain owned media/storage
+  identity and recheck the source record after decoding, before publication or
+  served accounting. Quarantined/removed records fail closed even when another
+  available record shares the same blob; database-read identity is not borrowed
+  from a mutable repository record. The real SQLite/socket/worker-gate regression
+  reproduces quarantine and removal leaks while concurrent `/versions` and admin
+  controls pass. Normal GREEN, independent review and fresh combined verification
+  are pending. Remote-source identity, output caching, per-user decode limits and
+  strict trust-policy revocation are outside this slice; MED-4 remains partial.
+  See proposed ADR-0145.
+
+- **MED-7, bounded admission repair:** an authenticated remote homeserver could
+  retrieve otherwise available local media despite a persisted media-policy
+  denial. The federation provider now applies the existing media decision before
+  repository resolution or blob reads, refusing with no bytes/content type and
+  no successful multipart envelope. A genuine signed-request SQLite regression
+  reproduced the bypass, checks durable admin denial plus an unaffected control,
+  and verifies recovery after rule deletion. Configured-unavailable media-hook
+  behavior is also covered directly at the provider, independently of the
+  federation-wide hook. Independent review passes; the fresh normal full suite
+  completes 56 OK, all return codes zero, with 1,026 frozen files unchanged.
+  Live policy-server HTTP responses and policy-change-during-I/O revocation are
+  outside the demonstrated boundary. This is not whole-audit or release
+  acceptance. See ADR-0144.
+
 Specific issues found and fixed, in the order they landed. Each entry names the
 threat it closes; the controls above are the standing defences these reinforce.
 
@@ -241,7 +268,13 @@ threat it closes; the controls above are the standing defences these reinforce.
   filter. The worker holds no secrets, sockets, or filesystem access beyond its
   stdio pipes, so a decoder exploit is contained. The parent enforces a
   wall-clock timeout, input/output size caps, and a pixel-count decode-bomb
-  guard, and SIGKILLs a worker that overruns. The ISO-5 boundary additionally
+  guard, and SIGKILLs a worker that overruns. Crop intermediates also obey the
+  existing effective pixel budget (MED-8), checked in 64-bit arithmetic before
+  narrowing or allocation; a thin source cannot amplify a small final target
+  into an unbounded fill buffer. Expected refusal uses an empty size-error frame,
+  while unexpected C++ exceptions use an internal-error frame prepared after
+  hardening and before input. This is a per-buffer bound, not an aggregate
+  memory/concurrency or general thumbnail-conformance claim. The ISO-5 boundary additionally
   prevents environment and diagnostic inheritance: both exec paths use only a
   fixed PATH, and fd 2 points to a pre-opened `/dev/null` sink. Main checks the
   full PNG signature and initial IHDR dimensions against the worker's report,

@@ -29,14 +29,15 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <png.h>
+#include <sys/stat.h>
 #include <turbojpeg.h>
 #include <unistd.h>
-#include <sys/stat.h>
-#include <tuple>
 
 namespace
 {
@@ -54,7 +55,7 @@ using merovingian::media::ThumbnailWorkerStatus;
 // sandbox they precede.
 constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U; // 64 MiB source
 constexpr std::uint32_t absolute_max_dimension = 4096U;
-// Worker-imposed pixel ceiling for BOTH the decoded frame and the resampled
+// Worker-imposed pixel ceiling for the decoded frame, crop fill, and resampled
 // output (#449). The per-axis cap alone still admits a 4096x4096 RGBA buffer
 // (64 MiB); a crafted IHDR could stack such allocations close to the
 // RLIMIT_AS ceiling and OOM the worker. ~4.1 Mpixels keeps any single RGBA
@@ -248,8 +249,8 @@ auto write_all_stdout(std::string const& bytes) -> void
 
 // Produces the resampled image per the requested method. `scale` fits within
 // the box preserving aspect ratio; `crop` fills the box then centre-crops.
-[[nodiscard]] auto resample(Rgba const& src, std::uint32_t target_w, std::uint32_t target_h, ThumbnailMethod method)
-    -> Rgba
+[[nodiscard]] auto resample(Rgba const& src, std::uint32_t target_w, std::uint32_t target_h, ThumbnailMethod method,
+                            std::uint32_t pixel_budget, Rgba& out) -> ThumbnailWorkerStatus
 {
     auto const sw = static_cast<double>(src.width);
     auto const sh = static_cast<double>(src.height);
@@ -258,13 +259,29 @@ auto write_all_stdout(std::string const& bytes) -> void
         auto const ratio = std::min(static_cast<double>(target_w) / sw, static_cast<double>(target_h) / sh);
         auto const out_w = std::max<std::uint32_t>(1U, static_cast<std::uint32_t>(sw * ratio + 0.5));
         auto const out_h = std::max<std::uint32_t>(1U, static_cast<std::uint32_t>(sh * ratio + 0.5));
-        return resample_bilinear(src, out_w, out_h);
+        out = resample_bilinear(src, out_w, out_h);
+        return ThumbnailWorkerStatus::ok;
     }
     auto const ratio = std::max(static_cast<double>(target_w) / sw, static_cast<double>(target_h) / sh);
-    auto const fill_w = std::max<std::uint32_t>(target_w, static_cast<std::uint32_t>(sw * ratio + 0.5));
-    auto const fill_h = std::max<std::uint32_t>(target_h, static_cast<std::uint32_t>(sh * ratio + 0.5));
-    auto const filled = resample_bilinear(src, fill_w, fill_h);
-    return crop_center(filled, target_w, target_h);
+    // Decoded and requested axes are already capped at 4096, so these rounded
+    // fill axes fit uint64_t. Keep the existing geometry, but check its actual
+    // area before narrowing or allocating: a thin source can require a fill
+    // far larger than either the decoded image or the final thumbnail.
+    auto const fill_w = std::max<std::uint64_t>(target_w, static_cast<std::uint64_t>(sw * ratio + 0.5));
+    auto const fill_h = std::max<std::uint64_t>(target_h, static_cast<std::uint64_t>(sh * ratio + 0.5));
+    if (fill_w == 0U || fill_h == 0U)
+    {
+        return ThumbnailWorkerStatus::internal_error;
+    }
+    // Division avoids an overflowing area product. Admission also proves both
+    // axes fit uint32_t because the effective pixel budget is at most 4096000.
+    if (fill_w > static_cast<std::uint64_t>(pixel_budget) / fill_h)
+    {
+        return ThumbnailWorkerStatus::too_large;
+    }
+    auto const filled = resample_bilinear(src, static_cast<std::uint32_t>(fill_w), static_cast<std::uint32_t>(fill_h));
+    out = crop_center(filled, target_w, target_h);
+    return ThumbnailWorkerStatus::ok;
 }
 
 // --- PNG encode --------------------------------------------------------------
@@ -310,82 +327,111 @@ auto write_all_stdout(std::string const& bytes) -> void
 auto main() -> int
 {
     std::ignore = ::umask(0077);
-    // HTTP-5: a parent that closes its end of the pipe must produce an EPIPE
-    // from write_all_stdout(), not a SIGPIPE. Done before hardening, which
-    // installs the seccomp filter, and before any input is read. Fail closed.
-    if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)
+    auto error_frame = std::optional<std::string>{};
+    try
     {
-        std::cerr << "merovingian-thumbnail-worker: " << sigpipe.reason << '\n';
-        return 1;
-    }
-
-    // Fail-closed (audit finding, 0.12.13): every applicable hardening
-    // control must succeed before this process reads a single byte of
-    // attacker-controlled input. A sandbox that fails to install must not
-    // silently leave the decoder running unconfined — see
-    // merovingian::media::apply_decoder_hardening() and
-    // docs/hardening.md, "Thumbnail worker sandbox".
-    auto const hardening = merovingian::media::apply_decoder_hardening();
-    if (!hardening.accepted)
-    {
-        std::cerr << "merovingian-thumbnail-worker: hardening failed: " << hardening.failed_control << '\n';
-        return 1;
-    }
-
-    auto const input = read_all_stdin();
-    auto const request = merovingian::media::parse_thumbnail_request(input);
-    auto image = Rgba{};
-    auto response = ThumbnailWorkerResponse{};
-
-    if (!request.has_value())
-    {
-        response = respond(ThumbnailWorkerStatus::internal_error, image, {});
-    }
-    else
-    {
-        // A request may not raise the pixel budget above the worker's own
-        // ceiling, and an unlimited (0) request still gets the ceiling (#449).
-        auto const pixel_budget =
-            request->max_pixels == 0U ? max_worker_pixels : std::min(request->max_pixels, max_worker_pixels);
-        auto status = request->format == ThumbnailSourceFormat::png
-                          ? decode_png(request->source_bytes, pixel_budget, image)
-                          : decode_jpeg(request->source_bytes, pixel_budget, image);
-        if (status != ThumbnailWorkerStatus::ok)
+        // HTTP-5: a parent that closes its end of the pipe must produce an EPIPE
+        // from write_all_stdout(), not a SIGPIPE. Done before hardening, which
+        // installs the seccomp filter, and before any input is read. Fail closed.
+        if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)
         {
-            response = respond(status, image, {});
+            std::cerr << "merovingian-thumbnail-worker: " << sigpipe.reason << '\n';
+            return 1;
+        }
+
+        // Fail-closed (audit finding, 0.12.13): every applicable hardening
+        // control must succeed before this process reads a single byte of
+        // attacker-controlled input. A sandbox that fails to install must not
+        // silently leave the decoder running unconfined — see
+        // merovingian::media::apply_decoder_hardening() and
+        // docs/hardening.md, "Thumbnail worker sandbox".
+        auto const hardening = merovingian::media::apply_decoder_hardening();
+        if (!hardening.accepted)
+        {
+            std::cerr << "merovingian-thumbnail-worker: hardening failed: " << hardening.failed_control << '\n';
+            return 1;
+        }
+
+        // Prepare the fixed empty failure frame before reading untrusted bytes.
+        // The exception path can then report internal_error without allocating
+        // another string after a decoder, resampler, or framing allocation fails.
+        error_frame = merovingian::media::frame_thumbnail_response(ThumbnailWorkerResponse{
+            .status = ThumbnailWorkerStatus::internal_error, .width = 0U, .height = 0U, .png_bytes = {}});
+        if (!error_frame.has_value())
+        {
+            return 1;
+        }
+
+        auto const input = read_all_stdin();
+        auto const request = merovingian::media::parse_thumbnail_request(input);
+        auto image = Rgba{};
+        auto response = ThumbnailWorkerResponse{};
+
+        if (!request.has_value())
+        {
+            response = respond(ThumbnailWorkerStatus::internal_error, image, {});
         }
         else
         {
-            auto target_w = std::min(request->target_width, absolute_max_dimension);
-            auto target_h = std::min(request->target_height, absolute_max_dimension);
-            // Apply the pixel budget to the OUTPUT as well: a capped-axis
-            // 4096x4096 request must not allocate a 64 MiB RGBA buffer.
-            while (static_cast<std::uint64_t>(target_w) * static_cast<std::uint64_t>(target_h) > pixel_budget &&
-                   (target_w > 1U || target_h > 1U))
+            // A request may not raise the pixel budget above the worker's own
+            // ceiling, and an unlimited (0) request still gets the ceiling (#449).
+            auto const pixel_budget =
+                request->max_pixels == 0U ? max_worker_pixels : std::min(request->max_pixels, max_worker_pixels);
+            auto status = request->format == ThumbnailSourceFormat::png
+                              ? decode_png(request->source_bytes, pixel_budget, image)
+                              : decode_jpeg(request->source_bytes, pixel_budget, image);
+            if (status != ThumbnailWorkerStatus::ok)
             {
-                target_w = std::max(1U, target_w / 2U);
-                target_h = std::max(1U, target_h / 2U);
-            }
-            auto const resampled = resample(image, target_w, target_h, request->method);
-            auto png_bytes = std::string{};
-            if (!encode_png(resampled, png_bytes))
-            {
-                response = respond(ThumbnailWorkerStatus::internal_error, image, {});
+                response = respond(status, image, {});
             }
             else
             {
-                response = respond(ThumbnailWorkerStatus::ok, resampled, std::move(png_bytes));
+                auto target_w = std::min(request->target_width, absolute_max_dimension);
+                auto target_h = std::min(request->target_height, absolute_max_dimension);
+                // Apply the pixel budget to the OUTPUT as well: a capped-axis
+                // 4096x4096 request must not allocate a 64 MiB RGBA buffer.
+                while (static_cast<std::uint64_t>(target_w) * static_cast<std::uint64_t>(target_h) > pixel_budget &&
+                       (target_w > 1U || target_h > 1U))
+                {
+                    target_w = std::max(1U, target_w / 2U);
+                    target_h = std::max(1U, target_h / 2U);
+                }
+                auto resampled = Rgba{};
+                auto const resample_status =
+                    resample(image, target_w, target_h, request->method, pixel_budget, resampled);
+                auto png_bytes = std::string{};
+                if (resample_status != ThumbnailWorkerStatus::ok)
+                {
+                    response = respond(resample_status, image, {});
+                }
+                else if (!encode_png(resampled, png_bytes))
+                {
+                    response = respond(ThumbnailWorkerStatus::internal_error, image, {});
+                }
+                else
+                {
+                    response = respond(ThumbnailWorkerStatus::ok, resampled, std::move(png_bytes));
+                }
             }
         }
-    }
 
-    auto const frame_opt = merovingian::media::frame_thumbnail_response(response);
-    // LCOV_EXCL_START — only reachable for >4 GiB PNG; impossible with any sane max_pixels limit
-    if (!frame_opt.has_value())
-    {
-        return 1;
+        auto const frame_opt = merovingian::media::frame_thumbnail_response(response);
+        // LCOV_EXCL_START — only reachable for >4 GiB PNG; impossible with any sane max_pixels limit
+        if (!frame_opt.has_value())
+        {
+            return 1;
+        }
+        // LCOV_EXCL_STOP
+        write_all_stdout(*frame_opt);
+        return 0;
     }
-    // LCOV_EXCL_STOP
-    write_all_stdout(*frame_opt);
-    return 0;
+    catch (...)
+    {
+        if (!error_frame.has_value())
+        {
+            return 1; // Startup failed before any untrusted input was consumed.
+        }
+        write_all_stdout(*error_frame);
+        return 0;
+    }
 }

@@ -137,6 +137,9 @@
 * [0134 - Share key-resolution admission with main's worker-relay verification](0134-share-key-admission-with-main-worker-relay-verification.md)
 * [0135 - Preserve key-admission denial through backfill recovery](0135-preserve-key-admission-denial-through-backfill-recovery.md)
 * [0136 - Retain path-only, bounded audit targets](0136-retain-path-only-bounded-audit-targets.md)
+* [0143 - Bound thumbnail crop intermediates by the existing pixel budget](0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md)
+* [0144 - Apply the shared media policy before federation media reads](0144-apply-shared-media-policy-before-federation-media-reads.md)
+* [0145 - Bind local thumbnail disclosure to source record identity](0145-bind-local-thumbnail-disclosure-to-source-record-identity.md)
 
 ## Proposed Records
 

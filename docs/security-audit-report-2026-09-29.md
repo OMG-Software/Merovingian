@@ -132,8 +132,14 @@ execution: 27 assertions in 1 `[fed9]` case and 167 assertions in 26 `[routing]`
 cases. No dedicated live worker IPC regression ran. This verifies the current
 checkpoint, not the remaining low findings or final release/version acceptance.
 
+**Update:** 15 October 2026 — MED-7 and MED-8 are accepted, and MED-4's local
+thumbnail path now revalidates the source record after the unlocked decode. The fresh
+full WSL run completed 56 OK, 0 failed, 0 timed out; tag runs of the new integration
+scenarios passed MED-4 255 / 1, MED-7 132 / 2 and MED-8 201 / 3 (ADR-0143, ADR-0144,
+ADR-0145).
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 26 are fixed, 5 are partly fixed and 15 are open.
+fixed. Of the 46 low findings, 28 are fixed, 5 are partly fixed and 13 are open.
 
 ### Fixed
 
@@ -145,7 +151,7 @@ fixed. Of the 46 low findings, 26 are fixed, 5 are partly fixed and 15 are open.
   CRY-2, ISO-2, ISO-3, MED-1, MED-2, MED-3, MED-5, MED-6, DB-2, DB-3, DB-5.
 - **Low:** AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-9, AUTH-10, AUTH-12, CSAZ-6, CSAZ-9,
   CSAZ-11, CSAZ-12, HTTP-6, HTTP-7, EVT-10, EVT-11, OUT-5, OUT-6, OUT-8, OPS-3,
-  CRY-3, CRY-4, CRY-5, CRY-6, OPS-6, ISO-5, FED-9.
+  CRY-3, CRY-4, CRY-5, CRY-6, OPS-6, ISO-5, FED-9, MED-7, MED-8.
   The AUTH rows are in "Fixed — low, AUTH" below. OUT-5: `CURLOPT_PROXY` is set to `""` on the
   only curl handle, but there is no regression test with `https_proxy` set. OPS-3: media
   size limits that do not parse are rejected by `validate()`, the effective limits are
@@ -235,6 +241,13 @@ Residual notes on fixed findings:
 |----|------------|
 | FED-9 | EDU-only `/send` bypass requires a parsed object with an explicitly empty `pdus` array. Nonempty malformed-first-PDU transactions retain the empty shard key, skip main's room-sync fallback and enter worker shard zero; later PDUs are not used to replace the key. Parent review traced the proxy and shard selector. Independent normal-target runs passed 27 assertions / 1 case and related routing passed 167 / 26. ADR-0131. No dedicated live worker IPC regression ran. |
 
+### Fixed — low, media, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| MED-7 | The federation media download consults the same media-policy decision as client downloads before resolving the repository or reading a blob; a denial answers 403 with no bytes and the federation dispatcher returns its JSON error, not a multipart success. Real SQLite tests cover a persisted admin rule against a genuinely signed request, recovery after the rule is removed, and the configured unavailable-policy hook with and without fail-open. ADR-0144. |
+| MED-8 | The thumbnail worker checks the crop's fill area against the request's effective pixel budget (never above the 4,096,000-pixel worker ceiling) in 64-bit arithmetic before allocating, answering `too_large` (413) instead of allocating the intermediate. `main` prepares an empty `internal_error` frame before reading input and returns it if anything throws. Tested against the real worker, including the audit's 64 GiB inputs. ADR-0143. |
+
 ### Partial — low, federation key admission, 11 October 2026
 
 | ID | Resolution |
@@ -252,11 +265,11 @@ None.
 | FED-10 | Partial | Core overload repair is independently reviewed; main IPC PDU/membership/invite admission and mixed-failure/EDU retry are now repaired with genuine RED evidence. Normal unit FED-10 passed 716 assertions / 10 cases and related inbound 1205 / 59; latest post-backfill integration passed 1522 / 8 (new admission regression 172 / 1, all backfill 2173 / 17). The pre-backfill WSL checkpoint passed 56 targets with zero failures/timeouts; one unit case remained skipped. Independent source-only review (deleg_18fcd7ae) approved the unchanged main slice. Actual separate-process worker/socket-HTTP overload propagation is now verified (262 / 1); the earlier substituted IPC fixture remains narrower evidence. Backfill/snapshot/auth-chain admission now has genuine RED/GREEN and a fresh 56-target full pass. Independent source-only backfill review (deleg_97884571) passed with no material findings. Both later test delegates failed provider limits; preserved fixtures were repaired directly and independently passed sticky denial 200 / 1, partial-progress retry 314 / 1, all backfill 2687 / 19 and total FED-10 integration 2298 / 11. Fresh recovered full checkpoint: 56 OK, zero failed/timed-out targets, all return codes 0, ten tracked hashes unchanged. Aggregate cross-shard limits remain unestablished. Direct state/auth-chain denial and backfill-specific cache rejection/negative-hit cases remain coverage suggestions, not executed proof; whole-finding acceptance remains pending. |
 | EVT-12 | Partial | (a) v3–v5 aliases domain authorization and (c) rejection-aware inbound auth selection / resolver fallback are implemented and tested; (b) was already fixed. (d) legacy finite fractional power levels remain rejected by the strict pipeline, contrary to the legacy spec, and remain unresolved. |
 | OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
-| MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). There is no thumbnail cache, no per-user concurrency cap, and no test with a slow decoder stub. |
+| MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). Since 0.12.26 a local thumbnail is published only if its source record is still available, bound to the same blob and visible on the endpoint used, checked after the decode with the lock re-taken; a test holds the real worker at a gate while `/versions` and admin quarantine/removal proceed (ADR-0145). There is still no thumbnail cache and no per-user concurrency cap, and remote thumbnails are not revalidated against a local identity. |
 | ISO-7 | Partial | Master, registration-token, main/worker database URI and bootstrap-password reads use owner/mode/type-validated descriptors and locked buffers. TLS/private-key handoff and the separate cache-identity/load association still need review; no whole-finding closure is claimed. |
 
 Open, with no accepted implementation yet: FED-12, ISO-4,
-ISO-6, ISO-8, MED-7, MED-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2,
+ISO-6, ISO-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2,
 OPS-4, OPS-5. In-progress changes in the branch do not count as accepted fixes.
 
 

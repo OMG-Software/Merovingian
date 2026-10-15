@@ -270,8 +270,18 @@ and `src/media/thumbnail_worker_main.cpp`):
   to the worker's reported dimensions. A malformed or mismatched successful
   response produces 502 without media bytes, content type or dimensions. This is
   fixed-header validation, not parent-side decoding or CRC/image-data validation.
-* The worker rejects images whose width or height exceeds 4096 and whose pixel
-  count exceeds the request's `max_pixels`.
+* The worker rejects decoded images when either axis exceeds 4096 or their area
+  exceeds the effective pixel budget. Zero requests still use its
+  4,096,000-pixel ceiling; positive requests cannot raise that ceiling. The final
+  thumbnail and actual crop-fill intermediate share that pixel budget (MED-8).
+  Before resampling, the worker checks the rounded fill axes in `uint64_t` and
+  uses division to reject excess area before narrowing or allocating. This does
+  not add a decoded-axis limit to intermediate images or an aggregate-memory cap.
+  After hardening, a prebuilt empty `internal_error` frame lets the main exception
+  boundary contain unexpected C++ failures without another string allocation.
+  Startup exceptions before that frame exists fail closed without reading input.
+  Signals and closed-pipe delivery are not guaranteed by the exception boundary.
+  See proposed [ADR-0143](adr/0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md).
 
 ### Out-of-process federation worker IPC security
 

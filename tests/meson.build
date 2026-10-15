@@ -378,8 +378,24 @@ shell = find_program('sh')
 #The thumbnail integration test spawns the real sandboxed worker; pass its
 #build - tree path when it was built(system image codecs available).
   thumbnail_test_args = []
+  thumbnail_gate_test_args = []
+  thumbnail_test_depends = []
   if thumbnail_worker_available
     thumbnail_test_args = ['-DMEROVINGIAN_TEST_THUMBNAIL_WORKER="' + thumbnail_worker_exe.full_path() + '"']
+    thumbnail_test_depends += [thumbnail_worker_exe]
+    if host_machine.system() != 'windows'
+      thumbnail_gate_exe = executable(
+        'merovingian-test-thumbnail-gate',
+        'integration/thumbnail_gate_main.cpp',
+        include_directories: inc,
+        dependencies: [libsodium_dep],
+        link_with: [core_lib],
+        cpp_args: thumbnail_test_args,
+        install: false,
+      )
+      thumbnail_gate_test_args = ['-DMEROVINGIAN_TEST_THUMBNAIL_GATE="' + thumbnail_gate_exe.full_path() + '"']
+      thumbnail_test_depends += [thumbnail_gate_exe]
+    endif
   endif
 
 #The federation worker integration test spawns the real merovingian - fed - worker;
@@ -417,6 +433,7 @@ shell = find_program('sh')
       'integration/test_remote_media_cache_flow.cpp',
       'integration/test_remote_media_fetch_pool_flow.cpp',
       'integration/test_media_thumbnail_flow.cpp',
+      'integration/test_media_thumbnail_revalidation_flow.cpp',
       'integration/test_security_audit_remote_media.cpp',
       'integration/test_observability_flow.cpp',
       'integration/test_pdu_ingestion_backfill_flow.cpp',
@@ -452,13 +469,13 @@ shell = find_program('sh')
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
-    cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
+    cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args],
   )
 
 # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
 # worker) and can be slow under sanitizers and on emulated BSD runners;
 # give them the same headroom as the load-test suite.
-  test('integration-tests', integration_tests, timeout: 900)
+  test('integration-tests', integration_tests, timeout: 900, depends: thumbnail_test_depends)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(

@@ -7,8 +7,19 @@ This capability note describes runtime-wired trust-and-safety behavior.
 - Registration policy checks in the runtime registration path.
 - Account lock/suspension policy checks in the runtime login path.
 - Room policy checks in the runtime room creation path.
-- Media policy checks in the runtime download path and persisted moderation
-  rules in the admin workflow.
+- Media policy checks in the runtime client and federation download paths and
+  persisted moderation rules in the admin workflow. Federation's production
+  provider now invokes the same media decision before repository lookup or byte
+  reads (MED-7, ADR-0144); a denied item yields 403 without media bytes
+  or a successful multipart envelope. The existing media-surface policy-server
+  hook and its configured unavailable-result policy are reused, not replaced by
+  a separate federation-only rule evaluator. The new regression uses real
+  SQLite, admin PUT/DELETE, genuine federation signatures and the production
+  dispatcher; configured-unavailable-hook coverage has no injected callback.
+  The bounded admission repair passes independent review and a fresh normal
+  full suite (56 OK, all return codes zero, 1,026 unchanged frozen files).
+  Live remote-hook responses and strict mid-request policy revocation are not
+  claimed, nor is whole-audit or release acceptance.
 - Federation request policy checks in the runtime federation path.
 - Authenticated client event reporting through
   `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`. The reporter must be

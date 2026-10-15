@@ -536,3 +536,251 @@ SCENARIO("thumbnail generation degrades safely when no worker is configured", "[
         }
     }
 }
+
+#ifdef MEROVINGIAN_TEST_THUMBNAIL_WORKER
+
+namespace
+{
+
+// Complete RGBA PNGs generated offline with Python stdlib zlib, struct, and CRC.
+// Each IDAT contains all scanlines for the stated geometry; no codec is linked
+// into the test process. Successful real-worker scale controls verify decoding.
+constexpr std::array<unsigned char, 99U> sample_png_4096x1{
+    137, 80,  78,  71,  13,  10,  26,  10,  0,   0,   0,   13,  73,  72,  68,  82,  0,   0,   16, 0,
+    0,   0,   0,   1,   8,   6,   0,   0,   0,   94,  33,  107, 124, 0,   0,   0,   42,  73,  68, 65,
+    84,  120, 218, 237, 195, 65,  13,  0,   0,   12,  3,   161, 243, 111, 186, 147, 177, 15,  36, 180,
+    154, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 170, 250, 251, 0,  248,
+    102, 225, 210, 12,  185, 221, 33,  0,   0,   0,   0,   73,  69,  78,  68,  174, 66,  96,  130};
+
+constexpr std::array<unsigned char, 113U> sample_png_1x4096{
+    137, 80, 78,  71,  13,  10,  26,  10,  0,   0,   0,   13, 73,  72,  68,  82,  0,  0,   0,   1,   0,   0,   16,
+    0,   8,  6,   0,   0,   0,   179, 151, 139, 226, 0,   0,  0,   56,  73,  68,  65, 84,  120, 218, 237, 196, 49,
+    1,   0,  0,   12,  195, 160, 248, 55,  221, 169, 216, 7,  7,   173, 150, 36,  73, 146, 36,  73,  146, 36,  73,
+    146, 36, 73,  146, 36,  73,  146, 36,  73,  146, 36,  73, 146, 36,  73,  146, 36, 73,  146, 36,  73,  250, 236,
+    0,   9,  101, 225, 210, 55,  105, 124, 102, 0,   0,   0,  0,   73,  69,  78,  68, 174, 66,  96,  130};
+
+struct ThinPngCase final
+{
+    std::string source_bytes;
+    std::uint32_t source_width;
+    std::uint32_t source_height;
+    std::uint32_t target_width;
+    std::uint32_t target_height;
+};
+
+[[nodiscard]] auto thin_png_cases(std::uint32_t target_long_dimension) -> std::array<ThinPngCase, 2U>
+{
+    return {
+        ThinPngCase{std::string{sample_png_4096x1.begin(), sample_png_4096x1.end()}, 4096U, 1U,    1U,
+                    target_long_dimension},
+        ThinPngCase{std::string{sample_png_1x4096.begin(), sample_png_1x4096.end()}, 1U,    4096U, target_long_dimension,
+                    1U                   }
+    };
+}
+
+} // namespace
+
+SCENARIO("the real thumbnail worker applies the request pixel budget to crop fill",
+         "[integration][media][thumbnail][med-8][med-8-budget]")
+{
+    GIVEN("valid thin PNGs containing exactly the configured 4096 source pixels")
+    {
+        auto config = merovingian::media::ThumbnailerConfig{};
+        config.worker_path = MEROVINGIAN_TEST_THUMBNAIL_WORKER;
+        config.timeout_seconds = 60U;
+        config.max_pixels = 4096U;
+
+        WHEN("scale and crop requests use the same admitted source and target geometry")
+        {
+            THEN("ordinary crop succeeds but both 16384-pixel crop fills return a framed size rejection")
+            {
+                auto ordinary_request = merovingian::media::ThumbnailRequest{};
+                ordinary_request.source_bytes = sample_png();
+                ordinary_request.source_content_type = "image/png";
+                ordinary_request.width = 4U;
+                ordinary_request.height = 4U;
+                ordinary_request.method = merovingian::media::ThumbnailMethod::crop;
+                auto const ordinary = merovingian::media::generate_thumbnail(config, ordinary_request);
+                INFO("ordinary crop status=" << ordinary.status << " reason=" << ordinary.reason);
+                REQUIRE(ordinary.ok);
+                REQUIRE(ordinary.status == 200U);
+                REQUIRE(ordinary.content_type == "image/png");
+                REQUIRE(is_png(ordinary.bytes));
+                REQUIRE(ordinary.bytes.size() >= 24U);
+                auto const [ordinary_width, ordinary_height] = png_dimensions(ordinary.bytes);
+                REQUIRE(ordinary_width == 4U);
+                REQUIRE(ordinary_height == 4U);
+                REQUIRE(ordinary.width == 4U);
+                REQUIRE(ordinary.height == 4U);
+
+                for (auto const& item : thin_png_cases(2U))
+                {
+                    INFO("source=" << item.source_width << 'x' << item.source_height << " target=" << item.target_width
+                                   << 'x' << item.target_height);
+                    REQUIRE(is_png(item.source_bytes));
+                    REQUIRE(item.source_bytes.size() >= 24U);
+                    auto const [source_width, source_height] = png_dimensions(item.source_bytes);
+                    REQUIRE(source_width == item.source_width);
+                    REQUIRE(source_height == item.source_height);
+                    REQUIRE(static_cast<std::uint64_t>(source_width) * source_height == config.max_pixels);
+
+                    auto request = merovingian::media::ThumbnailRequest{};
+                    request.source_bytes = item.source_bytes;
+                    request.source_content_type = "image/png";
+                    request.width = item.target_width;
+                    request.height = item.target_height;
+                    request.method = merovingian::media::ThumbnailMethod::scale;
+                    auto const scale = merovingian::media::generate_thumbnail(config, request);
+                    INFO("scale status=" << scale.status << " reason=" << scale.reason);
+                    REQUIRE(scale.ok);
+                    REQUIRE(scale.status == 200U);
+                    REQUIRE(scale.content_type == "image/png");
+                    REQUIRE(is_png(scale.bytes));
+                    REQUIRE(scale.bytes.size() >= 24U);
+                    auto const [scale_width, scale_height] = png_dimensions(scale.bytes);
+                    REQUIRE(scale_width == 1U);
+                    REQUIRE(scale_height == 1U);
+                    REQUIRE(scale.width == 1U);
+                    REQUIRE(scale.height == 1U);
+
+                    // The old fill is 8192x2 (or 2x8192): only 64 KiB,
+                    // safely exposing admission above this request's budget.
+                    request.method = merovingian::media::ThumbnailMethod::crop;
+                    auto const crop = merovingian::media::generate_thumbnail(config, request);
+                    INFO("crop status=" << crop.status << " reason=" << crop.reason);
+                    CHECK_FALSE(crop.ok);
+                    CHECK(crop.status == 413U);
+                    CHECK(crop.bytes.empty());
+                    CHECK(crop.content_type.empty());
+                    CHECK(crop.width == 0U);
+                    CHECK(crop.height == 0U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("the real thumbnail worker keeps its existing hard ceiling for crop fill",
+         "[integration][media][thumbnail][med-8][med-8-budget]")
+{
+    GIVEN("valid thin PNGs and zero, ceiling-sized, or UINT32_MAX request budgets")
+    {
+        auto config = merovingian::media::ThumbnailerConfig{};
+        config.worker_path = MEROVINGIAN_TEST_THUMBNAIL_WORKER;
+        config.timeout_seconds = 60U;
+
+        WHEN("both orientations request a 32-pixel-long target box")
+        {
+            THEN("scale succeeds but all six 4194304-pixel crop fills exceed the existing ceiling")
+            {
+                for (auto const max_pixels : std::array<std::uint32_t, 3U>{0U, 4096000U, 4294967295U})
+                {
+                    config.max_pixels = max_pixels;
+                    for (auto const& item : thin_png_cases(32U))
+                    {
+                        INFO("max_pixels=" << max_pixels << " source=" << item.source_width << 'x' << item.source_height
+                                           << " target=" << item.target_width << 'x' << item.target_height);
+                        REQUIRE(is_png(item.source_bytes));
+                        REQUIRE(item.source_bytes.size() >= 24U);
+                        auto const [source_width, source_height] = png_dimensions(item.source_bytes);
+                        REQUIRE(source_width == item.source_width);
+                        REQUIRE(source_height == item.source_height);
+
+                        auto request = merovingian::media::ThumbnailRequest{};
+                        request.source_bytes = item.source_bytes;
+                        request.source_content_type = "image/png";
+                        request.width = item.target_width;
+                        request.height = item.target_height;
+                        request.method = merovingian::media::ThumbnailMethod::scale;
+                        auto const scale = merovingian::media::generate_thumbnail(config, request);
+                        INFO("scale status=" << scale.status << " reason=" << scale.reason);
+                        REQUIRE(scale.ok);
+                        REQUIRE(scale.status == 200U);
+                        REQUIRE(scale.content_type == "image/png");
+                        REQUIRE(is_png(scale.bytes));
+                        REQUIRE(scale.bytes.size() >= 24U);
+                        auto const [scale_width, scale_height] = png_dimensions(scale.bytes);
+                        REQUIRE(scale_width == 1U);
+                        REQUIRE(scale_height == 1U);
+                        REQUIRE(scale.width == 1U);
+                        REQUIRE(scale.height == 1U);
+
+                        // The old fill is 131072x32 (or 32x131072): 16 MiB,
+                        // above the existing 4096000-pixel hard ceiling.
+                        request.method = merovingian::media::ThumbnailMethod::crop;
+                        auto const crop = merovingian::media::generate_thumbnail(config, request);
+                        INFO("crop status=" << crop.status << " reason=" << crop.reason);
+                        CHECK_FALSE(crop.ok);
+                        CHECK(crop.status == 413U);
+                        CHECK(crop.bytes.empty());
+                        CHECK(crop.content_type.empty());
+                        CHECK(crop.width == 0U);
+                        CHECK(crop.height == 0U);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// First-GREEN audit coverage only: do not run before the crop-fill repair.
+// The original path attempts a 64 GiB RGBA fill, and ASan skips the memory cap.
+// These admission regressions do not cover every worker exception branch.
+SCENARIO("the real thumbnail worker rejects the original MED-8 crop magnitude",
+         "[integration][media][thumbnail][med-8][med-8-audit]")
+{
+    GIVEN("valid thin PNGs and the default pixel budget")
+    {
+        auto config = merovingian::media::ThumbnailerConfig{};
+        config.worker_path = MEROVINGIAN_TEST_THUMBNAIL_WORKER;
+        config.timeout_seconds = 60U;
+
+        WHEN("both orientations request a 2048-pixel-long target box")
+        {
+            THEN("scale succeeds but the audit-sized crop fills return framed size rejections")
+            {
+                for (auto const& item : thin_png_cases(2048U))
+                {
+                    INFO("source=" << item.source_width << 'x' << item.source_height << " target=" << item.target_width
+                                   << 'x' << item.target_height);
+                    REQUIRE(is_png(item.source_bytes));
+                    REQUIRE(item.source_bytes.size() >= 24U);
+                    auto const [source_width, source_height] = png_dimensions(item.source_bytes);
+                    REQUIRE(source_width == item.source_width);
+                    REQUIRE(source_height == item.source_height);
+
+                    auto request = merovingian::media::ThumbnailRequest{};
+                    request.source_bytes = item.source_bytes;
+                    request.source_content_type = "image/png";
+                    request.width = item.target_width;
+                    request.height = item.target_height;
+                    request.method = merovingian::media::ThumbnailMethod::scale;
+                    auto const scale = merovingian::media::generate_thumbnail(config, request);
+                    INFO("scale status=" << scale.status << " reason=" << scale.reason);
+                    REQUIRE(scale.ok);
+                    REQUIRE(scale.status == 200U);
+                    REQUIRE(scale.content_type == "image/png");
+                    REQUIRE(is_png(scale.bytes));
+                    REQUIRE(scale.bytes.size() >= 24U);
+                    auto const [scale_width, scale_height] = png_dimensions(scale.bytes);
+                    REQUIRE(scale_width == 1U);
+                    REQUIRE(scale_height == 1U);
+                    REQUIRE(scale.width == 1U);
+                    REQUIRE(scale.height == 1U);
+
+                    request.method = merovingian::media::ThumbnailMethod::crop;
+                    auto const crop = merovingian::media::generate_thumbnail(config, request);
+                    INFO("crop status=" << crop.status << " reason=" << crop.reason);
+                    CHECK_FALSE(crop.ok);
+                    CHECK(crop.status == 413U);
+                    CHECK(crop.bytes.empty());
+                    CHECK(crop.content_type.empty());
+                    CHECK(crop.width == 0U);
+                    CHECK(crop.height == 0U);
+                }
+            }
+        }
+    }
+}
+
+#endif // MEROVINGIAN_TEST_THUMBNAIL_WORKER

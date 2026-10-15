@@ -41,6 +41,21 @@ current in-process runtime path.
   `security.media.max_upload_size`, so client upload hints match the policy
   enforced by the repository.
 - Downloads serve local media owned by the configured server name.
+- Federation downloads also use the production `media_policy_decision` before
+  repository lookup or blob reads (MED-7, ADR-0144). Persisted exact or
+  wildcard media rules and the configured media-surface policy-server hook use
+  the same decision path as client downloads. Denial returns 403 without media
+  bytes or a media content type; the signed federation dispatcher returns its
+  existing JSON error, not `multipart/mixed`. Healthy responses retain the
+  two-part federation media format. The provider keeps its runtime lock and
+  `RequestLockScope`; hook I/O uses the existing lock-release mechanism, and
+  subsequent blob reads retain record/storage revalidation. This is admission
+  policy, not a guarantee that a rule changed during hook or blob I/O cancels an
+  already admitted request. SQLite/signed-request regression and unavailable-hook
+  checks pass 132 assertions in two cases; independent source review passes.
+  The fresh normal full suite completes 56 OK with all return codes zero and
+  1,026 frozen files unchanged. This is bounded admission acceptance, not
+  live policy-server HTTP denial or whole-audit/release acceptance.
 - Remote media fetches are opt-in (`security.media.remote_fetch_enabled`, built-in default `false`;
   `config/merovingian.conf.example` sets it to `true`) and
   the flag is checked first: `download_local_media` and `download_local_media_thumbnail` answer
@@ -64,6 +79,18 @@ current in-process runtime path.
   federation media request (ADR-0119). Memory holds records and blob metadata. The read runs with the
   runtime mutex released, and the record is checked again afterwards, so media removed or quarantined
   during the read is not served.
+- Local thumbnails also own their source media/storage identity before the blob
+  read and revalidate that record after the unlocked decoder returns (MED-4,
+  proposed ADR-0145). Availability, matching storage identity and legacy visibility
+  must still permit disclosure before a successful PNG is published or counted
+  as served. An available alias sharing the same blob does not authorize a
+  quarantined or removed record. Refusal is 404 with no decoded PNG or fallback
+  original. The existing decoder lock release remains intact. A real SQLite/
+  socket/child-gate regression reproduces both moderation races with healthy
+  controls; normal GREEN, independent review and fresh full verification are
+  pending. This local-only slice does not establish remote-source revalidation,
+  generated-output caching, per-user decode admission or strict policy-rule
+  revocation during I/O.
 - When enabled, a remote fetch runs on the media fetch pool, not the main request pool (ADR-0121;
   `docs/http-transport.md` "Remote media fetch pool"). The refusal, policy and cache checks run first
   on the main pool; only a cache miss is handed to the pool, which admits at most
@@ -238,6 +265,18 @@ surface), so it runs in a short-lived, sandboxed child process:
 - The parent (`media::generate_thumbnail`) enforces a wall-clock timeout, an
   input-size limit, an output-size cap, and a pixel-count decode-bomb guard, and
   SIGKILLs a worker that overruns.
+- The worker applies the same effective pixel budget to decoded pixels, the
+  final thumbnail, and the actual whole-image crop fill (MED-8). Zero still uses
+  its 4,096,000-pixel ceiling and a larger request cannot raise it. Rounded crop
+  fill axes are checked in 64-bit arithmetic before narrowing or allocation;
+  excess area produces the existing empty `too_large` frame. The parent driver
+  returns 413 with no media payload, content type, or dimensions; public routes
+  retain their existing thumbnail-failure handling. Unexpected C++ exceptions
+  use an empty `internal_error` frame prepared after hardening and before input,
+  rather than allocating another error string on the failure path. Admitted
+  bilinear/center-crop geometry is unchanged. This is not an aggregate memory or
+  concurrency budget, nor a broader thumbnail conformance claim. See proposed
+  [ADR-0143](adr/0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md).
 - A worker's successful response is still untrusted: the parent checks the full
   PNG signature, initial 13-byte IHDR framing, and legal nonzero dimensions
   matching the reported dimensions. A malformed or mismatched PNG returns 502

@@ -5,6 +5,49 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **ACCEPTED (MED-4, local thumbnail revalidation):** local thumbnail requests
+  own the source media/storage identity across unlocked blob reads and decoding.
+  Successful worker output is checked against that record's current servability,
+  storage binding and legacy visibility before publication or served accounting;
+  a quarantine or removal wins with 404 even when an available alias shares the
+  same blob. A real SQLite/socket regression gates a child before it execs the
+  actual worker, proves healthy ungated/gated output and concurrent `/versions`
+  and admin operations, then checks durable quarantine/removal and alias safety.
+  Genuine RED passes 249 / 255 assertions, failing the six expected PNG-disclosure
+  checks across both actions. Normal GREEN passes 255 / 1 inside a fresh full
+  WSL run of 56 OK / 0 failed / 0 timed out. Output caching, per-user decode
+  admission and remote source identity remain separate MED-4 work. See ADR-0145.
+- **ACCEPTED (MED-7, bounded admission repair):** federation media downloads now consult the existing
+  media-policy decision before repository resolution or blob reads. A denial
+  returns 403 with no media bytes or content type, and the federation dispatcher
+  returns its existing JSON error rather than a multipart success. Real SQLite
+  integration covers persisted admin denial, genuinely signed requests, an
+  unaffected upload and recovery after rule removal; a second scenario checks
+  the configured unavailable policy hook and explicit fail-open setting without
+  an injected callback. RED passed 116 / 129 assertions, failing the 13 expected
+  refusal checks; final normal GREEN passes 132 / 2. Related media integration
+  passes 371 / 9, locking 146 / 7, federation media conformance 12 / 1,
+  client policy 41 / 3 and trust-safety units 100 / 13. Independent review passes;
+  the fresh normal full suite completes 56 OK with every return code zero and
+  1,026 frozen files unchanged. Live remote-policy HTTP responses and strict
+  policy revocation during an admitted request are not established. This accepts
+  the bounded admission repair, not the whole audit or release. See ADR-0144.
+
+- **FIXED (MED-8):** the thumbnail worker checks a crop's actual fill against
+  the existing effective pixel budget in 64-bit arithmetic before narrowing or
+  allocating. Zero still uses the 4,096,000-pixel worker ceiling; a larger request
+  cannot raise it. Refusal uses the existing empty `too_large` frame (413 from
+  `generate_thumbnail`), not an allocation failure or worker crash. Main prepares
+  an empty `internal_error` frame after hardening and before input, then catches
+  unexpected C++ exceptions without allocating a replacement error string.
+  A safe real-worker RED passed 115 / 163 assertions, failing only the 48 expected
+  crop checks with all healthy controls passing. Normal GREEN passes 201 / 3;
+  related thumbnail integration 776 / 10, ISO-5 isolation 554 / 4, thumbnail
+  units 35 / 8 and hardening units 21 / 10. The original 64 GiB amplification
+  inputs run only as first-GREEN coverage. The fresh full WSL run completes
+  56 OK / 0 failed / 0 timed out, with the MED-8 tag re-run at 201 / 3; separate
+  exception fault injection and broader thumbnail geometry/upscaling conformance
+  are not claimed. See ADR-0143.
 - **FIXED (HTTP-7):** permissive JSON parsing checks integer bounds before converting
   unsigned values to signed values; values outside the canonical integer range are refused
   with `integer_out_of_range` instead of wrapping.
