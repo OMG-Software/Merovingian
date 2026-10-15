@@ -166,7 +166,7 @@ fixed. Of the 46 low findings, 34 are fixed, 5 are partly fixed and 7 are open.
 - **Low:** AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-9, AUTH-10, AUTH-12, CSAZ-6, CSAZ-9,
   CSAZ-11, CSAZ-12, HTTP-6, HTTP-7, EVT-10, EVT-11, OUT-5, OUT-6, OUT-8, OPS-3,
   CRY-3, CRY-4, CRY-5, CRY-6, OPS-6, ISO-5, FED-9, MED-7, MED-8, ISO-4, ISO-6, ISO-8,
-  DB-10.
+  DB-10, DB-4, OPS-5.
   The AUTH rows are in "Fixed — low, AUTH" below. OUT-5: `CURLOPT_PROXY` is set to `""` on the
   only curl handle, but there is no regression test with `https_proxy` set. OPS-3: media
   size limits that do not parse are rejected by `validate()`, the effective limits are
