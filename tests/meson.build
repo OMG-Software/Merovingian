@@ -204,6 +204,7 @@ shell = find_program('sh')
       'unit/test_worker_hardening_threads.cpp',
       'unit/test_signal_hardening.cpp',
       'unit/test_logger_writers.cpp',
+      'unit/test_log_file_sink.cpp',
       'unit/test_hardening_self_check.cpp',
       'unit/test_homeserver_vertical_slice.cpp',
       'unit/test_http_connection_guard.cpp',

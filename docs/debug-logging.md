@@ -3,7 +3,9 @@
 Merovingian emits structured diagnostic log summaries through the existing
 `SingleLog` logger. Console output defaults to `info`; pass `--debug` to
 `merovingian-server` to show debug diagnostics on the console. Pass
-`--log-file <path>` to write trace/debug diagnostics to a file.
+`--log-file <path>` to write trace/debug diagnostics to a file. The file is
+opened without following a symlink, made `0600`, and truncated at start-up; a
+path that is not a regular file the server owns is refused (ADR-0146).
 
 Example:
 

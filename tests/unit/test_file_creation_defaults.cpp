@@ -67,3 +67,29 @@ SCENARIO("Packages write registration tokens under a private mask", "[platform][
         }
     }
 }
+SCENARIO("The systemd unit confines address families and kernel interfaces", "[platform][iso8]")
+{
+    GIVEN("the packaged systemd service")
+    {
+        auto const unit = source("packaging/systemd/merovingian.service");
+
+        WHEN("its [Service] sandbox directives are inspected")
+        {
+            THEN("only the address families the server and its workers use are admitted")
+            {
+                REQUIRE(unit.find("\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n") != std::string::npos);
+            }
+            AND_THEN("kernel tunables, modules, logs, control groups and namespaces are protected")
+            {
+                for (auto const* directive :
+                     std::array{"\nProtectKernelTunables=true\n", "\nProtectKernelModules=true\n",
+                                "\nProtectKernelLogs=true\n", "\nProtectControlGroups=true\n",
+                                "\nRestrictNamespaces=true\n", "\nUMask=0077\n"})
+                {
+                    CAPTURE(directive);
+                    REQUIRE(unit.find(directive) != std::string::npos);
+                }
+            }
+        }
+    }
+}

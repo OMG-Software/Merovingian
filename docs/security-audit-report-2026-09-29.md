@@ -138,8 +138,13 @@ full WSL run completed 56 OK, 0 failed, 0 timed out; tag runs of the new integra
 scenarios passed MED-4 255 / 1, MED-7 132 / 2 and MED-8 201 / 3 (ADR-0143, ADR-0144,
 ADR-0145).
 
+**Update:** 15 October 2026 — ISO-4, ISO-6, ISO-8 and DB-10 are fixed. The SQLite,
+umask and package-script parts were on the branch already and were reviewed; the
+`--log-file` sink, the worker's socket-family filter and the systemd directives are new
+(ADR-0146, ADR-0147). Fresh full WSL run: 56 OK, 0 failed, 0 timed out.
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 28 are fixed, 5 are partly fixed and 13 are open.
+fixed. Of the 46 low findings, 32 are fixed, 5 are partly fixed and 9 are open.
 
 ### Fixed
 
@@ -151,7 +156,8 @@ fixed. Of the 46 low findings, 28 are fixed, 5 are partly fixed and 13 are open.
   CRY-2, ISO-2, ISO-3, MED-1, MED-2, MED-3, MED-5, MED-6, DB-2, DB-3, DB-5.
 - **Low:** AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-9, AUTH-10, AUTH-12, CSAZ-6, CSAZ-9,
   CSAZ-11, CSAZ-12, HTTP-6, HTTP-7, EVT-10, EVT-11, OUT-5, OUT-6, OUT-8, OPS-3,
-  CRY-3, CRY-4, CRY-5, CRY-6, OPS-6, ISO-5, FED-9, MED-7, MED-8.
+  CRY-3, CRY-4, CRY-5, CRY-6, OPS-6, ISO-5, FED-9, MED-7, MED-8, ISO-4, ISO-6, ISO-8,
+  DB-10.
   The AUTH rows are in "Fixed — low, AUTH" below. OUT-5: `CURLOPT_PROXY` is set to `""` on the
   only curl handle, but there is no regression test with `https_proxy` set. OPS-3: media
   size limits that do not parse are rejected by `validate()`, the effective limits are
@@ -248,6 +254,15 @@ Residual notes on fixed findings:
 | MED-7 | The federation media download consults the same media-policy decision as client downloads before resolving the repository or reading a blob; a denial answers 403 with no bytes and the federation dispatcher returns its JSON error, not a multipart success. Real SQLite tests cover a persisted admin rule against a genuinely signed request, recovery after the rule is removed, and the configured unavailable-policy hook with and without fail-open. ADR-0144. |
 | MED-8 | The thumbnail worker checks the crop's fill area against the request's effective pixel budget (never above the 4,096,000-pixel worker ceiling) in 64-bit arithmetic before allocating, answering `too_large` (413) instead of allocating the intermediate. `main` prepares an empty `internal_error` frame before reading input and returns it if anything throws. Tested against the real worker, including the audit's 64 GiB inputs. ADR-0143. |
 
+### Fixed — low, isolation and SQLite, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| ISO-4 | The worker opens main's SQLite file `SQLITE_OPEN_READONLY` and refuses a WAL-mode file (a read-only connection would still write its shared-memory index); its Landlock grant on the database directory is read-only. Tested by a production worker bootstrap whose writes fail and by a Landlocked child whose raw writable `open()` is denied (`[iso4]`). The threat model's "read-write" wording is corrected. |
+| ISO-6 | Every executable sets `umask(0077)` first and the unit sets `UMask=0077`; package scripts write the registration token under `umask 077`; SQLite creates missing directories 0700 and the file 0600 (`[iso6_defaults]`, `[iso6]`). `--log-file` is opened `O_NOFOLLOW\|O_CLOEXEC`, only as a regular file this process owns, then made 0600 (ADR-0146). |
+| ISO-8 | The worker filter admits `socket()` for `AF_UNIX`/`AF_INET`/`AF_INET6`, answers `AF_NETLINK` with `EAFNOSUPPORT`, and kills on any other family; `socketpair()` is `AF_UNIX` only. The unit adds `RestrictAddressFamilies=`, `RestrictNamespaces=` and the kernel-protection directives. The `peer`-authentication caveat is documented. Tested in forked children against the real kernel (`[iso8]`). ADR-0147. |
+| DB-10 | SQLite opens with `SQLITE_OPEN_NOFOLLOW` after descriptor-relative, no-follow traversal; files are 0600; `secure_delete=ON` and `trusted_schema=OFF` (`[db10]`). Residual: the path is reopened by name after the checks. |
+
 ### Partial — low, federation key admission, 11 October 2026
 
 | ID | Resolution |
@@ -268,8 +283,7 @@ None.
 | MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). Since 0.12.26 a local thumbnail is published only if its source record is still available, bound to the same blob and visible on the endpoint used, checked after the decode with the lock re-taken; a test holds the real worker at a gate while `/versions` and admin quarantine/removal proceed (ADR-0145). There is still no thumbnail cache and no per-user concurrency cap, and remote thumbnails are not revalidated against a local identity. |
 | ISO-7 | Partial | Master, registration-token, main/worker database URI and bootstrap-password reads use owner/mode/type-validated descriptors and locked buffers. TLS/private-key handoff and the separate cache-identity/load association still need review; no whole-finding closure is claimed. |
 
-Open, with no accepted implementation yet: FED-12, ISO-4,
-ISO-6, ISO-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2,
+Open, with no accepted implementation yet: FED-12, DB-4, DB-6, DB-7, DB-8, DB-9, OPS-2,
 OPS-4, OPS-5. In-progress changes in the branch do not count as accepted fixes.
 
 

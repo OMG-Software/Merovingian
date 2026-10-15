@@ -140,6 +140,8 @@
 * [0143 - Bound thumbnail crop intermediates by the existing pixel budget](0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md)
 * [0144 - Apply the shared media policy before federation media reads](0144-apply-shared-media-policy-before-federation-media-reads.md)
 * [0145 - Bind local thumbnail disclosure to source record identity](0145-bind-local-thumbnail-disclosure-to-source-record-identity.md)
+* [0146 - Open the log file without following links, owner-only, and keep truncating it](0146-open-the-log-file-without-following-links-and-owner-only.md)
+* [0147 - Filter the worker's socket families, and restrict them in the systemd unit](0147-filter-worker-socket-families-and-restrict-systemd-address-families.md)
 
 ## Proposed Records
 

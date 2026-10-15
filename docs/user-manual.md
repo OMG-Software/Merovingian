@@ -2362,7 +2362,10 @@ merovingian-server --debug --log-file /var/log/merovingian/debug.log \
 ```
 
 `--debug` lowers the console sink threshold to `debug`. `--log-file` enables
-the file sink, whose threshold is `trace`. Both sinks still obey the
+the file sink, whose threshold is `trace`. The path must be a regular file owned
+by the server's user, or not exist yet: it is created or tightened to `0600` and
+truncated at start-up. A symlink (including `/dev/stderr`), FIFO, device or
+another user's file is refused and no file output is written (ADR-0146). Both sinks still obey the
 configured module/default levels, so set the relevant modules to `debug`
 or `trace` to receive those diagnostics.
 

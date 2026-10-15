@@ -112,6 +112,10 @@ POSIX metadata:
   0.12.13. Before then the file was opened with a plain `std::ifstream` without
   an ownership, symlink, or file-kind check, so a group/world-readable or
   swapped-in master key was silently accepted.
+* The `--log-file` path (ISO-6, [ADR-0146](adr/0146-open-the-log-file-without-following-links-and-owner-only.md))
+  is opened `O_NOFOLLOW|O_CLOEXEC` and used only when it is a regular file the
+  process owns; it is then made 0600 and truncated. A symlink, FIFO, device or
+  another user's file is refused and the logger writes no file output.
 
 - **Core-dump policy.** `setrlimit(RLIMIT_CORE, 0)` *and*, on Linux,
   `prctl(PR_SET_DUMPABLE, 0)` must both succeed. The prctl result was discarded
@@ -458,6 +462,15 @@ separate process on the same host:
   `kill(getppid(), SIGSTOP)`. `[iso2]` in
   `tests/unit/test_worker_hardening_threads.cpp` runs the real filter in a
   forked child.
+* **The worker opens only the socket families it uses** (ISO-8,
+  [ADR-0147](adr/0147-filter-worker-socket-families-and-restrict-systemd-address-families.md)):
+  `socket()` admits `AF_UNIX`, `AF_INET` and `AF_INET6`; `AF_NETLINK` returns
+  `EAFNOSUPPORT` so glibc's `getaddrinfo` address-sorting probe falls back instead
+  of killing the worker; any other family (`AF_ALG`, `AF_PACKET`, …) kills it.
+  `socketpair()` admits `AF_UNIX` only. Landlock does not govern `connect()` to a
+  pathname `AF_UNIX` socket, so give the worker's PostgreSQL role password or
+  certificate authentication, not `peer`. `[iso8]` in
+  `tests/unit/test_seccomp_hardening.cpp` runs the real filter in forked children.
 * **No thread exists before hardening; seccomp is installed with `TSYNC`
   (ISO-1, [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)):**
   seccomp filters and Landlock rulesets attach to the calling thread only, so
@@ -552,7 +565,7 @@ Linux receives the richest set of in-process controls.
 | Core dump policy | `apply_linux_core_dump_policy()` | `setrlimit(RLIMIT_CORE, {0, 0})` and `prctl(PR_SET_DUMPABLE, 0)`. |
 | Self-check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2` and `NoNewPrivs: 1` for every task under `/proc/self/task`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
 | Ignored SIGPIPE | `src/platform/signal_hardening.cpp` | `platform::ignore_sigpipe()` is the first call in every executable's `main()`. |
-| systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, etc. |
+| systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, `UMask=0077`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces=true`, `ProtectKernelTunables=`/`Modules=`/`Logs=`, `ProtectControlGroups=`, `ProtectClock=`, `ProtectHostname=` (ISO-8, ADR-0147), etc. |
 
 The seccomp-bpf filter is deliberately narrow: it allows only the syscalls the
 runtime actually needs. The filter is installed in `main.cpp` before

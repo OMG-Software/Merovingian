@@ -8,6 +8,7 @@ Structured logging and audit trail for the server.
 |---|---|
 | `observability.cpp` | Audit event types and category enum, admin route matching (`admin_routes`/`match_admin_route`), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
 | `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
+| `log_file_sink.hpp` (header-only) | The `--log-file` descriptor: opened `O_NOFOLLOW\|O_CLOEXEC`, only as a regular file this process owns, made 0600 (ISO-6, ADR-0146). Never open the log file any other way |
 
 ## Writer threads (ADR-0082)
 

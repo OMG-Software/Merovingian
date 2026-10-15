@@ -543,14 +543,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   the master key specifically; the load profile above still reduces (but,
   for SQLite, does not eliminate — the file itself remains fully readable by
   the worker process) how much credential material sits resident in the
-  worker's memory.
+  worker's memory. Since 0.12.26 (ISO-4) the worker can no longer *change*
+  main's SQLite system of record: it opens the file `SQLITE_OPEN_READONLY`,
+  refuses a WAL-mode file (whose shared-memory index a read-only connection
+  would still write), and its Landlock grant on the database directory is
+  read-only, so even a raw writable `open()` fails.
 
   **Part 3, Linux Landlock: closed.** The worker now restricts its own
   filesystem access with `platform::apply_worker_landlock()`
   (`landlock_create_ruleset`/`landlock_add_rule`/`landlock_restrict_self`),
   called from `federation_worker::main()` before the worker seccomp filter
   and before the event loop opens the database or handles any inbound
-  request. The ruleset grants only the SQLite database directory (read-write,
+  request. The ruleset grants only the SQLite database directory (read-only,
   required, when `database.backend=sqlite`) and a fixed set of best-effort,
   read-only or read-execute OS-integration paths (CA trust store candidates,
   resolver configuration, NSS/dynamic-linker library directories, timezone
@@ -591,6 +595,16 @@ threat it closes; the controls above are the standing defences these reinforce.
   main's uid, so the seccomp argument check is the only barrier on kernels before
   Landlock ABI 6. See
   [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md).
+- **A compromised worker could open any socket family (ISO-8,
+  security-audit-report-2026-09-29.md, closed):** `socket()` and `socketpair()` were
+  unrestricted, exposing kernel interfaces such as `AF_ALG` and `AF_PACKET`. The worker
+  filter now admits `AF_UNIX`, `AF_INET` and `AF_INET6`, answers `AF_NETLINK` with
+  `EAFNOSUPPORT` (glibc's address-sorting probe falls back) and kills on anything else;
+  the systemd unit restricts the same families for the whole service. Residual: Landlock
+  does not govern `connect()` to a pathname `AF_UNIX` socket, so the worker can reach any
+  local socket its uid may open; a PostgreSQL role using `peer` authentication would
+  accept it. See
+  [ADR-0147](adr/0147-filter-worker-socket-families-and-restrict-systemd-address-families.md).
 - **A compromised worker could exhaust main's memory through IPC (CRY-2,
   security-audit-report-2026-09-29.md, closed):** main's reader thread queued every
   request frame for the dispatch thread without limit, ahead of the in-flight cap

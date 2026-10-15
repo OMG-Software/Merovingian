@@ -974,6 +974,13 @@ ciphertext, but exactly what decrypts it once the operator master key is
 recovered by an unrelated bug — see ADR-0062 part 1) and every other
 credential-bearing table, even though no worker code path ever reads them.
 
+**Do not use `peer` authentication for main's role** (ISO-8, ADR-0147). The
+worker runs under main's uid, and Landlock does not govern `connect()` to a
+Unix socket, so a compromised worker can reach PostgreSQL's local socket; with
+`peer` (or `ident`) PostgreSQL would log it in as main's role on the uid alone,
+undoing the separate login below. Use `scram-sha-256` or certificate
+authentication for both roles.
+
 Two independent mechanisms close this, together:
 
 1. **A separate login, not `SET ROLE`.** `SET ROLE`-based separation was

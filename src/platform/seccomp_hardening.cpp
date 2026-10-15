@@ -10,6 +10,7 @@
 #include <system_error>
 
 #ifdef __linux__
+#include <cerrno>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -21,6 +22,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
@@ -534,6 +536,8 @@ namespace
         __NR_munlockall,
         __NR_mincore,
         // ── Network ────────────────────────────────────────────────────────
+        // ISO-8: socket() and socketpair() are argument-checked by family in
+        // argument_check_block (ADR-0147).
         __NR_socket,
         __NR_bind,
         __NR_listen,
@@ -815,6 +819,35 @@ namespace
             return {
                 BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),
                 BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, own_tgid, 0, 1),
+                allow,
+                deny,
+            };
+        }
+        if (nr == __NR_socket)
+        {
+            // ISO-8 (ADR-0147): the families federation, DNS, PostgreSQL and
+            // the IPC channel use. glibc's getaddrinfo opens a routing netlink
+            // socket to sort multiple addresses and falls back when that fails,
+            // so AF_NETLINK answers EAFNOSUPPORT, as systemd's
+            // RestrictAddressFamilies does, rather than killing the worker.
+            // The kernel reads the domain as an int: the low word is all of it.
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),      // [0] A = domain
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 4, 0),                  // [1] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 3, 0),                  // [2] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET6, 2, 0),                 // [3] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 0, 2),               // [4] else -> [7]
+                BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EAFNOSUPPORT & 0xFFFFU)), // [5]
+                allow,                                                               // [6]
+                deny,                                                                // [7]
+            };
+        }
+        if (nr == __NR_socketpair)
+        {
+            // Only local pairs; no other family has a use for socketpair().
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 0, 1),
                 allow,
                 deny,
             };

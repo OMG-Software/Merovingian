@@ -5,6 +5,34 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (ISO-8):** the federation worker's seccomp profile argument-checks
+  `socket()`: `AF_UNIX`, `AF_INET` and `AF_INET6` are allowed, `AF_NETLINK` answers
+  `EAFNOSUPPORT` so glibc's `getaddrinfo` address-sorting probe falls back, and any
+  other family (`AF_ALG`, `AF_PACKET`, `AF_VSOCK`, …) kills the worker; `socketpair()`
+  is `AF_UNIX` only. The systemd unit adds `RestrictAddressFamilies=AF_UNIX AF_INET
+  AF_INET6`, `RestrictNamespaces=`, `ProtectKernelTunables=`, `ProtectKernelModules=`,
+  `ProtectKernelLogs=`, `ProtectControlGroups=`, `ProtectClock=` and `ProtectHostname=`.
+  The docs now say why main's PostgreSQL role must not use `peer` authentication.
+  RED: `[iso8]` failed 5 of 35 assertions (healthy families passed); GREEN passes
+  60 / 2, `[seccomp]` 367 / 15 and `[iso2]` 30 / 1, in a fresh full WSL run of
+  56 OK / 0 failed / 0 timed out. ADR-0147.
+- **FIXED (ISO-6, log file):** `--log-file` is opened by the new header-only
+  `observability::LogFileSink` with `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`, used only when
+  it is a regular file this process owns, then made 0600 and truncated (as before).
+  A symlink, FIFO, device or foreign file is refused and the logger writes no file
+  output. RED: the logger wrote through a symlinked log path (1 of 35 `[iso6]`
+  assertions failed); GREEN passes `[iso6]` 35 / 6, `[iso6_defaults]` 32 / 2 and
+  `[logger]` 156 / 8 in the same full run. ADR-0146. Together with the umask, package-script
+  and SQLite-creation changes already on this branch, ISO-6 is closed.
+- **ACCEPTED (ISO-4, DB-10):** reviewed the checkpoint's SQLite changes. The worker
+  opens main's SQLite file read-only, refuses a WAL-mode file, and its Landlock grant
+  on the database directory is read-only; main creates missing directories 0700 and
+  the database 0600 without following symlinks, tightens an existing file it owns to
+  0600, and sets `secure_delete=ON` and `trusted_schema=OFF`. The threat model's
+  stale "read-write" Landlock wording is corrected. Residual: the database path is
+  reopened by name after the descriptor-relative checks, so a writable parent
+  directory still allows a swap between them. `[iso4]` 15 / 2 and `[db10]` 15 / 2
+  pass in the same full run.
 - **ACCEPTED (MED-4, local thumbnail revalidation):** local thumbnail requests
   own the source media/storage identity across unlocked blob reads and decoding.
   Successful worker output is checked against that record's current servability,
