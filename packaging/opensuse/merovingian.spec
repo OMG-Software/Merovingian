@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.25
+Version:        0.12.26
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Oct 15 2026 James Chapman <claude@ping.me.uk> - 0.12.26-1
+- Fix the remaining low findings of the 29 September 2026 security audit.
+
 * Thu Oct 08 2026 James Chapman <claude@ping.me.uk> - 0.12.25-1
 - Fix CSAZ-6, CSAZ-9 and CSAZ-12 of the 29 September 2026 security audit.
 

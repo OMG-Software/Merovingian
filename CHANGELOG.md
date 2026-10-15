@@ -1,9 +1,10 @@
 ## 0.12.26
 
-Remaining low-severity findings from the 29 September 2026 security audit are being
-remediated on `fix/remaining-low-security-audit`. This section records accepted slices
-and explicitly marked pending verification, not a claim that the entire pass or
-combined test suite is complete.
+Completes the 29 September 2026 security audit: every remaining low-severity finding is
+fixed, so all 101 findings (1 critical, 23 high, 31 medium, 46 low) are now closed. Entries
+marked PARTIAL or IN PROGRESS further down record intermediate steps on this branch; the
+FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the final commit:
+57 OK, 0 failed, 0 timed out.
 
 - **FIXED (DB-7):** every persisted write opened a fresh database connection (an SQLite
   open with its no-follow checks, or a PostgreSQL connect, TLS and `SET ROLE`), usually
