@@ -515,7 +515,7 @@ auto bootstrap_local_database(config::Config const& config) -> LocalDatabase
     return bootstrap_local_database(config, {});
 }
 
-auto hydrate_local_database(LocalDatabase& database) -> void
+auto hydrate_local_database(LocalDatabase& database, database::TableLoadProfile profile) -> void
 {
     database.users.reserve(database.persistent_store.users.size());
     for (auto const& user : database.persistent_store.users)
@@ -557,17 +557,23 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     // first make them agree with each room's current m.room.member state. A
     // store written before membership rows shared the event's transaction may
     // hold a durable ban whose row still says join; without this the banned
-    // user would be a member again after every restart.
-    auto const reconciled = database::reconcile_memberships_with_current_state(database.persistent_store, [&database] {
-        return database.next_stream_ordering++;
-    });
-    if (reconciled > 0U)
+    // user would be a member again after every restart. Main only: the
+    // federation worker never writes main's records (ISO-4, ADR-0062) nor draws
+    // stream positions, and main has reconciled before it spawns the worker.
+    if (profile == database::TableLoadProfile::full)
     {
-        log_diagnostic("database.memberships.reconciled",
-                       {
-                           {"count", std::to_string(reconciled), false}
-        },
-                       observability::LogEventSeverity::warning);
+        auto const reconciled =
+            database::reconcile_memberships_with_current_state(database.persistent_store, [&database] {
+                return database.next_stream_ordering++;
+            });
+        if (reconciled > 0U)
+        {
+            log_diagnostic("database.memberships.reconciled",
+                           {
+                               {"count", std::to_string(reconciled), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
     }
     std::ignore =
         database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
@@ -679,7 +685,7 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;
-    hydrate_local_database(database);
+    hydrate_local_database(database, profile);
     // CSAZ-11: the main process applies redactions as events are stored, and once now for any
     // that were stored but never applied. The federation worker only reads; it serves the redacted
     // JSON the main process wrote.

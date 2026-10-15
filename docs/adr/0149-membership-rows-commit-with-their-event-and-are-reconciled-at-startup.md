@@ -58,8 +58,12 @@ Chosen option: commit the projection with the event, and reconcile at hydration.
   built. For each current `m.room.member` event it rewrites the row when the row is missing, when the
   row says `join` and the event does not (a row never grants more than current state), or when the event
   is newer than the row. A row newer than its event is kept. Corrected rows take a fresh stream ordering,
-  so incremental `/sync` reports the change. The in-memory rows are corrected even if the write fails
-  (the federation worker's store is read-only): they then match current state, which is already durable.
+  so incremental `/sync` reports the change. The in-memory rows are corrected even if the write fails:
+  they then match current state, which is already durable.
+* **It runs only for `TableLoadProfile::full`, never in the federation worker.** The worker must not
+  write main's records (ISO-4, ADR-0062) or draw stream positions from its own counter; on PostgreSQL
+  its role may be able to write `membership`, and an unguarded reconcile did. Main reconciles at its own
+  startup, before it spawns the worker, so the worker reads rows that are already correct.
 
 ### Positive Consequences
 

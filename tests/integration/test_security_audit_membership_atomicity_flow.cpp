@@ -14,6 +14,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -357,6 +358,33 @@ struct PgDurableMembership final
     return durable;
 }
 
+[[nodiscard]] auto durable_watermark(std::filesystem::path const& path) -> std::uint64_t
+{
+    auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+    REQUIRE(opened.ok);
+    return opened.store.event_stream_watermark;
+}
+
+[[nodiscard]] auto loaded_membership_of_bob(merovingian::homeserver::LocalDatabase const& database,
+                                            std::string_view room_id) -> std::optional<std::string>
+{
+    auto const& rows = database.persistent_store.memberships;
+    auto const row = std::ranges::find_if(rows, [room_id](auto const& membership) {
+        return membership.room_id == room_id && membership.user_id == bob_user_id;
+    });
+    return row == rows.end() ? std::nullopt : std::optional<std::string>{row->membership};
+}
+
+[[nodiscard]] auto postgresql_config(std::string const& uri) -> merovingian::config::Config
+{
+    auto config = sqlite_config({});
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::postgresql;
+    database.worker_conninfo_override = uri;
+    return {config.server(),   config.listeners(),          std::move(database),
+            config.security(), config.client_rate_limits(), config.log_modules()};
+}
+
 } // namespace
 
 SCENARIO("DB-4 a ban whose membership row was left saying join does not return read access after a restart",
@@ -535,6 +563,112 @@ SCENARIO("DB-4 on PostgreSQL a ban commits with its membership row, and stale ro
             THEN("bob's row durably says ban")
             {
                 CHECK(corrected >= 1U);
+                CHECK(pg_durable_membership_of_bob(uri, room_id, ban_id).row == std::optional<std::string>{"ban"});
+            }
+        }
+    }
+}
+
+SCENARIO("DB-4 the federation worker's load profile never reconciles membership rows",
+         "[db4][db4-worker][integration][database][homeserver]")
+{
+    GIVEN("a real SQLite store holding a durable ban whose membership row still says join")
+    {
+        auto const fixture = MembershipSqliteFixture{};
+        auto const config = sqlite_config(fixture.database_path());
+        auto room = JoinedRoom{};
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+            REQUIRE(started.started);
+            room = alice_and_bob_in_a_room(started.runtime);
+            REQUIRE(request(started.runtime, "POST", room_path(room.room_id, "/ban"), room.alice_token,
+                            R"({"user_id":"@bob:example.org"})")
+                        .status == 200U);
+        }
+        {
+            auto const tamper = SqliteConnection{fixture.database_path()};
+            REQUIRE(tamper.execute("UPDATE membership SET membership = 'join' WHERE user_id = '@bob:example.org'"));
+        }
+        auto const watermark_before = durable_watermark(fixture.database_path());
+
+        WHEN("the store is opened with the federation worker's load profile")
+        {
+            auto const worker = merovingian::homeserver::bootstrap_local_database(
+                config, {}, merovingian::database::TableLoadProfile::federation_worker);
+
+            THEN("no row is rewritten, in memory or on disk, and no stream position is allocated")
+            {
+                REQUIRE(worker.opened);
+                CHECK(loaded_membership_of_bob(worker, room.room_id) == std::optional<std::string>{"join"});
+                CHECK(worker.next_stream_ordering == watermark_before + 1U);
+                CHECK(durable_membership_of_bob(fixture.database_path(), room.room_id).row ==
+                      std::optional<std::string>{"join"});
+                CHECK(durable_watermark(fixture.database_path()) == watermark_before);
+            }
+        }
+
+        WHEN("the store is opened with the full load profile")
+        {
+            auto const main = merovingian::homeserver::bootstrap_local_database(config, {});
+
+            THEN("bob's row is reconciled to the ban")
+            {
+                REQUIRE(main.opened);
+                CHECK(loaded_membership_of_bob(main, room.room_id) == std::optional<std::string>{"ban"});
+                CHECK(durable_membership_of_bob(fixture.database_path(), room.room_id).row ==
+                      std::optional<std::string>{"ban"});
+            }
+        }
+    }
+}
+
+SCENARIO("DB-4 on PostgreSQL the federation worker's load profile never writes membership rows",
+         "[db4][db4-worker][integration][database][postgresql]")
+{
+    GIVEN("a PostgreSQL store holding a durable ban whose membership row still says join")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        auto const suffix = unique_postgresql_suffix();
+        auto const room_id = "!db4-worker-" + suffix + ":example.org";
+        auto const join_id = "$db4-worker-join-" + suffix;
+        auto const ban_id = "$db4-worker-ban-" + suffix;
+        REQUIRE(merovingian::database::store_room(store, {room_id, "@alice:example.org"}));
+        REQUIRE(merovingian::database::store_event_with_state(
+            store, pg_member_event(join_id, room_id, bob_user_id, "join", 1U),
+            merovingian::database::PersistentStateEvent{room_id, "m.room.member", std::string{bob_user_id}, join_id},
+            merovingian::database::MembershipProjection{std::string{bob_user_id}, "join", 2U, std::nullopt}));
+        REQUIRE(merovingian::database::store_event_with_state(
+            store, pg_member_event(ban_id, room_id, bob_user_id, "ban", 3U),
+            merovingian::database::PersistentStateEvent{room_id, "m.room.member", std::string{bob_user_id}, ban_id}));
+        auto const config = postgresql_config(uri);
+
+        WHEN("the store is opened with the federation worker's load profile")
+        {
+            auto const worker = merovingian::homeserver::bootstrap_local_database(
+                config, {}, merovingian::database::TableLoadProfile::federation_worker);
+
+            THEN("main's membership row is not written")
+            {
+                REQUIRE(worker.opened);
+                CHECK(pg_durable_membership_of_bob(uri, room_id, ban_id).row == std::optional<std::string>{"join"});
+            }
+        }
+
+        WHEN("the store is opened with the full load profile")
+        {
+            auto const main = merovingian::homeserver::bootstrap_local_database(config, {});
+
+            THEN("bob's row durably says ban")
+            {
+                REQUIRE(main.opened);
                 CHECK(pg_durable_membership_of_bob(uri, room_id, ban_id).row == std::optional<std::string>{"ban"});
             }
         }

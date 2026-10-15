@@ -658,7 +658,7 @@ path decoding without blanket payload filtering, is recorded in proposed
 (`local_membership_projection`, DB-4, ADR-0149); `finish_local_membership` then updates the roster and
 device lists, and realigns the row if state resolution left a different member event current. Inbound member
 events (`send_join`, `send_leave`, `send_knock`, `/invite`, PDUs over `/send`) pass a projection the same
-way. At startup `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
+way. At main's startup (never in the federation worker) `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
 roster: a row is rewritten to the current member event when it is missing, when it says `join` and the event
 does not, or when the event is newer; a row newer than its event (a federated leave, an `/invite`) is kept.
 

@@ -27,7 +27,14 @@ combined test suite is complete.
   `test_security_audit_db_4.cpp` (reconciliation rule and projection atomicity on the
   in-memory store). RED: after a restart bob's `/joined_members` returned 200 and alice's
   roster listed him, and with his row refused the ban event and its current state were
-  still durable (5 failed assertions).
+  still durable (5 failed assertions). Review follow-up: the reconcile first ran for every
+  load profile, so the federation worker's open also rewrote rows and drew stream
+  positions from its own counter; on PostgreSQL that durably wrote main's `membership`
+  table. It now runs only for `TableLoadProfile::full` (main), like the redaction
+  reconciler; main reconciles before it spawns the worker. New `[db4-worker]` scenarios
+  (SQLite and gated PostgreSQL); RED: the PostgreSQL worker open rewrote bob's row to
+  `ban`, and the SQLite worker open rewrote it in memory and allocated a stream position
+  (3 failed assertions).
 
 - **FIXED (OPS-5):** the Docker image and the deb and BSD packages built at Meson's
   default `debug` buildtype (`-O0`), so `_FORTIFY_SOURCE` was never defined and every

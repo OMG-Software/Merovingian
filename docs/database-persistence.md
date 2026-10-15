@@ -1184,7 +1184,7 @@ Schema 18 adds `rooms.directory_public` as TEXT NOT NULL DEFAULT false. It is in
 write it in the event's own transaction (an upsert on `membership`, and an upsert or keyed delete on
 `invites`), so the event, its `current_state` row, the row and the invite change are durable together or
 not at all, on both backends. `store_membership_projection` writes a row and invite change with no event in
-one transaction. `reconcile_memberships_with_current_state` runs at hydration: a row is rewritten to the
+one transaction. `reconcile_memberships_with_current_state` runs at main's hydration (`TableLoadProfile::full` only; the federation worker never writes main's rows): a row is rewritten to the
 current member event's membership when the row is missing, says `join` while the event does not, or is older
 than the event; a newer row is kept. Corrected rows get a fresh stream ordering and are corrected in memory
 even if the write fails. No schema change (ADR-0149).
