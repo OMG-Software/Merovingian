@@ -12,12 +12,14 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
+#include "../support/tls_mock_server.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/media/repository.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
@@ -36,6 +38,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <utility>
 
@@ -168,6 +171,17 @@ public:
             return count == 1 && byte == 'A';
         }
         return false;
+    }
+    // One more release byte, for when several gated children are waiting.
+    [[nodiscard]] auto release_one() noexcept -> bool
+    {
+        auto const byte = 'R';
+        auto written = ssize_t{-1};
+        do
+        {
+            written = ::write(m_release.get(), &byte, 1U);
+        } while (written < 0 && errno == EINTR);
+        return written == 1;
     }
     [[nodiscard]] auto release() noexcept -> bool
     {
@@ -541,6 +555,31 @@ auto check_not_served(Response const& response, std::string const& original) -> 
     auto const contains_original = response.body.find(original) != std::string::npos;
     CHECK_FALSE(contains_original);
 }
+[[nodiscard]] auto remote_config(std::filesystem::path const& path) -> merovingian::config::Config
+{
+    auto config = sqlite_config(path);
+    auto security = config.security();
+    security.media.remote_fetch_enabled = true;
+    security.media.remote_fetch_media_policy = "allow";
+    return {config.server(), config.listeners(),          config.database(),
+            security,        config.client_rate_limits(), config.log_modules()};
+}
+
+[[nodiscard]] auto router_get(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& target,
+                              std::string const& token) -> Response
+{
+    auto const result = merovingian::homeserver::handle_client_server_request(runtime, {"GET", target, token, {}});
+    auto content_type = std::string{};
+    for (auto const& [name, value] : result.response.headers)
+    {
+        if (name == "Content-Type")
+        {
+            content_type = value;
+        }
+    }
+    return {result.status == merovingian::homeserver::DispatchResult::Status::complete, result.response.status,
+            std::move(content_type), result.response.body};
+}
 } // namespace
 
 SCENARIO("Local thumbnail decoding revalidates the moderated record rather than its shared blob",
@@ -666,6 +705,174 @@ SCENARIO("Local thumbnail decoding revalidates the moderated record rather than 
                     // PendingThumbnail scopes have released and waited before
                     // listener/pools join, runtime destruction and file cleanup.
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("MED-4 a generated thumbnail is served from the cache only while its record is servable",
+         "[med-4-cache][media][database][http]")
+{
+    GIVEN("an uploaded image whose 4x4 thumbnail was generated once by the real worker")
+    {
+        auto const directory = PrivateDirectory{};
+        auto const path = directory.path() / "media.sqlite3";
+        auto started = merovingian::homeserver::start_client_server(sqlite_config(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        use_worker(runtime, MEROVINGIAN_TEST_THUMBNAIL_WORKER);
+        auto listener = DispatchedListener{runtime};
+        auto const port = listener.port();
+        auto const token = login_admin(runtime, port);
+        auto const image = sample_png();
+        auto const id = upload(port, token, image);
+        require_thumbnail(transact(port, request("GET", thumbnail_target(id, 4U), token)), 4U);
+
+        WHEN("the worker becomes unavailable")
+        {
+            use_worker(runtime, (directory.path() / "no-such-worker").string());
+
+            THEN("the same thumbnail is still served, a new size is not, and moderation withholds the cached one")
+            {
+                require_thumbnail(transact(port, request("GET", thumbnail_target(id, 4U), token)), 4U);
+                check_not_served(transact(port, request("GET", thumbnail_target(id, 3U), token)), image);
+                auto const quarantined =
+                    transact(port, request("POST", "/_merovingian/admin/media/quarantine/" + id, token, "MED-4"));
+                REQUIRE(quarantined.status == 200U);
+                check_not_served(transact(port, request("GET", thumbnail_target(id, 4U), token)), image);
+                auto const released = transact(port, request("POST", "/_merovingian/admin/media/release/" + id, token));
+                REQUIRE(released.status == 200U);
+                require_thumbnail(transact(port, request("GET", thumbnail_target(id, 4U), token)), 4U);
+            }
+        }
+    }
+}
+
+SCENARIO("MED-4 one requester cannot run more thumbnail decodes at once than the per-user cap",
+         "[med-4-concurrency][media][database][concurrency]")
+{
+    GIVEN("an uploaded image and two decodes for one user held at the gate")
+    {
+        auto const directory = PrivateDirectory{};
+        auto const path = directory.path() / "media.sqlite3";
+        auto gate = ChildGate{directory.path()};
+        auto started = merovingian::homeserver::start_client_server(sqlite_config(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        use_worker(runtime, MEROVINGIAN_TEST_THUMBNAIL_WORKER);
+        auto listener = DispatchedListener{runtime};
+        auto const port = listener.port();
+        auto const token = login_admin(runtime, port);
+        auto const image = sample_png();
+        auto const id = upload(port, token, image);
+        use_worker(runtime, gate.executable());
+        gate.arm();
+        auto first = std::async(std::launch::async, [&] {
+            return router_get(runtime, thumbnail_target(id, 2U), token);
+        });
+        REQUIRE(gate.entered());
+        auto second = std::async(std::launch::async, [&] {
+            return router_get(runtime, thumbnail_target(id, 3U), token);
+        });
+        REQUIRE(gate.entered());
+
+        WHEN("the same user asks for a third thumbnail")
+        {
+            auto third = std::async(std::launch::async, [&] {
+                return router_get(runtime, thumbnail_target(id, 4U), token);
+            });
+            auto const answered = third.wait_for(std::chrono::seconds{10}) == std::future_status::ready;
+            // Release every gated child, including a third one if the cap failed.
+            for (auto i = 0; i < 3; ++i)
+            {
+                std::ignore = gate.release_one();
+            }
+            auto const first_result = first.get();
+            auto const second_result = second.get();
+
+            THEN("it is refused at once with 429, and the two held decodes still complete")
+            {
+                REQUIRE(answered);
+                auto const third_result = third.get();
+                CHECK(third_result.status == 429U);
+                CHECK(third_result.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                require_thumbnail(first_result, 2U);
+                require_thumbnail(second_result, 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("MED-4 a remote thumbnail decoded while its cached record is quarantined is not served",
+         "[med-4-remote][media][remote][concurrency]")
+{
+    GIVEN("a remote image admitted into the cache and its thumbnail decode held at the gate")
+    {
+        auto const directory = PrivateDirectory{};
+        auto const path = directory.path() / "media.sqlite3";
+        auto gate = ChildGate{directory.path()};
+        auto const certificate = merovingian::tests::tls_mock::write_test_tls_certificate();
+        auto tls = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                    certificate.private_key_file);
+        REQUIRE(tls.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto started = merovingian::homeserver::start_client_server(remote_config(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        {
+            auto const lock = std::lock_guard{runtime.homeserver.mutex};
+            runtime.homeserver.media_repository.config.private_address_fetches_blocked = false;
+            runtime.homeserver.test_forced_outbound_resolution["peer.example.org"] = {
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+        }
+        runtime.rate_limit_engine.reset();
+        auto listener = DispatchedListener{runtime};
+        auto const port = listener.port();
+        auto const token = login_admin(runtime, port);
+        auto const image = sample_png();
+        auto const multipart = std::string{"--med4\r\nContent-Type: application/json\r\n\r\n{}\r\n"
+                                           "--med4\r\nContent-Type: image/png\r\n\r\n"} +
+                               image + "\r\n--med4--\r\n";
+        auto const peer_response =
+            std::string{"HTTP/1.1 200 OK\r\nContent-Type: multipart/mixed; boundary=med4\r\nConnection: "
+                        "close\r\nContent-Length: "} +
+            std::to_string(multipart.size()) + "\r\n\r\n" + multipart;
+        auto peer = std::thread{[&] {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, *tls.context,
+                                                                       {
+                                                                           {"/media/download/remote", peer_response}
+            });
+        }};
+        auto const peer_join = merovingian::tests::tls_mock::ScopedThreadJoin{peer};
+        use_worker(runtime, gate.executable());
+        gate.arm();
+        auto const remote_target =
+            std::string{"/_matrix/client/v1/media/thumbnail/peer.example.org/remote?width=2&height=2&method=scale"};
+        auto pending = PendingThumbnail{gate, port, request("GET", remote_target, token)};
+        REQUIRE(gate.entered());
+        if (peer.joinable())
+        {
+            peer.join();
+        }
+        auto const local_id = [&] {
+            auto const lock = std::lock_guard{runtime.homeserver.mutex};
+            auto const& cache = runtime.homeserver.media_repository.remote_media_cache;
+            return cache.empty() ? std::string{} : cache.front().local_media_id;
+        }();
+        REQUIRE_FALSE(local_id.empty());
+
+        WHEN("an administrator quarantines the cached record before the decode finishes")
+        {
+            auto const quarantined =
+                transact(port, request("POST", "/_merovingian/admin/media/quarantine/" + local_id, token, "MED-4"));
+            auto const completed = pending.collect();
+
+            THEN("the thumbnail is not served")
+            {
+                REQUIRE(quarantined.status == 200U);
+                CHECK(completed.status != 200U);
+                CHECK_FALSE(png_signature(completed.body));
             }
         }
     }

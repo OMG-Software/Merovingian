@@ -394,6 +394,10 @@ security.media.max_upload_size=50MiB
 # security.media.remote_media_cache_ttl_seconds=86400
 # security.media.remote_media_cache_max_entries=50000
 # security.media.remote_media_cache_max_size=25GiB
+# Generated thumbnails kept in memory (empty or 0 disables), and thumbnail
+# decodes one requester may run at once (over it: 429).
+# security.media.thumbnail_cache_size=64MiB
+# security.media.thumbnail_max_concurrent_per_user=2
 # allowed_mime_types is a comma-separated allow-list. When empty (the default),
 # Merovingian uses its built-in default list, which includes image/png,
 # image/jpeg, image/gif, text/plain, application/pdf, and application/octet-stream

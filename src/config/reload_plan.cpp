@@ -407,6 +407,15 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.remote_media_cache_max_size");
     }
+    if (current.security().media.thumbnail_cache_size != next.security().media.thumbnail_cache_size)
+    {
+        add_change(plan, "security.media.thumbnail_cache_size");
+    }
+    if (current.security().media.thumbnail_max_concurrent_per_user !=
+        next.security().media.thumbnail_max_concurrent_per_user)
+    {
+        add_change(plan, "security.media.thumbnail_max_concurrent_per_user");
+    }
     if (current.security().media.remote_media_cache_max_entries != next.security().media.remote_media_cache_max_entries)
     {
         add_change(plan, "security.media.remote_media_cache_max_entries");

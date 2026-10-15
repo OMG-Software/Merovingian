@@ -79,9 +79,18 @@ current in-process runtime path.
   federation media request (ADR-0119). Memory holds records and blob metadata. The read runs with the
   runtime mutex released, and the record is checked again afterwards, so media removed or quarantined
   during the read is not served.
+- Generated thumbnails are cached in memory (`security.media.thumbnail_cache_size`,
+  64 MiB, least recently used first out), keyed by the source record, size and method;
+  a hit is served only after the record has been checked as servable, so moderation
+  needs no cache invalidation. Each requester (the user, or the client address when
+  unauthenticated) runs at most `security.media.thumbnail_max_concurrent_per_user` (2)
+  decodes at once; a further request gets `429 M_LIMIT_EXCEEDED`. A remote thumbnail
+  carries the cached local record its bytes were admitted as and is revalidated like a
+  local one, and every thumbnail re-checks the media policy after the decode (MED-4,
+  ADR-0152).
 - Local thumbnails also own their source media/storage identity before the blob
   read and revalidate that record after the unlocked decoder returns (MED-4,
-  proposed ADR-0145). Availability, matching storage identity and legacy visibility
+  ADR-0145). Availability, matching storage identity and legacy visibility
   must still permit disclosure before a successful PNG is published or counted
   as served. An available alias sharing the same blob does not authorize a
   quarantined or removed record. Refusal is 404 with no decoded PNG or fallback

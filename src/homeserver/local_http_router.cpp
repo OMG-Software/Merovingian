@@ -1152,6 +1152,19 @@ namespace
         return context;
     }
 
+    // MED-4: a thumbnail request also names its requester, for the per-user
+    // decode cap.
+    [[nodiscard]] auto thumbnail_request_context(LocalHttpRequest const& request, HomeserverRuntime& runtime)
+        -> RemoteMediaRequestContext
+    {
+        auto context = remote_media_context(request, runtime);
+        if (!request.access_token.empty())
+        {
+            context.requester = authenticated_user(runtime, request.access_token).value_or(std::string{});
+        }
+        return context;
+    }
+
     [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
         -> canonicaljson::Object const*
     {
@@ -4957,7 +4970,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto const params = parse_thumbnail_params(request.target);
         auto const result =
             download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height,
-                                           params.method, true, remote_media_context(request, runtime));
+                                           params.method, true, thumbnail_request_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
@@ -4971,7 +4984,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto const params = parse_thumbnail_params(request.target);
         auto const result =
             download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height,
-                                           params.method, false, remote_media_context(request, runtime));
+                                           params.method, false, thumbnail_request_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};

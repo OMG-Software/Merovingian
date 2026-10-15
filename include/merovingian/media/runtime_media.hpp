@@ -70,6 +70,10 @@ struct RuntimeMediaConfig final
     // exec the worker with fexecve(3) rather than execv(3). -1 means unused.
     int thumbnail_worker_fd{-1};
     std::uint32_t thumbnail_timeout_seconds{10U};
+    // MED-4, ADR-0152: the thumbnail cache's byte budget (0 disables it) and the
+    // per-requester cap on concurrent decodes.
+    std::uint64_t thumbnail_cache_max_bytes{64U * 1024U * 1024U};
+    std::uint32_t thumbnail_max_concurrent_per_user{2U};
 };
 
 [[nodiscard]] auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConfig;

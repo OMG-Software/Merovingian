@@ -27,6 +27,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -1097,6 +1098,13 @@ namespace
                                            out_result.response.body);
     }
 
+    // MED-4: who a thumbnail decode counts against: the user when the request
+    // is authenticated, otherwise the client address.
+    [[nodiscard]] auto thumbnail_requester(RemoteMediaRequestContext const& remote) -> std::string
+    {
+        return remote.requester.empty() ? "address:" + remote.client_key : "user:" + remote.requester;
+    }
+
     struct LocalThumbnailSource final
     {
         std::string media_id{};
@@ -1108,14 +1116,60 @@ namespace
     // handle (unsupported format, worker not installed, decode failure) degrades
     // to a 404 so a thumbnail request never hard-fails by serving the original
     // full-size bytes. Shared by the local and remote thumbnail paths.
+    // MED-4, ADR-0152: one thumbnail decode in flight for `requester`, counted
+    // while held. Constructed and destroyed with runtime.mutex held.
+    class ThumbnailDecodeSlot final
+    {
+    public:
+        ThumbnailDecodeSlot(media::LocalMediaRepository& repository, std::string requester)
+            : repository_{repository}
+            , requester_{std::move(requester)}
+        {
+            ++repository_.get().thumbnail_decodes_in_flight[requester_];
+        }
+        ThumbnailDecodeSlot(ThumbnailDecodeSlot const&) = delete;
+        auto operator=(ThumbnailDecodeSlot const&) -> ThumbnailDecodeSlot& = delete;
+        ThumbnailDecodeSlot(ThumbnailDecodeSlot&&) = delete;
+        auto operator=(ThumbnailDecodeSlot&&) -> ThumbnailDecodeSlot& = delete;
+        ~ThumbnailDecodeSlot() noexcept
+        {
+            auto& in_flight = repository_.get().thumbnail_decodes_in_flight;
+            if (auto const found = in_flight.find(requester_); found != in_flight.end() && --found->second == 0U)
+            {
+                in_flight.erase(found);
+            }
+        }
+
+    private:
+        std::reference_wrapper<media::LocalMediaRepository> repository_;
+        std::string requester_;
+    };
+
     [[nodiscard]] auto generate_thumbnail_for_media(HomeserverRuntime& runtime, std::string_view media_id,
                                                     std::string_view content_type, std::string_view bytes,
                                                     std::uint32_t width, std::uint32_t height,
                                                     media::ThumbnailMethod method,
-                                                    std::optional<LocalThumbnailSource> local_source = std::nullopt)
-        -> OperationResult
+                                                    std::optional<LocalThumbnailSource> local_source,
+                                                    std::string_view requester) -> OperationResult
     {
         auto const& media_config = runtime.media_repository.config;
+        // MED-4: a thumbnail already generated from this record's bytes is
+        // served without a decode. The caller has checked the record is still
+        // servable; the entry itself authorises nothing.
+        auto const cache_key =
+            local_source.has_value()
+                ? std::optional<media::ThumbnailCacheKey>{media::ThumbnailCacheKey{local_source->media_id,
+                                                                                   local_source->storage_id, width,
+                                                                                   height, method}}
+                : std::nullopt;
+        if (cache_key.has_value())
+        {
+            if (auto cached = runtime.media_repository.thumbnail_cache.find(*cache_key); cached.has_value())
+            {
+                ++runtime.media_repository.metrics.thumbnails_served;
+                return make_operation_result(true, cached->content_type + "|" + cached->bytes, {}, 200U);
+            }
+        }
         auto thumbnailer_config = media::ThumbnailerConfig{};
         thumbnailer_config.worker_path = media_config.thumbnail_worker_path;
         thumbnailer_config.worker_binary_fd = media_config.thumbnail_worker_fd;
@@ -1133,6 +1187,21 @@ namespace
 
         if (media_config.thumbnailing_enabled && !thumbnailer_config.worker_path.empty())
         {
+            // MED-4: each requester runs at most thumbnail_max_concurrent_per_user
+            // decodes at once, so one client cannot hold the decoder pool.
+            auto const& in_flight = runtime.media_repository.thumbnail_decodes_in_flight;
+            if (auto const found = in_flight.find(std::string{requester});
+                found != in_flight.end() &&
+                found->second >= std::max(media_config.thumbnail_max_concurrent_per_user, 1U))
+            {
+                log_diagnostic("thumbnail.concurrency_refused", {
+                                                                    {"media_id", std::string{media_id}, false}
+                });
+                auto refused = make_operation_result(false, {}, "too many thumbnails in progress, retry shortly", 429U);
+                refused.retry_after_ms = 1000U;
+                return refused;
+            }
+            auto const slot = ThumbnailDecodeSlot{runtime.media_repository, std::string{requester}};
             // MED-4: decoding runs in a child process for up to the thumbnail
             // timeout; it touches no runtime state, so it runs unlocked.
             auto const result = [&thumbnailer_config, &request]() {
@@ -1144,11 +1213,21 @@ namespace
                 // The local record, not a shared blob or an earlier admission,
                 // authorizes disclosure after the unlocked decode. Remote
                 // sources do not yet carry this local identity through fetch.
-                if (local_source.has_value() &&
-                    !media::local_media_still_servable(runtime.media_repository, local_source->media_id,
-                                                       local_source->storage_id, local_source->legacy_endpoint))
+                // Remote sources carry the cached local record the bytes were
+                // admitted as (MED-4), and the media policy is asked again: either
+                // may have changed while the lock was released.
+                if ((local_source.has_value() &&
+                     !media::local_media_still_servable(runtime.media_repository, local_source->media_id,
+                                                        local_source->storage_id, local_source->legacy_endpoint)) ||
+                    !media_policy_decision(runtime, media_id).allowed)
                 {
                     return make_operation_result(false, {}, "thumbnail source no longer available", 404U);
+                }
+                if (cache_key.has_value())
+                {
+                    runtime.media_repository.thumbnail_cache.insert(
+                        *cache_key, media::CachedThumbnail{result.content_type, result.bytes},
+                        media_config.thumbnail_cache_max_bytes);
                 }
                 ++runtime.media_repository.metrics.thumbnails_served;
                 log_diagnostic("thumbnail.resampled", {
@@ -1434,7 +1513,18 @@ namespace
         }
         auto const content_type = std::string_view{fetch_result.value}.substr(0U, separator);
         auto const bytes = std::string_view{fetch_result.value}.substr(separator + 1U);
-        return generate_thumbnail_for_media(runtime, media_id, content_type, bytes, width, height, method);
+        // MED-4: the bytes were admitted as a cached local record (unless the
+        // remote cache is disabled); that record, not the fetch, authorises
+        // serving the decode once the lock is taken again.
+        auto remote_source = std::optional<LocalThumbnailSource>{};
+        if (auto const* cached = media::find_cached_remote_media(runtime.media_repository, server_name, media_id,
+                                                                 media::remote_media_cache_now_ms());
+            cached != nullptr)
+        {
+            remote_source = LocalThumbnailSource{cached->media_id, cached->storage_id, false};
+        }
+        return generate_thumbnail_for_media(runtime, media_id, content_type, bytes, width, height, method,
+                                            std::move(remote_source), thumbnail_requester(remote));
     }
 
     auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
@@ -1461,7 +1551,7 @@ namespace
     }
 
     return generate_thumbnail_for_media(runtime, media_id, content_type, *bytes, width, height, method,
-                                        std::move(local_source));
+                                        std::move(local_source), thumbnail_requester(remote));
 }
 
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,

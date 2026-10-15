@@ -5,6 +5,24 @@ remediated on `fix/remaining-low-security-audit`. This section records accepted 
 and explicitly marked pending verification, not a claim that the entire pass or
 combined test suite is complete.
 
+- **FIXED (MED-4):** thumbnails were decoded with the lock released (0.12.20) and local
+  ones revalidated after the decode (ADR-0145), but every request forked the decoder
+  again, one client could run any number of decodes at once, and a remote thumbnail was
+  not revalidated. New `media::ThumbnailCache` keeps generated thumbnails in memory
+  (`security.media.thumbnail_cache_size`, 64 MiB, least recently used first out), served
+  only after the source record is checked as servable. New
+  `security.media.thumbnail_max_concurrent_per_user` (2) caps decodes in flight per user
+  (or client address when unauthenticated); beyond it `429 M_LIMIT_EXCEEDED`. A remote
+  thumbnail now carries the cached local record its bytes were admitted as and is
+  revalidated like a local one, and every thumbnail re-asks the media policy after the
+  decode (ADR-0152). Also fixed: `make_runtime_media_config`'s positional initializer put
+  the thumbnail timeout's `10` into `thumbnail_worker_fd`, so on FreeBSD a failed worker
+  pre-open left fd 10 to be `fexecve`d; it is now `-1`. Tests: `[med-4-cache]`,
+  `[med-4-concurrency]` and `[med-4-remote]` in `test_media_thumbnail_revalidation_flow.cpp`
+  (real worker and gate) and new `test_media_thumbnail_cache.cpp`. RED: with the worker
+  gone a repeated thumbnail was 404, a third concurrent decode for one user entered the
+  decoder, and a remote thumbnail was served after its cached record was quarantined.
+
 - **FIXED (OUT-3):** one user's push gateways could still tie up delivery: registrations
   were unbounded and a gateway host that stalled or failed was contacted again for every
   event, holding a delivery slot for its full timeout. New `server.push.max_pushers_per_user`

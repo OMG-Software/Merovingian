@@ -36,6 +36,7 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
     auto const per_user_limit = config::parse_size_limit(config.security().media.max_size_per_user);
     auto const remote_cache_limit = config::parse_size_limit(config.security().media.remote_media_cache_max_size);
     auto const remote_timeout = config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
+    auto const thumbnail_cache_limit = config::parse_size_limit(config.security().media.thumbnail_cache_size);
     auto const& configured_types = config.security().media.allowed_mime_types;
     auto allowed_types =
         configured_types.empty() ? default_allowed_mime_types() : std::vector<std::string>{configured_types};
@@ -64,7 +65,12 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         config.security().media.remote_media_cache_ttl_seconds,
         remote_cache_limit.valid ? remote_cache_limit.bytes : 0U,
         std::string{MEROVINGIAN_THUMBNAIL_WORKER_PATH},
+        // No pre-opened worker binary: main.cpp sets one only on FreeBSD. This
+        // slot used to receive the 10 meant for the timeout below.
+        -1,
         10U,
+        thumbnail_cache_limit.valid ? thumbnail_cache_limit.bytes : 0U,
+        config.security().media.thumbnail_max_concurrent_per_user,
     };
 }
 

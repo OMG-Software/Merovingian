@@ -583,6 +583,11 @@ struct MediaSecurityConfig final
     // files are deleted to stay within it, so remote caching never takes
     // capacity from local uploads. Empty means no limit.
     std::string remote_media_cache_max_size{"25GiB"};
+    // MED-4, ADR-0152: bytes of generated thumbnails kept in memory (least
+    // recently used first out; empty or 0 disables the cache), and how many
+    // thumbnail decodes one requester may run at once.
+    std::string thumbnail_cache_size{"64MiB"};
+    std::uint32_t thumbnail_max_concurrent_per_user{2U};
 };
 
 struct TrustSafetySecurityConfig final

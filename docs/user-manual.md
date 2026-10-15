@@ -1215,6 +1215,8 @@ Service API".
 | `security.media.remote_media_cache_ttl_seconds` | `86400` | How long admitted remote media is served from the local copy before it is fetched again. |
 | `security.media.remote_media_cache_max_entries` | `50000` | Maximum remote media files kept; when full, the least recently used one is deleted to make room. `0` disables the cache: every request for remote media goes to the origin, and only the latest fetched file is kept. |
 | `security.media.remote_media_cache_max_size` | `25GiB` | Bytes of cached remote media. The least recently used remote files are deleted to stay within it; a single file larger than this is refused with `507`. Empty means no limit. |
+| `security.media.thumbnail_cache_size` | `64MiB` | Bytes of generated thumbnails kept in memory, least recently used first out, so a repeated thumbnail request does not run the decoder again. A cached thumbnail is served only while its media is still servable. Empty or `0` disables the cache. |
+| `security.media.thumbnail_max_concurrent_per_user` | `2` | Thumbnail decodes one requester (the user, or the client address when unauthenticated) may run at once, 1..64. A further request is refused with `429 M_LIMIT_EXCEEDED`. |
 
 The three local capacity limits bound media your users upload, which would otherwise
 be unbounded: upload spam grows it until the database fills. Size limits must be empty

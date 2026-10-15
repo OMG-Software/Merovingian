@@ -1291,10 +1291,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // OPS-3: an optional media size limit is empty for "no limit"; anything
     // else must parse, because a value that fails to parse used to mean no limit.
     for (auto const& [field, value] : {
-             std::pair{"security.media.max_total_size",              &config.security().media.max_total_size   },
-             std::pair{"security.media.max_size_per_user",           &config.security().media.max_size_per_user},
+             std::pair{"security.media.max_total_size",              &config.security().media.max_total_size      },
+             std::pair{"security.media.max_size_per_user",           &config.security().media.max_size_per_user   },
              std::pair{"security.media.remote_media_cache_max_size",
-                       &config.security().media.remote_media_cache_max_size                                    },
+                       &config.security().media.remote_media_cache_max_size                                       },
+             std::pair{"security.media.thumbnail_cache_size",        &config.security().media.thumbnail_cache_size},
     })
     {
         if (!value->empty() && !parse_size_limit(*value).valid)
@@ -1302,6 +1303,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({field, "media size limit must be empty (no limit) or a positive size such as "
                                        "250GiB; accepted suffixes are B, KiB, MiB and GiB"});
         }
+    }
+    if (config.security().media.thumbnail_max_concurrent_per_user == 0U ||
+        config.security().media.thumbnail_max_concurrent_per_user > 64U)
+    {
+        findings.push_back({"security.media.thumbnail_max_concurrent_per_user", "must be between 1 and 64"});
     }
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)

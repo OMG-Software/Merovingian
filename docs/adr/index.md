@@ -146,6 +146,7 @@
 * [0149 - Membership rows commit with their event, and are reconciled from current state at startup](0149-membership-rows-commit-with-their-event-and-are-reconciled-at-startup.md)
 * [0150 - Legacy float power levels are read by the auth rules, but never hashed](0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)
 * [0151 - Cap pusher registration and break the circuit to failing gateways](0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md)
+* [0152 - Cache thumbnails in memory and cap concurrent decodes per requester](0152-cache-thumbnails-in-memory-and-cap-concurrent-decodes-per-requester.md)
 
 ## Proposed Records
 
