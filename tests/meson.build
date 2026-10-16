@@ -67,6 +67,12 @@ shell = find_program('sh')
   )
 
   test(
+    'line-endings-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_line_endings.py'],
+  )
+
+  test(
     'startup-hardening-gate-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],

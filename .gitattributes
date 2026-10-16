@@ -1,3 +1,8 @@
+# Every text file checks out with LF on every platform, whatever core.autocrlf
+# says: unit files, maintainer scripts, sources and docs are consumed on Unix,
+# and tests read them as text (ADR-0158). Git still detects binaries itself.
+* text=auto eol=lf
 *.sh text eol=lf
+# Windows-only scripts are the one exception.
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
