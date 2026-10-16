@@ -245,7 +245,8 @@ constexpr auto sqlite_reserved_byte = off_t{0x40000001};
     if (pid == 0)
     {
         auto const fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
-        auto probe = flock{};
+        // `struct`: the BSDs also declare a flock() function.
+        struct flock probe{};
         probe.l_type = F_WRLCK;
         probe.l_whence = SEEK_SET;
         probe.l_start = sqlite_reserved_byte;

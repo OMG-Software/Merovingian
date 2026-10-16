@@ -25,6 +25,8 @@ FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the fina
   `GatewayCircuitBreaker::record`'s eviction, now guarded like `ThumbnailCache`'s, and the
   startup hardening gate's GNU-only `\|` basic-regex alternation, which OpenBSD's grep
   reads literally (`grep -E`; tests in `test_startup_hardening_gate.py`).
+  The new test declares its lock probe as `struct flock`, since the BSDs also declare a
+  `flock()` function and `flock{}` did not compile there.
 - **FIXED (PR #509 review, CI):** the branch did not build outside WSL/gcc. A Catch2
   `CHECK` on a `std::tuple` comparison failed to compile under clang with libstdc++ 14
   (`test_worker_relay_signature_flow.cpp` now compares a struct); `postgresql_store.cpp`
