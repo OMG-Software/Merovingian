@@ -21,7 +21,9 @@ makes Unix-consumed files check out with LF line endings on every platform.
   collision on every run. The runtime's move constructor and assignment now carry both new
   fields. A further integration scenario, "a room creation that fails on the server leaves no
   room behind" (`[create-room-failure]`), starts a runtime that cannot sign and checks the 500
-  leaves no room row, member or timestamp reservation.
+  leaves no room row, member or timestamp reservation. The size-limit conformance scenario
+  now also sends `creation_content` that passes the request pre-check but makes the signed
+  v12 create event exceed 65536 bytes, and gets 400 `M_TOO_LARGE` with no room created.
 - **FIXED (CRLF working trees):** a checkout made by Windows Git with `core.autocrlf=true`
   wrote CRLF into every text file, because `.gitattributes` covered only `*.sh`, `*.ps1` and
   `*.cmd`. A full WSL run from such a checkout failed the `[platform][iso8]` systemd unit

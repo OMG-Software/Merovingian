@@ -381,6 +381,16 @@ SCENARIO("createRoom refuses each kind of oversized client content before creati
                 refused_without_room(R"({"creation_content":{"x":")" + big + R"("}})");
             }
         }
+        WHEN("creation_content fits on its own but makes the signed create event too large")
+        {
+            // 65508 bytes of content passes the request pre-check (65536), but the
+            // limit applies to the signed event, whose envelope, hashes and
+            // signatures push the v12 create event over it.
+            THEN("it is refused")
+            {
+                refused_without_room(R"({"creation_content":{"x":")" + std::string(65'500U, 'z') + R"("}})");
+            }
+        }
         WHEN("power_level_content_override is too large")
         {
             THEN("it is refused")
