@@ -158,6 +158,7 @@
 * [0155 - Bound send_join key fetches by the shared in-flight cap, waiting for a slot](0155-bound-send-join-key-fetches-by-the-shared-in-flight-cap.md)
 * [0156 - Stamp v12 create events with a strictly increasing timestamp, stepping past taken room IDs](0156-stamp-v12-create-events-with-a-strictly-increasing-timestamp.md)
 * [0157 - Never open a SQLite database file outside SQLite while connections may be open](0157-never-open-a-sqlite-database-file-outside-sqlite.md)
+* [0158 - Check out every text file with LF endings on every platform](0158-check-out-every-text-file-with-lf-endings.md)
 
 ## Proposed Records
 

@@ -20,6 +20,17 @@ makes Unix-consumed files check out with LF line endings on every platform.
   `[create-room-collision]` conformance and integration scenarios use it to reproduce the
   collision on every run. The runtime's move constructor and assignment now carry both new
   fields.
+- **FIXED (CRLF working trees):** a checkout made by Windows Git with `core.autocrlf=true`
+  wrote CRLF into every text file, because `.gitattributes` covered only `*.sh`, `*.ps1` and
+  `*.cmd`. A full WSL run from such a checkout failed the `[platform][iso8]` systemd unit
+  scenario (it matches `"\nRestrictAddressFamilies=…\n"`), and a package built from it would
+  have shipped CRLF unit files and maintainer scripts. `.gitattributes` now sets
+  `* text=auto eol=lf` for the whole tree; Windows-only `.ps1` and `.cmd` keep CRLF. The index
+  was already LF, so no stored file changes (ADR-0158). New tooling test
+  `tests/tooling/test_line_endings.py` (`line-endings-tooling`): every tracked text file
+  carries `eol=lf`, the Windows scripts `eol=crlf`, and nothing is stored with CRLF; RED with
+  2 failures before the change. `docs/dev-environment.md` gives the one-off re-checkout for
+  existing working trees.
 
 ## 0.12.26
 
