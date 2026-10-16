@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -7833,6 +7834,99 @@ SCENARIO("POST /createRoom returns a room_id", "[conformance][client-server][roo
                 auto const* room_id = string_member(body, "room_id");
                 REQUIRE(room_id != nullptr);
                 REQUIRE(!room_id->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: POST /_matrix/client/v3/createRoom
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
+// Also: ../../docs/matrix-v1.19-spec/rooms/v12.md ("The room ID is the event ID
+// of the event with sigil `!` instead of `$`.")
+//
+// Spec MUST: createRoom will "Create a new room"; its responses are 200 with the
+// new room's ID, or 400 for an invalid request. In room version 12 the room ID is
+// the create event's reference hash, and a create event carries no room_id and no
+// prev_events, so two requests from one user with the same creation content in
+// the same millisecond would compose byte-identical create events. Each request
+// must still get a new, distinct room: never a 500, never the earlier room's ID.
+SCENARIO("POST /createRoom creates a distinct room for each request made within one millisecond",
+         "[conformance][client-server][rooms][create-room-collision]")
+{
+    GIVEN("a logged-in user, a second local user and an event clock that stands still")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        started.runtime.homeserver.test_frozen_event_clock_ms = std::int64_t{1'760'000'000'000};
+
+        auto const create = [&started, &alice](std::string const& body) {
+            return merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice, body});
+        };
+        auto const room_id_of = [](merovingian::homeserver::DispatchResult const& result) {
+            auto const body = parse_object(result.response.body);
+            auto const* room_id = string_member(body, "room_id");
+            return room_id == nullptr ? std::string{} : *room_id;
+        };
+
+        WHEN("Alice creates three rooms with identical empty bodies")
+        {
+            auto const first = create("{}");
+            auto const second = create("{}");
+            auto const third = create("{}");
+
+            THEN("every request succeeds with a room ID of its own and Alice is joined to all three")
+            {
+                // Spec MUST: 200 with the new room's ID on success.
+                REQUIRE(first.response.status == 200U);
+                REQUIRE(second.response.status == 200U);
+                REQUIRE(third.response.status == 200U);
+                auto const ids = std::array{room_id_of(first), room_id_of(second), room_id_of(third)};
+                REQUIRE_FALSE(ids[0].empty());
+                // Spec MUST: each request creates a *new* room.
+                REQUIRE(ids[0] != ids[1]);
+                REQUIRE(ids[1] != ids[2]);
+                REQUIRE(ids[0] != ids[2]);
+
+                auto const joined = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/joined_rooms", alice, {}});
+                REQUIRE(joined.response.status == 200U);
+                for (auto const& id : ids)
+                {
+                    REQUIRE(joined.response.body.find(id) != std::string::npos);
+                }
+            }
+        }
+
+        WHEN("Alice creates a room and then a private_chat room inviting Bob")
+        {
+            auto const plain = create("{}");
+            auto const invited = create(R"({"preset":"private_chat","invite":["@bob:example.org"]})");
+
+            THEN("both succeed with distinct room IDs and Bob is invited to the second room")
+            {
+                // Spec MUST: 200 with the new room's ID on success.
+                REQUIRE(plain.response.status == 200U);
+                REQUIRE(invited.response.status == 200U);
+                auto const plain_id = room_id_of(plain);
+                auto const invited_id = room_id_of(invited);
+                REQUIRE_FALSE(invited_id.empty());
+                REQUIRE(plain_id != invited_id);
+
+                auto const bob_sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+                REQUIRE(bob_sync.response.status == 200U);
+                auto const bob_body = parse_object(bob_sync.response.body);
+                auto const* rooms = object_member_as_object(bob_body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* invite = object_member_as_object(*rooms, "invite");
+                REQUIRE(invite != nullptr);
+                // Spec MUST: the invitee sees the invite to the room it was invited to.
+                REQUIRE(object_member_as_object(*invite, invited_id) != nullptr);
+                REQUIRE(object_member_as_object(*invite, plain_id) == nullptr);
             }
         }
     }

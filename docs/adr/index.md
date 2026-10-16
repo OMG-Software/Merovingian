@@ -156,6 +156,7 @@
 * [0153 - Split the key-resolution budgets across federation worker shards](0153-split-key-resolution-budgets-across-worker-shards.md)
 * [0154 - Pool database write connections up to database.pool_size](0154-pool-database-write-connections.md)
 * [0155 - Bound send_join key fetches by the shared in-flight cap, waiting for a slot](0155-bound-send-join-key-fetches-by-the-shared-in-flight-cap.md)
+* [0156 - Stamp v12 create events with a strictly increasing timestamp, stepping past taken room IDs](0156-stamp-v12-create-events-with-a-strictly-increasing-timestamp.md)
 * [0157 - Never open a SQLite database file outside SQLite while connections may be open](0157-never-open-a-sqlite-database-file-outside-sqlite.md)
 
 ## Proposed Records

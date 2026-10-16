@@ -332,7 +332,14 @@ fails, as required by Matrix Server-Server API v1.19.
 For room version 12 (MSC4291) the room ID is the `m.room.create` event's
 reference hash with a `!` sigil — the same hash as the create event ID, which
 uses `$` — and carries no `:server` domain. `create_room` composes the create
-event first to derive this ID. The create event is also excluded from every other
+event first to derive this ID. A v12 create event has no `room_id` and no
+`prev_events`, so two from one user with the same content in the same millisecond
+would be byte-identical and derive the same room ID; `create_room` therefore stamps
+each create event strictly after the previous one it composed
+(`HomeserverRuntime::last_create_event_ts_ms`) and moves past any timestamp whose
+room ID already exists, as after a restart with the clock stepped back
+([ADR-0156](adr/0156-stamp-v12-create-events-with-a-strictly-increasing-timestamp.md)).
+The create event is also excluded from every other
 event's `auth_events`, because the room ID already implies it. Room versions 10
 and 11 keep server-scoped IDs (`!opaque:server`), a `room_id` in the create event,
 and the create event in `auth_events`.

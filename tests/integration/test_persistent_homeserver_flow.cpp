@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -241,6 +242,66 @@ SCENARIO("media uploaded after the legacy endpoint freeze stays private across r
                 CHECK(legacy.response.status == 404U);
                 CHECK(authenticated.response.status == 200U);
                 CHECK(authenticated.response.body == "media-restart-bytes");
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+// In room version 12 the room ID is the create event's reference hash. After a
+// restart the server has no memory of the timestamps it stamped before, so a
+// clock stepped back to the millisecond of an earlier createRoom would compose
+// that room's create event again. The new request must still get a new room.
+SCENARIO("a room created after a restart with the clock stepped back never reuses an existing room ID",
+         "[database][sqlite][rooms][restart][create-room-collision]")
+{
+    GIVEN("a SQLite-backed runtime in which Alice created a room at a fixed millisecond")
+    {
+        auto const path = unique_sqlite_path();
+        auto const config = sqlite_registration_enabled_config(path);
+        auto constexpr frozen_ms = std::int64_t{1'760'000'000'000};
+        auto token = std::string{};
+        auto first_room_id = std::string{};
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+            REQUIRE(started.started);
+            started.runtime.homeserver.test_frozen_event_clock_ms = frozen_ms;
+            auto const registered = merovingian::homeserver::register_local_user(
+                started.runtime.homeserver, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+            REQUIRE(registered.ok);
+            auto const logged =
+                merovingian::homeserver::login_local_user_by_id(started.runtime.homeserver, registered.value, "ALICE");
+            REQUIRE(logged.ok);
+            token = logged.value;
+            auto const created = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+            REQUIRE(created.response.status == 200U);
+            first_room_id = room_from_body(created.response.body);
+        }
+
+        WHEN("the runtime restarts with its clock at that same millisecond and Alice creates an identical room")
+        {
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            restarted.runtime.homeserver.test_frozen_event_clock_ms = frozen_ms;
+            auto const created = merovingian::homeserver::handle_client_server_request(
+                restarted.runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+
+            THEN("the request succeeds with a new room ID and the earlier room is untouched")
+            {
+                REQUIRE(created.response.status == 200U);
+                auto const second_room_id = room_from_body(created.response.body);
+                REQUIRE(second_room_id != first_room_id);
+                auto const& rooms = restarted.runtime.homeserver.database.persistent_store.rooms;
+                REQUIRE(std::ranges::count_if(rooms, [&first_room_id](auto const& room) {
+                            return room.room_id == first_room_id;
+                        }) == 1);
+                REQUIRE(std::ranges::count_if(rooms, [&second_room_id](auto const& room) {
+                            return room.room_id == second_room_id;
+                        }) == 1);
+                auto const first_state = merovingian::homeserver::handle_client_server_request(
+                    restarted.runtime, {"GET", "/_matrix/client/v3/rooms/" + first_room_id + "/state", token, {}});
+                REQUIRE(first_state.response.status == 200U);
             }
         }
         std::filesystem::remove(path);

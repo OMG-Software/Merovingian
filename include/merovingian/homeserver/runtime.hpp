@@ -310,6 +310,11 @@ struct HomeserverRuntime final
     // PushGatewayClient::notify() to pin a local mock gateway + in-memory CA
     // bundle in tests (discovery rejects loopback and never sets a CA bundle).
     std::map<std::string, push::TestForcedPushGatewayResolution> test_forced_push_gateway_resolution{};
+    // Test-only: when set, every event this runtime composes carries this
+    // origin_server_ts (Unix ms) instead of the system clock's reading — a
+    // clock that stands still, as two requests inside one millisecond see it,
+    // or one stepped back. Always empty in production.
+    std::optional<std::int64_t> test_frozen_event_clock_ms{};
     // Application Service API registry (Matrix v1.19). Built once at
     // start_runtime() time from config.appservice().registration_files and
     // never mutated afterward — every request reads it as an immutable,
@@ -369,6 +374,13 @@ struct HomeserverRuntime final
     // the room changes.  Used by /sync and MSC4186 typing extensions to emit
     // the current (possibly empty) typing list on every change.
     std::map<std::string, std::uint64_t> room_typing_stream_id{};
+    // The origin_server_ts of the last m.room.create event this runtime
+    // composed (Unix ms). Guarded by `mutex`. In room version 12 the room ID
+    // is the create event's reference hash, so create_room stamps each create
+    // event strictly later than the previous one rather than with the bare
+    // clock: two createRoom requests in one millisecond would otherwise derive
+    // the same room ID (ADR-0156).
+    std::int64_t last_create_event_ts_ms{0};
     // Per-connection MSC4186 sliding sync state.
     // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
     std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};

@@ -1,3 +1,26 @@
+## 0.12.27
+
+Fixes the intermittent `createRoom` 500 behind the flaky sync conformance scenario, and
+makes Unix-consumed files check out with LF line endings on every platform.
+
+- **FIXED (createRoom 500 on a room ID collision):** in room version 12 the room ID is the
+  create event's reference hash, and a v12 create event has no `room_id` and no
+  `prev_events`, so two `createRoom` requests from one user with the same creation content
+  in the same millisecond composed byte-identical create events, derived the same room ID,
+  and the second failed on the duplicate room row with a 500 logged only at debug. This is
+  what made the conformance scenario "GET /sync returns spec-shaped room category objects"
+  fail intermittently (5 of 40 runs in a release build). `create_room` now stamps each
+  create event strictly after the previous one this runtime composed
+  (`HomeserverRuntime::last_create_event_ts_ms`), reserved before the policy-server hook
+  releases the runtime lock, and steps past any timestamp whose room ID already exists, as
+  after a restart with the clock stepped back (ADR-0156). Every 5xx from `create_room`
+  (`createRoom`, `/upgrade`, the local router) is now logged once at error as
+  `room.create.failed` with its reason. New test seam
+  `HomeserverRuntime::test_frozen_event_clock_ms` freezes the event clock; the new
+  `[create-room-collision]` conformance and integration scenarios use it to reproduce the
+  collision on every run. The runtime's move constructor and assignment now carry both new
+  fields.
+
 ## 0.12.26
 
 Completes the 29 September 2026 security audit: every remaining low-severity finding is
