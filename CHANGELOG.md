@@ -19,7 +19,9 @@ makes Unix-consumed files check out with LF line endings on every platform.
   `HomeserverRuntime::test_frozen_event_clock_ms` freezes the event clock; the new
   `[create-room-collision]` conformance and integration scenarios use it to reproduce the
   collision on every run. The runtime's move constructor and assignment now carry both new
-  fields.
+  fields. A further integration scenario, "a room creation that fails on the server leaves no
+  room behind" (`[create-room-failure]`), starts a runtime that cannot sign and checks the 500
+  leaves no room row, member or timestamp reservation.
 - **FIXED (CRLF working trees):** a checkout made by Windows Git with `core.autocrlf=true`
   wrote CRLF into every text file, because `.gitattributes` covered only `*.sh`, `*.ps1` and
   `*.cmd`. A full WSL run from such a checkout failed the `[platform][iso8]` systemd unit
