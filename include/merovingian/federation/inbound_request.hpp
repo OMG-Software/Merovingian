@@ -15,6 +15,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -234,6 +235,9 @@ using RoomVersionResolver = std::function<std::string(std::string_view room_id)>
 // room has no m.room.server_acl event. When unset, ACL checks are skipped.
 using RoomServerAclProvider = std::function<bool(std::string_view room_id, std::string_view server_name)>;
 using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
+// Signalled whenever a key-resolution slot is given back. Shared like the mutex
+// it is used with, so the state stays movable.
+using FederationSlotSignal = std::shared_ptr<std::condition_variable_any>; // SHARED_PTR: reviewed — moves with mutex
 
 // Per-source-IP window for pre-authentication remote-key resolution.
 struct KeyResolutionBucket final
@@ -311,6 +315,9 @@ struct FederationRuntimeState final
     // resolver call itself runs unlocked, so this is incremented before the
     // call and decremented after by a scope guard.
     std::uint32_t key_resolutions_in_flight{0U};
+    // Notified after key_resolutions_in_flight is decremented, for the one
+    // admission path that waits for a slot (resolve_join_state_key).
+    FederationSlotSignal key_resolution_slot_released{std::make_shared<std::condition_variable_any>()};
     // Optional ingestion hooks. When set, accepted PDUs are appended to the
     // event graph via pdu_sink and accepted EDUs are routed to runtime
     // surfaces (typing tracker, receipt store, etc.) via edu_sink. Both
@@ -421,8 +428,8 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
     -> FederationDecision;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
                                             std::optional<FederationKeyRecord> const& key,
-                                            RemoteKeyResolver const& remote_key_resolver, crypto::Ed25519Provider& provider)
-    -> FederationDecision;
+                                            RemoteKeyResolver const& remote_key_resolver,
+                                            crypto::Ed25519Provider& provider) -> FederationDecision;
 
 // Verifies the sender server's signature on `pdu` with `key`. From room
 // version 5 the key must also be valid at the event's own origin_server_ts
@@ -461,8 +468,24 @@ struct VerificationKeyResolution final
 };
 
 [[nodiscard]] auto resolve_verification_key(FederationRuntimeState& runtime, std::string_view source,
-                                            std::string_view server_name,
-                                            std::string_view key_id) -> VerificationKeyResolution;
+                                            std::string_view server_name, std::string_view key_id)
+    -> VerificationKeyResolution;
+
+// FED-10, ADR-0155: the key of `server_name`/`key_id` for verifying the state of
+// a room this server is joining. A network-free cached key is used when there
+// is one. Otherwise the fetch takes one of this runtime's
+// key_resolution_max_in_flight slots and honours the server/key failure cache,
+// like every other network resolution, but it waits for a free slot (until
+// `deadline`) instead of being refused, and is not charged to a per-source
+// rate: a join needs one key per server in the room, and refusing would drop
+// member events and leave the joined room's state incomplete.
+//
+// nullopt when the key cannot be resolved, the pair recently failed, or no
+// slot came free before `deadline`. Must be called without
+// FederationRuntimeState::mutex held (it waits on it).
+[[nodiscard]] auto resolve_join_state_key(FederationRuntimeState& runtime, std::string_view server_name,
+                                          std::string_view key_id, std::chrono::steady_clock::time_point deadline)
+    -> std::optional<FederationKeyRecord>;
 
 [[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
                                                      SignedFederationRequest const& request) -> FederationResponse;

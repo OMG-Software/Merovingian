@@ -155,6 +155,7 @@
 * [0152 - Cache thumbnails in memory and cap concurrent decodes per requester](0152-cache-thumbnails-in-memory-and-cap-concurrent-decodes-per-requester.md)
 * [0153 - Split the key-resolution budgets across federation worker shards](0153-split-key-resolution-budgets-across-worker-shards.md)
 * [0154 - Pool database write connections up to database.pool_size](0154-pool-database-write-connections.md)
+* [0155 - Bound send_join key fetches by the shared in-flight cap, waiting for a slot](0155-bound-send-join-key-fetches-by-the-shared-in-flight-cap.md)
 
 ## Proposed Records
 

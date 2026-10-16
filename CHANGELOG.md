@@ -41,8 +41,16 @@ FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the fina
   sender-key pre-pass no longer runs more resolutions at once than the runtime's in-flight
   cap, which admission refuses rather than queues: with four worker shards (cap 4) any
   transaction naming five or more cold sender servers used to deny itself a 503
-  (`federation::sender_key_prepass_parallelism`). Tests: `[nul]` backfill scenario,
-  `test_config_parser.cpp` deny-range scenario, `[fed10-shards]` parallelism scenario.
+  (`federation::sender_key_prepass_parallelism`). `/send_join` state verification called
+  the raw key resolver up to 1024 at a time, outside every FED-10 budget, so a resident
+  server could name thousands of servers and drive a burst of fetches; it now takes main's
+  shared in-flight slots and honours the server/key failure cache through
+  `federation::resolve_join_state_key`, waiting for a slot (until the join timeout)
+  instead of being refused, and is not charged a per-source rate, since a refused key
+  would drop a member event from the joined room's state (ADR-0155). Tests: `[nul]`
+  backfill scenario, `test_config_parser.cpp` deny-range scenario, `[fed10-shards]`
+  parallelism scenario, `[send_join][fed10]` shared-cap and failure-cache scenarios (RED:
+  peak above the cap; a failed pair fetched twice).
 - **FIXED (PR #509 review, media):** after a decode, the record was checked before the media
   policy, whose policy-server round trip releases the runtime mutex, so a quarantine landing
   during it was missed and the thumbnail was served and cached; the policy is now asked

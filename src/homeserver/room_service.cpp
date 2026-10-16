@@ -3593,23 +3593,37 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         if (!distinct_pairs.empty())
         {
             static constexpr auto k_max_join_state_key_parallelism = std::ptrdiff_t{1024};
-            auto const configured = runtime.federation.config.join_state_key_parallelism;
-            auto const parallelism = std::min(static_cast<std::ptrdiff_t>(std::max(std::uint32_t{1U}, configured)),
-                                              k_max_join_state_key_parallelism);
-            auto resolved = std::vector<std::optional<federation::FederationRemoteRuntime>>(distinct_pairs.size());
+            auto const& federation_config = runtime.federation.config;
+            auto const configured = federation_config.join_state_key_parallelism;
+            // FED-10, ADR-0155: each fetch takes one of the process-wide
+            // key-resolution slots, so more tasks than slots would only wait.
+            auto const parallelism = std::min(
+                {static_cast<std::ptrdiff_t>(std::max(std::uint32_t{1U}, configured)), k_max_join_state_key_parallelism,
+                 static_cast<std::ptrdiff_t>(
+                     std::max(std::uint32_t{1U}, federation_config.key_resolution_max_in_flight))});
+            // A slot is waited for, never refused, but not for longer than a
+            // join may take.
+            auto constexpr fallback_join_timeout = std::chrono::seconds{180};
+            auto const deadline =
+                std::chrono::steady_clock::now() + (federation_config.join_timeout_seconds > 0U
+                                                        ? std::chrono::seconds{federation_config.join_timeout_seconds}
+                                                        : fallback_join_timeout);
+            auto resolved = std::vector<std::optional<federation::FederationKeyRecord>>(distinct_pairs.size());
             auto sem = PortableSemaphore{static_cast<int>(parallelism)};
             auto tasks = std::vector<std::future<void>>{};
             tasks.reserve(distinct_pairs.size());
-            auto const& resolver = runtime.federation.remote_key_resolver;
+            auto& federation_state = runtime.federation;
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
                 // Block until a concurrency slot is free, then launch the task.
                 sem.acquire();
                 auto const pair = distinct_pairs[i];
-                tasks.push_back(std::async(std::launch::async, [&resolved, &sem, &resolver, pair, i]() {
-                    resolved[i] = resolver(pair.first, pair.second);
-                    sem.release();
-                }));
+                tasks.push_back(
+                    std::async(std::launch::async, [&resolved, &sem, &federation_state, deadline, pair, i]() {
+                        resolved[i] =
+                            federation::resolve_join_state_key(federation_state, pair.first, pair.second, deadline);
+                        sem.release();
+                    }));
             }
             // Join every task before reading `resolved` (disjoint slots, but the
             // vector must not be read while tasks are still writing).
@@ -3619,10 +3633,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             }
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
-                auto const& record = resolved[i];
-                sender_key_map[distinct_pairs[i]] =
-                    record.has_value() ? std::optional<federation::FederationKeyRecord>{record->signing_key}
-                                       : std::nullopt;
+                sender_key_map[distinct_pairs[i]] = std::move(resolved[i]);
             }
         }
     }

@@ -451,10 +451,16 @@ namespace
 
     auto release_key_resolution(FederationRuntimeState& runtime) -> void
     {
-        auto guard = federation_guard(runtime);
-        if (runtime.key_resolutions_in_flight > 0U)
         {
-            --runtime.key_resolutions_in_flight;
+            auto guard = federation_guard(runtime);
+            if (runtime.key_resolutions_in_flight > 0U)
+            {
+                --runtime.key_resolutions_in_flight;
+            }
+        }
+        if (runtime.key_resolution_slot_released != nullptr)
+        {
+            runtime.key_resolution_slot_released->notify_all();
         }
     }
 
@@ -1935,6 +1941,50 @@ auto resolve_verification_key(FederationRuntimeState& runtime, std::string_view 
     auto const locally_denied =
         !resolution.key.has_value() && resolution.failure == KeyResolutionFailureKind::local_resource_denial;
     return {std::move(resolution.key), locally_denied};
+}
+
+auto resolve_join_state_key(FederationRuntimeState& runtime, std::string_view server_name, std::string_view key_id,
+                            std::chrono::steady_clock::time_point deadline) -> std::optional<FederationKeyRecord>
+{
+    if (runtime.cached_pdu_key_lookup)
+    {
+        auto key = runtime.cached_pdu_key_lookup(server_name, key_id);
+        if (key.has_value() && key->server_name == server_name && key->key_id == key_id)
+        {
+            return key;
+        }
+    }
+    auto constexpr max_key_id_bytes = std::size_t{255U};
+    if (!runtime.remote_key_resolver || !server_name_is_valid(server_name) || key_id.empty() ||
+        key_id.size() > max_key_id_bytes || runtime.key_resolution_slot_released == nullptr)
+    {
+        return std::nullopt;
+    }
+    {
+        auto guard = federation_guard(runtime);
+        if (key_resolution_recently_failed(runtime, server_name, key_id, std::chrono::steady_clock::now()))
+        {
+            return std::nullopt;
+        }
+        // Wait, rather than refuse, for a slot under the same process-wide cap
+        // every other resolution is admitted against (ADR-0155).
+        auto const slot_free = [&runtime] {
+            return runtime.key_resolutions_in_flight < std::max(runtime.config.key_resolution_max_in_flight, 1U);
+        };
+        if (!runtime.key_resolution_slot_released->wait_until(guard, deadline, slot_free))
+        {
+            return std::nullopt;
+        }
+        ++runtime.key_resolutions_in_flight;
+    }
+    auto const slot = KeyResolutionSlot{runtime};
+    auto resolved = runtime.remote_key_resolver(server_name, key_id);
+    if (!resolved.has_value())
+    {
+        remember_key_resolution_failure(runtime, server_name, key_id, std::chrono::steady_clock::now());
+        return std::nullopt;
+    }
+    return std::move(resolved->signing_key);
 }
 
 auto load_server_signing_key(std::string_view server_name, std::string_view key_id, std::string_view key_material)

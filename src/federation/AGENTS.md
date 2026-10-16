@@ -31,6 +31,11 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    most 7 days after the fetch (`min(valid_until_ts, fetched_at + 7 days)`). From room v5 an event's
    signing key must be valid at the event's own `origin_server_ts`, never judged against the
    current time; v1-v4 ignore `valid_until_ts` (ADR-0075).
+   Never call `remote_key_resolver` directly for a network fetch: go through an admitted path so
+   the fetch counts against `key_resolution_max_in_flight` and the server/key failure cache
+   (FED-10). Inbound and relay verification refuse over budget (`resolve_verification_key`);
+   `/send_join` state verification waits for a slot instead (`resolve_join_state_key`,
+   ADR-0155), because refusing there drops member events.
 
 4. **Run authorization rules** (`events/authorization.hpp`) before persisting any inbound PDU.
 
