@@ -49,6 +49,15 @@ FAKE_SERVER = textwrap.dedent(
             log "Listeners active; awaiting traffic"
             log "Federation worker spawned: shard=0 pid=4242 binary=/usr/libexec/merovingian/merovingian-fed-worker"
             ;;
+        ready_not_applicable)
+            log "Startup hardening checks: 3"
+            log "Hardening self-check: capsicum=enabled"
+            log "Hardening self-check: no_new_privs=enabled note=Not applicable on this platform."
+            log "Hardening self-check: capability bounding=enabled note=Not applicable on this platform."
+            log "Hardening readiness: ready=true blockers=0"
+            log "Listeners active; awaiting traffic"
+            log "Federation worker spawned: shard=0 pid=4242 binary=/usr/local/libexec/merovingian/merovingian-fed-worker"
+            ;;
         refused)
             log "Startup hardening checks: 2"
             log "Hardening self-check: PIE=enabled"
@@ -259,6 +268,31 @@ class StartupHardeningGateTests(unittest.TestCase):
 
         # THEN it refuses at once with its usage status.
         self.assertEqual(result.returncode, 2)
+
+    def test_passes_when_checks_are_enabled_as_not_applicable_on_this_platform(self) -> None:
+        # GIVEN a BSD server, which reports the Linux-only controls as enabled
+        # with a "not applicable" note and its own sandbox check as enabled.
+        # WHEN the gate runs it.
+        result = self.run_gate("ready_not_applicable")
+
+        # THEN the note does not stop the check counting as enabled.
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("all 3 hardening checks enabled", result.stdout)
+
+
+class StartupHardeningGatePortabilityTests(unittest.TestCase):
+    def test_uses_only_regular_expressions_every_bsd_base_grep_understands(self) -> None:
+        # GIVEN the gate script, which the BSD package jobs run with each
+        # system's base grep and sed.
+        script = GATE_SCRIPT.read_text(encoding="utf-8")
+
+        # WHEN it needs alternation in a pattern.
+        # THEN it uses an extended regex (`grep -E 'a|b'`) rather than GNU's
+        # `\|` in a basic regex, which OpenBSD's grep reads as a literal `|`:
+        # there no check would count as enabled and every run would fail.
+        commands = [line.strip() for line in script.splitlines() if not line.lstrip().startswith("#")]
+        gnu_alternation = [line for line in commands if "\\|" in line]
+        self.assertEqual(gnu_alternation, [])
 
 
 if __name__ == "__main__":

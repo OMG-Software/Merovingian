@@ -47,6 +47,13 @@ auto GatewayCircuitBreaker::record(std::string_view host, bool success, std::chr
             auto const oldest = std::ranges::min_element(hosts_, {}, [](auto const& entry) {
                 return entry.second.last_failure;
             });
+            // Not reachable while the map is non-empty; stated so that gcc's
+            // flow analysis (-Wnull-dereference, Fedora/RHEL -O2) can see the
+            // iterator is valid.
+            if (oldest == hosts_.end())
+            {
+                break;
+            }
             hosts_.erase(oldest);
         }
     }

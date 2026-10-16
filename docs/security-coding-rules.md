@@ -757,6 +757,15 @@ media-fetch-pool task.
   key (0.12.14 audit, DB-1).
   Source: `src/database/AGENTS.md`.
 
+- **Nothing in the process opens a SQLite database file except SQLite: check it by name
+  (`fstatat` with `AT_SYMLINK_NOFOLLOW`) or read it through SQLite's own handle
+  (`SQLITE_FCNTL_FILE_POINTER`).**
+  Why: closing any descriptor of a file releases every POSIX lock the process holds on it.
+  A check that opened and closed the database released another connection's write lock, so
+  another process took the live transaction's journal for a hot one and could roll it back
+  (PR #509 CI, ADR-0157).
+  Source: `src/database/AGENTS.md`.
+
 - **Higher-level modules receive a `PersistentStore&` and must not downcast to a
   backend-specific type.**
   Why: downcasting to a specific backend (SQLite vs. PostgreSQL) breaks the abstraction that

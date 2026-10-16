@@ -6,6 +6,25 @@ marked PARTIAL or IN PROGRESS further down record intermediate steps on this bra
 FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the final commit:
 57 OK, 0 failed, 0 timed out.
 
+- **FIXED (PR #509 CI, SQLite locks):** opening a SQLite connection released another
+  connection's write lock. Closing any descriptor of a file drops every POSIX lock the
+  process holds on it, and `open_sqlite_connection` opened and closed the database file
+  itself on every connection (the DB-10 owner/type/mode check on the read-write path, the
+  ISO-4 WAL check on the read-only one). Another process then found a journal with no
+  RESERVED lock and took it for a hot one: on OpenBSD the federation worker's read-only room
+  reload failed, the proxy fell back to main, and a retried transaction was processed twice
+  ("main key-admission overload survives real worker socket HTTP and unchanged transaction
+  retry"); a read-write process could have rolled back a transaction still in progress. An
+  existing file is now checked by name (`fstatat`, `AT_SYMLINK_NOFOLLOW`) and opened only to
+  tighten a loose mode, and the read-only WAL check reads the header through SQLite's own
+  descriptor (`SQLITE_FCNTL_FILE_POINTER`) before any statement runs (ADR-0157). Tests:
+  `[sqlite-locks]` in `test_sqlite_security_policy.cpp` (a forked process checks the
+  RESERVED lock survives a read-write and a read-only open; a WAL database is still refused
+  read-only without creating `-shm`); RED 2 failures. The same CI round fixed two build
+  breaks: gcc's `-Wnull-dereference` at `-O2` (Fedora, RHEL RPM builds) on
+  `GatewayCircuitBreaker::record`'s eviction, now guarded like `ThumbnailCache`'s, and the
+  startup hardening gate's GNU-only `\|` basic-regex alternation, which OpenBSD's grep
+  reads literally (`grep -E`; tests in `test_startup_hardening_gate.py`).
 - **FIXED (PR #509 review, CI):** the branch did not build outside WSL/gcc. A Catch2
   `CHECK` on a `std::tuple` comparison failed to compile under clang with libstdc++ 14
   (`test_worker_relay_signature_flow.cpp` now compares a struct); `postgresql_store.cpp`

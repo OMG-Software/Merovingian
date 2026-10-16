@@ -40,6 +40,12 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    one transaction and never take another lease while holding one, or writers can deadlock waiting for each other.
    A PostgreSQL connection is reused only while idle with nothing to read on its socket.
 
+8. **Nothing in this process opens a SQLite database file except SQLite** (ADR-0157). Closing any descriptor of a
+   file releases every POSIX lock the process holds on it, so a check that opens and closes the database (for its
+   owner, type, size or header, or to chmod it) silently drops another connection's write lock, and another process
+   then rolls back a live transaction's journal as hot. Check by name (`fstatat` with `AT_SYMLINK_NOFOLLOW`) or read
+   through SQLite's own handle (`SQLITE_FCNTL_FILE_POINTER`).
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).

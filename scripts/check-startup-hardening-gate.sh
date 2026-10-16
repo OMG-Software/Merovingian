@@ -14,7 +14,12 @@
 # Run it as the unprivileged user the package runs as, with an empty capability
 # bounding set (for example `setpriv --bounding-set=-all`, or
 # `docker run --cap-drop=ALL`): the server refuses to run as root and cannot
-# drop the bounding set without CAP_SETPCAP.
+# drop the bounding set without CAP_SETPCAP. On the BSDs, which have no bounding
+# set, run it as any unprivileged user (`su -m nobody -c ...`).
+#
+# It uses only POSIX sh and tools every supported base system ships: mktemp -d,
+# dd, grep (-E, -o), sed and tail. Keep it that way; the BSD package jobs run it
+# with the base tools, not GNU ones.
 #
 # Without --federation-worker the server finds its federation worker at its
 # built-in libexec path, so a pass also proves the package installed it there.
@@ -185,8 +190,10 @@ done
 
 checks=$(grep -o 'Hardening self-check: [^"]*' "$log" | sed 's/^Hardening self-check: //')
 expected=$(sed -n 's/.*Startup hardening checks: \([0-9][0-9]*\).*/\1/p' "$log" | tail -n 1)
-enabled=$(printf '%s\n' "$checks" | grep -c '^[^=]*=enabled\( \|$\)' || true)
-not_enabled=$(printf '%s\n' "$checks" | grep -v '^[^=]*=enabled\( \|$\)' | grep -c . || true)
+# Extended regexes: `\|` in a basic regex is a GNU extension that OpenBSD's base
+# grep reads as a literal `|`, and the BSD package jobs run this script there.
+enabled=$(printf '%s\n' "$checks" | grep -E -c '^[^=]*=enabled( |$)' || true)
+not_enabled=$(printf '%s\n' "$checks" | grep -E -v '^[^=]*=enabled( |$)' | grep -c . || true)
 
 [ -n "$expected" ] || fail_with_log "server did not report how many hardening checks it ran"
 [ "$not_enabled" -eq 0 ] || fail_with_log "$not_enabled hardening check(s) not enabled"
@@ -210,7 +217,7 @@ while ! grep -q 'Federation worker spawned: ' "$log" 2>/dev/null; do
     elapsed=$((elapsed + 1))
 done
 sleep "$worker_settle"
-if grep -q 'Federation worker exited: \|Federation worker restart failed' "$log"; then
+if grep -E -q 'Federation worker exited: |Federation worker restart failed' "$log"; then
     fail_with_log "federation worker exited after it was spawned"
 fi
 

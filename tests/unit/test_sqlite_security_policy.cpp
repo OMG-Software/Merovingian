@@ -10,11 +10,13 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 
 #include <fcntl.h>
+#include <sqlite3.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -224,6 +226,121 @@ SCENARIO("SQLite follows an operator's existing symlinked data directory", "[dat
                 REQUIRE((status.st_mode & 0777) == 0700);
                 REQUIRE(::stat((real / "new" / "nested" / "other.db").c_str(), &status) == 0);
                 REQUIRE((status.st_mode & 0777) == 0600);
+            }
+        }
+    }
+}
+namespace
+{
+// SQLite's RESERVED lock byte: PENDING_BYTE (0x40000000) + 1. A writer holds
+// it from BEGIN IMMEDIATE to COMMIT; while it is held, no other process may
+// treat a rollback journal as hot.
+constexpr auto sqlite_reserved_byte = off_t{0x40000001};
+
+// Whether another process sees a write lock on the RESERVED byte. POSIX
+// record locks are per process, so the probe must run in a child.
+[[nodiscard]] auto other_process_sees_reserved_lock(std::filesystem::path const& path) -> bool
+{
+    auto const pid = ::fork();
+    if (pid == 0)
+    {
+        auto const fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+        auto probe = flock{};
+        probe.l_type = F_WRLCK;
+        probe.l_whence = SEEK_SET;
+        probe.l_start = sqlite_reserved_byte;
+        probe.l_len = 1;
+        auto const held = fd >= 0 && ::fcntl(fd, F_GETLK, &probe) == 0 && probe.l_type != F_UNLCK;
+        ::_exit(held ? 0 : 1);
+    }
+    auto status = 0;
+    return pid > 0 && ::waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+struct RawSqlite final
+{
+    explicit RawSqlite(std::filesystem::path const& path)
+    {
+        auto* raw = static_cast<sqlite3*>(nullptr);
+        std::ignore = sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr);
+        handle.reset(raw);
+    }
+    struct Close final
+    {
+        auto operator()(sqlite3* db) const noexcept -> void
+        {
+            std::ignore = sqlite3_close(db);
+        }
+    };
+    std::unique_ptr<sqlite3, Close> handle;
+};
+} // namespace
+SCENARIO("Opening a SQLite connection never releases another connection's write lock", "[database][sqlite-locks]")
+{
+    // Closing any descriptor of a file drops every POSIX lock the process
+    // holds on it. Opening a connection used to open and close the database
+    // file itself, so a write transaction on another connection silently lost
+    // its RESERVED lock: another process then took its journal for a hot one
+    // (the federation worker's read-only room reload failed on OpenBSD), and a
+    // read-write process could roll back a transaction still in progress.
+    GIVEN("a store database and a connection holding a write transaction")
+    {
+        auto scratch = DatabaseScratch{};
+        auto const path = scratch.path / "store.db";
+        REQUIRE(merovingian::database::open_sqlite_persistent_store(path.string()).ok);
+        auto writer = RawSqlite{path};
+        REQUIRE(writer.handle != nullptr);
+        REQUIRE(sqlite3_exec(writer.handle.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) == SQLITE_OK);
+        REQUIRE(other_process_sees_reserved_lock(path));
+
+        WHEN("the same process opens the database read-write")
+        {
+            auto const opened = merovingian::database::open_sqlite_persistent_store(path.string());
+
+            THEN("the write transaction still holds its lock")
+            {
+                REQUIRE(opened.ok);
+                CHECK(other_process_sees_reserved_lock(path));
+            }
+        }
+
+        WHEN("the same process reads it through a read-only connection")
+        {
+            std::ignore = merovingian::database::detail::read_media_blob_from_sqlite(path.string(), "absent");
+            std::ignore = merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), "!r:example.org");
+
+            THEN("the write transaction still holds its lock")
+            {
+                CHECK(other_process_sees_reserved_lock(path));
+            }
+        }
+
+        std::ignore = sqlite3_exec(writer.handle.get(), "ROLLBACK", nullptr, nullptr, nullptr);
+    }
+}
+SCENARIO("A read-only SQLite connection refuses a WAL database before reading it", "[database][sqlite-locks]")
+{
+    GIVEN("a store database switched to WAL mode")
+    {
+        auto scratch = DatabaseScratch{};
+        auto const path = scratch.path / "store.db";
+        REQUIRE(merovingian::database::open_sqlite_persistent_store(path.string()).ok);
+        {
+            auto wal = RawSqlite{path};
+            REQUIRE(wal.handle != nullptr);
+            REQUIRE(sqlite3_exec(wal.handle.get(), "PRAGMA journal_mode = WAL", nullptr, nullptr, nullptr) ==
+                    SQLITE_OK);
+        }
+
+        WHEN("it is opened read-only")
+        {
+            auto const opened = merovingian::database::open_sqlite_persistent_store(
+                path.string(), merovingian::database::TableLoadProfile::federation_worker);
+
+            THEN("it is refused and no shared-memory index is created")
+            {
+                CHECK_FALSE(opened.ok);
+                CHECK_FALSE(std::filesystem::exists(scratch.path / "store.db-shm"));
             }
         }
     }

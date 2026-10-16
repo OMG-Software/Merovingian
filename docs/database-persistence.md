@@ -1204,3 +1204,8 @@ An SQLite database file is created `0600` and must not be a symlink. Directories
 followed as the kernel resolves them, symlinks included (an operator's `/var/lib/merovingian` pointing at a
 data volume); any directory the server creates is made `0700`, and everything below it is opened without
 following links (DB-10).
+
+Those checks never open an existing database file: closing any descriptor of it would release every POSIX
+lock the process holds on it, including another connection's write lock (ADR-0157). An existing file is
+checked by name (`fstatat` with `AT_SYMLINK_NOFOLLOW`), and a read-only connection reads the header, to
+refuse WAL, through SQLite's own handle before any statement runs.

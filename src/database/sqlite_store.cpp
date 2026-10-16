@@ -194,15 +194,38 @@ namespace
             directory = std::move(next);
         }
         auto const name = target.filename().string();
-        auto file = core::FileDescriptor{
+        auto created = core::FileDescriptor{
             ::openat(directory.get(), name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
-        if (!file.valid() && errno == EEXIST)
-        {
-            file.reset(::openat(directory.get(), name.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC));
-        }
         struct stat metadata{};
-        return file.valid() && ::fstat(file.get(), &metadata) == 0 && S_ISREG(metadata.st_mode) &&
-               metadata.st_uid == ::geteuid() && ::fchmod(file.get(), 0600) == 0;
+        if (created.valid())
+        {
+            // A new file: no connection of this process can hold a lock on it.
+            return ::fstat(created.get(), &metadata) == 0 && S_ISREG(metadata.st_mode) &&
+                   metadata.st_uid == ::geteuid() && ::fchmod(created.get(), 0600) == 0;
+        }
+        if (errno != EEXIST)
+        {
+            return false;
+        }
+        // An existing file is checked by name and never opened here. Closing
+        // any descriptor of it would drop every POSIX lock this process holds
+        // on it, including a write transaction's on another connection, and
+        // another process would then roll its journal back as hot (ADR-0157).
+        if (::fstatat(directory.get(), name.c_str(), &metadata, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISREG(metadata.st_mode) || metadata.st_uid != ::geteuid())
+        {
+            return false;
+        }
+        if ((metadata.st_mode & 07777) == 0600)
+        {
+            return true;
+        }
+        // Tightening a loose mode needs a descriptor. It happens once, before
+        // the first connection; once tightened, the mode check above returns.
+        auto file = core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC)};
+        struct stat opened{};
+        return file.valid() && ::fstat(file.get(), &opened) == 0 && opened.st_dev == metadata.st_dev &&
+               opened.st_ino == metadata.st_ino && ::fchmod(file.get(), 0600) == 0;
     }
 
     // `path` with its directory resolved to the real one. SQLITE_OPEN_NOFOLLOW
@@ -231,6 +254,23 @@ namespace
         return std::nullopt;
     }
 
+    // Whether the database header names the rollback journal (file format
+    // bytes 18 and 19 both 1) rather than WAL (2). Read through the descriptor
+    // SQLite opened, before any statement runs: sqlite3_open_v2 opens the file
+    // but starts no read transaction, so nothing has looked for WAL yet.
+    [[nodiscard]] auto sqlite_file_uses_rollback_journal(sqlite3& connection) -> bool
+    {
+        auto* file = static_cast<sqlite3_file*>(nullptr);
+        if (sqlite3_file_control(&connection, "main", SQLITE_FCNTL_FILE_POINTER, &file) != SQLITE_OK ||
+            file == nullptr || file->pMethods == nullptr)
+        {
+            return false;
+        }
+        auto header = std::array<unsigned char, 20>{};
+        return file->pMethods->xRead(file, header.data(), static_cast<int>(header.size()), 0) == SQLITE_OK &&
+               header[18] == 1U && header[19] == 1U;
+    }
+
     [[nodiscard]] auto open_sqlite_connection(std::string const& path, bool read_only = false)
         -> std::optional<SqliteConnection>
     {
@@ -243,24 +283,24 @@ namespace
         {
             return std::nullopt;
         }
-        if (read_only)
+        struct stat metadata{};
+        if (read_only && (::lstat(resolved->c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode)))
         {
-            // READONLY alone can write a WAL shared-memory index. Refuse WAL
-            // before SQLite opens it; immutable=1 would silently ignore WAL.
-            auto file = core::FileDescriptor{::open(resolved->c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)};
-            auto header = std::array<unsigned char, 20>{};
-            struct stat metadata{};
-            if (!file.valid() || ::fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
-                ::pread(file.get(), header.data(), header.size(), 0) != static_cast<ssize_t>(header.size()) ||
-                header[18] != 1U || header[19] != 1U)
-            {
-                return std::nullopt;
-            }
+            return std::nullopt;
         }
         auto* raw = static_cast<sqlite3*>(nullptr);
         auto const mode = read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
         if (sqlite3_open_v2(resolved->c_str(), &raw, mode | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX, nullptr) !=
             SQLITE_OK)
+        {
+            sqlite3_close(raw);
+            return std::nullopt;
+        }
+        // READONLY alone can write a WAL shared-memory index, and immutable=1
+        // would silently ignore WAL, so refuse WAL before anything reads the
+        // database. The header is read through SQLite's own descriptor: one
+        // opened and closed here would drop this process's locks (ADR-0157).
+        if (read_only && !sqlite_file_uses_rollback_journal(*raw))
         {
             sqlite3_close(raw);
             return std::nullopt;
