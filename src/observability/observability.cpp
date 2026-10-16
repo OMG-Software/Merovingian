@@ -3,6 +3,8 @@
 
 #include "merovingian/observability/observability.hpp"
 
+#include "merovingian/observability/bounded_text.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -374,7 +376,7 @@ auto make_audit_event(AuditCategory category, std::string_view event_type, std::
     return {category,
             std::string{event_type},
             std::string{actor},
-            std::string{target},
+            sanitized_audit_target(target),
             std::string{reason_code},
             std::string{request_id}};
 }
@@ -389,7 +391,7 @@ auto audit_log_insert_statement(AuditLogEvent const& event) -> database::Prepare
           public_value(audit_category_name(event.category)),
           public_value(event.event_type),
           public_value(event.actor),
-          public_value(event.target),
+          public_value(sanitized_audit_target(event.target)),
           public_value(event.reason_code),
           public_value(event.request_id),
           },
@@ -399,12 +401,21 @@ auto audit_log_insert_statement(AuditLogEvent const& event) -> database::Prepare
 auto audit_event_summary(AuditLogEvent const& event) -> std::string
 {
     return "audit category=" + std::string{audit_category_name(event.category)} + " type=" + event.event_type +
-           " actor=" + event.actor + " target=" + event.target + " reason=" + event.reason_code;
+           " actor=" + event.actor + " target=" + sanitized_audit_target(event.target) + " reason=" + event.reason_code;
 }
 
 auto log_field_is_sensitive(std::string_view key) -> bool
 {
     return contains_sensitive_marker(key);
+}
+
+auto sanitized_audit_target(std::string_view target) -> std::string
+{
+    // Never keep even a prefix of an unknown query value. Limit the delimiter
+    // search as well as the output work: a delimiter beyond the output cap
+    // cannot affect the retained path.
+    auto const query_start = target.substr(0U, observability::max_audit_field_bytes).find('?');
+    return observability::bounded_utf8(target.substr(0U, query_start), observability::max_audit_field_bytes);
 }
 
 auto sanitized_http_target(std::string_view target) -> std::string

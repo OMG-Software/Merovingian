@@ -33,7 +33,18 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 6. **In-memory mirrors of append-only tables are bounded windows.** `PersistentStore::audit_log`
    holds the newest `max_in_memory_audit_events` rows; append through `append_audit_event` and
    hydrate through `remember_audit_event`, never `push_back`. `append_audit_event` bounds
-   `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`bounded_utf8`).
+   `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`observability::bounded_utf8`).
+
+7. **Persisted writes lease a pooled connection; nothing else opens one per write.** `commit_persistent_transaction`
+   goes through the store's `ConnectionPool` (at most `database.pool_size` in use, ADR-0154). Hold a lease for exactly
+   one transaction and never take another lease while holding one, or writers can deadlock waiting for each other.
+   A PostgreSQL connection is reused only while idle with nothing to read on its socket.
+
+8. **Nothing in this process opens a SQLite database file except SQLite** (ADR-0157). Closing any descriptor of a
+   file releases every POSIX lock the process holds on it, so a check that opens and closes the database (for its
+   owner, type, size or header, or to chmod it) silently drops another connection's write lock, and another process
+   then rolls back a live transaction's journal as hot. Check by name (`fstatat` with `AT_SYMLINK_NOFOLLOW`) or read
+   through SQLite's own handle (`SQLITE_FCNTL_FILE_POINTER`).
 
 ## Backend selection
 

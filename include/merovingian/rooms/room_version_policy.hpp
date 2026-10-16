@@ -70,6 +70,13 @@ struct RoomVersionPolicy final
     // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md
     //       "Values in m.room.power_levels events must be integers"
     bool power_levels_require_integers{false};
+    // Room versions 1-5 also accept a float power level, read by applying
+    // exponential notation and truncating at the decimal point; values outside
+    // binary64, Infinity and NaN are rejected. v6 made Canonical JSON (which has
+    // no floats) mandatory. EVT-12 (d), ADR-0150.
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v3.md
+    //       "m.room.power_levels events accept values as floats"
+    bool power_levels_accept_floats{false};
     // Which join rules the version's authorization rules define. A join rule
     // a version does not define falls through to "Otherwise, reject".
     //   knock            — rooms/v7.md: joins ("invite or knock") and the

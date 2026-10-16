@@ -23,6 +23,10 @@ struct SyncRequest final
 
 [[nodiscard]] auto percent_decode(std::string_view encoded) -> std::string;
 
+// Detect literal NUL or a NUL produced by one percent-decoding pass. This is
+// allocation-free and does not reject a literal "%00" encoded as "%2500".
+[[nodiscard]] auto path_component_contains_nul(std::string_view encoded) noexcept -> bool;
+
 [[nodiscard]] auto percent_decode_path_component(std::string_view encoded) -> std::string;
 
 [[nodiscard]] auto percent_encode_path_component(std::string_view decoded) -> std::string;

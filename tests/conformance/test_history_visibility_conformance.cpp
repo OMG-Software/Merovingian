@@ -675,6 +675,154 @@ SCENARIO("GET /members honours the at token", "[history-visibility][csaz-2][conf
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Spec: Matrix Client-Server API v1.19, GET /rooms/{roomId}/members.
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+// `membership` includes the selected kind, `not_membership` excludes the selected
+// kind, and `at` selects a historical roster. Unrelated query text is not a path.
+SCENARIO("Room member queries survive path-only routing", "[history-visibility][conformance][db6-members-query]")
+{
+    GIVEN("a room with joined, departed and invited members after a historical marker")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        std::ignore = register_and_login(rt, "carol");
+        auto const room_id = create_room(rt, alice);
+        std::ignore = send_text(rt, alice, room_id, "roster-marker");
+        auto const latest = messages(rt, alice, room_id, "?dir=b&limit=1");
+        REQUIRE(latest.status == 200U);
+        auto const at_marker = string_field(latest.body, "start");
+        REQUIRE_FALSE(at_marker.empty());
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        leave(rt, bob, room_id);
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                     "{\"user_id\":\"" + user_id("carol") + "\"}")
+                    .status == 200U);
+
+        WHEN("a joined caller selects a current or historical roster through query parameters")
+        {
+            THEN("recognised parameters retain their meaning and unrelated data is ignored")
+            {
+                auto const path = "/_matrix/client/v3/rooms/" + room_id + "/members";
+                auto const control = call(rt, "GET", path, alice);
+                REQUIRE(control.status == 200U);
+                auto const roster = member_events_by_user(control.body, "chunk");
+                REQUIRE(roster.size() == 3U);
+                REQUIRE(membership_of(roster, user_id("alice")) == std::optional<std::string>{"join"});
+                REQUIRE(membership_of(roster, user_id("bob")) == std::optional<std::string>{"leave"});
+                REQUIRE(membership_of(roster, user_id("carol")) == std::optional<std::string>{"invite"});
+                auto unrelated =
+                    std::vector<std::string>{"", "&unused=ordinary", "&unused=%00/members", "&unused=%2500/members"};
+                auto literal_nul = std::string{"&unused="};
+                literal_nul.push_back('\0');
+                literal_nul += "/members";
+                unrelated.push_back(std::move(literal_nul));
+                for (auto const& extra : unrelated)
+                {
+                    INFO("unrelated query case size: " << extra.size());
+                    auto const joined = call(rt, "GET", path + "?membership=join" + extra, alice);
+                    REQUIRE(joined.status == 200U);
+                    auto const joins = member_events_by_user(joined.body, "chunk");
+                    CHECK(joins.size() == 1U);
+                    CHECK(membership_of(joins, user_id("alice")) == std::optional<std::string>{"join"});
+                    CHECK(membership_of(joins, user_id("bob")) == std::nullopt);
+                    CHECK(membership_of(joins, user_id("carol")) == std::nullopt);
+
+                    auto const excluded = call(rt, "GET", path + "?not_membership=leave" + extra, alice);
+                    REQUIRE(excluded.status == 200U);
+                    auto const non_leavers = member_events_by_user(excluded.body, "chunk");
+                    CHECK(non_leavers.size() == 2U);
+                    CHECK(membership_of(non_leavers, user_id("alice")) == std::optional<std::string>{"join"});
+                    CHECK(membership_of(non_leavers, user_id("bob")) == std::nullopt);
+                    CHECK(membership_of(non_leavers, user_id("carol")) == std::optional<std::string>{"invite"});
+
+                    auto const historical = call(rt, "GET", path + "?at=" + at_marker + extra, alice);
+                    REQUIRE(historical.status == 200U);
+                    auto const earlier = member_events_by_user(historical.body, "chunk");
+                    CHECK(earlier.size() == 1U);
+                    CHECK(membership_of(earlier, user_id("alice")) == std::optional<std::string>{"join"});
+                    CHECK(membership_of(earlier, user_id("bob")) == std::nullopt);
+                    CHECK(membership_of(earlier, user_id("carol")) == std::nullopt);
+
+                    auto const malformed = call(rt, "GET", path + "?at=not-a-token" + extra, alice);
+                    CHECK(malformed.status == 400U);
+                    CHECK(string_field(malformed.body, "errcode") == "M_INVALID_PARAM");
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, GET /rooms/{roomId}/members.
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+// Spec MUST: when both filters are supplied, select matching membership OR
+// membership different from not_membership, rather than their intersection.
+SCENARIO("Combined room member filters form the specified union", "[history-visibility][conformance][db6-members-or]")
+{
+    GIVEN("a joined caller and a roster containing join, leave and invite")
+    {
+        auto started = merovingian::homeserver::start_client_server(visibility_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        std::ignore = register_and_login(rt, "carol");
+        auto const room_id = create_room(rt, alice);
+        invite_and_join(rt, alice, room_id, "bob", bob);
+        leave(rt, bob, room_id);
+        REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                     "{\"user_id\":\"" + user_id("carol") + "\"}")
+                    .status == 200U);
+        WHEN("both include and exclude parameters are provided")
+        {
+            THEN("the roster is their union for distinct and identical filter values")
+            {
+                auto const path = "/_matrix/client/v3/rooms/" + room_id + "/members";
+                auto const control = call(rt, "GET", path, alice);
+                REQUIRE(control.status == 200U);
+                auto const original = member_events_by_user(control.body, "chunk");
+                REQUIRE(original.size() == 3U);
+                REQUIRE(membership_of(original, user_id("alice")) == std::optional<std::string>{"join"});
+                REQUIRE(membership_of(original, user_id("bob")) == std::optional<std::string>{"leave"});
+                REQUIRE(membership_of(original, user_id("carol")) == std::optional<std::string>{"invite"});
+                struct FilterCase
+                {
+                    std::string query;
+                    bool alice;
+                    bool bob;
+                    bool carol;
+                };
+                auto const cases = std::vector<FilterCase>{
+                    {"?membership=invite&not_membership=leave", true,  false, true},
+                    {"?membership=leave&not_membership=leave",  true,  true,  true},
+                    {"?membership=join&not_membership=join",    true,  true,  true},
+                    {"?membership=leave&not_membership=join",   false, true,  true},
+                    {"?membership=join&not_membership=leave",   true,  false, true},
+                    {"?membership=invite&not_membership=join",  false, true,  true},
+                };
+                for (auto const& filter : cases)
+                {
+                    INFO("combined filter: " << filter.query);
+                    auto const reply = call(rt, "GET", path + filter.query, alice);
+                    REQUIRE(reply.status == 200U);
+                    auto const roster = member_events_by_user(reply.body, "chunk");
+                    CHECK(roster.size() == static_cast<std::size_t>(filter.alice) +
+                                               static_cast<std::size_t>(filter.bob) +
+                                               static_cast<std::size_t>(filter.carol));
+                    CHECK(membership_of(roster, user_id("alice")) ==
+                          (filter.alice ? std::optional<std::string>{"join"} : std::optional<std::string>{}));
+                    CHECK(membership_of(roster, user_id("bob")) ==
+                          (filter.bob ? std::optional<std::string>{"leave"} : std::optional<std::string>{}));
+                    CHECK(membership_of(roster, user_id("carol")) ==
+                          (filter.carol ? std::optional<std::string>{"invite"} : std::optional<std::string>{}));
+                }
+            }
+        }
+    }
+}
+
 // CSAZ-3: m.room.history_visibility on every read path
 // ─────────────────────────────────────────────────────────────────────────────
 

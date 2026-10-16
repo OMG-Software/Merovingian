@@ -3,6 +3,8 @@
 
 #include "merovingian/core/secret_buffer.hpp"
 
+#include <algorithm>
+#include <new>
 #include <utility>
 
 #include <sodium.h>
@@ -18,31 +20,42 @@ auto secure_zero(std::span<std::byte> bytes) noexcept -> void
     }
 }
 
-SecretBuffer::SecretBuffer(std::size_t size)
-    : m_buffer(size, 0U)
+auto SecretBuffer::SodiumDeleter::operator()(std::uint8_t* buffer) const noexcept -> void
 {
-    // Pin the buffer into RAM so it cannot be swapped to disk while it holds
-    // secret material. mlock may fail under RLIMIT_MEMLOCK; in that case the
-    // buffer is still reliably zeroised on destruction via sodium_memzero.
-    if (!m_buffer.empty())
+    sodium_free(buffer); // Wipes and unlocks this allocation's isolated pages.
+}
+
+SecretBuffer::SecretBuffer(std::size_t size)
+{
+    if (size == 0U)
     {
-        m_mlocked = sodium_mlock(m_buffer.data(), m_buffer.size()) == 0;
+        return;
     }
+    if (sodium_init() < 0)
+    {
+        throw std::bad_alloc{};
+    }
+    m_buffer.reset(static_cast<std::uint8_t*>(sodium_malloc(size)));
+    if (!m_buffer)
+    {
+        throw std::bad_alloc{};
+    }
+    m_size = size;
+    // sodium_malloc attempts locking but does not report its outcome. Explicitly
+    // lock the isolated data pages so is_locked reflects an actual syscall.
+    m_mlocked = sodium_mlock(m_buffer.get(), m_size) == 0;
+    sodium_memzero(m_buffer.get(), m_size);
 }
 
 SecretBuffer::SecretBuffer(std::span<std::uint8_t const> bytes)
-    : m_buffer(bytes.begin(), bytes.end())
+    : SecretBuffer(bytes.size())
 {
-    // Copy then pin: the source span may live in an unpinned std::string or a
-    // caller-owned buffer, so this owner takes its own mlocked, zeroised copy.
-    if (!m_buffer.empty())
-    {
-        m_mlocked = sodium_mlock(m_buffer.data(), m_buffer.size()) == 0;
-    }
+    std::copy(bytes.begin(), bytes.end(), this->bytes().begin());
 }
 
 SecretBuffer::SecretBuffer(SecretBuffer&& other) noexcept
     : m_buffer(std::move(other.m_buffer))
+    , m_size(std::exchange(other.m_size, 0U))
     , m_mlocked(std::exchange(other.m_mlocked, false))
 {
     // The mlocked buffer transfers to this object; the source is left empty and
@@ -53,48 +66,23 @@ auto SecretBuffer::operator=(SecretBuffer&& other) noexcept -> SecretBuffer&
 {
     if (this != &other)
     {
-        // Wipe the existing secret before replacing it — a plain vector
-        // move-assignment would free the old buffer without wiping it.
-        wipe_current();
         m_buffer = std::move(other.m_buffer);
+        m_size = std::exchange(other.m_size, 0U);
         m_mlocked = std::exchange(other.m_mlocked, false);
     }
     return *this;
 }
 
-SecretBuffer::~SecretBuffer()
-{
-    wipe_current();
-}
-
-auto SecretBuffer::wipe_current() noexcept -> void
-{
-    if (m_buffer.empty())
-    {
-        return;
-    }
-    if (m_mlocked)
-    {
-        // sodium_munlock zeroises the buffer (volatile writes the compiler cannot
-        // elide) and releases the mlock — an optimisation barrier as well as a wipe.
-        sodium_munlock(m_buffer.data(), m_buffer.size());
-        m_mlocked = false;
-    }
-    else
-    {
-        // Non-elidable volatile zeroise for the case where mlock failed.
-        sodium_memzero(m_buffer.data(), m_buffer.size());
-    }
-}
+SecretBuffer::~SecretBuffer() = default;
 
 auto SecretBuffer::bytes() noexcept -> std::span<std::uint8_t>
 {
-    return std::span<std::uint8_t>{m_buffer};
+    return std::span<std::uint8_t>{m_buffer.get(), m_size};
 }
 
 auto SecretBuffer::bytes() const noexcept -> std::span<std::uint8_t const>
 {
-    return std::span<std::uint8_t const>{m_buffer};
+    return std::span<std::uint8_t const>{m_buffer.get(), m_size};
 }
 
 auto SecretBuffer::is_locked() const noexcept -> bool

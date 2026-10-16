@@ -341,12 +341,9 @@ auto build_worker_landlock_rules(config::Config const& config) -> std::vector<La
     {
         auto const dir = std::filesystem::path{config.database().sqlite_path}.parent_path();
         auto const dir_str = dir.empty() ? std::string{"."} : dir.string();
-        // Read-write on the *directory*, not just the database file: WAL mode
-        // creates -wal/-shm files and a rollback journal is created and
-        // removed around each write transaction, none of which exist yet on
-        // a first boot. A rule scoped to the file alone would not permit
-        // creating those siblings.
-        rules.push_back({.path = dir_str, .access = LandlockAccess::read_write, .required = true});
+        // No write/create/remove grant for the database, journal or WAL index.
+        // Workers use READONLY SQLite against main's DELETE-mode database.
+        rules.push_back({.path = dir_str, .access = LandlockAccess::read_only, .required = true});
     }
 
     // ---- TLS / CA trust store (best-effort: distro-dependent) --------------

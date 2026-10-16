@@ -196,9 +196,10 @@ namespace
     // certificate host explicitly means a new discovery branch cannot quietly
     // inherit the wrong one.
     [[nodiscard]] auto resolve_destination(std::string_view server_name, HostPort host_port, std::string_view tls_host,
-                                           ServerDiscoveryNetwork& network) -> ServerDiscoveryResult
+                                           ServerDiscoveryNetwork& network,
+                                           std::vector<std::string> const& denied_ranges = {}) -> ServerDiscoveryResult
     {
-        auto result = resolve_federation_destination(host_port.host, host_port.port, network);
+        auto result = resolve_federation_destination(host_port.host, host_port.port, network, denied_ranges);
         result.server_name = std::string{server_name};
         result.tls_server_name = std::string{tls_host};
         result.tls_required = host_port.port != 8008U;
@@ -301,6 +302,7 @@ namespace
     class SystemServerDiscoveryNetwork final : public ServerDiscoveryNetwork
     {
     public:
+        using ServerDiscoveryNetwork::ServerDiscoveryNetwork;
         [[nodiscard]] auto fetch_well_known(std::string_view server_name,
                                             std::uint32_t timeout_seconds) -> WellKnownServerResult override
         {
@@ -311,9 +313,9 @@ namespace
             }
 
             auto addresses = lookup_addresses(host_port->host, host_port->port);
-            if (!addresses.ok || !address_set_allowed(addresses.addresses))
+            if (!addresses.ok || !address_set_allowed(addresses.addresses, denied_ip_ranges()))
             {
-                return {false, false, {}, "well-known host address is private, loopback, or unresolved"};
+                return {false, false, {}, "well-known host address is disallowed or unresolved"};
             }
 
             auto request = http::OutboundRequest{};
@@ -526,8 +528,8 @@ auto discover_server(LiteralDiscoveryOptIn, std::string_view server_name,
     return result;
 }
 
-auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network,
-                     std::uint32_t timeout_seconds) -> ServerDiscoveryResult
+auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
+                     std::vector<std::string> const& denied_ranges) -> ServerDiscoveryResult
 {
     auto result = ServerDiscoveryResult{};
     result.server_name = server_name;
@@ -562,7 +564,8 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
                 {"server_name", std::string{server_name},                                                    false},
                 {"method",      host_is_numeric_ip(direct_host_port->host) ? "ip_literal" : "explicit_port", false}
         });
-        return resolve_destination(server_name, HostPort{*direct_host_port}, direct_host_port->host, network);
+        return resolve_destination(server_name, HostPort{*direct_host_port}, direct_host_port->host, network,
+                                   denied_ranges);
     }
 
     // Matrix spec step 3: consult /.well-known/matrix/server delegation.
@@ -585,7 +588,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
             if (host_is_numeric_ip(delegated_host_port->host) || delegated_host_port->port_explicit)
             {
                 result = resolve_destination(server_name, HostPort{*delegated_host_port}, delegated_host_port->host,
-                                             network);
+                                             network, denied_ranges);
                 result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
                 return result;
             }
@@ -603,12 +606,12 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
                                                     {"via",         "well_known_delegated_srv", false}
                 });
                 result = resolve_destination(server_name, HostPort{first.target, first.port, true},
-                                             delegated_host_port->host, network);
+                                             delegated_host_port->host, network, denied_ranges);
                 result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
                 return result;
             }
-            result =
-                resolve_destination(server_name, HostPort{*delegated_host_port}, delegated_host_port->host, network);
+            result = resolve_destination(server_name, HostPort{*delegated_host_port}, delegated_host_port->host,
+                                         network, denied_ranges);
             result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
             return result;
         }
@@ -633,7 +636,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
                                             {"via",         "direct_srv",               false}
         });
         return resolve_destination(server_name, HostPort{first.target, first.port, true}, direct_host_port->host,
-                                   network);
+                                   network, denied_ranges);
     }
 
     // Matrix spec step 5: direct A/AAAA on the server name at the default port.
@@ -642,7 +645,8 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
                                            {"method",      "aaaa_fallback",                        false},
                                            {"port",        std::to_string(direct_host_port->port), false}
     });
-    return resolve_destination(server_name, HostPort{*direct_host_port}, direct_host_port->host, network);
+    return resolve_destination(server_name, HostPort{*direct_host_port}, direct_host_port->host, network,
+                               denied_ranges);
 }
 
 auto discover_server(std::string_view server_name) -> ServerDiscoveryResult
@@ -651,9 +655,10 @@ auto discover_server(std::string_view server_name) -> ServerDiscoveryResult
     return discover_server(server_name, network, 30U);
 }
 
-auto make_system_server_discovery_network() -> std::unique_ptr<ServerDiscoveryNetwork>
+auto make_system_server_discovery_network(std::vector<std::string> denied_ranges)
+    -> std::unique_ptr<ServerDiscoveryNetwork>
 {
-    return std::make_unique<SystemServerDiscoveryNetwork>();
+    return std::make_unique<SystemServerDiscoveryNetwork>(std::move(denied_ranges));
 }
 
 auto validate_federation_tls_origin(std::string_view server_name,
@@ -713,8 +718,8 @@ auto validate_federation_tls_origin(std::string_view server_name,
     return {true, {}};
 }
 
-auto resolve_federation_destination(std::string_view host, std::uint16_t port,
-                                    ServerDiscoveryNetwork& network) -> ServerDiscoveryResult
+auto resolve_federation_destination(std::string_view host, std::uint16_t port, ServerDiscoveryNetwork& network,
+                                    std::vector<std::string> const& denied_ranges) -> ServerDiscoveryResult
 {
     auto result = ServerDiscoveryResult{};
     result.resolved_host = std::string{host};
@@ -728,7 +733,7 @@ auto resolve_federation_destination(std::string_view host, std::uint16_t port,
     }
     if (host_is_numeric_ip(result.resolved_host) && ip_address_is_private_or_loopback(result.resolved_host))
     {
-        result.reason = "resolved address is a private or loopback IP address";
+        result.reason = "resolved address set contains a disallowed IP address";
         return result;
     }
 
@@ -738,9 +743,10 @@ auto resolve_federation_destination(std::string_view host, std::uint16_t port,
         result.reason = addresses.reason.empty() ? "resolved host has no addresses" : addresses.reason;
         return result;
     }
-    if (!address_set_allowed(addresses.addresses))
+    if (!address_set_allowed(addresses.addresses, network.denied_ip_ranges()) ||
+        !address_set_allowed(addresses.addresses, denied_ranges))
     {
-        result.reason = "resolved address is a private or loopback IP address";
+        result.reason = "resolved address set contains a disallowed IP address";
         return result;
     }
 

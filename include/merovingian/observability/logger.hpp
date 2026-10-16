@@ -3,6 +3,7 @@
 // Derived from SingleLog by James Chapman, BSD-3-Clause.
 #pragma once
 
+#include "merovingian/observability/log_file_sink.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <array>
@@ -31,7 +32,6 @@
 namespace merovingian::observability
 {
 
-constexpr auto logger_internal_buffer_size = 10240U;
 constexpr auto max_log_queue_size = 4096U;
 
 enum class LogLevel
@@ -203,11 +203,8 @@ public:
         stop_writers();
 
         auto lock = std::lock_guard<std::mutex>{m_file_lock};
-        if (m_file_out.is_open())
-        {
-            m_file_out << "\n\n";
-            m_file_out.close();
-        }
+        m_file_sink.write("\n\n");
+        m_file_sink.close();
     }
 
     // Starts the console and file writer threads. Until this succeeds every log
@@ -246,6 +243,12 @@ public:
         m_console_log_level.store(level);
     }
 
+    // Return the exact previous threshold for scoped diagnostic capture.
+    [[nodiscard]] auto exchange_console_log_level(LogLevel level) noexcept -> LogLevel
+    {
+        return m_console_log_level.exchange(level);
+    }
+
     auto set_file_log_level(LogLevel level) noexcept -> void
     {
         m_file_log_level.store(level);
@@ -271,6 +274,27 @@ public:
         m_module_levels[std::string{logger}] = level;
     }
 
+    // nullopt removes an override, preserving inheritance rather than copying
+    // the current default into a permanent explicit module level. The caller
+    // retains its name so restoration of an existing entry needs no allocation.
+    [[nodiscard]] auto exchange_module_log_level(std::string const& logger, std::optional<LogLevel> level)
+        -> std::optional<LogLevel>
+    {
+        auto lock = std::lock_guard<std::shared_mutex>{m_module_levels_lock};
+        auto const current = m_module_levels.find(logger);
+        auto const previous =
+            current == m_module_levels.end() ? std::optional<LogLevel>{} : std::optional<LogLevel>{current->second};
+        if (level.has_value())
+        {
+            m_module_levels.insert_or_assign(logger, *level);
+        }
+        else if (current != m_module_levels.end())
+        {
+            m_module_levels.erase(current);
+        }
+        return previous;
+    }
+
     [[nodiscard]] auto module_log_level(std::string_view logger) const -> LogLevel
     {
         {
@@ -283,19 +307,15 @@ public:
         return m_default_log_level.load();
     }
 
-    auto set_log_file_path(std::string const& path) -> void
+    // Whether the log file was opened. A refused path (ISO-6: a symlink, a
+    // non-regular file, another user's file) leaves the sink closed: no file
+    // output, never a write through the link. The caller reports a refusal;
+    // it cannot be logged from here, with the file lock held.
+    [[nodiscard]] auto set_log_file_path(std::string const& path) -> bool
     {
         auto lock = std::lock_guard<std::mutex>{m_file_lock};
         m_file_path = path;
-        if (m_file_out.is_open())
-        {
-            m_file_out.close();
-        }
-        m_file_out.open(m_file_path, std::ios_base::out);
-        if (m_file_out.is_open())
-        {
-            m_file_out.rdbuf()->pubsetbuf(m_write_buffer.data(), logger_internal_buffer_size);
-        }
+        return m_file_sink.open(m_file_path);
     }
 
     auto trace(std::string const& module, std::string const& message) -> void
@@ -490,11 +510,8 @@ private:
     auto file_log_sync(std::string const& message) -> void
     {
         auto lock = std::lock_guard<std::mutex>{m_file_lock};
-        if (m_file_out.is_open())
-        {
-            m_file_out << message;
-            m_file_out.flush();
-        }
+        m_file_sink.write(message);
+        m_file_sink.flush();
     }
 
     auto console_log(std::string const& message, bool flush) -> void
@@ -534,11 +551,8 @@ private:
         if (!m_writers_started.load(std::memory_order_acquire))
         {
             auto lock = std::lock_guard<std::mutex>{m_file_lock};
-            if (m_file_out.is_open())
-            {
-                m_file_out << message;
-                m_file_out.flush();
-            }
+            m_file_sink.write(message);
+            m_file_sink.flush();
             return;
         }
         auto warn = false;
@@ -686,10 +700,7 @@ private:
             if (flush_without_entry)
             {
                 auto lock = std::lock_guard<std::mutex>{m_file_lock};
-                if (m_file_out.is_open())
-                {
-                    m_file_out.flush();
-                }
+                m_file_sink.flush();
                 flush_policy.mark_flushed();
                 if (exit_without_entry)
                 {
@@ -704,12 +715,12 @@ private:
             }
 
             auto lock = std::lock_guard<std::mutex>{m_file_lock};
-            if (m_file_out.is_open())
+            if (m_file_sink.is_open())
             {
-                m_file_out << entry.message;
+                m_file_sink.write(entry.message);
                 if (flush_policy.observe_message(entry.flush, LowSeverityFlushPolicy::Clock::now()))
                 {
-                    m_file_out.flush();
+                    m_file_sink.flush();
                 }
             }
             else
@@ -724,9 +735,8 @@ private:
     std::atomic<LogLevel> m_default_log_level{LogLevel::info};
     mutable std::shared_mutex m_module_levels_lock{};
     std::unordered_map<std::string, LogLevel> m_module_levels{};
-    std::ofstream m_file_out{};
+    LogFileSink m_file_sink{};
     std::string m_file_path{};
-    std::array<char, logger_internal_buffer_size> m_write_buffer{};
 
     std::mutex m_console_queue_lock{};
     std::mutex m_file_queue_lock{};

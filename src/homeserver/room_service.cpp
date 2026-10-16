@@ -59,6 +59,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <future>
 #include <limits>
 #include <map>
@@ -241,11 +243,13 @@ namespace
     // Why compose_signed_event produced no event. too_large means the event would
     // break the spec's size limits (CSAZ-9) and is the client's to fix, so callers
     // answer 400 M_TOO_LARGE; rejected covers everything else (malformed input,
-    // authorization, signing).
+    // authorization, signing); invalid_state_key is refused with 400 before
+    // composition can allocate any stream ordering or persistence state.
     enum class ComposeFailure : std::uint8_t
     {
         none,
         too_large,
+        invalid_state_key,
         rejected,
     };
 
@@ -267,6 +271,13 @@ namespace
         result.errcode = "M_TOO_LARGE";
         return result;
     }
+    [[nodiscard]] auto invalid_state_key_result() -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, "state_key must not contain NUL", 400U);
+        result.errcode = "M_INVALID_PARAM";
+        return result;
+    }
+
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view sender, ComposedEvent const& composed) -> bool;
     [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
@@ -875,30 +886,30 @@ namespace
         return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
     }
 
+    // `pending_invite_json` is the invitee's m.room.member event when it is about
+    // to be stored with this metadata (DB-4): it stands in for the invitee's
+    // current member entry, where that entry is, or comes last, where the
+    // stored event will go.
     [[nodiscard]] auto invite_state_events_for_room(database::PersistentStore const& store, std::string_view room_id,
-                                                    std::string_view invitee) -> std::vector<std::string>
+                                                    std::string_view invitee,
+                                                    std::optional<std::string_view> pending_invite_json = std::nullopt)
+        -> std::vector<std::string>
     {
         auto events = std::vector<std::string>{};
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id)
-            {
-                continue;
-            }
-            auto const event_json = event_json_for_id(store, state.event_id);
+        auto const strip = [&](std::optional<std::string> const& event_json) {
             if (!event_json.has_value())
             {
-                continue;
+                return;
             }
             auto const parsed = canonicaljson::parse_lossless(*event_json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
-                continue;
+                return;
             }
             auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
             if (event == nullptr)
             {
-                continue;
+                return;
             }
             auto const* type = string_member(*event, "type");
             auto const* state_key = string_member(*event, "state_key");
@@ -907,7 +918,7 @@ namespace
             if (type == nullptr || state_key == nullptr || sender == nullptr || content == nullptr ||
                 !std::holds_alternative<canonicaljson::Object>(content->storage()))
             {
-                continue;
+                return;
             }
             // Matrix v1.19 #stripped-state: persist a room summary, not the roster
             // or private state. The exact type allowlist is our disclosure policy.
@@ -917,7 +928,7 @@ namespace
                                        *type == "m.room.canonical_alias" || *type == "m.room.encryption");
             if (!is_summary && !(*type == "m.room.member" && *state_key == invitee))
             {
-                continue;
+                return;
             }
             auto stripped = canonicaljson::Object{};
             stripped.push_back(canonicaljson::make_member("sender", canonicaljson::Value{*sender}));
@@ -929,6 +940,25 @@ namespace
             {
                 events.push_back(*serialized);
             }
+        };
+        auto pending_used = false;
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id)
+            {
+                continue;
+            }
+            if (pending_invite_json.has_value() && state.event_type == "m.room.member" && state.state_key == invitee)
+            {
+                strip(std::string{*pending_invite_json});
+                pending_used = true;
+                continue;
+            }
+            strip(event_json_for_id(store, state.event_id));
+        }
+        if (pending_invite_json.has_value() && !pending_used)
+        {
+            strip(std::string{*pending_invite_json});
         }
         return events;
     }
@@ -963,23 +993,6 @@ namespace
         }
         return result != database::MembershipStoreResult::already_exists ||
                database::update_membership(store, room_id, user_id, membership, stream_ordering);
-    }
-
-    [[nodiscard]] auto upsert_local_invite_metadata(database::PersistentStore& store, std::string_view room_id,
-                                                    std::string_view sender_user_id, std::string_view target_user_id,
-                                                    std::uint64_t stream_ordering) -> bool
-    {
-        auto const invite_state = membership_state_entry(store, room_id, target_user_id);
-        if (!invite_state.has_value())
-        {
-            return false;
-        }
-        auto const invite_json = event_json_for_id(store, invite_state->event_id);
-        return invite_json.has_value() &&
-               database::upsert_invite(store,
-                                       {std::string{room_id}, std::string{target_user_id}, std::string{sender_user_id},
-                                        invite_state->event_id, *invite_json,
-                                        invite_state_events_for_room(store, room_id, target_user_id), stream_ordering});
     }
 
     // Forward declaration: defined further down this file, after
@@ -1372,6 +1385,10 @@ namespace
             }
             return std::nullopt;
         }();
+        if (event_state_key.has_value() && events::state_key_contains_nul(*event_state_key))
+        {
+            return ComposeResult{std::nullopt, ComposeFailure::invalid_state_key};
+        }
         // CSAZ-9. Spec v1.19 "Size limits": "`state_key` MUST NOT exceed 255 bytes" and "`type`
         // MUST NOT exceed 255 bytes". Refused here, before anything is composed or stored.
         if (event_type.size() > events::max_event_type_length_bytes ||
@@ -1621,40 +1638,75 @@ namespace
         };
     }
 
-    // CSAZ-6: the one place a locally created m.room.member event becomes the
-    // user's membership. persist_composed_event calls it for every such event,
-    // whichever endpoint sent it: the membership APIs, PUT /state/m.room.member,
-    // createRoom and join alike. Before this only the membership APIs updated the
-    // projections, so a ban sent through the state API changed room state but
-    // left the user in `memberships` and `LocalRoom.members`, which the read gates
-    // and join_room trust. Callers must not repeat any of this.
-    //
-    // Nothing is projected unless the event is now the current state for its
-    // user: an event that state resolution did not pick is not their membership.
-    [[nodiscard]] auto project_local_membership(HomeserverRuntime& runtime, std::string_view room_id,
-                                                std::string_view sender, ComposedEvent const& composed) -> bool
+    // CSAZ-6 / DB-4: the one place a locally created m.room.member event becomes
+    // the user's membership. persist_composed_event builds this for every such
+    // event, whichever endpoint sent it: the membership APIs, PUT
+    // /state/m.room.member, createRoom and join alike. Before CSAZ-6 only the
+    // membership APIs updated the projections, so a ban sent through the state API
+    // changed room state but left the user in `memberships` and
+    // `LocalRoom.members`, which the read gates and join_room trust. Before DB-4
+    // the row was written in a transaction of its own after the event's, so a
+    // fault between the two left a durable ban with a row still saying join.
+    // The projection is now committed in the event's own transaction. Callers
+    // must not repeat any of this.
+    [[nodiscard]] auto local_membership_projection(HomeserverRuntime& runtime, std::string_view room_id,
+                                                   std::string_view sender, ComposedEvent const& composed)
+        -> std::optional<database::MembershipProjection>
     {
-        auto& store = runtime.database.persistent_store;
-        auto const& target = *composed.state_key;
-        auto const current = membership_state_entry(store, room_id, target);
-        if (!current.has_value() || current->event_id != composed.event_id)
-        {
-            return true;
-        }
         auto const parsed = canonicaljson::parse_lossless(composed.json);
         auto const membership = events::extract_content_membership(parsed.value);
         if (parsed.error != canonicaljson::ParseError::none || membership.empty())
         {
-            return false;
+            return std::nullopt;
+        }
+        auto const& target = *composed.state_key;
+        auto projection = database::MembershipProjection{target, std::string{membership},
+                                                         allocate_stream_ordering(runtime.database), std::nullopt};
+        if (projection.membership == "invite")
+        {
+            projection.invite = database::PersistentInvite{
+                std::string{room_id},
+                target,
+                std::string{sender},
+                composed.event_id,
+                composed.json,
+                invite_state_events_for_room(runtime.database.persistent_store, room_id, target, composed.json),
+                projection.stream_ordering};
+        }
+        return projection;
+    }
+
+    // The runtime half of a stored member event: the live roster and the device
+    // list changes. The durable row was committed with the event. If state
+    // resolution did not leave the event current (a fork with more forward
+    // extremities than one event may cite), the event is not the user's
+    // membership: the row is put back to whatever is current, and that is what
+    // the roster follows.
+    [[nodiscard]] auto finish_local_membership(HomeserverRuntime& runtime, std::string_view room_id,
+                                               ComposedEvent const& composed, std::string membership) -> bool
+    {
+        auto& store = runtime.database.persistent_store;
+        auto const& target = *composed.state_key;
+        auto const current = membership_state_entry(store, room_id, target);
+        if (current.has_value() && current->event_id != composed.event_id)
+        {
+            auto const current_json = event_json_for_id(store, current->event_id);
+            if (!current_json.has_value())
+            {
+                return false;
+            }
+            auto const parsed = canonicaljson::parse_lossless(*current_json);
+            membership = std::string{events::extract_content_membership(parsed.value)};
+            if (parsed.error != canonicaljson::ParseError::none || membership.empty() ||
+                !database::store_membership_projection(
+                    store, room_id, {target, membership, allocate_stream_ordering(runtime.database), std::nullopt}))
+            {
+                return false;
+            }
         }
 
         auto const* room = find_room(runtime.database, room_id);
         auto const was_joined = room != nullptr && room_has_member(*room, target);
-        auto const membership_stream = allocate_stream_ordering(runtime.database);
-        if (!store_or_update_membership(store, room_id, target, membership, membership_stream))
-        {
-            return false;
-        }
         // Device lists (spec v1.19 "Tracking the device list for a user"): leaving
         // the room's joined set is recorded while the user is still in it, joining
         // once they are, matching what each helper reads.
@@ -1663,19 +1715,7 @@ namespace
             return false;
         }
         apply_runtime_membership(runtime.database, room_id, target, membership);
-        if (!was_joined && membership == "join" && !record_room_share_started_device_changes(runtime, room_id, target))
-        {
-            return false;
-        }
-        if (membership == "invite")
-        {
-            return upsert_local_invite_metadata(store, room_id, sender, target, membership_stream);
-        }
-        if (membership == "join" || membership == "leave" || membership == "ban")
-        {
-            return database::delete_invite(store, room_id, target);
-        }
-        return true;
+        return was_joined || membership != "join" || record_room_share_started_device_changes(runtime, room_id, target);
     }
 
     // Composes, signs, and persists a single room state event.  Used by create_room to
@@ -1705,6 +1745,17 @@ namespace
             state = database::PersistentStateEvent{std::string{room_id}, composed.event_type, *composed.state_key,
                                                    composed.event_id};
         }
+        auto const is_member_event = composed.event_type == "m.room.member" && composed.state_key.has_value();
+        auto membership = std::optional<database::MembershipProjection>{};
+        if (is_member_event)
+        {
+            membership = local_membership_projection(runtime, room_id, sender, composed);
+            if (!membership.has_value())
+            {
+                return false;
+            }
+        }
+        auto committed_membership = membership.has_value() ? membership->membership : std::string{};
         auto event = database::PersistentEvent{};
         event.event_id = composed.event_id;
         event.room_id = std::string{room_id};
@@ -1716,12 +1767,12 @@ namespace
         event.auth_event_ids = composed.auth_event_ids;
         event.signatures = composed.signatures;
         if (!store_local_event(runtime.database.persistent_store, *policy, std::move(event), std::move(state),
-                               state_resolution_limits(runtime.config.security().federation.state_resolution)))
+                               state_resolution_limits(runtime.config.security().federation.state_resolution),
+                               std::move(membership)))
         {
             return false;
         }
-        return composed.event_type != "m.room.member" || !composed.state_key.has_value() ||
-               project_local_membership(runtime, room_id, sender, composed);
+        return !is_member_event || finish_local_membership(runtime, room_id, composed, std::move(committed_membership));
     }
 
     // CSAZ-9: true when createRoom content the client supplied cannot fit in an
@@ -2712,6 +2763,16 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    // Preflight the complete initial-state list before creating the room or
+    // persisting any earlier bootstrap/initial-state event (DB-6).
+    if (std::ranges::any_of(options.initial_state, [](canonicaljson::Value const& entry) {
+            auto const* object = std::get_if<canonicaljson::Object>(&entry.storage());
+            auto const* state_key = object == nullptr ? nullptr : string_member(*object, "state_key");
+            return state_key != nullptr && events::state_key_contains_nul(*state_key);
+        }))
+    {
+        return invalid_state_key_result();
+    }
     if (create_room_options_exceed_size_limits(options))
     {
         log_diagnostic("room.create.rejected", {
@@ -3209,7 +3270,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     return make_operation_result(true, room_id);
 }
 
-auto parse_join_via_servers(std::string_view query) -> std::vector<std::string>
+auto parse_join_via_servers(std::string_view query) -> std::optional<std::vector<std::string>>
 {
     auto servers = std::vector<std::string>{};
     while (!query.empty())
@@ -3227,7 +3288,12 @@ auto parse_join_via_servers(std::string_view query) -> std::vector<std::string>
         {
             continue;
         }
-        auto decoded = core::percent_decode_path_component(pair.substr(eq + 1U));
+        auto const encoded = pair.substr(eq + 1U);
+        if (core::path_component_contains_nul(encoded))
+        {
+            return std::nullopt;
+        }
+        auto decoded = core::percent_decode_path_component(encoded);
         if (!decoded.empty() && std::ranges::find(servers, decoded) == servers.end())
         {
             servers.push_back(std::move(decoded));
@@ -3527,23 +3593,37 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         if (!distinct_pairs.empty())
         {
             static constexpr auto k_max_join_state_key_parallelism = std::ptrdiff_t{1024};
-            auto const configured = runtime.federation.config.join_state_key_parallelism;
-            auto const parallelism = std::min(static_cast<std::ptrdiff_t>(std::max(std::uint32_t{1U}, configured)),
-                                              k_max_join_state_key_parallelism);
-            auto resolved = std::vector<std::optional<federation::FederationRemoteRuntime>>(distinct_pairs.size());
+            auto const& federation_config = runtime.federation.config;
+            auto const configured = federation_config.join_state_key_parallelism;
+            // FED-10, ADR-0155: each fetch takes one of the process-wide
+            // key-resolution slots, so more tasks than slots would only wait.
+            auto const parallelism = std::min(
+                {static_cast<std::ptrdiff_t>(std::max(std::uint32_t{1U}, configured)), k_max_join_state_key_parallelism,
+                 static_cast<std::ptrdiff_t>(
+                     std::max(std::uint32_t{1U}, federation_config.key_resolution_max_in_flight))});
+            // A slot is waited for, never refused, but not for longer than a
+            // join may take.
+            auto constexpr fallback_join_timeout = std::chrono::seconds{180};
+            auto const deadline =
+                std::chrono::steady_clock::now() + (federation_config.join_timeout_seconds > 0U
+                                                        ? std::chrono::seconds{federation_config.join_timeout_seconds}
+                                                        : fallback_join_timeout);
+            auto resolved = std::vector<std::optional<federation::FederationKeyRecord>>(distinct_pairs.size());
             auto sem = PortableSemaphore{static_cast<int>(parallelism)};
             auto tasks = std::vector<std::future<void>>{};
             tasks.reserve(distinct_pairs.size());
-            auto const& resolver = runtime.federation.remote_key_resolver;
+            auto& federation_state = runtime.federation;
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
                 // Block until a concurrency slot is free, then launch the task.
                 sem.acquire();
                 auto const pair = distinct_pairs[i];
-                tasks.push_back(std::async(std::launch::async, [&resolved, &sem, &resolver, pair, i]() {
-                    resolved[i] = resolver(pair.first, pair.second);
-                    sem.release();
-                }));
+                tasks.push_back(
+                    std::async(std::launch::async, [&resolved, &sem, &federation_state, deadline, pair, i]() {
+                        resolved[i] =
+                            federation::resolve_join_state_key(federation_state, pair.first, pair.second, deadline);
+                        sem.release();
+                    }));
             }
             // Join every task before reading `resolved` (disjoint slots, but the
             // vector must not be read while tasks are still writing).
@@ -3553,10 +3633,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             }
             for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
             {
-                auto const& record = resolved[i];
-                sender_key_map[distinct_pairs[i]] =
-                    record.has_value() ? std::optional<federation::FederationKeyRecord>{record->signing_key}
-                                       : std::nullopt;
+                sender_key_map[distinct_pairs[i]] = std::move(resolved[i]);
             }
         }
     }
@@ -4517,10 +4594,19 @@ namespace
             // store_event_with_state either inserts a new state row or UPDATEs the
             // existing one (invite → join).  Either path leaves current_state pointing
             // at the join event at membership_stream, which joined_membership_changed_since
-            // then detects correctly.
+            // then detects correctly. DB-4: the user's membership row and the end of
+            // their invite are committed in the same transaction.
             auto const join_event_id = join_pe.event_id;
-            if (!database::store_event_with_state(runtime.database.persistent_store, std::move(join_pe), join_state))
+            if (!database::store_event_with_state(
+                    runtime.database.persistent_store, std::move(join_pe), join_state,
+                    database::MembershipProjection{*user_id, "join", membership_stream, std::nullopt}))
             {
+                log_diagnostic("room.join.rejected", {
+                                                         {"actor",   *user_id,                        false},
+                                                         {"room_id", std::string{room_id},            false},
+                                                         {"status",  "500",                           false},
+                                                         {"reason",  "join event persistence failed", false}
+                });
                 return make_operation_result(false, {}, "join event persistence failed", 500U);
             }
             {
@@ -4565,30 +4651,6 @@ namespace
         }
         // GCOVR_EXCL_STOP
 
-        auto const membership_result = database::store_membership(
-            runtime.database.persistent_store, {std::string{room_id}, *user_id, "join", membership_stream});
-        if (membership_result == database::MembershipStoreResult::error)
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                        false},
-                                                     {"room_id", std::string{room_id},            false},
-                                                     {"status",  "500",                           false},
-                                                     {"reason",  "membership persistence failed", false}
-            });
-            return make_operation_result(false, {}, "membership persistence failed", 500U);
-        }
-        if (membership_result == database::MembershipStoreResult::already_exists &&
-            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join",
-                                         membership_stream))
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                   false},
-                                                     {"room_id", std::string{room_id},       false},
-                                                     {"status",  "500",                      false},
-                                                     {"reason",  "membership update failed", false}
-            });
-            return make_operation_result(false, {}, "membership update failed", 500U);
-        }
         for (auto const& joined_member : joined_members)
         {
             if (joined_member == *user_id)
@@ -4603,16 +4665,6 @@ namespace
                 std::ignore = database::update_membership(runtime.database.persistent_store, room_id, joined_member,
                                                           "join", joined_member_stream);
             }
-        }
-        if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                         false},
-                                                     {"room_id", std::string{room_id},             false},
-                                                     {"status",  "500",                            false},
-                                                     {"reason",  "invite metadata cleanup failed", false}
-            });
-            return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
         }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
         if (!record_room_share_started_device_changes(runtime, room_id, *user_id))
@@ -5176,10 +5228,11 @@ namespace
             return make_operation_result(false, {}, "send_leave failed: " + send_body, 502U);
         }
 
-        // Step 5: update local membership, device lists and in-memory state.
+        // Step 5: update local membership, device lists and in-memory state. DB-4:
+        // the row and the end of any invite commit together.
         auto const membership_stream = allocate_stream_ordering(runtime.database);
-        if (!store_or_update_membership(runtime.database.persistent_store, room_id, *user_id, "leave",
-                                        membership_stream))
+        if (!database::store_membership_projection(runtime.database.persistent_store, room_id,
+                                                   {*user_id, "leave", membership_stream, std::nullopt}))
         {
             log_diagnostic("room.leave.rejected", {
                                                       {"actor",   *user_id,                        false},
@@ -5200,7 +5253,6 @@ namespace
             return make_operation_result(false, {}, "device list change persistence failed", 500U);
         }
         apply_runtime_membership(runtime.database, room_id, *user_id, "leave");
-        std::ignore = database::delete_invite(runtime.database.persistent_store, room_id, *user_id);
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
@@ -5862,14 +5914,15 @@ namespace
         }();
 
         auto const power_levels_value = room_power_levels_event_value(store, room.room_id);
-        // Room versions 1-9 may encode a power level as a string. Reading such a
-        // value as absent would silently apply a default instead of the level the
-        // room actually set, so the room's own version decides how it is read.
+        // Room versions 1-9 may encode a power level as a string, and 1-5 as a
+        // float. Reading such a value as absent would silently apply a default
+        // instead of the level the room actually set, so the room's own version
+        // decides how it is read.
         auto const* push_room_policy = rooms::find_room_version_policy(room_version_for_room(store, room.room_id));
-        auto const push_allow_string_levels =
-            push_room_policy == nullptr || !push_room_policy->power_levels_require_integers;
+        auto const push_level_encoding = push_room_policy == nullptr ? events::PowerLevelEncoding::integers_or_strings
+                                                                     : events::power_level_encoding(*push_room_policy);
         auto const sender_power_level =
-            events::extract_user_power_level(power_levels_value, sender, push_allow_string_levels);
+            events::extract_user_power_level(power_levels_value, sender, push_level_encoding);
         auto notification_power_levels = std::unordered_map<std::string, std::int64_t>{};
         if (auto const* pl_object = std::get_if<canonicaljson::Object>(&power_levels_value.storage());
             pl_object != nullptr)
@@ -6122,10 +6175,36 @@ namespace
         auto client =
             push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
                                     &runtime.test_forced_push_gateway_resolution};
+        auto const& push_config = runtime.config.server().push;
+        auto const breaker_policy = push::GatewayCircuitBreakerPolicy{
+            push_config.gateway_failure_threshold, std::chrono::seconds{push_config.gateway_cooldown_seconds}};
         for (auto const& delivery : deliveries)
         {
+            // OUT-3, ADR-0151: a host that keeps failing is skipped for a
+            // cooldown, so its stalled requests stop holding delivery capacity.
+            auto const host = push::push_gateway_host(delivery.pusher.data_url);
+            if (host.has_value() && runtime.push_gateway_breaker_ != nullptr &&
+                !runtime.push_gateway_breaker_->allow(*host, std::chrono::steady_clock::now(), breaker_policy))
+            {
+                log_diagnostic("push.delivery.circuit_open",
+                               {
+                                   {"gateway_host", *host,                   false},
+                                   {"recipient",    delivery.pusher.user_id, false}
+                },
+                               observability::LogEventSeverity::warning);
+                continue;
+            }
             auto const result = client.notify(delivery.pusher.data_url, delivery.notification);
-            if (result.ok && !result.rejected_pushkeys.empty())
+            // ADR-0151: only an unreachable host counts toward its circuit; any
+            // HTTP answer, a 5xx included, shows the shared host is reachable.
+            if (auto const outcome = push::gateway_circuit_outcome(result);
+                host.has_value() && runtime.push_gateway_breaker_ != nullptr &&
+                outcome != push::GatewayCircuitOutcome::not_attempted)
+            {
+                runtime.push_gateway_breaker_->record(*host, outcome == push::GatewayCircuitOutcome::reachable,
+                                                      std::chrono::steady_clock::now(), breaker_policy);
+            }
+            if (push::pushkey_was_rejected(result, delivery.pusher.pushkey))
             {
                 auto lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
                 std::ignore = database::delete_pusher(runtime.database.persistent_store, delivery.pusher.user_id,
@@ -6134,14 +6213,72 @@ namespace
         }
     }
 
-    // Bounds the number of concurrently in-flight push-delivery background
-    // tasks (see HomeserverRuntime::push_delivery_in_flight_). Each
-    // dispatch_push_deliveries call spawns exactly one OS thread regardless
-    // of how many individual notifications it carries — run_pending_push_
-    // deliveries loops over every PendingPushDelivery sequentially within
-    // that one task — so this is a per-event, not per-notification, cap.
-    // The configured cap bounds thread creation against high send rates while
-    // remaining adjustable for the deployment's available resources.
+    // A permit counts one recipient batch against both budgets. Completion
+    // uses only atomics: no waiter-held mutex is needed to return admission.
+    class PushDeliveryPermit final
+    {
+    public:
+        PushDeliveryPermit(std::atomic<std::size_t>& global,
+                           std::shared_ptr<std::atomic<std::size_t>> // SHARED_PTR: reviewed - permit lifetime.
+                               recipient) noexcept
+            : global_{global}
+            , recipient_{std::move(recipient)}
+        {
+            ++global_.get();
+            ++*recipient_;
+        }
+
+        ~PushDeliveryPermit() noexcept
+        {
+            if (active_)
+            {
+                --*recipient_;
+                --global_.get();
+            }
+        }
+
+        PushDeliveryPermit(PushDeliveryPermit const&) = delete;
+        auto operator=(PushDeliveryPermit const&) -> PushDeliveryPermit& = delete;
+        PushDeliveryPermit(PushDeliveryPermit&& other) noexcept
+            : global_{other.global_}
+            , recipient_{std::move(other.recipient_)}
+            , active_{std::exchange(other.active_, false)}
+        {
+        }
+        auto operator=(PushDeliveryPermit&&) -> PushDeliveryPermit& = delete;
+
+    private:
+        std::reference_wrapper<std::atomic<std::size_t>> global_;
+        std::shared_ptr<std::atomic<std::size_t>> // SHARED_PTR: reviewed - permit lifetime.
+            recipient_;
+        bool active_{true};
+    };
+
+    auto log_push_delivery_drop(std::string_view scope, std::size_t in_flight, std::size_t cap,
+                                std::size_t deliveries) noexcept -> void
+    {
+        try
+        {
+            log_diagnostic("push.delivery.dropped",
+                           {
+                               {"scope",      std::string{scope},         false},
+                               {"in_flight",  std::to_string(in_flight),  false},
+                               {"cap",        std::to_string(cap),        false},
+                               {"deliveries", std::to_string(deliveries), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        catch (...)
+        {
+            // Logging is best-effort, especially when admission failed due
+            // to allocation exhaustion. Never fail a persisted event for it.
+        }
+    }
+
+    // OUT-3: one independently admitted task per recipient, not per event.
+    // A recipient may hold at most eight batches and, for global budgets
+    // above one, never every slot. G=1 retains its existing serial/drop policy.
+    // The global configured cap and per-recipient pusher truncation remain.
 
     // Dispatches `deliveries` asynchronously (see run_pending_push_deliveries)
     // and parks the future in runtime.orphan_futures_. No-op when there is
@@ -6164,38 +6301,77 @@ namespace
         {
             return;
         }
+
+        auto batches = std::map<std::string, std::vector<PendingPushDelivery>>{};
+        auto const max_in_flight = static_cast<std::size_t>(runtime.config.server().push.max_in_flight_deliveries);
+        auto const recipient_cap = max_in_flight > 1U ? std::min(std::size_t{8U}, max_in_flight - 1U) : 1U;
+        try
         {
-            auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
-            reap_completed_futures(runtime.orphan_futures_);
-            auto const max_in_flight = static_cast<std::size_t>(runtime.config.server().push.max_in_flight_deliveries);
-            if (at_background_task_capacity(runtime.push_delivery_in_flight_, max_in_flight))
+            for (auto& delivery : deliveries)
             {
-                log_diagnostic("push.delivery.dropped",
-                               {
-                                   {"in_flight",  std::to_string(runtime.push_delivery_in_flight_), false},
-                                   {"cap",        std::to_string(max_in_flight),                    false},
-                                   {"deliveries", std::to_string(deliveries.size()),                false}
-                },
-                               observability::LogEventSeverity::warning);
-                return;
+                auto& batch = batches[delivery.pusher.user_id];
+                batch.push_back(std::move(delivery));
             }
-            ++runtime.push_delivery_in_flight_;
         }
-        auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(deliveries)]() mutable {
-            run_pending_push_deliveries(runtime, std::move(deliveries));
-            // Deliberately NOT under orphan_futures_mutex_: this task's
-            // completion must never depend on acquiring the same mutex a
-            // waiter (HomeserverRuntime::~HomeserverRuntime(),
-            // wait_for_background_tasks() in test_push_delivery_flow.cpp)
-            // might hold while blocked in future.wait() on this very task —
-            // that combination deadlocks. push_delivery_in_flight_ is a
-            // std::atomic for exactly this reason; the increment and cap
-            // check above remain under the mutex since that read-modify-write
-            // must stay atomic against concurrent dispatchers.
-            --runtime.push_delivery_in_flight_;
-        });
-        auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
-        runtime.orphan_futures_.push_back(std::move(push_future));
+        catch (std::exception const&)
+        {
+            log_push_delivery_drop("allocation", runtime.push_delivery_in_flight_.load(), max_in_flight,
+                                   deliveries.size());
+            return;
+        }
+
+        for (auto& [recipient, batch] : batches)
+        {
+            auto const delivery_count = batch.size();
+            try
+            {
+                auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
+                reap_completed_futures(runtime.orphan_futures_);
+                std::erase_if(runtime.push_delivery_in_flight_by_user_, [](auto const& entry) {
+                    return entry.second->load() == 0U;
+                });
+                if (at_background_task_capacity(runtime.push_delivery_in_flight_, max_in_flight))
+                {
+                    log_push_delivery_drop("global", runtime.push_delivery_in_flight_.load(), max_in_flight,
+                                           delivery_count);
+                    continue;
+                }
+
+                auto user = runtime.push_delivery_in_flight_by_user_.find(recipient);
+                if (user == runtime.push_delivery_in_flight_by_user_.end())
+                {
+                    auto counter = std::make_shared<std::atomic<std::size_t>>(0U);
+                    user = runtime.push_delivery_in_flight_by_user_.emplace(recipient, std::move(counter)).first;
+                }
+                if (at_background_task_capacity(*user->second, recipient_cap))
+                {
+                    log_push_delivery_drop("recipient", user->second->load(), recipient_cap, delivery_count);
+                    continue;
+                }
+
+                // Reserve BEFORE launch and keep the parking mutex held. The
+                // following future insertion then needs no allocation, so an
+                // allocation failure cannot wait on a running future while
+                // this request still owns runtime.mutex.
+                runtime.orphan_futures_.reserve(runtime.orphan_futures_.size() + 1U);
+                auto permit = PushDeliveryPermit{runtime.push_delivery_in_flight_, user->second};
+                auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(batch),
+                                                                   permit = std::move(permit)]() mutable {
+                    // Return the counters on work completion (or throw),
+                    // not on destruction of the future's retained closure.
+                    auto const completion = std::move(permit);
+                    run_pending_push_deliveries(runtime, std::move(deliveries));
+                });
+                runtime.orphan_futures_.push_back(std::move(push_future));
+            }
+            catch (std::exception const&)
+            {
+                // Failed allocation/launch is best-effort delivery loss. The
+                // permit, if acquired, restores both counters during unwind.
+                log_push_delivery_drop("admission", runtime.push_delivery_in_flight_.load(), max_in_flight,
+                                       delivery_count);
+            }
+        }
     }
 
     // Builds one Application Service API ClientEvent from a persisted
@@ -6530,6 +6706,10 @@ namespace
     }
 
     auto const composition = compose_signed_event(runtime, room_id, *user_id, event_json);
+    if (composition.failure == ComposeFailure::invalid_state_key)
+    {
+        return invalid_state_key_result();
+    }
     if (composition.failure == ComposeFailure::too_large)
     {
         return event_too_large_result();

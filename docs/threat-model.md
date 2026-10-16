@@ -80,6 +80,33 @@ flowchart TB
 
 ## Mitigations applied
 
+- **MED-4, local thumbnail revalidation in progress:** moderation could complete
+  while an unlocked decoder was running, yet its finished PNG was returned from
+  an earlier admission. Local thumbnail requests now retain owned media/storage
+  identity and recheck the source record after decoding, before publication or
+  served accounting. Quarantined/removed records fail closed even when another
+  available record shares the same blob; database-read identity is not borrowed
+  from a mutable repository record. The real SQLite/socket/worker-gate regression
+  reproduces quarantine and removal leaks while concurrent `/versions` and admin
+  controls pass. Normal GREEN, independent review and fresh combined verification
+  are pending. Remote-source identity, output caching, per-user decode limits and
+  strict trust-policy revocation are outside this slice; MED-4 remains partial.
+  See proposed ADR-0145.
+
+- **MED-7, bounded admission repair:** an authenticated remote homeserver could
+  retrieve otherwise available local media despite a persisted media-policy
+  denial. The federation provider now applies the existing media decision before
+  repository resolution or blob reads, refusing with no bytes/content type and
+  no successful multipart envelope. A genuine signed-request SQLite regression
+  reproduced the bypass, checks durable admin denial plus an unaffected control,
+  and verifies recovery after rule deletion. Configured-unavailable media-hook
+  behavior is also covered directly at the provider, independently of the
+  federation-wide hook. Independent review passes; the fresh normal full suite
+  completes 56 OK, all return codes zero, with 1,026 frozen files unchanged.
+  Live policy-server HTTP responses and policy-change-during-I/O revocation are
+  outside the demonstrated boundary. This is not whole-audit or release
+  acceptance. See ADR-0144.
+
 Specific issues found and fixed, in the order they landed. Each entry names the
 threat it closes; the controls above are the standing defences these reinforce.
 
@@ -135,6 +162,47 @@ threat it closes; the controls above are the standing defences these reinforce.
   (i.e., relayed PDUs). A malicious relay could persist events attributed to any user on
   any server. Fixed by resolving the sender domain's signing key via `remote_key_resolver`
   before authorizing; fail-closed when the resolver is wired but cannot produce a key.
+
+- **Relayed sender-key resolution amplification (FED-10):** an authenticated
+  relay could trigger discovery/key resolution for many event sender domains
+  without origin bootstrap's admission controls or failure cache. Core inbound
+  network-capable sender lookups share the source budget, runtime in-flight cap and server/key
+  negative cache, including parallel and authorization fallback paths. Cache-only
+  verification reads remain available when outbound resources are exhausted.
+  A fresh key is not proof that discovery is cached: unknown-origin full resolution
+  is still admitted, while known-peer key rotation reuses established discovery
+  state. Cached paths never release another request's reservation. Resolver/permit
+  lifetimes are exception-safe. Scope and rejected alternatives are recorded in
+  [ADR-0132](adr/0132-separate-cached-verification-keys-from-budgeted-discovery.md).
+
+  Local admission denial is kept separate from remote failure: core inbound
+  sender/authorising-key overload returns retryable 503 without changing relay
+  trust or accepted-transaction dedup. Genuine failures retain their penalties,
+  including in mixed transactions. See [ADR-0133](adr/0133-preserve-local-key-admission-denial-separately-from-remote-failure.md).
+  Main IPC PDU/membership/invite re-verification now shares the admitted key-only
+  helper. Cache misses use main's common unknown-source quota, not an address
+  asserted by the worker, and local denial defers before mutation. Real encrypted
+  in-process IPC regressions exercise all three paths, quota/capacity denial,
+  unchanged-relay retry, cache identity/validity and bounded negative caching.
+  See [ADR-0134](adr/0134-share-key-admission-with-main-worker-relay-verification.md).
+  Independent source-only review approved the main boundary. Backfilled-event,
+  snapshot and auth-chain verification now also uses the admitted helper and
+  common unknown-source bucket; local denial stops subsequent recovery calls
+  and preserves the PDU overload result instead of ordinary missing state.
+  Its real TLS/SQLite regression was RED (13 failed checks) then GREEN; the
+  extension passed fresh full-suite verification and independent source-only
+  review. Additional sticky-denial/partial-progress tests and end-to-end worker
+  socket-HTTP overload coverage remain before whole-finding closure. See
+  [ADR-0135](adr/0135-preserve-key-admission-denial-through-backfill-recovery.md).
+
+- **Malformed-first-PDU worker bypass (FED-9):** the EDU-only `/send` shortcut
+  inferred no persistent events from a missing first-PDU room ID. With workers
+  enabled, a malformed first PDU followed by real PDUs could therefore enter
+  main's request handler. Classification now requires an explicitly empty PDU
+  array to bypass; malformed first-PDU transactions retain the empty shard key,
+  skip the proxy's room-sync fallback and dispatch through worker shard zero.
+  Main's JSON-envelope parsing and other existing fallback paths are unchanged.
+  See [ADR-0131](adr/0131-keep-malformed-first-pdu-transactions-inside-worker-shard-zero.md).
 
 - **Thumbnail worker descriptor leak + privilege-escalation surface:** the parent forked the
   image decoder with `pipe()` (descriptor leak) and did not close other inherited descriptors
@@ -200,7 +268,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   filter. The worker holds no secrets, sockets, or filesystem access beyond its
   stdio pipes, so a decoder exploit is contained. The parent enforces a
   wall-clock timeout, input/output size caps, and a pixel-count decode-bomb
-  guard, and SIGKILLs a worker that overruns. See `media/thumbnailer.hpp` and
+  guard, and SIGKILLs a worker that overruns. Crop intermediates also obey the
+  existing effective pixel budget (MED-8), checked in 64-bit arithmetic before
+  narrowing or allocation; a thin source cannot amplify a small final target
+  into an unbounded fill buffer. Expected refusal uses an empty size-error frame,
+  while unexpected C++ exceptions use an internal-error frame prepared after
+  hardening and before input. This is a per-buffer bound, not an aggregate
+  memory/concurrency or general thumbnail-conformance claim. The ISO-5 boundary additionally
+  prevents environment and diagnostic inheritance: both exec paths use only a
+  fixed PATH, and fd 2 points to a pre-opened `/dev/null` sink. Main checks the
+  full PNG signature and initial IHDR dimensions against the worker's report,
+  rejecting malformed/mismatched output with 502 and no media payload. It does
+  not decode or validate image data in-process. See `media/thumbnailer.hpp` and
   [media-repository.md](media-repository.md).
 
 - **Variable-length secret comparison leaking length (#8):** comparing a config
@@ -464,14 +543,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   the master key specifically; the load profile above still reduces (but,
   for SQLite, does not eliminate — the file itself remains fully readable by
   the worker process) how much credential material sits resident in the
-  worker's memory.
+  worker's memory. Since 0.12.26 (ISO-4) the worker can no longer *change*
+  main's SQLite system of record: it opens the file `SQLITE_OPEN_READONLY`,
+  refuses a WAL-mode file (whose shared-memory index a read-only connection
+  would still write), and its Landlock grant on the database directory is
+  read-only, so even a raw writable `open()` fails.
 
   **Part 3, Linux Landlock: closed.** The worker now restricts its own
   filesystem access with `platform::apply_worker_landlock()`
   (`landlock_create_ruleset`/`landlock_add_rule`/`landlock_restrict_self`),
   called from `federation_worker::main()` before the worker seccomp filter
   and before the event loop opens the database or handles any inbound
-  request. The ruleset grants only the SQLite database directory (read-write,
+  request. The ruleset grants only the SQLite database directory (read-only,
   required, when `database.backend=sqlite`) and a fixed set of best-effort,
   read-only or read-execute OS-integration paths (CA trust store candidates,
   resolver configuration, NSS/dynamic-linker library directories, timezone
@@ -512,6 +595,16 @@ threat it closes; the controls above are the standing defences these reinforce.
   main's uid, so the seccomp argument check is the only barrier on kernels before
   Landlock ABI 6. See
   [ADR-0112](adr/0112-restrict-worker-signals-and-resource-limits.md).
+- **A compromised worker could open any socket family (ISO-8,
+  security-audit-report-2026-09-29.md, closed):** `socket()` and `socketpair()` were
+  unrestricted, exposing kernel interfaces such as `AF_ALG` and `AF_PACKET`. The worker
+  filter now admits `AF_UNIX`, `AF_INET` and `AF_INET6`, answers `AF_NETLINK` with
+  `EAFNOSUPPORT` (glibc's address-sorting probe falls back) and kills on anything else;
+  the systemd unit restricts the same families for the whole service. Residual: Landlock
+  does not govern `connect()` to a pathname `AF_UNIX` socket, so the worker can reach any
+  local socket its uid may open; a PostgreSQL role using `peer` authentication would
+  accept it. See
+  [ADR-0147](adr/0147-filter-worker-socket-families-and-restrict-systemd-address-families.md).
 - **A compromised worker could exhaust main's memory through IPC (CRY-2,
   security-audit-report-2026-09-29.md, closed):** main's reader thread queued every
   request frame for the dispatch thread without limit, ahead of the in-flight cap
@@ -767,6 +860,14 @@ threat it closes; the controls above are the standing defences these reinforce.
   exactly that key. Every request target is logged via
   `sanitized_http_target`, so the raw secret reached structured logs in
   cleartext. Fixed by adding `token` to the exact-match redaction list.
+  That earlier fix did not protect durable audit targets (OPS-2): rejection
+  paths still passed raw request targets to the shared audit sink. Audit
+  targets now retain only the bounded path/identifier, never a query string,
+  across durable/in-memory storage and `audit.append` debug output (ADR-0136).
+  Actual rate-limit and unavailable-runtime requests are covered with SQLite
+  reopen and debug-output regressions. Historical rows and logs are not
+  retroactively scrubbed; arbitrary credentials embedded in paths or other
+  audit fields remain forbidden.
 - **`/refresh` gated behind an access token it does not need (2026-07
   audit):** `client_auth_endpoint_requires_access_token` excluded only
   `login` and `register_account`, so a request to refresh an *expired*
@@ -803,12 +904,26 @@ threat it closes; the controls above are the standing defences these reinforce.
   zeroised nor `mlock`ed, leaving it recoverable from a core dump, an
   unrelated arbitrary-read bug, or a swapped page. The three 32-byte derived
   keys (`SecretBoxKey`, `TokenHmacKey`, `IpcAuthKey`) wrapped their bytes in
-  a bare `std::array` with no destructor. Fixed by reading directly into a
-  `core::SecretBuffer` (mlocked, zeroised on destruction) and giving each
-  derived-key struct a destructor (plus copy/move operators) that zeroises
-  `bytes` with `sodium_memzero`. `src/homeserver/room_service.cpp`'s
-  duplicate copy of the master-key loader is removed in favor of the single
-  `src/crypto/` implementation.
+  a bare `std::array` with no destructor. The original fix read roots into
+  `core::SecretBuffer` and wiped derived arrays; the September audit identified
+  that shared heap pages could still be unlocked by a neighbouring allocation's
+  destruction. The 0.12.26 fix (CRY-4) uses isolated sodium allocations for roots
+  and every derived-key/cached-key copy, with kernel lock checks in Linux tests.
+  Cached-key copy failures return no key instead of throwing or downgrading
+  token issuance (CRY-6). The access-token keys are cached once per master key
+  file and shared by every request (`crypto::cached_token_hmac_keys`), so an
+  authenticated request no longer makes fresh locked copies that could exhaust
+  `RLIMIT_MEMLOCK` under load, and a moved-from key cannot be copied into a
+  valid all-zero key. Root files require at least 32 bytes and reject all-zero
+  material (CRY-3), without silently changing persisted derivations (ADR-0128).
+  Validation-session lookup and consumption use the variable-length
+  constant-time helper (CRY-5). Descriptor-bound text secret readers validate
+  mode, ownership and type and refuse symlinked final components (ISO-7). The TLS
+  private key is read the same way and handed to OpenSSL from memory, and every
+  master-key derived-key cache takes the file identity and the key material from
+  one descriptor (`crypto::open_master_key_file`), so a cached key is always the
+  one derived from the file its identity describes. `src/homeserver/room_service.cpp`'s duplicate root loader remains
+  removed in favor of the single `src/crypto/` implementation.
 
 - **Outbound identity-server `store-invite` SSRF and trust-bypass surface
   (v0.11.9):** inviting a user by a 3PID requires the homeserver to call a
@@ -819,7 +934,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   could be exposed to the IS. Mitigations, all fail-closed: (1) **SSRF** —
   every IS outbound call resolves through `federation::CachedServerDiscovery`
   (`ServerDiscoveryNetwork::lookup_addresses`) with the resolved addresses
-  pinned and `deny_ip_ranges` rejecting private/loopback ranges
+  pinned and `deny_ip_ranges` adding operator-configured IPv4/IPv6 literal/CIDR
+  blocks (including public ranges) to the mandatory built-in private/loopback blocks
   (`127.0.0.1`, RFC1918, etc.); there is no ad-hoc DNS lookup on the
   client-supplied host. (2) **Trust gate** — the `id_server` must be listed
   in `server.identity_server.trusted_servers` or the invite fails closed with
@@ -980,7 +1096,28 @@ threat it closes; the controls above are the standing defences these reinforce.
   missed push is recoverable (the client still sees the event on its next
   `/sync`), an exhausted thread pool is not. This is the same "bound all
   resources, fail closed toward availability" trade-off as the `via`-list
-  bound above.
+  bound above. OUT-3 additionally splits each event into independently admitted
+  recipient batches. One recipient is capped at `G > 1 ? min(8, G - 1) : 1`
+  running batches, preserving the global bound while leaving parallel headroom
+  when `G > 1`. A move-only guard releases both atomic counters on completion
+  or unwind, and future parking storage is reserved before launch. `G=1` retains
+  serial dropping; multiple recipients may still fill the process budget.
+  The real TLS starvation regression and related push cases pass; independent
+  source review passed with no security or logic findings. Fresh full acceptance
+  passed 56 targets with all return codes zero, no failures/timeouts and 170
+  unchanged files including the reviewed sources. Gateway circuits, registration
+  quotas and general fairness are not supplied by this bounded repair.
+  See [ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md).
+
+- **Closing a shared push gateway for everyone (PR #509 review, 0.12.26):**
+  the OUT-3 gateway circuit is keyed by host, and one host (Sygnal for a
+  popular app) serves many users. Counting 5xx answers let one user register a
+  pusher with bad data on that host and open its circuit for every user for the
+  whole cooldown. Only a failure to reach the host (DNS, connection, TLS,
+  timeout) counts now; the key is the case-folded `host:port`, so spellings of
+  one host cannot dodge each other's circuit; and a `rejected` list removes only
+  the pushers whose pushkeys it names. See
+  [ADR-0151](adr/0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md).
 
 - **Sync pool exhaustion by one account (audit HTTP-4, 0.12.16):**
   v3 and sliding sync share transport admission: four live waits per account,
@@ -1860,6 +1997,27 @@ until the refresh).
   omit events it is entitled to omit; state resolution against other forks is
   the same residual risk every conformant server accepts.
 
+### Worker EDU origin substitution (audit FED-12; review/combined pending)
+
+A real-signature/encrypted-IPC/SQLite regression demonstrates that a worker could
+substitute B's origin under A's live request and persist a fresh EDU after its
+parent completed. The main-side repair requires the actual receiving channel,
+a live non-ready/nonexpired main-owned verified parent and exact origin match,
+checked after any runtime-lock wait and before the existing sink. Pending locks
+never cover a sink callback. Admission, not full persistence, is the linearization
+point; already admitted work may finish after completion/stop.
+
+Worker propagation and legitimate-fixture migration are implemented. Normal
+post-format origin checks pass 109 assertions / 1 case and supplemental lifecycle
+checks 49 / 2. Related IPC, worker, sync and proxy suites pass, including the
+actual socket-HTTP/separate-worker mixed PDU/EDU control (262 / 1). Independent
+review and fresh combined acceptance remain pending. Ordinary requests cannot
+authorize relays, and no unchecked compatibility handler is retained. Same-origin
+active context selection and signed-body content substitution remain residual risks:
+a parent ID is not a capability and this change does not prove signed-content
+membership. No whole-finding or release acceptance is claimed. See proposed
+[ADR-0142](adr/0142-bind-worker-edu-relays-to-live-main-verified-requests.md).
+
 ### Federation EDU identity, invite authorisation and device-list fan-out (audit FED-3, FED-5, FED-7)
 
 - **`m.direct_to_device` sender not bound to the sending server (FED-3).** The EDU's
@@ -1874,8 +2032,10 @@ until the refresh).
   risk:** the window is in memory only, so a replay that straddles a restart is delivered
   again, and a replay older than 24 hours or evicted by 65 536 newer messages from any origin
   is too; persisting it would need a migration and buys little for a best-effort EDU. The
-  origin a federation worker relays with an `edu_ingest` frame is still taken from the worker
-  (the PDU relays re-verify, EDU relays do not; ADR-0071 covers PDUs only).
+  origin in an `edu_ingest` frame remains worker-claimed, but the FED-12 repair
+  above correlates it with a live main-owned verified request before sink admission.
+  This is not per-EDU signature or signed-body membership verification; ADR-0071
+  covers PDU re-verification only.
 - **Inbound `/invite` overwrote a ban with a forged invite (FED-5).** `invite_handler` ran no
   room authorisation rules: it rewrote the target's membership row from `ban` to `invite` and
   stored the remote event as the target's current `m.room.member` state, so local composition

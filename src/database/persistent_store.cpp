@@ -7,8 +7,8 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
-#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -18,11 +18,13 @@
 #include <cstdlib>
 #include <deque>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -535,6 +537,25 @@ namespace
         }
     }
     return {true, {}};
+}
+
+auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> void
+{
+    store.write_connection_limit = std::max(limit, std::uint32_t{1U});
+    if (store.sqlite_write_pool != nullptr)
+    {
+        detail::set_write_pool_limit(*store.sqlite_write_pool, store.write_connection_limit);
+    }
+    if (store.postgresql_write_pool != nullptr)
+    {
+        detail::set_write_pool_limit(*store.postgresql_write_pool, store.write_connection_limit);
+    }
+}
+
+auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
+{
+    return (store.sqlite_write_pool != nullptr ? detail::write_pool_opened(*store.sqlite_write_pool) : 0U) +
+           (store.postgresql_write_pool != nullptr ? detail::write_pool_opened(*store.postgresql_write_pool) : 0U);
 }
 
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
@@ -1417,6 +1438,258 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     return true;
 }
 
+namespace
+{
+
+    // DB-4: a join, leave or ban ends any pending invite; an invite records one.
+    [[nodiscard]] auto membership_ends_invite(std::string_view membership) noexcept -> bool
+    {
+        return membership == "join" || membership == "leave" || membership == "ban";
+    }
+
+    [[nodiscard]] auto membership_projection_is_valid(MembershipProjection const& projection) noexcept -> bool
+    {
+        return !projection.user_id.empty() && !projection.membership.empty() &&
+               (!projection.invite.has_value() || projection.membership == "invite");
+    }
+
+    // The statements that write `projection` for `room_id`. Upserts, so the
+    // statements do not depend on what the in-memory mirror held when they were
+    // built: prepare_store_event_with_state may commit with the lock released.
+    [[nodiscard]] auto append_membership_projection_statements(std::vector<PreparedStatement>& statements,
+                                                               std::string_view room_id,
+                                                               MembershipProjection const& projection) -> bool
+    {
+        statements.push_back(record_statement(
+            "upsert_membership",
+            "INSERT INTO membership (room_id, user_id, membership, stream_ordering) VALUES ($1, $2, "
+            "$3, $4) ON CONFLICT (room_id, user_id) DO UPDATE SET membership = $3, stream_ordering = $4",
+            {public_value(room_id), public_value(projection.user_id), public_value(projection.membership),
+             public_value(std::to_string(projection.stream_ordering))}));
+        if (projection.membership == "invite" && projection.invite.has_value())
+        {
+            auto const& invite = *projection.invite;
+            auto const invite_state_json = serialize_invite_state_events_json(invite.invite_state_events_json);
+            if (!invite_state_json.has_value())
+            {
+                return false;
+            }
+            statements.push_back(record_statement(
+                "upsert_invite",
+                "INSERT INTO invites (room_id, user_id, sender_user_id, event_id, signed_event_json, "
+                "invite_state_json, "
+                "stream_ordering) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (room_id, user_id) DO UPDATE SET "
+                "sender_user_id = $3, event_id = $4, signed_event_json = $5, invite_state_json = $6, stream_ordering = "
+                "$7",
+                {public_value(room_id), public_value(projection.user_id), public_value(invite.sender_user_id),
+                 public_value(invite.event_id), sensitive_value(invite.signed_event_json),
+                 sensitive_value(*invite_state_json), public_value(std::to_string(invite.stream_ordering))}));
+        }
+        else if (membership_ends_invite(projection.membership))
+        {
+            statements.push_back(record_statement("delete_invite",
+                                                  "DELETE FROM invites WHERE room_id = $1 AND user_id = $2",
+                                                  {public_value(room_id), public_value(projection.user_id)}));
+        }
+        return true;
+    }
+
+    // Mirrors committed projection statements into the in-memory rows.
+    auto apply_membership_projection(PersistentStore& store, std::string_view room_id,
+                                     MembershipProjection const& projection) -> void
+    {
+        auto const row = std::ranges::find_if(store.memberships, [&](PersistentMembership const& membership) {
+            return membership.room_id == room_id && membership.user_id == projection.user_id;
+        });
+        if (row == store.memberships.end())
+        {
+            store.memberships.push_back(
+                {std::string{room_id}, projection.user_id, projection.membership, projection.stream_ordering});
+        }
+        else
+        {
+            row->membership = projection.membership;
+            row->stream_ordering = projection.stream_ordering;
+        }
+
+        auto const invite = std::ranges::find_if(store.invites, [&](PersistentInvite const& current) {
+            return current.room_id == room_id && current.user_id == projection.user_id;
+        });
+        if (projection.membership == "invite" && projection.invite.has_value())
+        {
+            auto written = *projection.invite;
+            written.room_id = std::string{room_id};
+            written.user_id = projection.user_id;
+            if (invite == store.invites.end())
+            {
+                store.invites.push_back(std::move(written));
+            }
+            else
+            {
+                *invite = std::move(written);
+            }
+        }
+        else if (membership_ends_invite(projection.membership) && invite != store.invites.end())
+        {
+            store.invites.erase(invite);
+        }
+        log_diagnostic("membership.projected",
+                       {
+                           {"room_id",         std::string{room_id},                       false},
+                           {"user_id",         projection.user_id,                         false},
+                           {"membership",      projection.membership,                      false},
+                           {"stream_ordering", std::to_string(projection.stream_ordering), false}
+        });
+    }
+
+    // content.membership of an m.room.member event's JSON, or nullopt.
+    [[nodiscard]] auto content_membership_of(std::string_view event_json) -> std::optional<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (event == nullptr)
+        {
+            return std::nullopt;
+        }
+        for (auto const& member : *event)
+        {
+            if (member.key != "content")
+            {
+                continue;
+            }
+            auto const* content = std::get_if<canonicaljson::Object>(&member.value->storage());
+            if (content == nullptr)
+            {
+                return std::nullopt;
+            }
+            for (auto const& field : *content)
+            {
+                if (field.key == "membership")
+                {
+                    auto const* value = std::get_if<std::string>(&field.value->storage());
+                    return value == nullptr || value->empty() ? std::nullopt : std::optional<std::string>{*value};
+                }
+            }
+            return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+[[nodiscard]] auto store_membership_projection(PersistentStore& store, std::string_view room_id,
+                                               MembershipProjection projection) -> bool
+{
+    auto statements = std::vector<PreparedStatement>{};
+    if (room_id.empty() || !membership_projection_is_valid(projection) ||
+        !append_membership_projection_statements(statements, room_id, projection) ||
+        !commit_persistent_transaction(store, statements))
+    {
+        log_diagnostic("membership.projection.rejected", {
+                                                             {"room_id",    std::string{room_id},  false},
+                                                             {"user_id",    projection.user_id,    false},
+                                                             {"membership", projection.membership, false}
+        });
+        return false;
+    }
+    apply_membership_projection(store, room_id, projection);
+    return true;
+}
+
+[[nodiscard]] auto reconcile_memberships_with_current_state(
+    PersistentStore& store, std::function<std::uint64_t()> const& allocate_stream_ordering) -> std::size_t
+{
+    // The current m.room.member event of every (room, user), found in one pass.
+    auto member_events = std::unordered_map<std::string, PersistentEvent const*>{};
+    for (auto const& state : store.state)
+    {
+        if (state.event_type == "m.room.member")
+        {
+            member_events.emplace(state.event_id, nullptr);
+        }
+    }
+    for (auto const& event : store.events)
+    {
+        if (auto const found = member_events.find(event.event_id); found != member_events.end())
+        {
+            found->second = &event;
+        }
+    }
+
+    // Every row by (room, user), so a large server reconciles in O(n log n).
+    auto rows = std::map<std::pair<std::string_view, std::string_view>, PersistentMembership const*>{};
+    for (auto const& membership : store.memberships)
+    {
+        rows.emplace(std::pair<std::string_view, std::string_view>{membership.room_id, membership.user_id},
+                     &membership);
+    }
+
+    struct Correction final
+    {
+        std::string room_id{};
+        MembershipProjection projection{};
+    };
+    auto corrections = std::vector<Correction>{};
+    for (auto const& state : store.state)
+    {
+        if (state.event_type != "m.room.member")
+        {
+            continue;
+        }
+        auto const found = member_events.find(state.event_id);
+        if (found == member_events.end() || found->second == nullptr || found->second->room_id != state.room_id)
+        {
+            continue;
+        }
+        auto const& event = *found->second;
+        auto membership = content_membership_of(event.json);
+        if (!membership.has_value())
+        {
+            continue;
+        }
+        auto const indexed = rows.find({state.room_id, state.state_key});
+        auto const* row = indexed == rows.end() ? nullptr : indexed->second;
+        auto const stale =
+            row == nullptr || (row->membership != *membership &&
+                               (row->membership == "join" || event.stream_ordering > row->stream_ordering));
+        if (stale)
+        {
+            corrections.push_back({
+                state.room_id, {state.state_key, std::move(*membership), 0U, std::nullopt}
+            });
+        }
+    }
+    if (corrections.empty())
+    {
+        return 0U;
+    }
+
+    auto statements = std::vector<PreparedStatement>{};
+    for (auto& correction : corrections)
+    {
+        correction.projection.stream_ordering = allocate_stream_ordering();
+        std::ignore = append_membership_projection_statements(statements, correction.room_id, correction.projection);
+    }
+    // In memory regardless: the rows then say what current_state, already
+    // durable, says. A failed write is retried at the next startup.
+    auto const persisted = commit_persistent_transaction(store, statements);
+    for (auto const& correction : corrections)
+    {
+        apply_membership_projection(store, correction.room_id, correction.projection);
+    }
+    log_diagnostic("membership.reconciled",
+                   {
+                       {"corrected", std::to_string(corrections.size()), false},
+                       {"persisted", persisted ? "true" : "false",       false}
+    },
+                   observability::LogEventSeverity::warning);
+    return corrections.size();
+}
+
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult
 {
     if (membership_exists(store, membership))
@@ -1952,9 +2225,23 @@ namespace
 }
 
 [[nodiscard]] auto prepare_store_event_with_state(PersistentStore& store, PersistentEvent event,
-                                                  std::optional<PersistentStateEvent> state)
+                                                  std::optional<PersistentStateEvent> state,
+                                                  std::optional<MembershipProjection> membership)
     -> std::optional<PreparedStateUpdate>
 {
+    // DB-4: a projection belongs to the member event it is stored with.
+    if (membership.has_value() &&
+        (!state.has_value() || state->event_type != "m.room.member" || state->state_key != membership->user_id ||
+         !membership_projection_is_valid(*membership)))
+    {
+        log_diagnostic("event_state.rejected",
+                       {
+                           {"event_id", event.event_id,                                   false},
+                           {"room_id",  event.room_id,                                    false},
+                           {"reason",   "membership projection does not match the event", false}
+        });
+        return std::nullopt;
+    }
     if (event_exists(store, event.event_id) || (state.has_value() && !state_matches_event(event, *state)))
     {
         log_diagnostic("event_state.rejected", {
@@ -2033,6 +2320,14 @@ namespace
         }));
         update.previous_event_id = previous_event_id;
     }
+    if (membership.has_value())
+    {
+        if (!append_membership_projection_statements(update.statements, update.event.room_id, *membership))
+        {
+            return std::nullopt;
+        }
+        update.membership = std::move(membership);
+    }
 
     return update;
 }
@@ -2080,14 +2375,19 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
                                                                         update.state->event_id),
                                              store.state_transitions.size() - 1U);
     }
+    if (update.membership.has_value())
+    {
+        apply_membership_projection(store, update.event.room_id, *update.membership);
+    }
     // Last, so the observer sees the event with its state already mirrored.
     notify_redaction_observer(store, update.event.event_id);
 }
 
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
-                                          std::optional<PersistentStateEvent> state) -> bool
+                                          std::optional<PersistentStateEvent> state,
+                                          std::optional<MembershipProjection> membership) -> bool
 {
-    auto prepared = prepare_store_event_with_state(store, event, state);
+    auto prepared = prepare_store_event_with_state(store, std::move(event), std::move(state), std::move(membership));
     if (!prepared.has_value())
     {
         return false;
@@ -3166,9 +3466,9 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
             return false;
         }
     }
-    audit.actor = bounded_utf8(audit.actor, max_audit_field_bytes);
-    audit.target = bounded_utf8(audit.target, max_audit_field_bytes);
-    audit.reason = bounded_utf8(audit.reason, max_audit_field_bytes);
+    audit.actor = observability::bounded_utf8(audit.actor, observability::max_audit_field_bytes);
+    audit.target = observability::bounded_utf8(audit.target, observability::max_audit_field_bytes);
+    audit.reason = observability::bounded_utf8(audit.reason, observability::max_audit_field_bytes);
     auto statements = std::vector<PreparedStatement>{
         record_statement("moderate_media_state", "UPDATE media SET quarantined = $2, removed = $3 WHERE media_id = $1",
                          {public_value(media_id), public_value(quarantined ? "true" : "false"),
@@ -3340,9 +3640,9 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
     // here, at the lowest audit-append layer, so no caller can store more than
     // `max_audit_field_bytes` of it or leave it as malformed UTF-8. Idempotent,
     // so a caller that already bounded its values is unaffected.
-    event.actor = bounded_utf8(event.actor, max_audit_field_bytes);
-    event.target = bounded_utf8(event.target, max_audit_field_bytes);
-    event.reason = bounded_utf8(event.reason, max_audit_field_bytes);
+    event.actor = observability::bounded_utf8(event.actor, observability::max_audit_field_bytes);
+    event.target = observability::bounded_utf8(event.target, observability::max_audit_field_bytes);
+    event.reason = observability::bounded_utf8(event.reason, observability::max_audit_field_bytes);
     if (!record_and_persist(store, record_statement("append_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
                                                     {
                                                         {event.category,   false},
@@ -3853,9 +4153,9 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("delete_room_alias",
-                                                    "DELETE FROM room_aliases WHERE room_alias = $1",
-                                                    {public_value(std::string{room_alias})})))
+    if (!record_and_persist(store,
+                            record_statement("delete_room_alias", "DELETE FROM room_aliases WHERE room_alias = $1",
+                                             {public_value(std::string{room_alias})})))
     {
         return false;
     }

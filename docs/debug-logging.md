@@ -3,7 +3,9 @@
 Merovingian emits structured diagnostic log summaries through the existing
 `SingleLog` logger. Console output defaults to `info`; pass `--debug` to
 `merovingian-server` to show debug diagnostics on the console. Pass
-`--log-file <path>` to write trace/debug diagnostics to a file.
+`--log-file <path>` to write trace/debug diagnostics to a file. The file is
+opened without following a symlink, made `0600`, and truncated at start-up; a
+path that is not a regular file the server owns is refused (ADR-0146).
 
 Example:
 
@@ -15,6 +17,15 @@ This starts the server with console debug output and a durable diagnostic log
 file for join-failure triage. Low-severity log batches now flush every 1 second
 or every 100 messages, whichever comes first, so a quiet debug session does not
 wait indefinitely for a severity bump or a large burst of traffic.
+
+## Push overload diagnostics
+
+`push.delivery.dropped` is a warning, not debug-only. `scope=global` or
+`scope=recipient` identifies the exhausted budget; numeric `in_flight`, `cap` and
+`deliveries` describe that budget and the dropped recipient batch.
+`scope=allocation` or `scope=admission` reports resource/launch failure with global
+budget counts. The record excludes recipient identities, gateway URLs and pusher
+credentials. Logging failure does not fail the already-persisted event.
 
 ## Sliding Sync response diagnostics (0.10.41)
 

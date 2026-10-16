@@ -12,6 +12,7 @@ Spec authority:
 |---|---|
 | `push_rules.cpp` | `parse_push_ruleset` / `evaluate_push_rules`: pure, in-memory rule evaluation against an event |
 | `push_gateway_client.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
+| `gateway_circuit_breaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
 
 The server-default ruleset is in `homeserver/default_push_ruleset.cpp`; delivery scheduling and the
 concurrency caps are in `homeserver/room_service.cpp`.
@@ -39,9 +40,14 @@ concurrency caps are in `homeserver/room_service.cpp`.
    the spec requires ("the data dictionary passed in at pusher creation minus the url key").
 8. **This client never touches the database.** The caller owns removing pushers named in
    `rejected_pushkeys`.
-9. **Delivery is capped, registration is not.** Background deliveries past
-   `k_max_in_flight_push_deliveries` (128) are dropped rather than queued (ADR-0028), and at most
-   `k_max_pushers_per_delivery` (10) pushers are contacted per event (ADR-0029). Both caps live in
+9. **Delivery and registration are both capped.** Background deliveries past
+   `server.push.max_in_flight_deliveries` are dropped rather than queued (ADR-0028), each recipient
+   has an in-flight cap of its own, at most `server.push.max_pushers_per_delivery` pushers are
+   contacted per event (ADR-0029), `POST /pushers/set` refuses a user's pusher beyond
+   `server.push.max_pushers_per_user`, and `GatewayCircuitBreaker` skips a gateway host that
+   could not be reached several times in a row (ADR-0151, OUT-3). Only a transport failure counts
+   (`gateway_circuit_outcome`); never count an HTTP answer such as a 5xx, which concerns one
+   notification on a host other users share. The delivery caps and the breaker are applied in
    `room_service.cpp`; any change to how push is invoked must preserve them.
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.

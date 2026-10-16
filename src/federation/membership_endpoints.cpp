@@ -183,6 +183,13 @@ auto parse_membership_path(FederationEndpoint endpoint, std::string_view target)
 auto parse_backfill_query(std::string_view target, FederationQueryPolicy const& policy)
     -> std::optional<BackfillRequest>
 {
+    // ADR-0137: a NUL, raw or %00, anywhere in the target is malformed. Checked
+    // here, not left to the path decoder: the transport's NUL guards stop at
+    // `?`, and that decoder throws, which no federation handler catches.
+    if (core::path_component_contains_nul(target))
+    {
+        return std::nullopt;
+    }
     auto const q_position = target.find('?');
     if (q_position == std::string_view::npos)
     {

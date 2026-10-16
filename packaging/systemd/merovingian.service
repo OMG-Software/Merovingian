@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=simple
 User=merovingian
 Group=merovingian
+UMask=0077
 ExecStart=/usr/bin/merovingian-server --config /etc/merovingian/merovingian.conf
 Restart=on-failure
 RestartSec=5s
@@ -26,6 +27,17 @@ MemoryDenyWriteExecute=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 SystemCallArchitectures=native
+# ISO-8 (ADR-0147): TCP/UDP for clients, federation and DNS; AF_UNIX for the
+# worker IPC channel and a local PostgreSQL socket. glibc falls back cleanly
+# when its address-sorting netlink probe gets EAFNOSUPPORT.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
 
 [Install]
 WantedBy=multi-user.target

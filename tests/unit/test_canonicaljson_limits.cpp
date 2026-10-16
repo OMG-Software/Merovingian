@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstddef>
 #include <string>
@@ -143,6 +144,40 @@ SCENARIO("object_has_duplicate_keys still reports true and false correctly after
             {
                 REQUIRE(has_duplicate);
                 REQUIRE_FALSE(has_no_duplicate);
+            }
+        }
+    }
+}
+
+SCENARIO("Permissive JSON parsing refuses integers outside the canonical range without wrapping",
+         "[canonicaljson][security][http-7]")
+{
+    GIVEN("integers above the canonical maximum or below the minimum, including UINT64_MAX")
+    {
+        auto const input = GENERATE("18446744073709551615", "9007199254740992", "9223372036854775807",
+                                    "9223372036854775808", "[18446744073709551615]", "{\"value\":18446744073709551615}",
+                                    "-9007199254740992", "-9223372036854775808");
+        CAPTURE(input);
+        WHEN("the general JSON parser reads the input")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_json(input);
+            THEN("the integer is refused rather than stored as a negative value")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::integer_out_of_range);
+                REQUIRE(std::holds_alternative<std::nullptr_t>(parsed.value.storage()));
+            }
+        }
+    }
+    GIVEN("the canonical integer boundaries and a floating point value")
+    {
+        auto const input = GENERATE("9007199254740991", "-9007199254740991", "0", "1.5");
+        CAPTURE(input);
+        WHEN("the general JSON parser reads the input")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_json(input);
+            THEN("permitted integers and floating point JSON remain supported")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
             }
         }
     }

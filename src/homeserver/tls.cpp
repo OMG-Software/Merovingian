@@ -5,17 +5,24 @@
 
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/file_metadata.hpp"
 
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
+#include <limits>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include <fcntl.h>
+#include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <poll.h>
 
@@ -219,6 +226,53 @@ auto TlsConnectionResult::ok() const noexcept -> bool
     return connection.has_value();
 }
 
+namespace
+{
+
+    struct BioDeleter final
+    {
+        auto operator()(BIO* bio) const noexcept -> void
+        {
+            BIO_free(bio);
+        }
+    };
+
+    struct EvpPkeyDeleter final
+    {
+        auto operator()(EVP_PKEY* key) const noexcept -> void
+        {
+            EVP_PKEY_free(key);
+        }
+    };
+
+    // A PEM private key of any size an operator would deploy (an RSA-16384 key
+    // is about 13 KiB); anything larger is not a key.
+    constexpr auto max_private_key_bytes = std::size_t{64U * 1024U};
+
+    // ISO-7: the key is validated and read through one descriptor
+    // (O_NOFOLLOW, regular file, owned by this user, mode 0400) into locked
+    // memory, and OpenSSL parses it from there. Loading it by path with
+    // SSL_CTX_use_PrivateKey_file reopened a name that the startup metadata
+    // check had inspected separately, so a swap or symlink in between was loaded.
+    [[nodiscard]] auto read_private_key(std::string const& private_key_file)
+        -> std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>
+    {
+        auto const pem = platform::read_secure_secret_file(private_key_file, max_private_key_bytes);
+        if (!pem.has_value() || pem->bytes().size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            return {};
+        }
+        auto const bio = std::unique_ptr<BIO, BioDeleter>{
+            BIO_new_mem_buf(pem->bytes().data(), static_cast<int>(pem->bytes().size()))};
+        if (!bio)
+        {
+            return {};
+        }
+        return std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr)};
+    }
+
+} // namespace
+
 auto make_tls_server_context(std::string const& certificate_file, std::string const& private_key_file)
     -> TlsServerContextResult
 {
@@ -263,7 +317,14 @@ auto make_tls_server_context(std::string const& certificate_file, std::string co
         return {{}, openssl_error_string("unable to load TLS certificate chain")};
     }
 
-    if (SSL_CTX_use_PrivateKey_file(context.m_context, private_key_file.c_str(), SSL_FILETYPE_PEM) != 1)
+    auto const private_key = read_private_key(private_key_file);
+    if (!private_key)
+    {
+        return {{},
+                openssl_error_string("unable to load TLS private key: it must be a regular, non-symlink file "
+                                     "owned by this user with mode 0400")};
+    }
+    if (SSL_CTX_use_PrivateKey(context.m_context, private_key.get()) != 1)
     {
         return {{}, openssl_error_string("unable to load TLS private key")};
     }

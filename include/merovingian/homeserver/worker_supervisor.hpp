@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -33,6 +34,10 @@ namespace merovingian::homeserver
 class WorkerSupervisor final
 {
 public:
+    using ChannelRequestHandler =
+        std::function<void(std::shared_ptr<ipc::IpcChannel> const&, // SHARED_PTR: reviewed - receiver lifetime.
+                           std::uint64_t, std::string)>;
+
     // worker_path: absolute path to merovingian-fed-worker executable.
     // config_path: path passed as --config to the worker.
     // request_timeout: per-request IPC timeout forwarded to channel usage.
@@ -70,7 +75,11 @@ public:
     auto operator=(WorkerSupervisor&&) -> WorkerSupervisor& = delete;
 
     // Sets the request handler called for inbound messages from the worker
-    // (e.g. pdu_ingest). Must be called before start().
+    // (e.g. pdu_ingest), with the exact receiving channel. Must be called before start().
+    auto set_channel_request_handler(ChannelRequestHandler handler) -> void;
+
+    // Transport-only compatibility adapter; this does not provide EDU admission.
+    // Must be called before start().
     auto set_request_handler(ipc::IpcChannel::RequestHandler handler) -> void;
 
     // Spawns the worker process, performs the IPC handshake, and starts the
@@ -132,7 +141,7 @@ private:
     std::size_t ipc_max_dispatch_queue_count_{0U};
     std::uint64_t ipc_max_dispatch_queue_bytes_{0U};
     core::SecretBuffer worker_database_uri_material_{};
-    ipc::IpcChannel::RequestHandler request_handler_{};
+    ChannelRequestHandler request_handler_{};
 
     // channel_ and channel_mu_ guard the IpcChannel pointer against concurrent
     // reads (WorkerPool::handle) and writes (supervisor_loop restart, stop).

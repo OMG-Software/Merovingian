@@ -155,7 +155,12 @@ auto make_store_event_lookup(database::PersistentStore const& store) -> events::
             return std::nullopt;
         }
         auto const& evt = store.events[it->second];
-        return parse_state_event_reference(evt.event_id, evt.json, evt.depth);
+        auto ref = parse_state_event_reference(evt.event_id, evt.json, evt.depth);
+        if (ref.has_value())
+        {
+            ref->rejected = evt.status == "rejected";
+        }
+        return ref;
     };
 }
 
@@ -422,7 +427,8 @@ auto forward_extremities_for_new_event(database::PersistentStore const& store, s
 
 auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
                        database::PersistentEvent event, std::optional<database::PersistentStateEvent> state,
-                       events::StateResolutionLimits const& limits) -> bool
+                       events::StateResolutionLimits const& limits,
+                       std::optional<database::MembershipProjection> membership) -> bool
 {
     auto const room_id = event.room_id;
     auto const event_id = event.event_id;
@@ -443,7 +449,7 @@ auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolic
     auto const state_key =
         state.has_value() ? std::optional<std::string>{state->state_key} : std::optional<std::string>{};
 
-    if (!database::store_event_with_state(store, event, state))
+    if (!database::store_event_with_state(store, event, state, std::move(membership)))
     {
         return false;
     }

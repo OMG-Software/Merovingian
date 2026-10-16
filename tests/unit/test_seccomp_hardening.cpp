@@ -1,16 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #ifdef __linux__
+#include <array>
+#include <cerrno>
+#include <csignal>
 #include <cstdint>
+#include <tuple>
 
 #include <linux/audit.h>
 #include <linux/seccomp.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 // #428: personality() is allowed in the seccomp allowlist only for
@@ -168,6 +176,228 @@ SCENARIO("seccomp probe reads /proc/self/status successfully on Linux", "[platfo
     }
 }
 
+SCENARIO("Only the main seccomp profile permits descriptor-bound owner-only database permissions",
+         "[platform][seccomp][linux][sqlite-mode]")
+{
+    GIVEN("a private descriptor and the main, federation and decoder profiles")
+    {
+        auto file = merovingian::core::FileDescriptor{static_cast<int>(::syscall(__NR_memfd_create, "sqlite-mode", 0))};
+        REQUIRE(file.valid());
+        REQUIRE(::fchmod(file.get(), 0600) == 0);
+
+        WHEN("each profile attempts owner-only and broader permission changes")
+        {
+            THEN("only main can set exactly 0600 and neither worker gains metadata mutation")
+            {
+                for (auto const profile : std::array{0, 1, 2})
+                {
+                    for (auto const mode : std::array<mode_t, 4>{0600, 0644, 0666, 04777})
+                    {
+                        CAPTURE(profile, mode);
+                        auto const pid = ::fork();
+                        REQUIRE(pid >= 0);
+                        if (pid == 0)
+                        {
+                            auto const installed =
+                                profile == 0
+                                    ? merovingian::platform::apply_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS)
+                                : profile == 1 ? merovingian::platform::apply_worker_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS)
+                                               : merovingian::platform::apply_decoder_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS);
+                            if (!installed)
+                            {
+                                ::syscall(__NR_exit_group, 20);
+                                __builtin_unreachable();
+                            }
+                            auto const result = ::fchmod(file.get(), mode);
+                            ::syscall(__NR_exit_group, result == 0 ? 0 : 21);
+                            __builtin_unreachable();
+                        }
+                        auto status = int{};
+                        REQUIRE(::waitpid(pid, &status, 0) == pid);
+                        if (profile == 0 && mode == 0600)
+                        {
+                            REQUIRE(WIFEXITED(status));
+                            REQUIRE(WEXITSTATUS(status) == 0);
+                        }
+                        else
+                        {
+                            REQUIRE(WIFSIGNALED(status));
+                            REQUIRE(WTERMSIG(status) == SIGSYS);
+                        }
+                        struct stat metadata
+                        {
+                        };
+                        REQUIRE(::fstat(file.get(), &metadata) == 0);
+                        REQUIRE((metadata.st_mode & 07777) == 0600);
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Inherited main seccomp permits only the private creation mask before worker hardening",
+         "[platform][seccomp][linux][worker-private-mask]")
+{
+    GIVEN("a subprocess that must set its mask before installing its own worker profile")
+    {
+        WHEN("each profile receives private and non-private umask requests")
+        {
+            THEN("main admits exactly 0077 while hardened workers admit no mask changes")
+            {
+                for (auto const profile : std::array{0, 1, 2})
+                {
+                    for (auto const mask : std::array<mode_t, 4>{0077, 0000, 0022, 0777})
+                    {
+                        CAPTURE(profile, mask);
+                        auto const pid = ::fork();
+                        REQUIRE(pid >= 0);
+                        if (pid == 0)
+                        {
+                            std::ignore = ::umask(0000);
+                            auto const installed =
+                                profile == 0
+                                    ? merovingian::platform::apply_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS)
+                                : profile == 1 ? merovingian::platform::apply_worker_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS)
+                                               : merovingian::platform::apply_decoder_seccomp_filter_with_default(
+                                                     SECCOMP_RET_KILL_PROCESS);
+                            if (!installed)
+                            {
+                                ::syscall(__NR_exit_group, 20);
+                                __builtin_unreachable();
+                            }
+                            auto const previous = ::umask(mask);
+                            auto const observed = ::umask(0077);
+                            ::syscall(__NR_exit_group, previous == 0 && observed == 0077 ? 0 : 21);
+                            __builtin_unreachable();
+                        }
+                        auto status = int{};
+                        REQUIRE(::waitpid(pid, &status, 0) == pid);
+                        if (profile == 0 && mask == 0077)
+                        {
+                            REQUIRE(WIFEXITED(status));
+                            REQUIRE(WEXITSTATUS(status) == 0);
+                        }
+                        else
+                        {
+                            REQUIRE(WIFSIGNALED(status));
+                            REQUIRE(WTERMSIG(status) == SIGSYS);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+namespace
+{
+// ISO-8: how a forked child running the real worker profile fared when it
+// asked for one socket. Exit 0 is a descriptor, exit 1 is EAFNOSUPPORT from
+// the filter, and any other result is reported as it happened.
+enum class SocketOutcome
+{
+    opened,
+    refused_with_eafnosupport,
+    killed_by_seccomp,
+    other,
+};
+
+[[nodiscard]] auto worker_profile_socket_outcome(bool pair, int domain, int type, int protocol) -> SocketOutcome
+{
+    auto const pid = ::fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0)
+    {
+        if (!merovingian::platform::apply_worker_seccomp_filter_with_default(SECCOMP_RET_KILL_PROCESS))
+        {
+            ::syscall(__NR_exit_group, 20);
+            __builtin_unreachable();
+        }
+        auto descriptors = std::array<int, 2>{-1, -1};
+        auto const result = pair ? ::syscall(__NR_socketpair, domain, type, protocol, descriptors.data())
+                                 : ::syscall(__NR_socket, domain, type, protocol);
+        auto const error = errno;
+        ::syscall(__NR_exit_group, result >= 0 ? 0 : (error == EAFNOSUPPORT ? 1 : 30 + (error % 64)));
+        __builtin_unreachable();
+    }
+    auto status = int{};
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    if (WIFSIGNALED(status))
+    {
+        return WTERMSIG(status) == SIGSYS ? SocketOutcome::killed_by_seccomp : SocketOutcome::other;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+    {
+        return SocketOutcome::opened;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 1)
+    {
+        return SocketOutcome::refused_with_eafnosupport;
+    }
+    return SocketOutcome::other;
+}
+} // namespace
+
+SCENARIO("The worker seccomp profile admits only the socket families federation needs",
+         "[platform][seccomp][linux][iso8]")
+{
+    GIVEN("a forked child that installs the real federation worker filter")
+    {
+        WHEN("it opens the families used for federation, DNS, PostgreSQL and IPC")
+        {
+            THEN("each socket is created")
+            {
+                for (auto const domain : std::array{AF_UNIX, AF_INET, AF_INET6})
+                {
+                    CAPTURE(domain);
+                    REQUIRE(worker_profile_socket_outcome(false, domain, SOCK_STREAM, 0) == SocketOutcome::opened);
+                    REQUIRE(worker_profile_socket_outcome(false, domain, SOCK_DGRAM, 0) == SocketOutcome::opened);
+                }
+                REQUIRE(worker_profile_socket_outcome(true, AF_UNIX, SOCK_STREAM, 0) == SocketOutcome::opened);
+            }
+        }
+        WHEN("glibc's address-selection probe asks for a routing netlink socket")
+        {
+            THEN("the call fails with EAFNOSUPPORT, which glibc falls back from, rather than killing the worker")
+            {
+                REQUIRE(worker_profile_socket_outcome(false, AF_NETLINK, SOCK_RAW, 0) ==
+                        SocketOutcome::refused_with_eafnosupport);
+                REQUIRE(worker_profile_socket_outcome(false, AF_NETLINK, SOCK_DGRAM, 15) ==
+                        SocketOutcome::refused_with_eafnosupport);
+            }
+        }
+        WHEN("it asks for any other socket family")
+        {
+            THEN("the worker is killed by seccomp")
+            {
+                // AF_ALG (38) is the audit's example: kernel crypto sockets are
+                // reachable attack surface a federation worker never needs.
+                for (auto const domain : std::array{38, AF_PACKET, 40, AF_APPLETALK, AF_UNSPEC})
+                {
+                    CAPTURE(domain);
+                    REQUIRE(worker_profile_socket_outcome(false, domain, SOCK_DGRAM, 0) ==
+                            SocketOutcome::killed_by_seccomp);
+                }
+                REQUIRE(worker_profile_socket_outcome(false, AF_INET | 0x100, SOCK_STREAM, 0) ==
+                        SocketOutcome::killed_by_seccomp);
+            }
+        }
+        WHEN("it asks for a socket pair outside AF_UNIX")
+        {
+            THEN("the worker is killed by seccomp")
+            {
+                REQUIRE(worker_profile_socket_outcome(true, AF_INET, SOCK_STREAM, 0) ==
+                        SocketOutcome::killed_by_seccomp);
+                REQUIRE(worker_profile_socket_outcome(true, 38, SOCK_SEQPACKET, 0) == SocketOutcome::killed_by_seccomp);
+            }
+        }
+    }
+}
+
 SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalation syscalls",
          "[platform][hardening][seccomp][linux]")
 {
@@ -239,10 +469,11 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
 
         WHEN("privilege-modification filesystem syscalls are checked")
         {
-            THEN("chmod, fchmod, fchmodat, umask, mkdir, and truncate remain blocked")
+            THEN("chmod, fchmod, fchmodat, umask, mkdir, and truncate are not unconditionally allowed")
             {
-                // Permission bits, ownership, and umask changes are not required
-                // after startup. truncate (path-based) is blocked; only the fd-based
+                // Arbitrary permissions, ownership, and umask remain denied;
+                // fchmod is restricted to 0600 and tested against the kernel above.
+                // truncate (path-based) is blocked; only the fd-based
                 // ftruncate (needed by SQLite) is permitted.
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_chmod));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fchmod));

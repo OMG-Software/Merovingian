@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/media/runtime_media.hpp"
+#include "merovingian/media/thumbnail_cache.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <cstdint>
@@ -113,6 +114,10 @@ struct LocalMediaRepository final
     // Remote media cache keyed by (origin_server, media_id) with TTL/LRU
     // eviction (OUT-4).
     std::vector<RemoteMediaCacheEntry> remote_media_cache{};
+    // MED-4, ADR-0152: generated thumbnails, and thumbnail decodes in flight per
+    // requester. Both guarded by runtime.mutex like the rest of the repository.
+    ThumbnailCache thumbnail_cache{};
+    std::unordered_map<std::string, std::uint32_t> thumbnail_decodes_in_flight{};
 };
 
 struct LocalMediaUploadRequest final

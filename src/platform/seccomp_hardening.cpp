@@ -10,6 +10,7 @@
 #include <system_error>
 
 #ifdef __linux__
+#include <cerrno>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -21,6 +22,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
@@ -136,13 +138,35 @@ namespace
         // ── File system ────────────────────────────────────────────────────
         // Only operations required by the runtime are allowed. std::filesystem
         // operations such as create_directories may issue mkdirat, so it stays.
-        // Metadata changes (chmod/umask) and destructive/rename ops are not
-        // required after the filter is applied and are therefore denied.
+        // Path-based chmod and arbitrary umask remain denied. Database admission
+        // needs owner-only fchmod; exec children must establish a private mask
+        // under this inherited filter before installing their stricter profiles.
         ALLOW_SYSCALL(__NR_open),
         ALLOW_SYSCALL(__NR_openat),
         ALLOW_SYSCALL(__NR_close),
         ALLOW_SYSCALL(__NR_stat),
         ALLOW_SYSCALL(__NR_fstat),
+        // SQLite admission tightens the validated descriptor to 0600 (DB-10).
+        // Do not grant arbitrary chmod, and do not add this to either worker.
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_fchmod, 0, 4),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 static_cast<uint32_t>(offsetof(struct ::seccomp_data, args[1]))),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0600, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, k_seccomp_ret_kill_process),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 static_cast<uint32_t>(offsetof(struct ::seccomp_data, nr))),
+        // ISO-6: umask survives exec, as does main's seccomp filter. Permit only
+        // the private startup value, never zero or a group/other-readable mask.
+        // Both workers still deny umask after their own profiles are installed.
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_umask, 0, 4),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 static_cast<uint32_t>(offsetof(struct ::seccomp_data, args[0]))),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0077, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, k_seccomp_ret_kill_process),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 static_cast<uint32_t>(offsetof(struct ::seccomp_data, nr))),
         ALLOW_SYSCALL(__NR_lstat),
         ALLOW_SYSCALL(__NR_access),
         ALLOW_SYSCALL(__NR_faccessat),
@@ -512,6 +536,8 @@ namespace
         __NR_munlockall,
         __NR_mincore,
         // ── Network ────────────────────────────────────────────────────────
+        // ISO-8: socket() and socketpair() are argument-checked by family in
+        // argument_check_block (ADR-0147).
         __NR_socket,
         __NR_bind,
         __NR_listen,
@@ -793,6 +819,35 @@ namespace
             return {
                 BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),
                 BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, own_tgid, 0, 1),
+                allow,
+                deny,
+            };
+        }
+        if (nr == __NR_socket)
+        {
+            // ISO-8 (ADR-0147): the families federation, DNS, PostgreSQL and
+            // the IPC channel use. glibc's getaddrinfo opens a routing netlink
+            // socket to sort multiple addresses and falls back when that fails,
+            // so AF_NETLINK answers EAFNOSUPPORT, as systemd's
+            // RestrictAddressFamilies does, rather than killing the worker.
+            // The kernel reads the domain as an int: the low word is all of it.
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),      // [0] A = domain
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 4, 0),                  // [1] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 3, 0),                  // [2] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET6, 2, 0),                 // [3] -> [6]
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 0, 2),               // [4] else -> [7]
+                BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EAFNOSUPPORT & 0xFFFFU)), // [5]
+                allow,                                                               // [6]
+                deny,                                                                // [7]
+            };
+        }
+        if (nr == __NR_socketpair)
+        {
+            // Only local pairs; no other family has a use for socketpair().
+            return {
+                BPF_STMT(BPF_LD | BPF_W | BPF_ABS, syscall_arg_low_offset(0U)),
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 0, 1),
                 allow,
                 deny,
             };
@@ -1121,8 +1176,8 @@ auto seccomp_is_syscall_allowed(int const syscall_number) noexcept -> bool
 {
     // ALLOW_SYSCALL(nr) emits a JEQ jump on the syscall number followed by an
     // SECCOMP_RET_ALLOW statement. A matching pair means the syscall is in the
-    // allowlist. Anything else (including the architecture guard and default
-    // action) is ignored by this scan.
+    // unconditional allowlist. Argument-restricted entries such as fchmod,
+    // the architecture guard and the default action are ignored by this scan.
     auto const filter_size = sizeof(k_seccomp_filter) / sizeof(k_seccomp_filter[0]);
     for (std::size_t i = 0; i + 1 < filter_size; ++i)
     {

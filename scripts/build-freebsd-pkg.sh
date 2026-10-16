@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.12.25.
+# Build for merovingian 0.12.26.
 set -e
 
-VERSION="0.12.25"
+VERSION="0.12.26"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.
@@ -11,7 +11,11 @@ rm -rf "${STAGING}" build-freebsd-pkg
 
 # 1. Configure with meson using FreeBSD prefix conventions.
 #    -pie: produce a PIE executable so the kernel applies ASLR.
+#    --buildtype=release: Meson otherwise builds `debug` (-O0), where
+#    _FORTIFY_SOURCE has no effect and the server's startup hardening gate
+#    refuses to start (ADR-0148).
 meson setup build-freebsd-pkg \
+    --buildtype=release \
     --prefix=/usr/local \
     --sysconfdir=/usr/local/etc \
     --wrap-mode=default \

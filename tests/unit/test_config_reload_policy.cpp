@@ -32,7 +32,8 @@ SCENARIO("Config reload policies reflect runtime ownership", "[config][reload]")
                 REQUIRE(transaction_size_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(federation_timeout_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(media_timeout_policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(database_pool_policy == merovingian::config::ReloadPolicy::reloadable);
+                // DB-7, ADR-0154: the write connection pool is built when the store opens.
+                REQUIRE(database_pool_policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }
@@ -69,7 +70,7 @@ SCENARIO("Config group reload policies distinguish startup snapshots", "[config]
             auto all_policies_match = true;
             for (auto const key : keys)
             {
-                auto const expected = key.starts_with("security.federation.")
+                auto const expected = key.starts_with("security.federation.") || key == "database.pool_size"
                                           ? merovingian::config::ReloadPolicy::restart_required
                                           : merovingian::config::ReloadPolicy::reloadable;
                 all_policies_match = all_policies_match && merovingian::config::reload_policy_for_key(key) == expected;
@@ -138,6 +139,28 @@ SCENARIO("Reload policy names are stable for logs and diagnostics", "[config][re
             {
                 REQUIRE(reloadable_name == "reloadable");
                 REQUIRE(restart_required_name == "restart_required");
+            }
+        }
+    }
+}
+
+SCENARIO("Thumbnail cache and decode-cap keys require restart", "[config][reload][med4]")
+{
+    // PR #509 review: the thumbnail cache budget and per-user decode cap are
+    // copied into the media repository at startup and nothing rebuilds them on
+    // SIGHUP, so a reload plan must not call them reloadable.
+    GIVEN("the MED-4 thumbnail keys")
+    {
+        WHEN("their reload policies are requested")
+        {
+            auto const cache_size = merovingian::config::reload_policy_for_key("security.media.thumbnail_cache_size");
+            auto const decode_cap =
+                merovingian::config::reload_policy_for_key("security.media.thumbnail_max_concurrent_per_user");
+
+            THEN("both require a restart")
+            {
+                CHECK(cache_size == merovingian::config::ReloadPolicy::restart_required);
+                CHECK(decode_cap == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }

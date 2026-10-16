@@ -997,3 +997,94 @@ SCENARIO("Key-value config parser accepts the full unsigned 64-bit range for a r
         }
     }
 }
+
+SCENARIO("Key-value config parser rejects negative token lifetimes", "[config][parser][ops4-negative-lifetime]")
+{
+    GIVEN("a healthy parsed default configuration and its two token lifetime fields")
+    {
+        auto const healthy = merovingian::config::parse_key_value_config("");
+        auto const fields =
+            std::vector<std::string>{"security.access_token_lifetime_ms", "security.refresh_token_lifetime_ms"};
+
+        WHEN("negative token lifetimes are parsed and validated for admission")
+        {
+            THEN("each negative lifetime is rejected with a finding for its exact field")
+            {
+                REQUIRE(healthy.findings.empty());
+                REQUIRE(merovingian::config::is_valid(healthy.config));
+                REQUIRE(healthy.config.security().access_token_lifetime_ms == 3600000);
+                REQUIRE(healthy.config.security().refresh_token_lifetime_ms == 2592000000);
+
+                auto const never_expiring = merovingian::config::parse_key_value_config(
+                    "security.access_token_lifetime_ms=0\nsecurity.refresh_token_lifetime_ms=0\n");
+                REQUIRE(never_expiring.findings.empty());
+                REQUIRE(merovingian::config::is_valid(never_expiring.config));
+                REQUIRE(never_expiring.config.security().access_token_lifetime_ms == 0);
+                REQUIRE(never_expiring.config.security().refresh_token_lifetime_ms == 0);
+
+                for (auto const& field : fields)
+                {
+                    for (auto const& value : std::vector<std::string>{"-1", "-9223372036854775808"})
+                    {
+                        auto const result = merovingian::config::parse_key_value_config(field + "=" + value + "\n");
+                        auto const findings = merovingian::config::validate(result.config);
+
+                        CHECK(
+                            std::any_of(result.findings.begin(), result.findings.end(), [&field](auto const& finding) {
+                                return finding.field == field;
+                            }));
+                        CHECK(std::any_of(findings.begin(), findings.end(), [&field](auto const& finding) {
+                            return finding.field == field;
+                        }));
+                        CHECK_FALSE(merovingian::config::is_valid(result.config));
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Every federation deny range must be a well-formed address or CIDR range", "[config][federation][fed10]")
+{
+    // PR #509 review: the federation boundary treats an unparsable deny entry
+    // as "deny every address" so a typo can never open it. Validation only
+    // checked that a private range was listed, so a typo such as `/33` passed
+    // and silently stopped all federation. It is now a startup error.
+    GIVEN("the default deny ranges plus one more entry")
+    {
+        auto const findings_with = [](std::string const& entry) {
+            auto config = merovingian::config::Config{};
+            config.security().federation.deny_ip_ranges.push_back(entry);
+            auto const findings = merovingian::config::validate(config);
+            return std::ranges::count_if(findings, [](auto const& finding) {
+                return finding.field == "security.federation.deny_ip_ranges";
+            });
+        };
+
+        WHEN("the extra entry is malformed")
+        {
+            THEN("validation names the deny ranges")
+            {
+                for (auto const* entry : {"10.0.0.0/33", "::/129", " 10.0.0.0/8", "10.0.0.0/8 # lab", "10.0.0.0/",
+                                          "10.0.0.0/+8", "10.0.0/8", "example.org", "", "/8", "10.0.0.0/8/8"})
+                {
+                    INFO(entry);
+                    CHECK(findings_with(entry) == 1);
+                }
+            }
+        }
+
+        WHEN("the extra entry is a well-formed address or range")
+        {
+            THEN("validation accepts it")
+            {
+                for (auto const* entry : {"100.64.0.0/10", "198.18.0.0/15", "192.0.2.1", "::ffff:0:0/96",
+                                          "2001:db8::/32", "fe80::/10", "0.0.0.0/0", "::/0", "10.0.0.0/32"})
+                {
+                    INFO(entry);
+                    CHECK(findings_with(entry) == 0);
+                }
+            }
+        }
+    }
+}

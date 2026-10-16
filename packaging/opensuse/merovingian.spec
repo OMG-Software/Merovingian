@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.25
+Version:        0.12.26
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -88,7 +88,7 @@ install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
 install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
 if [ ! -f "${TOKEN_FILE}" ]; then
-    openssl rand -base64 48 > "${TOKEN_FILE}"
+    (umask 077; openssl rand -base64 48 > "${TOKEN_FILE}")
     chmod 0400 "${TOKEN_FILE}"
     chown merovingian:merovingian "${TOKEN_FILE}"
 fi
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Oct 15 2026 James Chapman <claude@ping.me.uk> - 0.12.26-1
+- Fix the remaining low findings of the 29 September 2026 security audit.
+
 * Thu Oct 08 2026 James Chapman <claude@ping.me.uk> - 0.12.25-1
 - Fix CSAZ-6, CSAZ-9 and CSAZ-12 of the 29 September 2026 security audit.
 

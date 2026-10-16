@@ -3,7 +3,9 @@
 
 #include "merovingian/homeserver/federation_proxy.hpp"
 
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -38,6 +40,17 @@ FederationProxy::~FederationProxy()
 
 auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpResponse
 {
+    auto const encoded_path = std::string_view{request.target}.substr(0U, request.target.find('?'));
+    if (core::path_component_contains_nul(encoded_path))
+    {
+        // Main decodes the shard key before worker dispatch, so the worker's
+        // own admission guard cannot protect this boundary (DB-6).
+        auto refused = LocalHttpResponse{};
+        refused.status = 400U;
+        refused.body = matrix_error("M_INVALID_PARAM", "request path must not contain NUL");
+        refused.errcode = "M_INVALID_PARAM";
+        return refused;
+    }
     // GET /_matrix/key/v2/server is always served locally. Match the path
     // exactly so unrelated targets that merely contain this substring still go
     // through the worker and federation authorization path.

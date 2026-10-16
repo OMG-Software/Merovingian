@@ -211,6 +211,12 @@ struct PushConfig final
     std::uint32_t total_timeout_seconds{30U};
     std::uint32_t max_pushers_per_delivery{25U};
     std::uint32_t max_in_flight_deliveries{256U};
+    // OUT-3, ADR-0151: distinct pushers one user may register, and the circuit
+    // breaker for a gateway host that keeps failing (consecutive transport
+    // failures, timeouts or 5xx before it opens; seconds it then stays open).
+    std::uint32_t max_pushers_per_user{20U};
+    std::uint32_t gateway_failure_threshold{3U};
+    std::uint32_t gateway_cooldown_seconds{300U};
 };
 
 // Deployment work budgets, not protocol maxima. Startup snapshots these
@@ -577,6 +583,11 @@ struct MediaSecurityConfig final
     // files are deleted to stay within it, so remote caching never takes
     // capacity from local uploads. Empty means no limit.
     std::string remote_media_cache_max_size{"25GiB"};
+    // MED-4, ADR-0152: bytes of generated thumbnails kept in memory (least
+    // recently used first out; empty or 0 disables the cache), and how many
+    // thumbnail decodes one requester may run at once.
+    std::string thumbnail_cache_size{"64MiB"};
+    std::uint32_t thumbnail_max_concurrent_per_user{2U};
 };
 
 struct TrustSafetySecurityConfig final

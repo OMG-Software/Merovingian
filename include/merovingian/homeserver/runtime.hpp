@@ -24,6 +24,7 @@
 #include "merovingian/observability/audit_rate_gate.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/push/gateway_circuit_breaker.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
@@ -450,6 +451,17 @@ struct HomeserverRuntime final
     // at_background_task_capacity() and k_max_in_flight_push_deliveries in
     // room_service.cpp.
     std::atomic<std::size_t> push_delivery_in_flight_{0U};
+    // Dispatcher-side lookup/admission/reaping is guarded by
+    // orphan_futures_mutex_. Tasks retain a shared atomic counter and release
+    // it without any completion-time lock. Zero entries are swept on dispatch;
+    // retained user entries are bounded by the global delivery budget.
+    // Runtime moves remain startup-only, like the captured-runtime futures.
+    std::unordered_map<std::string, std::shared_ptr<std::atomic<std::size_t>>> // SHARED_PTR: reviewed - task lifetime.
+        push_delivery_in_flight_by_user_{};
+    // OUT-3, ADR-0151: skips a push gateway host that keeps failing. Internally
+    // locked; shared by every delivery task. Behind a pointer so the runtime
+    // stays movable (its mutex is not).
+    std::unique_ptr<push::GatewayCircuitBreaker> push_gateway_breaker_{std::make_unique<push::GatewayCircuitBreaker>()};
 };
 
 // Removes every already-completed future from `futures` in place, preserving
@@ -501,6 +513,10 @@ struct RuntimeStartOptions final
     // its worker filter denies setrlimit (ISO-2, ADR-0112), so re-applying
     // the main profile's core-dump limit here kills the worker with SIGSYS.
     bool process_hardening_applied_by_caller{false};
+    // FED-10, ADR-0153: the number of federation worker shards this runtime is
+    // one of. A worker passes federation.worker.shards so its key-resolution
+    // budgets are its share of the configured ones; main leaves it at 1.
+    std::uint32_t key_resolution_shards{1U};
 };
 
 struct RuntimeStartResult final

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -121,7 +122,10 @@ class SecurityWorkflowTests(unittest.TestCase):
         # reviewed bootstrap_admin_user path and covered by help smoke tests.
         self.assertIn("--bootstrap-admin", server_main)
         self.assertIn("--bootstrap-admin-password-file", server_main)
-        self.assertIn("bootstrap_admin_user(runtime_result.runtime", server_main)
+        self.assertTrue(
+            re.search(r"\bbootstrap_admin_user\s*\(\s*runtime_result\.runtime\.homeserver\b", server_main),
+            "operator bootstrap must call the reviewed admin creation path",
+        )
         self.assertIn("server-admin-bootstrap-help-smoke-test", smoke_tests)
 
 

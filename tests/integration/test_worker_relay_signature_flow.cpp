@@ -18,6 +18,7 @@
 // Tags: [worker_relay_signature].
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/joining_threads.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -26,18 +27,29 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
+#include "merovingian/ipc/channel.hpp"
+#include "merovingian/ipc/federation_ipc_frames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
+
+#include <sys/socket.h>
 
 namespace
 {
@@ -150,7 +162,436 @@ struct RemoteRoom final
                                   std::move(content), room.prev_event_ids(), room.auth_event_ids(), 4, 50, key_seed);
 }
 
+// Real authenticated/encrypted transport, with the production main handlers
+// behind it. Only PDU result serialization is local (production's is private).
+class MainRelayLink final
+{
+public:
+    explicit MainRelayLink(homeserver::HomeserverRuntime& runtime)
+    {
+        auto fds = std::array<int, 2>{-1, -1};
+        REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds.data()) == 0);
+        auto server_fd = core::FileDescriptor{fds[0]};
+        auto client_fd = core::FileDescriptor{fds[1]};
+        // Bound the handshake as well as every subsequent request.
+        auto const timeout = timeval{5, 0};
+        for (auto const fd : fds)
+        {
+            REQUIRE(::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
+            REQUIRE(::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0);
+        }
+        auto const auth_key =
+            crypto::derive_ipc_auth_key(std::span<std::uint8_t const>{std::array<std::uint8_t, 32>{}});
+        REQUIRE(auth_key.has_value());
+        auto server_exception = std::exception_ptr{};
+        // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+        auto handshake = tests::JoiningThreads{};
+        handshake.emplace_back([&]() {
+            try
+            {
+                server_ =
+                    std::make_unique<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key);
+            }
+            catch (...)
+            {
+                server_exception = std::current_exception();
+            }
+        });
+        client_ = std::make_unique<ipc::IpcChannel>(std::move(client_fd), ipc::IpcChannel::Role::client, *auth_key);
+        handshake.join();
+        REQUIRE(server_exception == nullptr);
+        REQUIRE(server_ != nullptr);
+        server_->set_request_handler([this, &runtime](std::uint64_t id, std::string json) {
+            auto const type = ipc::ipc_json_get_str(json, "type");
+            if (type == "pdu_ingest")
+            {
+                auto const result = homeserver::handle_pdu_ingest_request(runtime, json);
+                auto const status = result.status == PduIngestionStatus::accepted          ? "accepted"
+                                    : result.status == PduIngestionStatus::main_overloaded ? "main_overloaded"
+                                                                                           : "rejected";
+                server_->send_response(id, std::string{R"({"type":"pdu_ingest_result","status":)"} +
+                                               ipc::ipc_json_str(status) + "}");
+            }
+            else if (type == "membership_ingest")
+            {
+                server_->send_response(id, homeserver::handle_membership_ingest_request(runtime, json));
+            }
+            else if (type == "invite_ingest")
+            {
+                server_->send_response(id, homeserver::handle_invite_ingest_request(runtime, json));
+            }
+        });
+        server_->start();
+        client_->start();
+    }
+
+    [[nodiscard]] auto send(std::string const& frame) -> std::string
+    {
+        auto reply = client_->send_request(frame, std::chrono::seconds{5});
+        REQUIRE(reply.has_value());
+        return *reply;
+    }
+
+private:
+    std::unique_ptr<ipc::IpcChannel> server_{};
+    std::unique_ptr<ipc::IpcChannel> client_{};
+};
+
+enum class MainRelayPath
+{
+    pdu,
+    membership,
+    invite
+};
+
+constexpr auto main_relay_paths = std::array{MainRelayPath::pdu, MainRelayPath::membership, MainRelayPath::invite};
+
+struct MainRelayEvent final
+{
+    InboundPduEnvelope envelope;
+    std::string frame;
+};
+
+[[nodiscard]] auto make_main_relay_event(homeserver::HomeserverRuntime& runtime, MainRelayPath path,
+                                         std::int64_t sequence, std::string_view seed = remote_key_seed,
+                                         std::string_view key_id = remote_key_id) -> MainRelayEvent
+{
+    auto const room = RemoteRoom{"!fed10-main-" + std::to_string(sequence) + ":local.example.org"};
+    seed_room_with_genesis_state_group(runtime, room.room_id);
+    auto json = std::string{};
+    if (path == MainRelayPath::pdu)
+    {
+        json = make_remote_message_json(room.room_id, room.prev_event_ids(), room.auth_event_ids(), 4, sequence);
+        if (seed != remote_key_seed)
+            json =
+                make_remote_message_json(room.room_id, room.prev_event_ids(), room.auth_event_ids(), 4, sequence, seed);
+    }
+    else
+    {
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member(
+            "membership", canonicaljson::Value{std::string{path == MainRelayPath::invite ? "invite" : "leave"}}));
+        auto const state_key =
+            path == MainRelayPath::invite ? std::string{"@alice:"} + local_server : std::string{remote_member};
+        json = make_remote_event_json(room.room_id, "m.room.member", state_key, remote_member, std::move(content),
+                                      room.prev_event_ids(), room.auth_event_ids(), 4, sequence, seed);
+    }
+    if (key_id != remote_key_id)
+    {
+        auto parsed = canonicaljson::parse_lossless(json);
+        REQUIRE(parsed.error == canonicaljson::ParseError::none);
+        auto object = std::get<canonicaljson::Object>(parsed.value.storage());
+        std::erase_if(object, [](auto const& field) {
+            return field.key == "signatures" || field.key == "hashes";
+        });
+        auto const unsigned_json = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(object)});
+        REQUIRE(unsigned_json.error == canonicaljson::CanonicalJsonError::none);
+        json =
+            federation::test::make_signed_event_json(unsigned_json.output, remote_server, key_id, seed, room_version);
+    }
+    auto env = parse_envelope(json);
+    if (path == MainRelayPath::pdu)
+        return {env, envelope_frame("pdu_ingest", env)};
+    if (path == MainRelayPath::membership)
+        return {env, envelope_frame("membership_ingest", env, std::string{"send_leave"})};
+    auto obj = canonicaljson::Object{};
+    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"invite_ingest"}}));
+    obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{env.room_id}));
+    obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{env.event_id}));
+    obj.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{std::string{room_version}}));
+    obj.push_back(canonicaljson::make_member("invite_event_json", canonicaljson::Value{env.json}));
+    obj.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{remote_server}}));
+    obj.push_back(canonicaljson::make_member("invite_room_state_json", canonicaljson::Value{canonicaljson::Array{}}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    return {env, serialized.output};
+}
+
+[[nodiscard]] auto relay_accepted(MainRelayPath path, std::string const& response) -> bool
+{
+    return path == MainRelayPath::pdu ? ipc::ipc_json_get_str(response, "status") == "accepted"
+                                      : response.find(R"("accepted":true)") != std::string::npos;
+}
+
+[[nodiscard]] auto relay_overloaded(MainRelayPath path, std::string const& response) -> bool
+{
+    return path == MainRelayPath::pdu
+               ? ipc::ipc_json_get_str(response, "status") == "main_overloaded"
+               : !relay_accepted(path, response) && ipc::ipc_json_get_u64(response, "status") == 503U;
+}
+
+// Count persistent mutations, including timeline allocation and invite metadata,
+// not just the absence of the particular rejected event.
+// A struct with only operator==, not a std::tuple: Catch2's expression
+// decomposer cannot wrap a tuple comparison under clang with libstdc++ 14,
+// whose tuple operator<=> is then matched against Catch::Decomposer.
+struct MainRelayState final
+{
+    std::size_t events{};
+    std::size_t memberships{};
+    std::size_t invites{};
+    std::size_t state{};
+    std::size_t rooms{};
+    std::uint64_t next_stream_ordering{};
+
+    [[nodiscard]] auto operator==(MainRelayState const&) const -> bool = default;
+};
+
+[[nodiscard]] auto main_relay_state(homeserver::HomeserverRuntime const& runtime) -> MainRelayState
+{
+    auto const& store = runtime.database.persistent_store;
+    return {store.events.size(), store.memberships.size(), store.invites.size(),
+            store.state.size(),  store.rooms.size(),       runtime.database.next_stream_ordering};
+}
+
+auto check_relay_mutation(homeserver::HomeserverRuntime const& runtime, MainRelayPath path, MainRelayEvent const& event)
+    -> void
+{
+    // Invitations record invite metadata, not the event graph (FED-5).
+    if (path != MainRelayPath::invite)
+        CHECK(event_stored(runtime, event.envelope.event_id));
+    if (path == MainRelayPath::membership)
+        CHECK(membership_of(runtime, event.envelope.room_id, remote_member) == "leave");
+    if (path == MainRelayPath::invite)
+    {
+        CHECK(membership_of(runtime, event.envelope.room_id, std::string{"@alice:"} + local_server) == "invite");
+        CHECK(std::ranges::any_of(runtime.database.persistent_store.invites, [&](auto const& invite) {
+            return invite.room_id == event.envelope.room_id;
+        }));
+    }
+}
+
+auto prepare_main_relay(homeserver::HomeserverRuntime& runtime, std::atomic<std::size_t>& raw_calls) -> void
+{
+    homeserver::wire_federation_callbacks(runtime);
+    runtime.database.users.push_back({std::string{"@alice:"} + local_server, "", false, false, false});
+    runtime.federation.cached_pdu_key_lookup = {};
+    runtime.federation.remote_key_resolver = [&raw_calls](std::string_view server, std::string_view id) {
+        ++raw_calls;
+        return genuine_key_resolver()(server, id);
+    };
+}
+
+auto exhaust_main_admission(homeserver::HomeserverRuntime& runtime, bool occupied_slot) -> void
+{
+    auto guard = std::lock_guard{*runtime.federation.mutex};
+    runtime.federation.config.key_resolution_max_in_flight = 1U;
+    runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
+    runtime.federation.key_resolution_buckets.clear();
+    // Model a reservation owned by a different lookup: relays must not release it.
+    runtime.federation.key_resolutions_in_flight = occupied_slot ? 1U : 0U;
+    if (!occupied_slot)
+        runtime.federation.key_resolution_buckets.push_back({"<unknown>", 1U, std::chrono::steady_clock::now()});
+}
+
 } // namespace
+
+SCENARIO("main worker relays defer key misses without mutation and retry after admission recovers",
+         "[integration][federation-worker][fed10][fed10-main-relay][fed10-main-admission]")
+{
+    GIVEN("real encrypted IPC, a persistent room and correctly signed relay events")
+    {
+        WHEN("main's source quota or a slot owned by another lookup is exhausted")
+        {
+            THEN("all three relay paths return retryable overload before network work or mutation")
+            {
+                auto sequence = std::int64_t{100};
+                for (auto const relay_path : main_relay_paths)
+                {
+                    for (auto const occupied_slot : {false, true})
+                    {
+                        CAPTURE(relay_path, occupied_slot);
+                        auto const db_path = unique_sqlite_path("main-relay-admission");
+                        std::filesystem::remove(db_path);
+                        auto started = homeserver::start_runtime(config_with_sqlite(db_path));
+                        REQUIRE(started.started);
+                        auto& runtime = started.runtime;
+                        auto raw_calls = std::atomic<std::size_t>{0U};
+                        prepare_main_relay(runtime, raw_calls);
+                        auto link = MainRelayLink{runtime};
+
+                        auto const control = make_main_relay_event(runtime, relay_path, sequence++);
+                        REQUIRE(relay_accepted(relay_path, link.send(control.frame)));
+                        check_relay_mutation(runtime, relay_path, control);
+                        REQUIRE(raw_calls.load() == 1U);
+
+                        auto const event = make_main_relay_event(runtime, relay_path, sequence++);
+                        exhaust_main_admission(runtime, occupied_slot);
+                        auto const before = main_relay_state(runtime);
+                        auto const response = link.send(event.frame);
+                        CHECK(relay_overloaded(relay_path, response));
+                        CHECK_FALSE(relay_accepted(relay_path, response));
+                        CHECK(raw_calls.load() == 1U);
+                        CHECK(main_relay_state(runtime) == before);
+                        CHECK_FALSE(event_stored(runtime, event.envelope.event_id));
+                        CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
+                        CHECK(runtime.federation.key_resolution_failures.empty());
+
+                        {
+                            auto guard = std::lock_guard{*runtime.federation.mutex};
+                            runtime.federation.key_resolutions_in_flight = 0U;
+                            runtime.federation.key_resolution_buckets.clear();
+                        }
+                        auto const retry = link.send(event.frame);
+                        CHECK(relay_accepted(relay_path, retry));
+                        check_relay_mutation(runtime, relay_path, event);
+                        CHECK(raw_calls.load() == 2U);
+                        CHECK(runtime.federation.key_resolutions_in_flight == 0U);
+                        CHECK(runtime.federation.key_resolution_buckets.size() == 1U);
+                        if (!runtime.federation.key_resolution_buckets.empty())
+                        {
+                            CHECK(runtime.federation.key_resolution_buckets.front().source == "<unknown>");
+                            CHECK(runtime.federation.key_resolution_buckets.front().resolutions_seen == 1U);
+                        }
+                        std::filesystem::remove(db_path);
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("main worker relays verify matching cached keys without borrowing admission slots",
+         "[integration][federation-worker][fed10][fed10-main-relay][fed10-main-cache]")
+{
+    GIVEN("main holds only a network-free verification key and receives genuinely signed IPC relays")
+    {
+        WHEN("admission is exhausted and the cache returns matching or mismatched key identities")
+        {
+            THEN("matching cached keys work but mismatches cannot bypass admission or cause mutation")
+            {
+                auto sequence = std::int64_t{200};
+                for (auto const relay_path : main_relay_paths)
+                {
+                    for (auto const occupied_slot : {false, true})
+                    {
+                        CAPTURE(relay_path, occupied_slot);
+                        auto const db_path = unique_sqlite_path("main-relay-cache");
+                        std::filesystem::remove(db_path);
+                        auto started = homeserver::start_runtime(config_with_sqlite(db_path));
+                        REQUIRE(started.started);
+                        auto& runtime = started.runtime;
+                        auto raw_calls = std::atomic<std::size_t>{0U};
+                        prepare_main_relay(runtime, raw_calls);
+                        auto link = MainRelayLink{runtime};
+                        auto const remote = genuine_key_resolver()(remote_server, remote_key_id);
+                        REQUIRE(remote.has_value());
+                        auto cached_key = remote->signing_key;
+                        runtime.federation.cached_pdu_key_lookup = [&cached_key](std::string_view, std::string_view) {
+                            return std::optional<federation::FederationKeyRecord>{cached_key};
+                        };
+                        auto const event = make_main_relay_event(runtime, relay_path, sequence++);
+                        exhaust_main_admission(runtime, occupied_slot);
+                        CHECK(relay_accepted(relay_path, link.send(event.frame)));
+                        check_relay_mutation(runtime, relay_path, event);
+                        CHECK(raw_calls.load() == 0U);
+                        CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
+
+                        for (auto const wrong_server : {false, true})
+                        {
+                            cached_key = remote->signing_key;
+                            if (wrong_server)
+                                cached_key.server_name += ".invalid";
+                            else
+                                cached_key.key_id += "-different";
+                            auto const mismatch = make_main_relay_event(runtime, relay_path, sequence++);
+                            auto const before = main_relay_state(runtime);
+                            CHECK(relay_overloaded(relay_path, link.send(mismatch.frame)));
+                            CHECK(raw_calls.load() == 0U);
+                            CHECK(main_relay_state(runtime) == before);
+                            CHECK_FALSE(event_stored(runtime, mismatch.envelope.event_id));
+                            CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
+                        }
+                        CHECK(runtime.federation.key_resolution_failures.empty());
+
+                        // A key-only cache works even without a full resolver,
+                        // but never bypasses the event-time validity rule.
+                        cached_key = remote->signing_key;
+                        runtime.federation.remote_key_resolver = {};
+                        auto const cache_only = make_main_relay_event(runtime, relay_path, sequence++);
+                        CHECK(relay_accepted(relay_path, link.send(cache_only.frame)));
+                        check_relay_mutation(runtime, relay_path, cache_only);
+                        CHECK(raw_calls.load() == 0U);
+                        CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
+                        cached_key.valid_until_ts = 0;
+                        auto const expired = make_main_relay_event(runtime, relay_path, sequence++);
+                        auto const before_expired = main_relay_state(runtime);
+                        auto const expired_response = link.send(expired.frame);
+                        CHECK_FALSE(relay_accepted(relay_path, expired_response));
+                        CHECK_FALSE(relay_overloaded(relay_path, expired_response));
+                        CHECK(main_relay_state(runtime) == before_expired);
+                        CHECK(raw_calls.load() == 0U);
+                        CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
+                        std::filesystem::remove(db_path);
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("main worker relays bound negative-cache entries per server and key",
+         "[integration][federation-worker][fed10][fed10-main-relay][fed10-main-negative]")
+{
+    GIVEN("real encrypted IPC and a main resolver that genuinely cannot supply the requested keys")
+    {
+        WHEN("workers repeat a failed key and then request another key of the same server")
+        {
+            THEN("only fresh misses call the resolver, the negative cache stays bounded and no data changes")
+            {
+                auto sequence = std::int64_t{300};
+                for (auto const relay_path : main_relay_paths)
+                {
+                    CAPTURE(relay_path);
+                    auto const db_path = unique_sqlite_path("main-relay-negative");
+                    std::filesystem::remove(db_path);
+                    auto started = homeserver::start_runtime(config_with_sqlite(db_path));
+                    REQUIRE(started.started);
+                    auto& runtime = started.runtime;
+                    auto raw_calls = std::atomic<std::size_t>{0U};
+                    prepare_main_relay(runtime, raw_calls);
+                    runtime.federation.config.key_resolution_cache_entries = 1U;
+                    runtime.federation.config.key_resolution_per_ip_rate = {5U, 3600U};
+                    runtime.federation.config.key_resolution_failure_ttl_seconds = 3600U;
+                    runtime.federation.remote_key_resolver =
+                        [&raw_calls](std::string_view,
+                                     std::string_view) -> std::optional<federation::FederationRemoteRuntime> {
+                        ++raw_calls;
+                        return std::nullopt;
+                    };
+                    auto link = MainRelayLink{runtime};
+                    auto const first = make_main_relay_event(runtime, relay_path, sequence++);
+                    auto const before = main_relay_state(runtime);
+                    for (auto attempt = 0U; attempt != 3U; ++attempt)
+                    {
+                        auto const response = link.send(first.frame);
+                        CHECK_FALSE(relay_accepted(relay_path, response));
+                        CHECK_FALSE(relay_overloaded(relay_path, response));
+                        CHECK(raw_calls.load() == 1U);
+                        CHECK(main_relay_state(runtime) == before);
+                        CHECK(runtime.federation.key_resolutions_in_flight == 0U);
+                        CHECK(runtime.federation.key_resolution_failures.size() == 1U);
+                    }
+                    auto const alternate = make_main_relay_event(runtime, relay_path, sequence++, remote_key_seed,
+                                                                 "ed25519:relay-alternate");
+                    auto const with_alternate = main_relay_state(runtime);
+                    CHECK_FALSE(relay_accepted(relay_path, link.send(alternate.frame)));
+                    CHECK(raw_calls.load() == 2U);
+                    CHECK(main_relay_state(runtime) == with_alternate);
+                    CHECK(runtime.federation.key_resolution_failures.size() == 1U);
+                    CHECK_FALSE(relay_accepted(relay_path, link.send(first.frame)));
+                    CHECK(raw_calls.load() == 3U);
+                    CHECK(main_relay_state(runtime) == with_alternate);
+                    CHECK(runtime.federation.key_resolution_failures.size() == 1U);
+                    CHECK(runtime.federation.key_resolution_buckets.size() == 1U);
+                    if (!runtime.federation.key_resolution_buckets.empty())
+                        CHECK(runtime.federation.key_resolution_buckets.front().resolutions_seen == 3U);
+                    std::filesystem::remove(db_path);
+                }
+            }
+        }
+    }
+}
 
 SCENARIO("main re-verifies the signature of a /send PDU relayed by a federation worker",
          "[integration][federation-worker][worker_relay_signature]")

@@ -53,15 +53,24 @@ struct AuthEventMap final
                                                        AuthEventMap const& auth_events) -> EventAuthorizationDecision;
 
 [[nodiscard]] auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>;
-// `allow_string_values` reflects RoomVersionPolicy::power_levels_require_integers
-// inverted: room versions 1-9 permit an integer power level to be encoded as a
-// string, and such an event is valid. Reading it as absent would silently apply
-// a default instead of the level the room actually set, so the flag must follow
-// the room's own version rather than defaulting per call site. It defaults to
-// false (strict) so a caller that has not considered the question gets the v10+
-// behaviour rather than the more permissive one.
+// The forms a power level may take in a room version. Room versions 1-9 permit
+// an integer encoded as a string (rooms/v10.md removed it), and 1-5 also permit a
+// float, read by truncation (rooms/v3.md; v6 enforces Canonical JSON). Such
+// events are valid: reading a value as absent would silently apply a default
+// instead of the level the room actually set, so the encoding must follow the
+// room's own version (power_level_encoding) rather than be chosen per call
+// site. The parameters default to `integers` (strict) so a caller that has not
+// considered the question gets the v10+ behaviour, not a more permissive one.
+enum class PowerLevelEncoding : std::uint8_t
+{
+    integers,
+    integers_or_strings,
+    integers_strings_or_floats,
+};
+[[nodiscard]] auto power_level_encoding(rooms::RoomVersionPolicy const& policy) noexcept -> PowerLevelEncoding;
 [[nodiscard]] auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id,
-                                            bool allow_string_values = false) noexcept -> std::int64_t;
+                                            PowerLevelEncoding encoding = PowerLevelEncoding::integers) noexcept
+    -> std::int64_t;
 // A sender's effective power level for auth-rule purposes: MSC4289 room
 // creators (per `policy.privilege_room_creators`) get an effectively
 // infinite level regardless of `power_levels`; otherwise the level comes
@@ -71,7 +80,8 @@ struct AuthEventMap final
                                           canonicaljson::Value const& create_event,
                                           rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t;
 [[nodiscard]] auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,
-                                           std::int64_t default_value, bool allow_string_values = false) noexcept
+                                           std::int64_t default_value,
+                                           PowerLevelEncoding encoding = PowerLevelEncoding::integers) noexcept
     -> std::int64_t;
 // The power level a state event of `event_type` requires under `power_levels_event`
 // (a full event value, or null when the room has none): `events[event_type]` when

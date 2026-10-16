@@ -817,7 +817,47 @@ The boundary provides these guarantees:
 - Multi-row runtime mutations commit through one backend transaction so partial
   login, room, or state-event writes are rolled back.
 - PostgreSQL connection strings are accepted only in explicit URI or libpq
-  key/value form, and password material is redacted from summaries.
+  key/value form. **Connection-opening diagnostics (DB-9)** use a fixed redacted
+  identity and generic parser/connection-status refusal reasons rather than
+  reconstructing a supplied option summary or forwarding library error text.
+  Host/database values are suppressed too because they can contain sensitive
+  material. The existing unit checks pass 6 / 1; new actual DEBUG-console
+  coverage passes 85 / 2, including malformed quoted options and four admitted
+  quoted/spaced/escaped/URI forms reaching a real libpq failure against an owned
+  private nonexistent socket path. It checks required records, whole/partial
+  marker absence, returned identity/reason and environment/stdout/owned-path
+  restoration. Normal database integration passes 2628 / 58; these are
+  first-GREEN coverage of the existing guard, not a new production repair.
+  Bounded independent source review passed without security or logic findings;
+  reviewed files match executed manifests. Current database units pass 18363 / 174,
+  DB-8 units 48 / 2 and DB-6 integration 2733 / 15. Fresh combined acceptance
+  passed 56 OK targets with all return codes zero, no failures/timeouts and 139
+  unchanged snapshotted files including all 30 focused sources. Source freeze
+  ended after completed-archive/current-source inspection. Native Windows socket
+  execution, live authentication/TLS/ready branches and
+  general SQL-result error confidentiality are not established by these checks.
+  See [ADR-0139](adr/0139-suppress-postgresql-connection-options-in-diagnostics.md).
+- **Remote PostgreSQL TLS admission (DB-8):** every effective host and host-address
+  entry is checked. Unless all destinations are local Unix sockets or recognized
+  loopback literals, parsed connection options must explicitly select `sslmode`
+  with the value `verify-full`. An omitted or empty mode cannot inherit its way
+  through admission via `PGSSLMODE`; the minimal worker environment deliberately
+  excludes that default. Service indirection and insecure remote opt-outs remain
+  unsupported. The opener disables preferential GSS encryption and database-name
+  expansion; private credential readers, role handling, binary bindings and
+  transaction semantics are unchanged. Certificate trust and sandbox accessibility
+  must be provisioned for each process. The new deterministic unit regression
+  failed 4 / 28 assertions before repair and passes 28 / 1 afterward; all DB-8
+  checks pass 48 / 2 and database units pass 18363 / 174. Live TLS/hostname/certificate
+  refusal and worker trust-file access are not proven by admission tests;
+  independent source review passed without security or logic findings. Fresh
+  combined acceptance passed 56 OK targets with all return codes zero, no
+  failures/timeouts and 135 unchanged snapshotted files, including all focused
+  sources; the source freeze ended after acceptance. Normal DB-6
+  integration passes 2733 / 15 and both isolated PostgreSQL modes pass 178 / 2
+  with verified teardown, fixture removal and current-source binding; these
+  local compatibility checks do not establish remote TLS transport. See
+  [ADR-0138](adr/0138-require-explicit-remote-postgresql-tls-policy.md).
 - Runtime startup requires `database.role=runtime`; offline migration planning
   requires `database.role=migration`.
 - No store function may clear a `revoked` flag once set — revocation is a
@@ -933,6 +973,13 @@ compromised worker could `SELECT` `server_signing_keys.secret_key` (still
 ciphertext, but exactly what decrypts it once the operator master key is
 recovered by an unrelated bug — see ADR-0062 part 1) and every other
 credential-bearing table, even though no worker code path ever reads them.
+
+**Do not use `peer` authentication for main's role** (ISO-8, ADR-0147). The
+worker runs under main's uid, and Landlock does not govern `connect()` to a
+Unix socket, so a compromised worker can reach PostgreSQL's local socket; with
+`peer` (or `ident`) PostgreSQL would log it in as main's role on the uid alone,
+undoing the separate login below. Use `scram-sha-256` or certificate
+authentication for both roles.
 
 Two independent mechanisms close this, together:
 
@@ -1129,3 +1176,36 @@ separate, operator-run provisioning script, never a file under
 ### Security audit follow-up (0.12.17)
 
 Schema 18 adds `rooms.directory_public` as TEXT NOT NULL DEFAULT false. It is independent of room join rules; existing rooms remain unpublished because their prior publication intent was not durable (ADR-0099). Creation persists publication with the room and initial membership. Visibility changes commit before updating the store and runtime mirrors. PostgreSQL scoped snapshots bind one room ID and join relation tables to events, avoiding the 128-parameter ceiling for large rooms. Media moderation commits flags, removal blob state and required administrative audit rows together; mirrors change only after commit (ADR-0100).
+
+### Membership rows commit with their event (DB-4, 0.12.26)
+
+`database::MembershipProjection` carries the `membership` row, and the invite metadata change, that an
+`m.room.member` event implies. `store_event_with_state` and `prepare_store_event_with_state` take one and
+write it in the event's own transaction (an upsert on `membership`, and an upsert or keyed delete on
+`invites`), so the event, its `current_state` row, the row and the invite change are durable together or
+not at all, on both backends. `store_membership_projection` writes a row and invite change with no event in
+one transaction. `reconcile_memberships_with_current_state` runs at main's hydration (`TableLoadProfile::full` only; the federation worker never writes main's rows): a row is rewritten to the
+current member event's membership when the row is missing, says `join` while the event does not, or is older
+than the event; a newer row is kept. Corrected rows get a fresh stream ordering and are corrected in memory
+even if the write fails. No schema change (ADR-0149).
+
+### Write connection pool (DB-7, 0.12.26)
+
+Persisted writes reuse connections from a per-store `ConnectionPool` instead of opening one per
+transaction: at most `database.pool_size` (16) are in use at once, and a write waits for a free one.
+PostgreSQL connections assume the runtime role once when opened; a pooled one is reused only while idle
+(`PQTRANS_IDLE`) with nothing to read on its socket, so one the server has closed is replaced. SQLite
+connections keep their pragmas and `foreign_keys=ON`. Reads, migrations and the worker's read-only store
+still open their own connections. `write_connections_opened` reports how many the pool has opened
+(ADR-0154). A slot is given back on every way out of an acquisition, a throwing open or liveness check
+included: waiting for a slot has no timeout, so a slot that leaked would be lost for good.
+
+An SQLite database file is created `0600` and must not be a symlink. Directories that already exist are
+followed as the kernel resolves them, symlinks included (an operator's `/var/lib/merovingian` pointing at a
+data volume); any directory the server creates is made `0700`, and everything below it is opened without
+following links (DB-10).
+
+Those checks never open an existing database file: closing any descriptor of it would release every POSIX
+lock the process holds on it, including another connection's write lock (ADR-0157). An existing file is
+checked by name (`fstatat` with `AT_SYMLINK_NOFOLLOW`), and a read-only connection reads the header, to
+refuse WAL, through SQLite's own handle before any statement runs.

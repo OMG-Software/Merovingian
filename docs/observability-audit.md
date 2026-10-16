@@ -20,6 +20,14 @@ an `info` threshold.
 
 ## Included now
 
+Push overload emits `push.delivery.dropped` at warning severity. Its `scope` is
+`global` or `recipient` for capacity drops, and `allocation` or `admission` for
+resource/launch failures. `in_flight`, `cap` and `deliveries` are numeric counts;
+capacity fields refer to the selected budget. Resource-failure fields use the
+global budget. No recipient identity, gateway URL or pusher credential is logged.
+Logging itself is best-effort on this already-persisted-event path.
+
+
 - Admin health summaries through `/_merovingian/admin/health`.
 - Admin metrics summaries through `/_merovingian/admin/metrics`.
 - Admin audit summaries through `/_merovingian/admin/audit` (with
@@ -108,6 +116,15 @@ an `info` threshold.
   the in-memory federation audit ring — see below.
 
 ## Federation audit events are not durable
+
+`federation.key_resolution_overloaded` records a core inbound transaction whose
+sender/authorising-key lookup was locally deferred. Its actor is the authenticated
+origin, its target is the request route, and its reason is a fixed admission
+message, not key/signature material. It denotes retryable 503 without transaction
+acceptance, not a relay trust failure; genuine failures in the same transaction
+retain their separate accounting. This event uses the same bounded in-memory
+ring, not durable audit storage. See
+[ADR-0133](adr/0133-preserve-local-key-admission-denial-separately-from-remote-failure.md).
 
 `audit_federation()` (`src/federation/inbound_request.cpp`) appends every
 `federation.*` audit event — `federation.accepted`, `federation.rejected`,
@@ -280,13 +297,31 @@ or memory, so the audit-append layer bounds the volume.
   that fills the window therefore cannot hide an earlier abuse report.
 - **Bounded field length.** `actor`, `target` and `reason` are cut to
   `database::max_audit_field_bytes` (255) bytes at `database::append_audit_event`
-  and `append_local_audit`, on a UTF-8 character boundary (`database::bounded_utf8`).
+  and `append_local_audit`, on a UTF-8 character boundary (`observability::bounded_utf8`).
   Invalid UTF-8 bytes and ASCII control characters (including NUL and newline) are
   replaced by U+FFFD, so a value can neither split a multi-byte character, forge a
   log line, nor put a NUL in a text column. Diagnostic field values passed to
   `log_diagnostic_audit` are cut to the same length before they are logged.
   A login `user` or `device_id` of up to the 64 KiB body cap is therefore recorded
   as at most 255 bytes; login semantics are unchanged.
+- **Path-only audit targets (OPS-2, ADR-0136).** `sanitized_audit_target` discards
+  the entire query string before logging or storing an audit target, including
+  unknown and percent-encoded parameter names. `append_local_audit` and
+  `remember_local_audit` use the same bounded value for debug output and their
+  respective storage paths; construction, INSERT statement generation and
+  summaries enforce it too. Query-free identifiers remain unchanged. Existing
+  database rows, backups and historical logs are not scrubbed by this change.
+  Do not put credentials in paths, actors or reasons: this is a query-removal
+  boundary, not detection of arbitrary secret text.
+
+Diagnostic capture tests must preserve the actual console threshold and whether
+a module override existed, rather than copying the effective default into a new
+override. The logger exposes exact threshold and optional module-policy exchanges
+for scoped restoration. Audit-output fixtures assert synchronous writers, configure
+levels before redirecting the console buffer, and restore on normal or exceptional
+scope exit. Capture fixtures also require exclusive access to `std::cout` and logger
+configuration: the absence of asynchronous writers does not exclude concurrent
+synchronous callers.
 
 ## Security posture
 

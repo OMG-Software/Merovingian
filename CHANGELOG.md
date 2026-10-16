@@ -1,3 +1,822 @@
+## 0.12.26
+
+Completes the 29 September 2026 security audit: every remaining low-severity finding is
+fixed, so all 101 findings (1 critical, 23 high, 31 medium, 46 low) are now closed. Entries
+marked PARTIAL or IN PROGRESS further down record intermediate steps on this branch; the
+FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the final commit:
+57 OK, 0 failed, 0 timed out.
+
+- **FIXED (PR #509 CI, SQLite locks):** opening a SQLite connection released another
+  connection's write lock. Closing any descriptor of a file drops every POSIX lock the
+  process holds on it, and `open_sqlite_connection` opened and closed the database file
+  itself on every connection (the DB-10 owner/type/mode check on the read-write path, the
+  ISO-4 WAL check on the read-only one). Another process then found a journal with no
+  RESERVED lock and took it for a hot one: on OpenBSD the federation worker's read-only room
+  reload failed, the proxy fell back to main, and a retried transaction was processed twice
+  ("main key-admission overload survives real worker socket HTTP and unchanged transaction
+  retry"); a read-write process could have rolled back a transaction still in progress. An
+  existing file is now checked by name (`fstatat`, `AT_SYMLINK_NOFOLLOW`) and opened only to
+  tighten a loose mode, and the read-only WAL check reads the header through SQLite's own
+  descriptor (`SQLITE_FCNTL_FILE_POINTER`) before any statement runs (ADR-0157). Tests:
+  `[sqlite-locks]` in `test_sqlite_security_policy.cpp` (a forked process checks the
+  RESERVED lock survives a read-write and a read-only open; a WAL database is still refused
+  read-only without creating `-shm`); RED 2 failures. The same CI round fixed two build
+  breaks: gcc's `-Wnull-dereference` at `-O2` (Fedora, RHEL RPM builds) on
+  `GatewayCircuitBreaker::record`'s eviction, now guarded like `ThumbnailCache`'s, and the
+  startup hardening gate's GNU-only `\|` basic-regex alternation, which OpenBSD's grep
+  reads literally (`grep -E`; tests in `test_startup_hardening_gate.py`).
+  The new test declares its lock probe as `struct flock`, since the BSDs also declare a
+  `flock()` function and `flock{}` did not compile there.
+- **FIXED (PR #509 review, CI):** the branch did not build outside WSL/gcc. A Catch2
+  `CHECK` on a `std::tuple` comparison failed to compile under clang with libstdc++ 14
+  (`test_worker_relay_signature_flow.cpp` now compares a struct); `postgresql_store.cpp`
+  lacked `<netinet/in.h>`/`<sys/socket.h>` on the BSDs; a Linux-only test helper left a
+  parameter unused elsewhere; and `observability` called `database::bounded_utf8`, a
+  dependency against the module order (database depends on observability) that broke the
+  fuzz link. `bounded_utf8` and `max_audit_field_bytes` now live in
+  `observability/bounded_text.hpp`, and the logger fixture's workaround is gone. The docs
+  build failed on a broken anchor in ADR-0132. The new package gates exposed two packaging
+  bugs: `packaging/deb/conffiles` listed the directory `/etc/merovingian`, so dpkg unpacked
+  it as `/etc/merovingian.dpkg-new` and the file inside could not be created, and the
+  `Dockerfile` used `addgroup`/`adduser`, which `debian:trixie-slim` does not ship (now
+  `groupadd`/`useradd`). The `.deb` also stopped shipping the vendored sqlite3 archive and
+  headers (`--skip-subprojects`, as every other package script). Tests:
+  `test_packages_workflow.py` (conffiles name files the package installs, the image creates
+  its user with tools its base ships, no subproject install); RED 3 failures. The first CI
+  run on these fixes found three more: the `.deb` postinst runs `adduser` but the package
+  did not depend on it, which container base images do not ship (`Depends: adduser`,
+  tooling test added, RED 1); gcc at `-O2` flagged the thumbnail cache's eviction loop under
+  `-Werror=null-dereference` (the iterator is now checked against `end()`); and six tests
+  added on this branch used `std::jthread`, which the FreeBSD and OpenBSD libc++ lack (now
+  `JoiningThreads` or `std::thread` with an explicit stop flag). The CRY-4 scenarios that
+  read kernel lock state from `/proc/self/smaps`, or drop `RLIMIT_MEMLOCK` to make a lock
+  fail, are skipped under AddressSanitizer, whose `mlock` interceptor locks nothing and never
+  fails. The ISO-5 decoder-stderr scenario compares stderr with `/dev/null` only on Linux:
+  NetBSD's `/dev/fd/2` is a static device node without fdescfs, so `-ef` could not compare
+  it; the write and the empty parent capture still prove the property everywhere.
+- **FIXED (PR #509 review, auth):** the token-key cache dereferenced an empty optional when
+  the first master-key open failed and a second open by path succeeded, and every
+  authenticated request copied both token keys into fresh locked allocations, which could
+  exhaust `RLIMIT_MEMLOCK` under load and turn auth into 503s. The cache moved into
+  `crypto::cached_token_hmac_keys`: one open per lookup, keys derived only from that open,
+  shared (not copied) on a hit, and an unreadable file logged once per outage rather than
+  per request. Copying a moved-from `SecureKeyBytes` now throws instead of yielding a valid
+  all-zero key. Tests: new `test_crypto_token_key_cache.cpp` (`[cry4][token_key]`); the
+  `[cry6-lock]` scenario now asserts that issuance with no locked-memory budget left
+  succeeds from the already-locked cached keys, where it used to expect a 503 from the copy.
+- **FIXED (PR #509 review, federation):** `GET /backfill/{room}?v=%00` threw out of
+  `parse_backfill_query` (the path decoder throws on NUL and the transport's guards stop at
+  `?`), dropping the connection instead of answering; the parser now refuses a NUL anywhere
+  in the target (ADR-0137). Every `security.federation.deny_ip_ranges` entry must now be a
+  well-formed address or CIDR range: the boundary treats a malformed entry as denying every
+  address, so a typo such as `/33` silently stopped all federation. A transaction's
+  sender-key pre-pass no longer runs more resolutions at once than the runtime's in-flight
+  cap, which admission refuses rather than queues: with four worker shards (cap 4) any
+  transaction naming five or more cold sender servers used to deny itself a 503
+  (`federation::sender_key_prepass_parallelism`). `/send_join` state verification called
+  the raw key resolver up to 1024 at a time, outside every FED-10 budget, so a resident
+  server could name thousands of servers and drive a burst of fetches; it now takes main's
+  shared in-flight slots and honours the server/key failure cache through
+  `federation::resolve_join_state_key`, waiting for a slot (until the join timeout)
+  instead of being refused, and is not charged a per-source rate, since a refused key
+  would drop a member event from the joined room's state (ADR-0155). Tests: `[nul]`
+  backfill scenario, `test_config_parser.cpp` deny-range scenario, `[fed10-shards]`
+  parallelism scenario, `[send_join][fed10]` shared-cap and failure-cache scenarios (RED:
+  peak above the cap; a failed pair fetched twice).
+- **FIXED (PR #509 review, media):** after a decode, the record was checked before the media
+  policy, whose policy-server round trip releases the runtime mutex, so a quarantine landing
+  during it was missed and the thumbnail was served and cached; the policy is now asked
+  first and the record checked last. `security.media.thumbnail_cache_size=0` failed
+  validation although the manual and ADR-0152 say it disables the cache. Cache keys clamp
+  each axis to the worker's 4096 maximum, so `width=5000, 5001, ...` no longer fill the
+  cache with copies of one thumbnail. The thumbnail cache size and per-user decode cap are
+  restart-required: nothing rebuilt them on reload. Tests: integration
+  `[med-4-policy-order]`; unit `[med4]` cache-size and dimension scenarios; reload policy.
+- **FIXED (PR #509 review, push):** the gateway circuit counted 5xx answers and was keyed by
+  the raw host, so one user's pusher with bad data on a shared gateway could close it to
+  every user for the cooldown, and case or trailing-dot spellings had separate circuits.
+  Only failures to reach the host (DNS, connection, TLS, timeout) count now
+  (`push::gateway_circuit_outcome`), and the key is the case-folded `host:port`. A
+  `rejected` list now removes only a pusher whose own pushkey it names; any non-empty list
+  used to delete the requesting pusher. ADR-0151 amended. Tests: `[out3]` classification,
+  key and rejection scenarios; integration: an unreachable host is skipped after three
+  failures, a host answering 500 is still contacted, a rejection of another pushkey keeps
+  the pusher.
+- **FIXED (PR #509 review, database):** SQLite refused any symlinked ancestor directory, so
+  a data directory linked to another volume stopped the server starting; existing
+  directories are now followed, the database file itself must still not be a symlink, and
+  everything below a directory the server creates is opened without following links.
+  SQLite is handed the database's real directory, since `SQLITE_OPEN_NOFOLLOW` refuses a
+  link anywhere in the name it is given.
+  `ConnectionPool::acquire` leaked its slot if opening or probing a connection threw, and a
+  wait for a slot has no timeout. Tests: `[db10]` symlinked data directory scenario; new
+  `test_database_connection_pool.cpp` (`[db7][pool]`).
+- **FIXED (PR #509 review, operations):** a refused `--log-file` now says so on the console
+  (`SingleLog::set_log_file_path` returns whether the file opened). The startup hardening
+  gate also requires the federation worker to be spawned and still running a few seconds
+  later (`--worker-settle`, default 3 s), and rejects a non-numeric `--timeout`, port or
+  settle time. ADR-0142's verification section
+  contradicted its status and is rewritten; internal agent and process IDs are removed from
+  this changelog and the audit report. Tests: `test_startup_hardening_gate.py` (worker dies,
+  worker never starts, non-numeric timeout), `[iso6]` refused-path scenario.
+
+- **FIXED (DB-7):** every persisted write opened a fresh database connection (an SQLite
+  open with its no-follow checks, or a PostgreSQL connect, TLS and `SET ROLE`), usually
+  with the runtime mutex held. Writes now lease connections from a per-store
+  `database::ConnectionPool` capped at `database.pool_size` (16), which is now
+  restart-required; a write waits for a free connection rather than opening another.
+  A PostgreSQL connection takes the runtime role once and is reused only while idle with
+  nothing to read on its socket, so one the server has closed (restart, idle reaper) is
+  replaced instead of failing a write; reads and migrations are unchanged (ADR-0154).
+  Also fixed: `PersistentStore`'s copy constructor and assignment did not copy
+  `postgresql_runtime_role`, so a copied store would have written as the login role; and
+  the PostgreSQL signing-key restart test wrote its URI file group-readable, which the
+  ISO-7 reader rightly refuses (it only runs with `MEROVINGIAN_TEST_POSTGRESQL_URI`). Tests:
+  new `test_security_audit_write_pool_flow.cpp` (`[db7]`, 64 concurrent writers on real
+  SQLite and PostgreSQL with a limit of four, then every pooled backend killed). RED: the
+  pool API did not exist; a first version that trusted `PQconsumeInput` lost 4 of 64
+  writes after the kill, which the socket-readiness check fixed.
+- **ACCEPTED (FED-12, DB-6, DB-8, DB-9, OPS-2, OPS-4):** implemented earlier on this branch
+  (entries below) and now accepted: each fix was checked against its finding, and the
+  regressions re-run at `cc7e1ee7`: unit `[fed-12-live-context]` 49 / 2, `[ops2]` 101 / 2,
+  `[ops4-negative-lifetime]` 20 / 1, `[ops-4-upper-bound]` 146 / 1, `[db6]` 9 / 3, `[db8]`
+  48 / 2, `[db9]` 6 / 1; integration `[fed-12-origin-binding]` 109 / 1, `[ops2]` 44 / 2,
+  `[db6]` 2909 / 15; conformance `[ops-4]` 223 / 1. ADR-0137, ADR-0138, ADR-0139 and ADR-0142
+  are accepted. The audit report now lists every low finding as fixed.
+
+- **FIXED (FED-10):** the last part of FED-10, aggregate admission across worker shards.
+  Each federation worker shard had its own copy of the key-resolution budgets
+  (`key_resolution_max_in_flight`, `key_resolution_per_ip_rate`), so `federation.worker.shards`
+  workers allowed that many times the configured outbound key fetches. A worker now
+  starts with its share (`federation::shard_key_resolution_budget`: the limit divided by the
+  shard count, rounded down, at least 1) through `RuntimeStartOptions::key_resolution_shards`;
+  main keeps the whole budget (ADR-0153). Tests: new `test_security_audit_fed_10_shards.cpp`
+  (`[fed10-shards]`). RED: the split function and the start option did not exist, so every
+  shard started with the full budget.
+
+- **FIXED (MED-4):** thumbnails were decoded with the lock released (0.12.20) and local
+  ones revalidated after the decode (ADR-0145), but every request forked the decoder
+  again, one client could run any number of decodes at once, and a remote thumbnail was
+  not revalidated. New `media::ThumbnailCache` keeps generated thumbnails in memory
+  (`security.media.thumbnail_cache_size`, 64 MiB, least recently used first out), served
+  only after the source record is checked as servable. New
+  `security.media.thumbnail_max_concurrent_per_user` (2) caps decodes in flight per user
+  (or client address when unauthenticated); beyond it `429 M_LIMIT_EXCEEDED`. A remote
+  thumbnail now carries the cached local record its bytes were admitted as and is
+  revalidated like a local one, and every thumbnail re-asks the media policy after the
+  decode (ADR-0152). Also fixed: `make_runtime_media_config`'s positional initializer put
+  the thumbnail timeout's `10` into `thumbnail_worker_fd`, so on FreeBSD a failed worker
+  pre-open left fd 10 to be `fexecve`d; it is now `-1`. Tests: `[med-4-cache]`,
+  `[med-4-concurrency]` and `[med-4-remote]` in `test_media_thumbnail_revalidation_flow.cpp`
+  (real worker and gate) and new `test_media_thumbnail_cache.cpp`. RED: with the worker
+  gone a repeated thumbnail was 404, a third concurrent decode for one user entered the
+  decoder, and a remote thumbnail was served after its cached record was quarantined.
+
+- **FIXED (OUT-3):** one user's push gateways could still tie up delivery: registrations
+  were unbounded and a gateway host that stalled or failed was contacted again for every
+  event, holding a delivery slot for its full timeout. New `server.push.max_pushers_per_user`
+  (20): `POST /pushers/set` refuses a new pusher beyond it with 400 `M_INVALID_PARAM`
+  (updates and deletes still allowed). New `push::GatewayCircuitBreaker`: after
+  `server.push.gateway_failure_threshold` (3) consecutive transport failures, timeouts or 5xx
+  responses, a host is skipped for `server.push.gateway_cooldown_seconds` (300), then probed
+  once per cooldown; skipped deliveries log `push.delivery.circuit_open`. The per-recipient
+  in-flight cap already existed and now has a test. ADR-0151 supersedes ADR-0029's
+  "registration stays unbounded". Tests: three `[out3]` scenarios in
+  `test_push_delivery_flow.cpp` and new `test_push_gateway_circuit_breaker.cpp`. RED: a 21st
+  pusher was accepted and all five notifications reached a gateway answering 500.
+
+- **FIXED (ISO-7):** the remaining two re-opens of a secret are gone. The TLS private key
+  was checked at startup by path and then loaded by OpenSSL from the path again
+  (`SSL_CTX_use_PrivateKey_file`); `make_tls_server_context` now reads it through one
+  validated descriptor (`O_NOFOLLOW`, regular, owned by this user, mode 0400) into locked
+  memory and gives OpenSSL a memory BIO. The signing-secret-box and token-HMAC caches took the
+  master key file's identity from one open and its bytes from another, so a swap in between
+  could cache a key from one file under another's identity; new
+  `crypto::open_master_key_file` returns the descriptor and identity together, and both caches
+  read the bytes from it. Test fixtures now write TLS keys 0400, as production already
+  required. Tests: new `test_security_audit_iso_7.cpp` (`[iso7]`). RED: a 0640 key and a
+  symlinked key were both loaded; the single-open master-key API did not exist.
+
+- **FIXED (EVT-12 (d)):** room versions 3-5 refused a float power level, which
+  `rooms/v3.md` allows ("exponential notation is applied ... the value is truncated at the
+  decimal point"). New `RoomVersionPolicy::power_levels_accept_floats` (v3-v5) and
+  `events::PowerLevelEncoding` replace the `allow_string_values` flag, so the auth rules, the
+  state resolver's power ordering, redaction judgement and push all read integers, integer
+  strings (v1-v9) and truncated floats (v1-v5) by the room's own version. Infinity, NaN and
+  values beyond int64 are refused. Hashing is unchanged: Canonical JSON defines no float
+  encoding, so such an event still cannot be parsed for its event ID or content hash
+  (ADR-0150). Tests: three `[evt12]` conformance scenarios in `test_event_auth_rules.cpp`
+  (v5 truncation, v4 `1.0E2` honoured, v6 refused); the unit characterization in
+  `test_event_auth_rejected_fallback.cpp` now asserts the new contract. RED: both v5
+  acceptance cases were refused.
+
+- **FIXED (DB-4):** a ban could commit while the banned user's `membership` row still
+  said `join`, and every restart rebuilt the room's roster from that row, so the user
+  could read `/joined_members` again. Every path that stores an `m.room.member` event
+  wrote the event and its `current_state` row in one transaction and the row and invite
+  metadata in later ones. The row and invite change are now a
+  `database::MembershipProjection` committed in the event's own transaction on both
+  backends: local membership changes (`persist_composed_event`), the federated
+  `join_room`, inbound `send_join`/`send_leave`/`send_knock`, `/invite` and PDUs over
+  `/send`. A federated leave, and `/invite` for a room this server holds, write row and
+  invite together with `store_membership_projection`. At startup
+  `hydrate_local_database` reconciles the rows from current state before building the
+  roster: a row is rewritten when it is missing, says `join` while the current member
+  event does not, or is older than that event; a newer row (a federated leave or an
+  `/invite` whose event has not arrived) is kept. Inbound PDUs no longer log and drop a
+  failed membership write after accepting the event. ADR-0149 (refines ADR-0126); no
+  schema change. Tests: new `test_security_audit_membership_atomicity_flow.cpp`
+  (`[db4]`: a tampered SQLite store regains no access after a restart; a SQLite trigger
+  that refuses bob's row leaves no ban event or state; the PostgreSQL variant, gated on
+  `MEROVINGIAN_TEST_POSTGRESQL_URI`, with a real trigger) and new
+  `test_security_audit_db_4.cpp` (reconciliation rule and projection atomicity on the
+  in-memory store). RED: after a restart bob's `/joined_members` returned 200 and alice's
+  roster listed him, and with his row refused the ban event and its current state were
+  still durable (5 failed assertions). Review follow-up: the reconcile first ran for every
+  load profile, so the federation worker's open also rewrote rows and drew stream
+  positions from its own counter; on PostgreSQL that durably wrote main's `membership`
+  table. It now runs only for `TableLoadProfile::full` (main), like the redaction
+  reconciler; main reconciles before it spawns the worker. New `[db4-worker]` scenarios
+  (SQLite and gated PostgreSQL); RED: the PostgreSQL worker open rewrote bob's row to
+  `ban`, and the SQLite worker open rewrote it in memory and allocated a stream position
+  (3 failed assertions).
+
+- **FIXED (OPS-5):** the Docker image and the deb and BSD packages built at Meson's
+  default `debug` buildtype (`-O0`), so `_FORTIFY_SOURCE` was never defined and every
+  shipped server refused to start at its startup hardening gate. `scripts/build-deb.sh`,
+  `build-freebsd-pkg.sh`, `build-netbsd-pkg.sh`, `build-openbsd-pkg.sh` and the
+  `Dockerfile` now pass `--buildtype=release`; `meson.build` keeps the `debug` default
+  for development builds and warns at configure time when hardening meets
+  `optimization=0` (ADR-0148). The `Dockerfile` pins `debian:trixie-slim` by index
+  digest in both stages, installs `libpq-dev`/`libpq5` and the other libraries the
+  binaries link (with trixie's `t64` runtime names), ships `merovingian-db-migrate`,
+  `merovingian-fed-worker` and `merovingian-thumbnail-worker`, and fails its own build
+  if `ldd` finds an unresolved library; a new `.dockerignore` keeps local build
+  directories out of the context. New `scripts/check-startup-hardening-gate.sh` boots
+  a packaged server against a throwaway SQLite config and passes only when every
+  hardening check reports `enabled`, the count matches, and the server exits 0 on
+  `SIGTERM`. `packages.yml` runs it against the installed `.deb` in the `deb` and
+  `debian-pkg` jobs (as `merovingian`, `setpriv --bounding-set=-all`) and inside the
+  image in a new `docker-image` job (`--cap-drop=ALL
+  --security-opt=no-new-privileges`). The BSD package jobs do not run it yet. Tests:
+  `test_packages_workflow.py` gains six scenarios (buildtype per script, digest pins,
+  Dockerfile build flags and libraries, shipped workers, CI wiring); new
+  `test_startup_hardening_gate.py` (registered as `startup-hardening-gate-tooling`)
+  covers the gate's eight decisions against a fake server. RED: 18 packaging subtests
+  failed and the gate script did not exist. Run against a real `--buildtype=release
+  -Dhardening=true` server (non-root, empty bounding set via a user namespace) the
+  gate first failed because the master key shared the config's directory, which the
+  federation worker's Landlock guard rightly refuses; config, database and key now get
+  separate directories (new scenario, RED then GREEN). It then passed with all 15
+  checks `enabled` and a clean `SIGTERM` exit, and against a `debug` build it failed
+  on `FORTIFY_SOURCE=unknown` and `compiler hardening=unknown`, the audit's
+  reproduction. Full hardened WSL run at the first commit: 56 OK, 1 Fail
+  (`conformance-tests`: "GET /sync returns spec-shaped room category objects" gets a
+  500 from `createRoom` with an invite; it fails 2 of 20 times run alone and is
+  unrelated to this change, which touches no C++), 0 timed out.
+- **FIXED (ISO-8):** the federation worker's seccomp profile argument-checks
+  `socket()`: `AF_UNIX`, `AF_INET` and `AF_INET6` are allowed, `AF_NETLINK` answers
+  `EAFNOSUPPORT` so glibc's `getaddrinfo` address-sorting probe falls back, and any
+  other family (`AF_ALG`, `AF_PACKET`, `AF_VSOCK`, …) kills the worker; `socketpair()`
+  is `AF_UNIX` only. The systemd unit adds `RestrictAddressFamilies=AF_UNIX AF_INET
+  AF_INET6`, `RestrictNamespaces=`, `ProtectKernelTunables=`, `ProtectKernelModules=`,
+  `ProtectKernelLogs=`, `ProtectControlGroups=`, `ProtectClock=` and `ProtectHostname=`.
+  The docs now say why main's PostgreSQL role must not use `peer` authentication.
+  RED: `[iso8]` failed 5 of 35 assertions (healthy families passed); GREEN passes
+  60 / 2, `[seccomp]` 367 / 15 and `[iso2]` 30 / 1, in a fresh full WSL run of
+  56 OK / 0 failed / 0 timed out. ADR-0147.
+- **FIXED (ISO-6, log file):** `--log-file` is opened by the new header-only
+  `observability::LogFileSink` with `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`, used only when
+  it is a regular file this process owns, then made 0600 and truncated (as before).
+  A symlink, FIFO, device or foreign file is refused and the logger writes no file
+  output. RED: the logger wrote through a symlinked log path (1 of 35 `[iso6]`
+  assertions failed); GREEN passes `[iso6]` 35 / 6, `[iso6_defaults]` 32 / 2 and
+  `[logger]` 156 / 8 in the same full run. ADR-0146. Together with the umask, package-script
+  and SQLite-creation changes already on this branch, ISO-6 is closed.
+- **ACCEPTED (ISO-4, DB-10):** reviewed the checkpoint's SQLite changes. The worker
+  opens main's SQLite file read-only, refuses a WAL-mode file, and its Landlock grant
+  on the database directory is read-only; main creates missing directories 0700 and
+  the database 0600 without following symlinks, tightens an existing file it owns to
+  0600, and sets `secure_delete=ON` and `trusted_schema=OFF`. The threat model's
+  stale "read-write" Landlock wording is corrected. Residual: the database path is
+  reopened by name after the descriptor-relative checks, so a writable parent
+  directory still allows a swap between them. `[iso4]` 15 / 2 and `[db10]` 15 / 2
+  pass in the same full run.
+- **ACCEPTED (MED-4, local thumbnail revalidation):** local thumbnail requests
+  own the source media/storage identity across unlocked blob reads and decoding.
+  Successful worker output is checked against that record's current servability,
+  storage binding and legacy visibility before publication or served accounting;
+  a quarantine or removal wins with 404 even when an available alias shares the
+  same blob. A real SQLite/socket regression gates a child before it execs the
+  actual worker, proves healthy ungated/gated output and concurrent `/versions`
+  and admin operations, then checks durable quarantine/removal and alias safety.
+  Genuine RED passes 249 / 255 assertions, failing the six expected PNG-disclosure
+  checks across both actions. Normal GREEN passes 255 / 1 inside a fresh full
+  WSL run of 56 OK / 0 failed / 0 timed out. Output caching, per-user decode
+  admission and remote source identity remain separate MED-4 work. See ADR-0145.
+- **ACCEPTED (MED-7, bounded admission repair):** federation media downloads now consult the existing
+  media-policy decision before repository resolution or blob reads. A denial
+  returns 403 with no media bytes or content type, and the federation dispatcher
+  returns its existing JSON error rather than a multipart success. Real SQLite
+  integration covers persisted admin denial, genuinely signed requests, an
+  unaffected upload and recovery after rule removal; a second scenario checks
+  the configured unavailable policy hook and explicit fail-open setting without
+  an injected callback. RED passed 116 / 129 assertions, failing the 13 expected
+  refusal checks; final normal GREEN passes 132 / 2. Related media integration
+  passes 371 / 9, locking 146 / 7, federation media conformance 12 / 1,
+  client policy 41 / 3 and trust-safety units 100 / 13. Independent review passes;
+  the fresh normal full suite completes 56 OK with every return code zero and
+  1,026 frozen files unchanged. Live remote-policy HTTP responses and strict
+  policy revocation during an admitted request are not established. This accepts
+  the bounded admission repair, not the whole audit or release. See ADR-0144.
+
+- **FIXED (MED-8):** the thumbnail worker checks a crop's actual fill against
+  the existing effective pixel budget in 64-bit arithmetic before narrowing or
+  allocating. Zero still uses the 4,096,000-pixel worker ceiling; a larger request
+  cannot raise it. Refusal uses the existing empty `too_large` frame (413 from
+  `generate_thumbnail`), not an allocation failure or worker crash. Main prepares
+  an empty `internal_error` frame after hardening and before input, then catches
+  unexpected C++ exceptions without allocating a replacement error string.
+  A safe real-worker RED passed 115 / 163 assertions, failing only the 48 expected
+  crop checks with all healthy controls passing. Normal GREEN passes 201 / 3;
+  related thumbnail integration 776 / 10, ISO-5 isolation 554 / 4, thumbnail
+  units 35 / 8 and hardening units 21 / 10. The original 64 GiB amplification
+  inputs run only as first-GREEN coverage. The fresh full WSL run completes
+  56 OK / 0 failed / 0 timed out, with the MED-8 tag re-run at 201 / 3; separate
+  exception fault injection and broader thumbnail geometry/upscaling conformance
+  are not claimed. See ADR-0143.
+- **FIXED (HTTP-7):** permissive JSON parsing checks integer bounds before converting
+  unsigned values to signed values; values outside the canonical integer range are refused
+  with `integer_out_of_range` instead of wrapping.
+- **FIXED (EVT-10):** an invite with any `third_party_invite` property enters the
+  third-party authorization branch; malformed/non-object values cannot fall through to
+  ordinary invite authorization.
+- **FIXED (EVT-11):** legacy room versions honor string-valued thresholds in the nested
+  `events` power-level map for both state and message events, including the spec's allowed
+  whitespace, sign and leading zeroes.
+- **PARTIAL (EVT-12):** the v3–v5 aliases sender-domain rule runs before membership/power
+  checks; receipt-rejected events cannot be selected as named inbound auth events or as
+  own-auth fallback during state resolution. Trusted rejection metadata is carried outside
+  the event JSON and retained on materialization. Rejected candidates remain available for
+  auth-chain traversal and reauthorization. Legacy fractional power-level parsing remains
+  unresolved; the characterization test is not a closure claim.
+- **FIXED (OUT-6):** server discovery retains at most 1024 positive/negative entries by
+  default (constructor capacity zero disables caching), sweeps expired entries before hits
+  and insertion, rejects invalid server names before network/cache admission, and bounds
+  concurrent insertion. Oldest results are evicted at capacity.
+- **FIXED (OUT-8):** configured IPv4/IPv6 literals and CIDRs supplement the mandatory
+  SSRF blocks throughout discovery, cache, well-known pre-connect and filtered destination
+  resolution. The production discovery network owns the startup policy, including in workers.
+- **FIXED (CRY-3, CRY-4):** master roots shorter than 32 bytes or entirely zero are
+  refused; secret buffers and every derived-key/cached-key copy use isolated sodium
+  allocations with independently verified locking. Exhausted locked memory returns no
+  key. Historical BLAKE2b inputs and labels are unchanged so stored signing-key ciphertext
+  and token digests stay compatible; the audit's proposed in-place KDF switch is rejected
+  in ADR-0128 rather than silently invalidating persisted data.
+- **FIXED (CRY-5, CRY-6):** validation-session lookup and consumption use the
+  variable-length constant-time comparison boundary. New access/refresh token issuance
+  requires v4 and returns 503 on unavailable keys without adding credentials; failure to
+  copy a cached key into locked memory is covered explicitly.
+- **IN PROGRESS (FED-12):** reproduced wrong-origin and completed-parent EDU
+  persistence through real signature verification, authenticated encrypted IPC
+  and reopened SQLite: normal build succeeded; 97 / 109 assertions passed and
+  12 behavioral checks failed, with healthy delivery and signature controls
+  passing. Main-side remediation binds owned verified origin to the exact
+  channel's live pending parent and checks admission after the runtime-lock wait.
+  Ordinary requests cannot authorize a relay; pending locks never cover a sink.
+  Worker parent propagation and legitimate-fixture migration are implemented.
+  Normal post-format GREEN passes 109 assertions / 1 regression case; related
+  worker EDUs pass 173 / 5 and worker flows 2059 / 38. The actual socket-HTTP /
+  separate-worker mixed PDU/EDU control passes 262 / 1; proxy checks pass 12 / 2.
+  Supplemental lifecycle checks pass 49 / 2 (first-GREEN coverage, not a new RED),
+  IPC units 396 / 50, worker units 340 / 42 and sync handlers 382 / 16.
+  All 79 focused source bindings are stable; the 11-file owned-added-lines scan
+  has no pattern indicators and all 11 owned range-format checks pass.
+  Independent source review and fresh combined acceptance remain pending.
+  This is not whole-finding/release closure or signed-body binding. See proposed
+  ADR-0142.
+- **PARTIAL (OPS-4):** configuration parsing and typed validation now reject
+  negative access and refresh token lifetimes with field-specific findings rather
+  than silently disabling expiry. Zero remains the explicit no-expiry setting;
+  defaults and full signed numeric parsing are preserved. The actual parser
+  regression reproduced 12 rejection failures / 14 assertions with both healthy
+  control assertions passing before repair; it now passes 20 assertions / 1 case
+  including explicit default/zero controls. Signed-boundary checks pass 4 / 2
+  and normal configuration units 845 / 176 against 41 unchanged focused sources.
+  Stored sessions, expiry text and token digests are unchanged. Independent
+  source review passed without security or logic findings; parent inspection
+  bound the reviewed files to executed GREEN and verified preservation of prior
+  shared edits. The fresh combined test checkpoint passed 56 OK targets with
+  all return codes zero, no failures/timeouts and 150 unchanged snapshotted files
+  including all 41 focused sources. The source freeze ended after parent
+  inspection of completed archives and current-source binding. After renewed
+  explicit authorization, the added-line security scan checked both changed C++
+  files and reported no findings; all 41 focused code/test sources matched
+  the reviewed and tested state at that checkpoint. The bounded negative-admission
+  slice is accepted.
+  Refresh-enabled `/login` and `/refresh` now omit `expires_in_ms` when the
+  access lifetime is zero, as Matrix v1.19 requires; finite lifetimes retain
+  the positive expiry field. A new real SQLite/public-dispatcher conformance
+  scenario reproduced both omission failures (221 passing / 2 failing assertions)
+  before repair and now passes all 223 assertions / 1 case, including finite,
+  stored-expiry, token-usability and legacy-login controls. Related auth conformance
+  passed 243 / 4; all 48 focused sources were unchanged during those runs. The
+  added-line/complete-new-file security scan reported no findings in both C++ files,
+  and inverse-hunk checksum verification confirms all preceding shared production
+  edits are preserved. Bounded independent source review passed with no security,
+  logic or suggested changes. Parent inspection bound the reviewed production and
+  regression to executed GREEN and verified that the later OUT-3 registration entry
+  preserves the entire earlier Meson file. Fresh current-source conformance again
+  passed 223 / 1 and related auth 243 / 4 after the later OUT-3 and configuration
+  changes. The full checkpoint below accepts this bounded response slice; its
+  earlier 48-source snapshot remains historical, not a current whole-tree claim.
+  Positive lifetime admission now has project ceilings of 2,592,000,000 ms
+  (30 days) for access and 31,536,000,000 ms (365 days) for refresh. A registered
+  real parser/direct-typed matrix reproduced 20 missing-rejection failures with
+  126 passing assertions before repair, covering both fields, zero, one, defaults,
+  inclusive maxima, maximum-plus-one and the signed maximum. Exact typed values
+  survive parsing and validation even when policy rejects them. No stored sessions
+  are rewritten. ADR-0141 records these project limits, not Matrix requirements.
+  The upper-bound regression now passes 146 assertions / 1 case; negative admission
+  passes 20 / 1, signed-boundary parsing 4 / 2 and normal configuration units
+  991 / 177. The corrected exact-tag run completed with all statuses zero and
+  61 sources stable during execution. A two-file added-line/complete-new-test
+  scan reported no indicators; inverse-boundary checksums verify preceding shared
+  production and registration edits are preserved. Independent source review passed
+  without security, logic or suggested changes; parent checks bind all three
+  reviewed source/registration hashes to executed GREEN. The fresh full checkpoint
+  passed 56 OK targets, all return codes zero and no failures, timeouts or other
+  result categories, with 170 files unchanged throughout execution including all
+  61 focused sources. Parent independently reconciled fresh archived JSON/text
+  logs and current reviewed source bindings, then released the freeze. The bounded
+  upper-admission slice is accepted; subsequent changes are acceptance-status docs
+  only. Checked timestamp
+  arithmetic, direct typed runtime
+  snapshot/reload admission, registration response expiry and broader persisted
+  hydration remain unresolved or unverified; no whole-finding/release closure.
+- **PARTIAL (OUT-3):** added a real SQLite/public-dispatcher/loopback-TLS
+  recipient-isolation regression. Its healthy notification control, ten held
+  attacker gateways and cleanup passed before repair, while the other recipient's
+  notification failed (262 passing / 1 failing assertion). Delivery now uses
+  independently admitted recipient batches, a global bound and a per-recipient
+  cap of `G > 1 ? min(8, G - 1) : 1`, retaining valid serial behavior at `G=1`.
+  Move-only RAII permits release both atomic counters on completion and unwind;
+  future parking capacity is reserved before launch. No configuration key or
+  persistent pusher format changed. Normal integration now passes 263 assertions /
+  1 isolation case and 1,092 / 18 related push cases, with all 60 focused sources
+  stable during execution. A four-file added-line/complete-new-test scan reported
+  no indicators, and inverse-boundary checksums prove preceding shared production
+  edits are preserved. ADR-0140 records the policy. Independent source review
+  passed with no security or logic findings; parent checks bind all four reviewed
+  production/test hashes to executed GREEN and the scan. The same fresh 56-OK,
+  170-stable-file full checkpoint above includes all four reviewed files and
+  accepts the bounded recipient-isolation slice. Nonblocking suggestions cover
+  fault-injected allocation/launch/
+  work failures, zero/single/eight-slot boundaries, concurrent admission and churn.
+  Gateway circuits, registration quotas, mixed-recipient execution coverage and
+  whole-finding/release acceptance remain unestablished.
+- **PARTIAL (DB-8):** preserved the existing remote verified-TLS guard and
+  repaired its parent-default dependency. Remote connection options must now
+  explicitly select the verified mode; an omitted or empty mode cannot pass
+  only because the parent supplies `PGSSLMODE`. Local socket/loopback exemptions,
+  host/host-address checks, service refusal, private readers, roles and stored
+  formats are unchanged. A deterministic URI/keyword regression with healthy
+  controls failed 4 / 28 assertions before repair and passes 28 / 1 afterward;
+  all DB-8 checks pass 48 / 2, DB-9 checks 6 / 1 and database units 18363 / 174.
+  The user manual and persistence guide now document strict remote admission,
+  trust provisioning and the minimal worker environment; ADR-0138 records why
+  forwarding parent defaults or adding insecure opt-outs was rejected. Earlier
+  DB-8/DB-9 RED/GREEN logs were recovered as historical evidence. Independent
+  review passed with no security or logic findings; parent inspection bound the
+  reviewed files to executed GREEN and checked preservation of prior shared
+  edits against accepted source checksums. The fresh combined checkpoint passed
+  56 OK targets with all return codes zero, no failures/timeouts and 135 unchanged
+  snapshotted files. The source freeze ended after acceptance. Normal DB-6 integration
+  compatibility passes 2733 / 15; both isolated PostgreSQL modes pass 178 / 2
+  with verified shutdown/owned-fixture removal and tested-source binding.
+  TLS handshake/certificate/hostname and worker trust-file access are
+  not established by these tests. No whole-finding/release closure.
+- **PARTIAL (DB-9 verification):** retained the existing fixed PostgreSQL
+  diagnostic identity and generic parser/connection-status refusal reasons;
+  no new production defect was identified in the inspected opener paths. Added
+  registered actual DEBUG-console integration coverage for malformed quoted
+  options and four policy-admitted quoted/spaced/escaped/URI forms reaching real
+  libpq failure at an owned private nonexistent socket path. Runtime-only
+  whole/partial credential markers are absent from emitted records and returned
+  reason/identity, with event-presence controls and environment/stdout/owned-path
+  cleanup checks. The new tag passes 85 assertions / 2 cases and normal database
+  integration 2628 / 58 against 30 unchanged current sources; existing DB-9 units
+  pass 6 / 1. This is first-GREEN coverage, not a new RED/production-fix claim.
+  Persistence/dependency docs and ADR-0139 explain why all connection options,
+  including host/database values, remain suppressed rather than reconstructed.
+  Bounded independent source review passed without security or logic findings;
+  parent inspection bound the reviewed files to the same executed 30-source
+  manifests. Current database units pass 18363 / 174, DB-8 units 48 / 2 and DB-6
+  integration 2733 / 15. Fresh combined acceptance passed 56 OK targets with all
+  return codes zero, no failures/timeouts and 139 unchanged snapshotted files
+  including all 30 focused sources. Source freeze ended after parent inspection
+  of completed archives and current-source binding. Native
+  Windows socket execution, live authentication/TLS/ready paths, allocation and
+  startup fault injection, and general SQL-result error confidentiality remain
+  outside this coverage. No whole-finding/release closure.
+- **PARTIAL (ISO-7):** bounded master-key, registration-token, main/worker database URI
+  and bootstrap-password reads validate ownership, mode and regular-file type after
+  `O_NOFOLLOW|O_CLOEXEC` open and read the validated descriptor directly into locked
+  storage. Remaining TLS/private-key and cache identity/load race review is not a closure
+  claim.
+- **FIXED (OPS-6):** the bootstrap password is a bounded, service-owned mode-0400
+  non-symlink file read into locked storage and wiped after bootstrap. The manual now uses
+  a private temporary directory and correctly states that bootstrap continues serving.
+- **TESTS (crypto batch):** parent rebuilt focused crypto/auth regressions passed
+  777 assertions / 102 cases, including historical derivation compatibility and forced
+  locked-memory exhaustion for both caches. The new exhaustion regressions were observed
+  failing before their fixes. Combined-suite coverage is recorded in the successful
+  post-repair checkpoint below; the remaining audit pass is not complete.
+- **FIXED (ISO-5):** thumbnail exec receives only a fixed PATH, with stderr redirected
+  to a pre-opened, RAII-owned `/dev/null` sink on both exec paths. Parent-side PNG signature
+  and initial IHDR dimension checks refuse malformed or mismatched output with 502
+  and no media payload. No decoder or image-data validation moves into main.
+- **FIXED (FED-9):** only an explicitly present, empty `pdus`
+  array enables the EDU-only `/send` bypass. A malformed first PDU followed by real
+  PDUs retains an empty shard key and enters the worker instead of main; later PDUs
+  are not used to select a main-process failed-sync fallback. Parent source/proxy review
+  and independent normal-binary runs passed: 27 assertions / 1 `[fed9]` case and
+  167 assertions / 26 `[routing]` cases. ADR-0131. No dedicated live IPC regression ran.
+- **PARTIAL (FED-10):** relayed sender-key resolution now shares the source-address
+  rate budget, runtime-wide in-flight cap and server/key negative cache across
+  parallel pre-resolution and authorization fallback paths. A network-free key-only
+  provider preserves cached verification, retained local keys and known-peer rotation;
+  fresh keys no longer exempt production discovery. Raw/verified router paths retain
+  source identity. Cache-only origin lookups cannot release another request's slot;
+  asynchronous resolver exceptions release scheduling permits and keep callable
+  lifetimes valid. Normal-target verification passed 474 assertions / 5 unit cases,
+  41 / 3 real database/router integration cases and 963 / 54 related inbound cases.
+  Budget, cache, exception, concurrency and production-wiring behavioral RED evidence
+  is retained. ADR-0132. The reviewed overload-to-trust/replay regression is repaired:
+  explicit outcomes preserve local denial across parallel, direct and restricted-join
+  paths; 503 leaves the original transaction retryable without charging or resetting
+  trust. Actual/negative-cache failures retain penalties in mixed transactions, and
+  EDUs wait for retry. ADR-0133. Independent all-target build and fresh normal-binary
+  runs passed 681 assertions / 9 unit cases, 122 / 4 real database/router integration
+  cases and 1170 / 58 related inbound cases. Behavioral RED evidence is retained.
+  Independent review confirmed the core overload repair; the completed unified
+  WSL checkpoint passed 56 targets with zero failures/timeouts. Its separate main
+  IPC bypass is now repaired: PDU, membership and invite re-verification share the
+  admitted key-only helper, with all main relay misses using the common unknown
+  source quota rather than a worker-supplied address. Local denial returns the
+  existing PDU overload status or unaccepted 503 before mutation. A genuine
+  encrypted-IPC RED failed 94 assertions before implementation. Normal integration
+  runs then passed 1228 assertions / 3 new cases, 156 / 3 existing signature cases
+  and 1350 / 7 FED-10 cases. Cache identity/event-time validity, unchanged-relay
+  retry, foreign slot ownership and bounded pair negative caching are covered.
+  ADR-0134. A mixed negative-cache/EDU unit regression also exposed genuine trust
+  penalties being discarded by a later main-overload return. Its behavioral RED
+  failed one assertion; conditional persistence now retains only actual failures,
+  defers EDUs and leaves the unchanged transaction retryable. Final normal unit
+  FED-10 passed 716 assertions / 10 cases and related inbound 1205 / 59. The first
+  main full run had 55 OK / 1 failed fixture; its 50-PDU room-interest regression
+  now reads the already-known key from cache instead of spending discovery quota.
+  Production limits are unchanged. Fresh completed WSL CLI passed 56 targets,
+  zero failures/timeouts, with one skipped unit case; logs are archived and the
+  six focused source/test hashes remain unchanged. Independent source-only
+  review approved this main slice with no material findings.
+  End-to-end worker HTTP overload propagation remains a coverage gap: the IPC
+  fixture substitutes PDU result serialization; production serialization,
+  worker decoding and HTTP propagation were source-traced only.
+  Backfill/snapshot/auth-chain key lookup now shares the admitted key-only
+  helper and unknown-source bucket. Local denial stops subsequent recovery
+  calls and preserves the existing PDU overload result instead of accepted
+  missing state; already-verified outliers are not rolled back. Genuine TLS/
+  SQLite RED failed 13 of 172 assertions before the fix; normal post-format
+  integration passed the new 172 / 1 case, all backfill 2173 / 17 and total
+  FED-10 1522 / 8. ADR-0135. Fresh post-backfill full CLI completed exit 0:
+  56 OK targets, zero failures/timeouts, one skipped unit case; archived logs
+  and eight unchanged source/test hashes confirm the tested snapshot.
+  Material review of the original production slice is accepted. The two later
+  test delegates failed provider limits, leaving unfinished fixtures; their
+  edits were preserved, inspected and repaired directly without loosening
+  production checks. Independent post-format normal integration passed actual
+  worker/socket-HTTP overload and unchanged-transaction retry (262 / 1), sticky
+  recovery denial (200 / 1), partial-progress retry/deduplication (314 / 1), all
+  backfill (2687 / 19) and FED-10 integration (2298 / 11). The fresh recovered
+  full checkpoint passed 56 OK targets, all return codes 0 and zero failures/
+  timeouts, with tracked source unchanged. This supplies separate-process
+  production serializer/worker decoder/HTTP execution evidence, not merely
+  the earlier substituted IPC fixture. Direct state/auth-chain denial and
+  backfill cache rejection/negative-hit cases remain unexecuted coverage
+  suggestions; aggregate cross-shard limits and whole-finding acceptance are
+  not established. No BSD claim.
+- **PARTIAL (DB-6):** local composition now uses the same NUL state-key
+  admission rule as inbound parsing, before allocating a stream ordering.
+  `createRoom` preflights the complete initial-state list before persisting
+  room/bootstrap state, including a bad entry after a valid one. Direct local
+  state sends answer `400 M_INVALID_PARAM`, not a late database refusal or a
+  successful in-memory mutation. Genuine local-admission RED failed 42 of
+  259 assertions; the repaired normal integration group passed 259 / 3 cases.
+  Public client and local-router entry points also reject literal or once-
+  decoded NUL in the path before a decoder can throw, with controlled
+  `400 M_INVALID_PARAM`; public responses retain configured CORS. The query
+  suffix is not part of this path guard, and `%2500` is not double-decoded.
+  Genuine HTTP RED failed 24 of 64 assertions; original repaired admission
+  passed 82 / 1 case and compatibility 4 / 1 (all DB-6 integration 345 / 5).
+  Additional explicit local errcode and configured Origin/Vary CORS checks
+  now pass 100 / 1. Source tracing after an incomplete independent review
+  exposed the same exception in recognized `via`/`server_name` join queries:
+  genuine RED failed 16 of 47 assertions; checked optional parsing now returns
+  `400 M_INVALID_PARAM`, with normal GREEN 63 / 1 and ordinary, `%2500` and
+  unrelated `%00` query positives. Local admission remains GREEN 259 / 3.
+  Real isolated PostgreSQL 16 inbound/compatibility tests passed 180 / 2,
+  both initially and after the join-query repair: a signed control persists,
+  NUL state keys cause no statements/event/state/graph/watermark writes, and
+  Unicode state keys, escaped-NUL content and binary BYTEA remain intact.
+  The private Unix-socket-only test database is stopped and removed after
+  each run; 14 tracked admission-source hashes remain stable. Initial
+  post-format unit DB-6 passed 9 / 3, query 127 / 12 and routing 167 / 26.
+  Startup/compilation failures were repaired as fixture/build failures, not
+  counted as behavioral RED. The first independent source review withheld
+  approval after a tool approval timeout, with no established implementation
+  defect; a bounded re-review is pending. Real no-proxy federation socket-
+  HTTP RED failed 16 of 216 assertions with authenticated controls reaching
+  the handler. The federation entry point now rejects NUL paths before
+  routing/replay with a structured `400 M_INVALID_PARAM`: normal GREEN
+  passed 246 / 1, including nine leading/interior/trailing malformed room,
+  member and event ID cases, same-socket keep-alive controls, `%2500`
+  positives and unchanged memory/reopened SQLite rows and watermarks.
+  The accompanying HTTP/local/join groups still pass 100 / 1, 259 / 3 and
+  63 / 1; 19 tracked source hashes remained stable during that run.
+  A second real healthy-proxy/separate-worker socket regression then exposed
+  main's earlier shard-key decoder: genuine RED failed 7 of 293 assertions.
+  A matching guard in `FederationProxy::handle`, before bypass/auth/routing,
+  now passes 311 / 1; combined transport passes 557 / 2. Controls are served
+  by the healthy worker without failed-room-sync fallback. The default
+  DB-6 integration filter passes 985 / 10 (including two opt-in PostgreSQL
+  fallback assertions, not live database proof); a separate post-proxy live
+  PostgreSQL run passes 180 / 2, with clean shutdown/removal and 19 stable
+  source hashes. Fresh unit groups remain 9 / 3, 127 / 12 and 167 / 26.
+  Independent source review approved the federation guard/socket slice;
+  parent verified its four reviewed source/registration hashes still match
+  the executed GREEN. A completed local/query/PostgreSQL review withheld
+  approval for path parsers that still decode unrelated query values,
+  unguarded direct-local join hints and a URI-only CI fixture mismatch.
+  The latter is reproduced against isolated real PostgreSQL: both opted-in
+  scenarios fail their missing-file prerequisite (2 assertions / 2 cases),
+  followed by verified shutdown/removal. The fresh combined attempt exited
+  before tests because the scratch CLI wrapper expanded an unset temporary-
+  directory variable; its archived stale logs are not acceptance evidence.
+  The wrapper was corrected and its actual CLI dry run succeeds, not a full
+  test pass. The review-confirmed gaps now have genuine regressions:
+  direct-local join hints failed 16 / 108 checks, then a checked optional
+  parser and controlled refusal passed both dispatchers. Stronger SQLite
+  snapshots cover event/signature/graph/membership/invite rows and both
+  watermarks; the current join group passes 188 / 1. Authenticated ordinary,
+  `%00`, `%2500` and literal-NUL unrelated-query cases exposed path mixing
+  across send, redact, state GET/PUT, report and typing (48 failed / 174).
+  Those parsers now take the path only; GREEN passes 230 / 1, including
+  original transaction idempotency, intended state keys, durable report
+  targets and typing subjects. A missing-header compilation attempt is
+  recorded as a build failure, not behavioral RED. PostgreSQL scenarios
+  now provision an exclusive, owner-only RAII connection file from the
+  same explicitly opted-in URI used by reopened-store checks; caller files
+  are not selected or modified. Both URI-only and URI-plus-file isolated
+  real runs pass 178 / 2, with owned-file cleanup and verified cluster
+  shutdown/removal. The two fewer assertions are the removed file-presence
+  prerequisites, not skipped admission checks. Normal DB-6 integration
+  passes 1340 / 11 (two opt-in fallback assertions, not live PostgreSQL),
+  including unchanged socket 557 / 2, local 259 / 3 and HTTP 100 / 1.
+  Unit groups remain 9 / 3, 127 / 12 and 167 / 26; 21 tracked admission
+  hashes are stable. Independent bounded repair re-review passed with no
+  security or logic findings; all seven reviewed files matched executed
+  GREEN. The fresh review-gap full CLI completed exit 0: 56 OK, zero
+  failures/timeouts, fresh archived text/JSON reports, all return codes
+  zero and 127 snapshotted files unchanged. This accepts that checkpoint,
+  not later edits. Further decoder tracing found raw query text still
+  reaching to-device, knock and user-metadata paths. A separate real
+  SQLite regression reproduced 34 failed / 169 assertions, with successful
+  no-query controls, original transaction replay, actual recipient queue
+  delivery, intended account-data/tag keys and durable knock membership.
+  Those three extraction boundaries now strip queries. The first GREEN
+  build failed before tests because the to-device helper referenced a
+  later declaration; local path-only slicing fixes that compilation error
+  without changing decoding semantics. The corrected GREEN rerun passes
+  255 / 1; original query paths 230 / 1, joins 188 / 1, HTTP 100 / 1,
+  compatibility 4 / 1 and real sockets 557 / 2 remain green. Current
+  normal DB-6 integration passes 1595 / 12 (two gated PostgreSQL fallback
+  assertions, not live database proof); unit groups pass 9 / 3, 127 / 12
+  and 167 / 26. Builds/runs exit 0 with stable admission source hashes.
+  Current isolated PostgreSQL URI-only and URI-plus-file reruns each pass
+  178 / 2 with owned connection-file cleanup, cluster shutdown/removal
+  and stable source snapshots. The scoped static scan has only the
+  unchanged, previously disposed OPS-2 marker false positive.
+  The next bounded review found no blocking defect in these three repairs
+  or their test, but rejected decoder completeness: public profile GET,
+  profile PUT, shared room action/receipt suffixes and presence still slice
+  raw targets. Parent source inspection corroborates these gaps, including
+  an ordinary receipt query entering the recorded event ID. A separate
+  registered real SQLite/password-authenticated regression then reproduced
+  206 failed / 691 assertions, after its mandatory complete no-query
+  control passed. All eight nonempty query/marker cases reached failures.
+  It checks public profile fields, intended profile/presence persistence,
+  whole state, exact receipt event IDs, durable fully-read markers and
+  leave-last membership. Only after that RED, four extraction boundaries
+  were changed to use the existing path-only request view. GREEN passes
+  733 / 1; current normal DB-6 integration passes 2328 / 13 (two gated
+  PostgreSQL fallback assertions). Earlier query/join/HTTP/socket groups
+  and unit 9 / 3, 127 / 12 and 167 / 26 remain green. Current isolated
+  PostgreSQL URI-only and URI-plus-file reruns each pass 178 / 2, with
+  verified owned-file cleanup and cluster shutdown/removal. At that
+  checkpoint, all 22 admission sources matched executed manifests. The
+  subsequent review found no remaining query-to-path-decoder feed in its
+  bounded inventory, but rejected an introduced `/members` regression:
+  recognized queries were still read from the now-clean room suffix.
+  Real-dispatch conformance reproduced 50 failed / 164 assertions (the
+  history group failed 52 / 1789). Separately extracting the original
+  query then passed 164 / 1. A separate test exposed the pre-existing
+  intersection of combined member filters: RED 16 / 73, then GREEN 73 / 1
+  after implementing the pinned specification's union semantics. Current
+  history conformance passes 1816 / 17; DB-6 integration remains 2328 / 13,
+  earlier focused/unit groups remain green, and both current isolated
+  PostgreSQL modes pass 178 / 2 with verified cleanup and teardown. All
+  23 current admission sources match conformance/integration/unit/both
+  PostgreSQL manifests; scoped static findings are unchanged and diff
+  checks pass. Fresh member-repair source review passed with no security
+  or logic findings; both reviewed files match executed GREEN. That
+  postmembers combined checkpoint completed with 56 OK targets, all return
+  codes zero, no failures/timeouts and 129 unchanged snapshotted files.
+  It accepts that earlier snapshot, not the subsequent repairs. The separate
+  device query regression required public HTTP login to populate the client
+  device cache; setup/compiler failures are not behavioral RED. Its healthy
+  control then passed, while all four unused-query cases reproduced 56 failed
+  / 216 assertions across GET, PUT and password-UIA DELETE. Path-only device
+  extraction now passes 224 / 1, including SQLite reopen, target-session
+  revocation and preservation of the owner's device/session. Independently,
+  backup-version DELETE reproduced 24 failed / 181 assertions with a healthy
+  no-query control: HTTP success could leave the intended version undeleted.
+  Extracting its version from the path now passes 181 / 1, including a surviving
+  second version, repeat deletion and reopened durable rows. Current normal
+  DB-6 integration passes 2733 / 15 (two gated PostgreSQL fallback assertions);
+  history conformance remains 1816 / 17 and unit groups remain green. Isolated
+  PostgreSQL admission/compatibility reruns each pass 178 / 2 with verified
+  owned-file cleanup and cluster shutdown/removal; all five execution manifests
+  match the same 23 current sources. These are not live PostgreSQL device/backup
+  regressions, wire/TLS checks, arbitrary encoded-device-ID support or backup
+  encryption/session-cascade coverage. Independent nondecoder source review
+  passed with no security or logic findings. The fresh combined checkpoint
+  passed 56 OK targets, all return codes zero and no failures/timeouts, with
+  130 unchanged snapshotted files; parent inspection bound the focused fixes
+  to that run. The source freeze ended after acceptance. DB-6 remains partial and
+  ADR-0137 proposed.
+- **IMPLEMENTED (OPS-2):** shared audit targets now discard the entire query
+  string and retain only a control-safe, UTF-8-safe 255-byte path/identifier.
+  The same policy protects durable and in-memory audit paths, actual
+  `audit.append` debug output, event construction, INSERT statements and summaries.
+  Known, unknown, encoded and duplicate parameter names cannot expose query values.
+  Constructor RED failed 20 assertions; separate SQLite/HTTP/sink RED failed 8.
+  Final focused unit OPS-2 passed 101 assertions / 2 cases, observability
+  10447 / 40 and audit 14263 / 45. Integration OPS-2 passed 44 / 2, including
+  actual rate limiting, unavailable-runtime rejection, SQLite reopen and exact
+  logger policy restoration. Independent review rejected the original capture
+  fixture; a genuine restoration/unwinding RED failed 4 of 6 assertions. Exact
+  threshold/optional-override exchanges, synchronous-writer checks and buffer
+  redirection after configuration repair it; the scope regression passed 20 / 1.
+  The first combined build failed the minimal logger fixture's missing encoder
+  linkage; tests/meson.build now supplies the existing pure bounded-text source.
+  A subsequent 56-target run preceded review correction and is not final acceptance.
+  ADR-0136 records the intentional loss of even safe query values; historical
+  rows, backups and logs are not rewritten. Independent re-review
+  approved the repaired slice with no material findings. Its
+  first final full run had 55 OK / 1 unrelated to-device TTL fixture failure.
+  Its exact cause was not established; the previous test depended on a
+  1.2-second sleep to establish an expired-row precondition. The memory-store
+  regression now seeds a definitely old positive timestamp instead of depending
+  on wall-clock progress, proving already-expired non-delivery and purge rather
+  than enqueue timestamp correctness or exact TTL boundaries. Production TTL
+  logic is unchanged. Independent source-only fixture review
+  passed with no material findings; five focused runs and the related CSAZ-10
+  cases passed. The resumed full verification exited 0:
+  all 56 targets reported OK with return code 0, no failures or timeouts, and
+  all 95 snapshotted files were unchanged. Exact completed reports are archived;
+  the previous 55 OK / 1 failed run remains recorded rather than overwritten.
+  Audit-inventory reconciliation is still pending: its separate execution
+  approval timed out before the reconciliation script ran.
+- **HARDENING REGRESSIONS (ISO-6 / DB-10):** main's seccomp admits only descriptor-bound
+  `fchmod(0600)` and private `umask(0077)`. This permits SQLite admission and worker
+  startup under the inherited filter without broad metadata grants; both workers
+  still deny all fchmod/umask once their stricter profiles are installed. ADR-0129/0130.
+  These fixes do not close the remaining ISO-6 or DB-10 acceptance review.
+- **TESTS (decoder/platform batch):** ISO-5 passed independently in the normal
+  integration binary (554 assertions / 4 cases), including a separate closed-stderr
+  run (13 assertions / 1 case). New permission/mask kernel regressions were observed
+  RED then GREEN; the combined focused platform runs passed 378 assertions / 20 unit
+  cases and 606 assertions / 13 integration cases, including real hardened startup.
+  The earlier full run failed; the post-repair unified WSL rerun passed all 56
+  Meson targets with zero failures or timeouts. One Landlock ABI-6 unit case was
+  skipped on the available kernel; this is a checkpoint, not closure of remaining findings.
+- **TESTS:** new legacy event-auth, rejected-auth fallback, discovery bounds and denied-range
+  scenarios; updated canonical JSON and inbound PDU auth scenarios. Parent verification of
+  these exact tags passed: unit 1717 assertions / 15 cases; conformance 1331 assertions /
+  4 cases. These are also covered by the successful post-repair checkpoint above;
+  remaining remediation still needs final acceptance.
+
 ## 0.12.25
 
 CSAZ-6, CSAZ-9, CSAZ-11 and CSAZ-12 of the 29 September 2026 security audit are fixed.

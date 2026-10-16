@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.12.25.
+# Build for merovingian 0.12.26.
 #
 # Standalone pkg_create(1) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no ports tree. The checked-in packaging/openbsd/PLIST
 # is the ports-framework packing list kept for downstream porters; this script
@@ -8,14 +8,18 @@
 # produce and validate an installable package on every run.
 set -e
 
-VERSION="0.12.25"
+VERSION="0.12.26"
 STAGE="staging-openbsd"
 PREFIX=/usr/local
 
 rm -rf "${STAGE}" build-openbsd-pkg pkg-plist-openbsd "merovingian-${VERSION}.tgz"
 
 # 1. Configure + build with OpenBSD prefix conventions.
+#    --buildtype=release: Meson otherwise builds `debug` (-O0), where
+#    _FORTIFY_SOURCE has no effect and the server's startup hardening gate
+#    refuses to start (ADR-0148).
 meson setup build-openbsd-pkg \
+    --buildtype=release \
     --prefix="${PREFIX}" \
     --sysconfdir=/etc \
     --wrap-mode=forcefallback \

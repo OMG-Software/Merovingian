@@ -12,13 +12,16 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
+
+#include <sys/stat.h>
 
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.25"};
+constexpr auto version = std::string_view{"0.12.26"};
 
 auto print_help() -> void
 {
@@ -58,6 +61,7 @@ auto print_help() -> void
 
 auto main(int argc, char const* const* argv) -> int
 {
+    std::ignore = ::umask(0077);
     // HTTP-5: every executable ignores SIGPIPE before doing anything else.
     if (auto const sigpipe = merovingian::platform::ignore_sigpipe(); !sigpipe.accepted)
     {

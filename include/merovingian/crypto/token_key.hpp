@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/crypto/secure_key_bytes.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 
 #include <sodium.h>
 
@@ -22,14 +26,14 @@ namespace merovingian::crypto
 // whichever instance is left behind rather than relying on the caller.
 struct TokenHmacKey final
 {
-    std::array<unsigned char, crypto_generichash_KEYBYTES> bytes{};
+    SecureKeyBytes bytes{};
 
-    TokenHmacKey() noexcept = default;
-    TokenHmacKey(TokenHmacKey const& other) noexcept;
-    auto operator=(TokenHmacKey const& other) noexcept -> TokenHmacKey&;
-    TokenHmacKey(TokenHmacKey&& other) noexcept;
-    auto operator=(TokenHmacKey&& other) noexcept -> TokenHmacKey&;
-    ~TokenHmacKey();
+    TokenHmacKey() = default;
+    TokenHmacKey(TokenHmacKey const&) = default;
+    auto operator=(TokenHmacKey const&) -> TokenHmacKey& = default;
+    TokenHmacKey(TokenHmacKey&&) noexcept = default;
+    auto operator=(TokenHmacKey&&) noexcept -> TokenHmacKey& = default;
+    ~TokenHmacKey() = default;
 };
 
 // Derive an independent access-token HMAC key from master key material.
@@ -47,5 +51,28 @@ struct TokenHmacKey final
 // nullopt if no master key is configured (fail-closed, same shape as v4).
 [[nodiscard]] auto derive_token_hmac_key_v3(std::span<std::uint8_t const> master_key_material) noexcept
     -> std::optional<TokenHmacKey>;
+
+static_assert(SecureKeyBytes::key_bytes == crypto_generichash_KEYBYTES);
+
+// Both access-token HMAC keys, derived together from one read of the master key.
+struct TokenHmacKeys final
+{
+    std::optional<TokenHmacKey> v3{};
+    std::optional<TokenHmacKey> v4{};
+};
+
+// The token HMAC keys derived from the master key file at `path`, cached
+// against that file's identity (ISO-7: identity and bytes from one open).
+//
+// CRY-4, PR #509 review: these keys are on every authenticated request's path.
+// A cache hit costs one open and fstat and shares the cached, locked keys; it
+// never copies them, because every copy is a fresh locked allocation and the
+// per-request copies could exhaust RLIMIT_MEMLOCK under concurrency.
+//
+// nullptr when `path` is empty, or the file is unreadable, insecure, invalid or
+// cannot be locked into memory. An unreadable file is logged once per outage,
+// not once per request. Thread-safe.
+[[nodiscard]] auto cached_token_hmac_keys(std::string_view path)
+    -> std::shared_ptr<TokenHmacKeys const>; // SHARED_PTR: reviewed — locked keys shared by readers
 
 } // namespace merovingian::crypto

@@ -407,6 +407,15 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.remote_media_cache_max_size");
     }
+    if (current.security().media.thumbnail_cache_size != next.security().media.thumbnail_cache_size)
+    {
+        add_change(plan, "security.media.thumbnail_cache_size");
+    }
+    if (current.security().media.thumbnail_max_concurrent_per_user !=
+        next.security().media.thumbnail_max_concurrent_per_user)
+    {
+        add_change(plan, "security.media.thumbnail_max_concurrent_per_user");
+    }
     if (current.security().media.remote_media_cache_max_entries != next.security().media.remote_media_cache_max_entries)
     {
         add_change(plan, "security.media.remote_media_cache_max_entries");
@@ -780,6 +789,18 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     if (current.server().push.max_in_flight_deliveries != next.server().push.max_in_flight_deliveries)
     {
         add_change(plan, "server.push.max_in_flight_deliveries");
+    }
+    if (current.server().push.max_pushers_per_user != next.server().push.max_pushers_per_user)
+    {
+        add_change(plan, "server.push.max_pushers_per_user");
+    }
+    if (current.server().push.gateway_failure_threshold != next.server().push.gateway_failure_threshold)
+    {
+        add_change(plan, "server.push.gateway_failure_threshold");
+    }
+    if (current.server().push.gateway_cooldown_seconds != next.server().push.gateway_cooldown_seconds)
+    {
+        add_change(plan, "server.push.gateway_cooldown_seconds");
     }
     if (current.server().client_api.max_body_size != next.server().client_api.max_body_size)
     {

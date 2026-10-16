@@ -1,6 +1,6 @@
 # Bound pusher delivery rather than registration
 
-* Status: accepted
+* Status: accepted; registration part superseded by [ADR-0151](0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md) (2026-10-15)
 * Date: 2026-09-06
 
 ## Context and Problem Statement

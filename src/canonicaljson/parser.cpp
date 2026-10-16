@@ -184,6 +184,10 @@ namespace
         case MEROVINGIAN_YYJSON_TYPE_NUMBER: {
             if (merovingian_yyjson_number_is_integer(value) != 0)
             {
+                if (merovingian_yyjson_integer_in_canonical_range(value) == 0)
+                {
+                    return {{}, ParseError::integer_out_of_range};
+                }
                 return {Value{static_cast<std::int64_t>(merovingian_yyjson_number_as_int64(value))}, ParseError::none};
             }
             return {Value{merovingian_yyjson_number_as_double(value)}, ParseError::none};

@@ -99,8 +99,9 @@ struct SendJoinStateSplit final
                               std::string_view room_id) -> OperationResult;
 // Parses the `server_name=` and `via=` query parameters (each may repeat) from a
 // raw query string into an ordered, de-duplicated list of server names. Values are
-// percent-decoded. `server_name` is the legacy spelling; `via` (MSC4156) is current.
-[[nodiscard]] auto parse_join_via_servers(std::string_view query) -> std::vector<std::string>;
+// percent-decoded once. nullopt rejects NUL in recognized values; unrelated
+// parameters remain untouched. `server_name` is legacy; `via` (MSC4156) is current.
+[[nodiscard]] auto parse_join_via_servers(std::string_view query) -> std::optional<std::vector<std::string>>;
 // Builds the ordered list of candidate resident servers to attempt make_join /
 // send_join against: the via servers first (in request order), then the room ID's
 // server domain when present (room versions < 12). Room version 12 IDs are bare

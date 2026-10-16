@@ -8,6 +8,7 @@ Structured logging and audit trail for the server.
 |---|---|
 | `observability.cpp` | Audit event types and category enum, admin route matching (`admin_routes`/`match_admin_route`), health and Prometheus metrics snapshots, correlation context (`CorrelationScope`), and automatic log-field redaction (`log_field_is_sensitive`, `redact_log_value`, `redact_log_message`), control-character escaping (`escape_log_controls`) and the field-value length cap (`cap_log_field_value`, `render_log_field_value`) |
 | `logger.hpp` (header-only) | Structured logger with level filtering; sinks to stdout/file; writer threads only after `start_writers()` |
+| `log_file_sink.hpp` (header-only) | The `--log-file` descriptor: opened `O_NOFOLLOW\|O_CLOEXEC`, only as a regular file this process owns, made 0600 (ISO-6, ADR-0146). Never open the log file any other way |
 
 ## Writer threads (ADR-0082)
 
@@ -86,7 +87,7 @@ durability distinction:
   added to `audit_event_is_rate_capped` (ADR-0080). Never gate authenticated or administrative
   events.
 - Client-supplied text in an audit `actor`, `target` or `reason` is cut to 255 bytes and
-  sanitised (`database::bounded_utf8`) by `append_local_audit` / `append_audit_event`; do not
+  sanitised (`observability::bounded_utf8`) by `append_local_audit` / `append_audit_event`; do not
   write around those two functions.
 - Every new log call added to security-sensitive paths must be reviewed in `docs/observability-audit.md`.
 

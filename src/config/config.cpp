@@ -8,11 +8,19 @@
 #include "merovingian/http/keep_alive.hpp"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <utility>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 namespace merovingian::config
 {
@@ -450,6 +458,45 @@ auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseRes
     return {true, magnitude * multiplier};
 }
 
+namespace
+{
+
+    // An IPv4 or IPv6 literal, optionally followed by `/` and a decimal prefix no
+    // longer than the address. The federation boundary refuses every address
+    // when an entry fails this (federation/security.cpp range_denies), so an
+    // entry that would do that is refused here instead (PR #509 review).
+    [[nodiscard]] auto ip_range_is_well_formed(std::string_view range) noexcept -> bool
+    {
+        auto const slash = range.find('/');
+        auto const address = range.substr(0U, slash);
+        if (address.empty() || address.size() >= INET6_ADDRSTRLEN)
+        {
+            return false;
+        }
+        auto literal = std::array<char, INET6_ADDRSTRLEN>{};
+        std::ranges::copy(address, literal.begin());
+        auto v4 = in_addr{};
+        auto v6 = in6_addr{};
+        auto const bits = ::inet_pton(AF_INET, literal.data(), &v4) == 1    ? 32U
+                          : ::inet_pton(AF_INET6, literal.data(), &v6) == 1 ? 128U
+                                                                            : 0U;
+        if (bits == 0U)
+        {
+            return false;
+        }
+        if (slash == std::string_view::npos)
+        {
+            return true;
+        }
+        auto const text = range.substr(slash + 1U);
+        auto prefix = 0U;
+        auto const parsed = std::from_chars(text.data(), text.data() + text.size(), prefix);
+        return !text.empty() && text.front() != '+' && parsed.ec == std::errc{} &&
+               parsed.ptr == text.data() + text.size() && prefix <= bits;
+    }
+
+} // namespace
+
 auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
 {
     return range == "127.0.0.0/8" || range == "10.0.0.0/8" || range == "172.16.0.0/12" || range == "192.168.0.0/16" ||
@@ -554,6 +601,27 @@ auto log_level_name(observability::LogLevel level) noexcept -> std::string_view
 auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 {
     auto findings = std::vector<ConfigValidationFinding>{};
+
+    // Project admission limits, not Matrix protocol maxima or a substitute
+    // for checked clock arithmetic. Zero keeps its explicit no-expiry meaning.
+    constexpr auto max_access_token_lifetime_ms = std::int64_t{2'592'000'000};   // 30 days
+    constexpr auto max_refresh_token_lifetime_ms = std::int64_t{31'536'000'000}; // 365 days
+    if (config.security().access_token_lifetime_ms < 0)
+    {
+        findings.push_back({"security.access_token_lifetime_ms", "must be non-negative; 0 disables expiry"});
+    }
+    else if (config.security().access_token_lifetime_ms > max_access_token_lifetime_ms)
+    {
+        findings.push_back({"security.access_token_lifetime_ms", "must not exceed 2592000000 ms (30 days)"});
+    }
+    if (config.security().refresh_token_lifetime_ms < 0)
+    {
+        findings.push_back({"security.refresh_token_lifetime_ms", "must be non-negative; 0 disables expiry"});
+    }
+    else if (config.security().refresh_token_lifetime_ms > max_refresh_token_lifetime_ms)
+    {
+        findings.push_back({"security.refresh_token_lifetime_ms", "must not exceed 31536000000 ms (365 days)"});
+    }
 
     if (config.server().server_name.empty())
     {
@@ -678,6 +746,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                    4096U);
     validate_count("server.push.max_pushers_per_delivery", config.server().push.max_pushers_per_delivery, 256U);
     validate_count("server.push.max_in_flight_deliveries", config.server().push.max_in_flight_deliveries, 4096U);
+    validate_count("server.push.max_pushers_per_user", config.server().push.max_pushers_per_user, 1000U);
+    validate_count("server.push.gateway_failure_threshold", config.server().push.gateway_failure_threshold, 100U);
+    validate_count("server.push.gateway_cooldown_seconds", config.server().push.gateway_cooldown_seconds, 86400U);
     validate_bytes("server.client_api.max_body_size", config.server().client_api.max_body_size, 67108864U);
     validate_bytes("server.http.max_body_size", config.server().http.max_body_size, 67108864U);
     validate_bytes("security.federation.backfill.response_max_size",
@@ -1142,6 +1213,13 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"security.federation.deny_ip_ranges", "federation must block private or loopback ranges"});
     }
+    if (auto const& ranges = config.security().federation.deny_ip_ranges;
+        !std::ranges::all_of(ranges, ip_range_is_well_formed))
+    {
+        findings.push_back({"security.federation.deny_ip_ranges",
+                            "every federation deny range must be an IP address or CIDR range such as 10.0.0.0/8 or "
+                            "fc00::/7; a malformed entry would deny every address"});
+    }
 
     validate_count("security.federation.query.max_backfill_pdus", config.security().federation.query.max_backfill_pdus,
                    10000U);
@@ -1277,6 +1355,20 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({field, "media size limit must be empty (no limit) or a positive size such as "
                                        "250GiB; accepted suffixes are B, KiB, MiB and GiB"});
         }
+    }
+    // The thumbnail cache is a budget, not a limit: empty or `0` disables it
+    // (ADR-0152); anything else must parse.
+    if (auto const& size = config.security().media.thumbnail_cache_size;
+        !size.empty() && size != "0" && !parse_size_limit(size).valid)
+    {
+        findings.push_back({"security.media.thumbnail_cache_size",
+                            "thumbnail cache size must be empty or 0 (disabled) or a positive size such as 64MiB; "
+                            "accepted suffixes are B, KiB, MiB and GiB"});
+    }
+    if (config.security().media.thumbnail_max_concurrent_per_user == 0U ||
+        config.security().media.thumbnail_max_concurrent_per_user > 64U)
+    {
+        findings.push_back({"security.media.thumbnail_max_concurrent_per_user", "must be between 1 and 64"});
     }
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)

@@ -42,6 +42,31 @@ namespace merovingian::federation_worker
 namespace
 {
 
+    // Only synchronous sinks on this fed_request task inherit its main-side parent.
+    thread_local std::uint64_t current_fed_parent_request_id{0U};
+
+    class FedRequestParentScope final
+    {
+    public:
+        explicit FedRequestParentScope(std::uint64_t parent_request_id) noexcept
+            : previous_parent_request_id_{std::exchange(current_fed_parent_request_id, parent_request_id)}
+        {
+        }
+
+        ~FedRequestParentScope() noexcept
+        {
+            current_fed_parent_request_id = previous_parent_request_id_;
+        }
+
+        FedRequestParentScope(FedRequestParentScope const&) = delete;
+        auto operator=(FedRequestParentScope const&) -> FedRequestParentScope& = delete;
+        FedRequestParentScope(FedRequestParentScope&&) = delete;
+        auto operator=(FedRequestParentScope&&) -> FedRequestParentScope& = delete;
+
+    private:
+        std::uint64_t previous_parent_request_id_;
+    };
+
     // ---- JSON helpers --------------------------------------------------------
     // The pdu_ingest frame uses the same JSON schema as the federation IPC
     // frames. Rather than keep a second hand-rolled parser here (which shared
@@ -212,10 +237,12 @@ namespace
     // to itself contain arbitrary nested JSON (including a literal "type"
     // key, as e.g. m.room_key.withheld content does) without corrupting the
     // outer frame that ipc_json_get_str parses on the other side.
-    auto serialize_edu_ingest(federation::InboundEduEnvelope const& env) -> std::string
+    auto serialize_edu_ingest(federation::InboundEduEnvelope const& env, std::uint64_t parent_request_id) -> std::string
     {
-        auto result = std::string{R"({"type":"edu_ingest","edu_type":)"};
+        auto result = std::string{R"({"type":"edu_ingest","parent_request_id":)"};
         result.reserve(256U + env.content_json.size());
+        result += std::to_string(parent_request_id);
+        result += R"(,"edu_type":)";
         result += ipc::ipc_json_str(env.edu_type);
         result += R"(,"origin":)";
         result += ipc::ipc_json_str(env.origin);
@@ -638,6 +665,9 @@ auto WorkerEventLoop::run() -> void
         // on. Re-applying the main-process profile would call setrlimit,
         // which the worker filter denies (ISO-2, ADR-0112).
         .process_hardening_applied_by_caller = config_.federation_worker().apply_hardening,
+        // FED-10, ADR-0153: each shard resolves keys within its share of the
+        // configured budgets, so all shards together stay within them.
+        .key_resolution_shards = config_.federation_worker().shards,
     });
     if (!started.started)
     {
@@ -723,7 +753,12 @@ auto WorkerEventLoop::run() -> void
     // worker EDU relay".
     runtime.federation.edu_sink =
         [channel_ptr](federation::InboundEduEnvelope const& envelope) -> federation::EduDispositionResult {
-        auto const json_body = serialize_edu_ingest(envelope);
+        auto const parent_request_id = current_fed_parent_request_id;
+        if (parent_request_id == 0U)
+        {
+            return {federation::EduDispositionStatus::rejected_invalid, "edu_ingest has no active fed_request parent"};
+        }
+        auto const json_body = serialize_edu_ingest(envelope, parent_request_id);
         auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
         if (!reply.has_value())
         {
@@ -874,7 +909,10 @@ auto WorkerEventLoop::run() -> void
             auto& target_pool = needs_relay ? relay_pool : local_pool;
             auto const enqueued =
                 target_pool.submit([&runtime, channel_ptr, id, request = std::move(request)]() mutable {
-                    auto const response = homeserver::handle_federation_http_request(runtime, request);
+                    auto const response = [&runtime, &request, id]() {
+                        auto const parent_scope = FedRequestParentScope{id};
+                        return homeserver::handle_federation_http_request(runtime, request);
+                    }();
                     channel_ptr->send_response(id, ipc::serialize_fed_response(response));
                 });
             if (!enqueued)

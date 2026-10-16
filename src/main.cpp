@@ -39,10 +39,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include <poll.h>
+#include <sys/stat.h>
 
 #ifdef __FreeBSD__
 #include <fcntl.h>
@@ -51,7 +53,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.25"};
+constexpr auto version = std::string_view{"0.12.26"};
 
 struct BootstrapConfigResult final
 {
@@ -480,32 +482,20 @@ auto configure_logging(ParsedArgs const& args) -> void
         merovingian::observability::SingleLog::instance().set_console_log_level(
             merovingian::observability::LogLevel::debug);
     }
-    if (args.log_file.has_value())
+    if (args.log_file.has_value() &&
+        !merovingian::observability::SingleLog::instance().set_log_file_path(*args.log_file))
     {
-        merovingian::observability::SingleLog::instance().set_log_file_path(*args.log_file);
+        // Logging continues on the console only; without this the operator
+        // would find neither a log file nor any reason for its absence.
+        LOG_ERROR("Log file refused, logging to the console only: --log-file must name a regular file owned by "
+                  "the service user, not a symlink or device (ISO-6, ADR-0146)");
     }
 }
 
-auto trim_line_ending(std::string& value) -> void
+[[nodiscard]] auto read_bootstrap_admin_password(std::string const& path)
+    -> std::optional<merovingian::core::SecretBuffer>
 {
-    while (!value.empty() && (value.back() == '\n' || value.back() == '\r'))
-    {
-        value.pop_back();
-    }
-}
-
-[[nodiscard]] auto read_bootstrap_admin_password(std::string const& path) -> std::optional<std::string>
-{
-    auto input = std::ifstream{path};
-    if (!input)
-    {
-        return std::nullopt;
-    }
-
-    auto password = std::string{};
-    std::getline(input, password);
-    trim_line_ending(password);
-    return password.empty() ? std::optional<std::string>{} : std::optional<std::string>{std::move(password)};
+    return merovingian::platform::read_secure_secret_line(path, 4096U);
 }
 
 auto print_version() -> void
@@ -902,12 +892,16 @@ struct ListenerBinding final
         auto password = read_bootstrap_admin_password(*args.bootstrap_admin_password_file);
         if (!password.has_value())
         {
-            LOG_CRITICAL("Bootstrap admin password file is missing or empty");
+            LOG_CRITICAL("Bootstrap admin password requires a nonempty service-owned mode-0400 regular file of at most "
+                         "4096 bytes");
             return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
         }
 
-        auto admin = merovingian::homeserver::bootstrap_admin_user(runtime_result.runtime.homeserver,
-                                                                   *args.bootstrap_admin_localpart, *password);
+        auto const bytes = password->bytes();
+        auto admin = merovingian::homeserver::bootstrap_admin_user(
+            runtime_result.runtime.homeserver, *args.bootstrap_admin_localpart,
+            std::string_view{reinterpret_cast<char const*>(bytes.data()), bytes.size()});
+        password.reset(); // Wipe before logging or handling bootstrap failure.
         if (!admin.ok)
         {
             LOG_CRITICAL("Bootstrap admin creation failed: " + admin.reason);
@@ -1020,6 +1014,7 @@ struct ListenerBinding final
 
 auto main(int argc, char const* const* argv) -> int
 {
+    std::ignore = ::umask(0077);
     // HTTP-5: SIGPIPE must be ignored before any thread exists. OpenSSL's socket
     // BIO writes without MSG_NOSIGNAL, so with the default disposition one TLS
     // client that resets its connection kills the server. Fail closed.

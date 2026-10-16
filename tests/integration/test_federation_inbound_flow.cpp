@@ -48,7 +48,9 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <variant>
+#include <vector>
 
 #include <sodium.h>
 
@@ -457,6 +459,296 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys", "[in
 // rejected. PDU-level failures MUST be reported per-PDU in the response body
 // under the "pdus" key. Returning a 4xx for the whole transaction causes the
 // sending server to back off and retry, breaking federation.
+SCENARIO("PDU cache wiring reads fresh remote and retained local signing keys without discovery",
+         "[integration][federation][fed10][fed10-cache-wiring]")
+{
+    GIVEN("the production callbacks and signing-key rows in a real in-memory database")
+    {
+        auto started = merovingian::homeserver::start_runtime(federation_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(static_cast<bool>(runtime.federation.cached_pdu_key_lookup));
+        auto seed = std::string(32U, '\0');
+        randombytes_buf(seed.data(), seed.size());
+        auto const bytes = merovingian::federation::test::keypair_from_seed(seed).public_key;
+        auto const encoded = merovingian::events::matrix_base64_from_bytes(bytes);
+        auto const now = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        auto const remote = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:cache"};
+        REQUIRE(merovingian::database::store_server_signing_key(runtime.database.persistent_store,
+                                                                {remote, key_id, encoded, now + 3600000U}));
+        auto rows = merovingian::database::snapshot_server_signing_keys(runtime.database.persistent_store);
+        auto own = std::ranges::find_if(rows, [&runtime](auto const& row) {
+            return row.server_name == runtime.config.server().server_name && !row.secret_key.empty();
+        });
+        REQUIRE(own != rows.end());
+        auto const own_id = own->key_id;
+        own->valid_until_ts = 1U;
+        REQUIRE(merovingian::database::store_server_signing_key(runtime.database.persistent_store, *own));
+        REQUIRE(merovingian::database::store_server_signing_key(
+            runtime.database.persistent_store, {runtime.config.server().server_name, key_id, encoded, now + 3600000U}));
+
+        WHEN("verification keys are read through the wired cache-only provider")
+        {
+            auto const fresh = runtime.federation.cached_pdu_key_lookup(remote, key_id);
+            auto const retained = runtime.federation.cached_pdu_key_lookup(runtime.config.server().server_name, own_id);
+            auto const foreign_local =
+                runtime.federation.cached_pdu_key_lookup(runtime.config.server().server_name, key_id);
+            auto const missing = runtime.federation.cached_pdu_key_lookup(remote, "ed25519:absent");
+            REQUIRE(merovingian::database::store_server_signing_key(runtime.database.persistent_store,
+                                                                    {remote, key_id, encoded, 1U}));
+            auto const stale = runtime.federation.cached_pdu_key_lookup(remote, key_id);
+
+            THEN("fresh remote and old owned keys are returned, but stale or foreign-owned keys are not")
+            {
+                REQUIRE(fresh.has_value());
+                CHECK((fresh->public_key_bytes == bytes));
+                REQUIRE(retained.has_value());
+                CHECK(retained->valid_until_ts == 1U);
+                CHECK_FALSE(foreign_local.has_value());
+                CHECK_FALSE(missing.has_value());
+                CHECK_FALSE(stale.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Federation HTTP overload stays retryable without penalizing relay trust",
+         "[integration][federation][fed10][fed10-overload-wiring]")
+{
+    GIVEN("production callbacks, a real database, and valid relayed PDUs without cached sender keys")
+    {
+        auto seed = std::string(32U, '\0');
+        randombytes_buf(seed.data(), seed.size());
+        auto const relay = std::string{"relay.example.org"};
+        auto const key_id = std::string{"ed25519:test"};
+        auto const source = std::string{"198.51.100.7"};
+        auto const senders = std::vector<std::string>{"127.0.0.1", "127.0.0.2", "127.0.0.3"};
+        auto pdus = std::string{};
+        for (auto const& sender : senders)
+        {
+            if (!pdus.empty())
+            {
+                pdus += ',';
+            }
+            pdus += signed_json_pdu(sender, key_id, seed);
+        }
+        auto outcomes = std::vector<std::pair<unsigned, unsigned>>{};
+
+        WHEN("raw and IPC-verified requests encounter either exhausted quota or occupied capacity")
+        {
+            for (auto const verified : {false, true})
+            {
+                for (auto const capacity_full : {false, true})
+                {
+                    auto started = merovingian::homeserver::start_runtime(federation_config());
+                    REQUIRE(started.started);
+                    auto& runtime = started.runtime;
+                    merovingian::homeserver::wire_federation_callbacks(runtime);
+                    auto const valid_until =
+                        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                       std::chrono::system_clock::now().time_since_epoch())
+                                                       .count()) +
+                        3600000U;
+                    auto peer = remote_for(relay, key_id, seed);
+                    peer.signing_key.valid_until_ts = valid_until;
+                    merovingian::federation::upsert_remote(runtime.federation, std::move(peer));
+                    auto const before = runtime.federation.remotes.front().trust;
+                    runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
+                    runtime.federation.config.key_resolution_max_in_flight = 1U;
+                    auto const spent = capacity_full ? 0U : 1U;
+                    runtime.federation.key_resolution_buckets.push_back(
+                        {source, spent, std::chrono::steady_clock::now()});
+                    runtime.federation.key_resolutions_in_flight = capacity_full ? 1U : 0U;
+                    auto request = merovingian::homeserver::LocalHttpRequest{};
+                    request.method = "PUT";
+                    request.target = "/_matrix/federation/v1/send/overload-retry";
+                    request.body = transaction_body(relay, pdus);
+                    request.remote_addr = source;
+                    request.sig_verified = verified;
+                    request.verified_origin = verified ? relay : std::string{};
+                    request.verified_key_id = verified ? key_id : std::string{};
+                    if (!verified)
+                    {
+                        auto const signature = merovingian::federation::make_federation_signature(
+                            relay, runtime.config.server().server_name, request.method, request.target, request.body,
+                            merovingian::federation::test::keypair_from_seed(seed).secret_key);
+                        request.access_token = "X-Matrix origin=\"" + relay + "\",destination=\"" +
+                                               runtime.config.server().server_name + "\",key=\"" + key_id +
+                                               "\",sig=\"" + signature + "\"";
+                    }
+                    auto const overloaded = merovingian::homeserver::handle_federation_http_request(runtime, request);
+                    CHECK(runtime.federation.remotes.front().trust.consecutive_failures == before.consecutive_failures);
+                    CHECK(runtime.federation.remotes.front().trust.last_failure_at == before.last_failure_at);
+                    CHECK(runtime.federation.remotes.front().trust.reputation_score == before.reputation_score);
+                    CHECK(runtime.federation.accepted_transactions.empty());
+                    CHECK(runtime.federation.key_resolution_failures.empty());
+                    // Adding genuine cached verification material permits the same
+                    // transaction to retry even while the admission limit remains.
+                    // Loopback literals ensure a broken cache path cannot use an
+                    // external server; the real discovery policy rejects them.
+                    auto const public_bytes = merovingian::federation::test::keypair_from_seed(seed).public_key;
+                    auto const public_key = merovingian::events::matrix_base64_from_bytes(public_bytes);
+                    for (auto const& sender : senders)
+                    {
+                        REQUIRE(merovingian::database::store_server_signing_key(
+                            runtime.database.persistent_store, {sender, key_id, public_key, valid_until}));
+                    }
+                    auto const retried = merovingian::homeserver::handle_federation_http_request(runtime, request);
+                    outcomes.emplace_back(overloaded.status, retried.status);
+                    REQUIRE(runtime.federation.accepted_transactions.size() == 1U);
+                    CHECK(runtime.federation.accepted_transactions.front().origin == relay);
+                    CHECK(runtime.federation.accepted_transactions.front().transaction_id == "overload-retry");
+                    CHECK(runtime.federation.remotes.front().trust.consecutive_failures == before.consecutive_failures);
+                    CHECK(runtime.federation.key_resolution_buckets.front().resolutions_seen == spent);
+                    CHECK(runtime.federation.key_resolutions_in_flight == (capacity_full ? 1U : 0U));
+                }
+            }
+
+            THEN("all overloads return 503 without backoff and the original transactions succeed from cache")
+            {
+                REQUIRE(outcomes.size() == 4U);
+                for (auto const& outcome : outcomes)
+                {
+                    CHECK(outcome.first == 503U);
+                    CHECK(outcome.second == 200U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("A cached verification key cannot exempt discovery from origin admission",
+         "[integration][federation][fed10][fed10-origin-budget]")
+{
+    GIVEN("a fresh second key, an exhausted source budget, and an occupied global slot")
+    {
+        auto started = merovingian::homeserver::start_runtime(federation_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        auto seed = std::string(32U, '\0');
+        auto old_seed = std::string(32U, '\0');
+        randombytes_buf(seed.data(), seed.size());
+        randombytes_buf(old_seed.data(), old_seed.size());
+        // An explicit loopback server is rejected before any HTTP fetch if the
+        // full resolver is reached. This regression requires no external network.
+        auto const origin = std::string{"127.0.0.1"};
+        auto const key_id = std::string{"ed25519:second"};
+        auto const source = std::string{"198.51.100.7"};
+        auto const valid_until = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                std::chrono::system_clock::now().time_since_epoch())
+                                                                .count()) +
+                                 3600000U;
+        auto const bytes = merovingian::federation::test::keypair_from_seed(seed).public_key;
+        REQUIRE(merovingian::database::store_server_signing_key(
+            runtime.database.persistent_store,
+            {origin, key_id, merovingian::events::matrix_base64_from_bytes(bytes), valid_until}));
+        runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
+        runtime.federation.config.key_resolution_max_in_flight = 1U;
+        runtime.federation.key_resolution_buckets.push_back({source, 1U, std::chrono::steady_clock::now()});
+        runtime.federation.key_resolutions_in_flight = 1U;
+        auto request = merovingian::homeserver::LocalHttpRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/cached-origin";
+        request.body = transaction_body(origin, "");
+        request.remote_addr = source;
+        auto const signature = merovingian::federation::make_federation_signature(
+            origin, runtime.config.server().server_name, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(seed).secret_key);
+        request.access_token = "X-Matrix origin=\"" + origin + "\",destination=\"" +
+                               runtime.config.server().server_name + "\",key=\"" + key_id + "\",sig=\"" + signature +
+                               "\"";
+
+        WHEN("the same request is checked first without discovery state and then with a known peer")
+        {
+            auto const cold = merovingian::homeserver::handle_federation_http_request(runtime, request);
+            auto known = remote_for(origin, "ed25519:first", old_seed);
+            known.signing_key.valid_until_ts = valid_until;
+            merovingian::federation::upsert_remote(runtime.federation, std::move(known));
+            auto const warm = merovingian::homeserver::handle_federation_http_request(runtime, request);
+
+            THEN("discovery is throttled while cached key rotation verifies without spending or releasing a slot")
+            {
+                CHECK(cold.status == 429U);
+                CHECK(warm.status == 200U);
+                CHECK(runtime.federation.key_resolutions_in_flight == 1U);
+                CHECK(runtime.federation.key_resolution_buckets.front().resolutions_seen == 1U);
+                REQUIRE(runtime.federation.remotes.size() == 1U);
+                CHECK(runtime.federation.remotes.front().signing_key.key_id == key_id);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation transport keeps the source identity for sender admission",
+         "[integration][federation][fed10][fed10-source-wiring]")
+{
+    GIVEN("raw and IPC-verified requests carrying a PDU from a denied loopback server")
+    {
+        auto seed = std::string(32U, '\0');
+        randombytes_buf(seed.data(), seed.size());
+        auto const relay = std::string{"relay.example.org"};
+        auto const key_id = std::string{"ed25519:test"};
+        auto const source = std::string{"198.51.100.7"};
+        auto results = std::vector<std::pair<unsigned, std::string>>{};
+
+        WHEN("each request passes through the real federation HTTP router")
+        {
+            for (auto const verified : {false, true})
+            {
+                auto started = merovingian::homeserver::start_runtime(federation_config());
+                REQUIRE(started.started);
+                auto& runtime = started.runtime;
+                merovingian::homeserver::wire_federation_callbacks(runtime);
+                auto peer = remote_for(relay, key_id, seed);
+                peer.signing_key.valid_until_ts =
+                    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                   std::chrono::system_clock::now().time_since_epoch())
+                                                   .count()) +
+                    3600000U;
+                merovingian::federation::upsert_remote(runtime.federation, std::move(peer));
+                auto request = merovingian::homeserver::LocalHttpRequest{};
+                request.method = "PUT";
+                request.target = "/_matrix/federation/v1/send/source-wiring";
+                request.body = transaction_body(relay, signed_json_pdu("127.0.0.1", key_id, seed));
+                request.remote_addr = source;
+                request.sig_verified = verified;
+                request.verified_origin = verified ? relay : std::string{};
+                request.verified_key_id = verified ? key_id : std::string{};
+                if (!verified)
+                {
+                    auto const signature = merovingian::federation::make_federation_signature(
+                        relay, runtime.config.server().server_name, request.method, request.target, request.body,
+                        merovingian::federation::test::keypair_from_seed(seed).secret_key);
+                    request.access_token = "X-Matrix origin=\"" + relay + "\",destination=\"" +
+                                           runtime.config.server().server_name + "\",key=\"" + key_id + "\",sig=\"" +
+                                           signature + "\"";
+                }
+                // The real discovery policy rejects the explicit loopback literal
+                // before any HTTP fetch; no external server or mocked client is used.
+                auto const response = merovingian::homeserver::handle_federation_http_request(runtime, request);
+                REQUIRE(runtime.federation.key_resolution_buckets.size() == 1U);
+                results.emplace_back(response.status, runtime.federation.key_resolution_buckets.front().source);
+                CHECK(runtime.federation.key_resolutions_in_flight == 0U);
+            }
+
+            THEN("both transports charge the actual client source, not the shared unknown bucket")
+            {
+                REQUIRE(results.size() == 2U);
+                for (auto const& result : results)
+                {
+                    CHECK(result.first == 200U);
+                    CHECK(result.second == source);
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("Homeserver routes signed inbound federation transactions through runtime policy", "[integration][federation]")
 {
     GIVEN("a started runtime with a known remote server")

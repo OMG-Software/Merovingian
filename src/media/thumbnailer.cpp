@@ -29,13 +29,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if defined(__FreeBSD__)
-// FreeBSD exposes `environ` with C linkage; declare it at namespace scope so
-// the FreeBSD Capsicum fexecve() path can pass the current environment to the
-// thumbnail worker binary.
-extern "C" char** environ;
-#endif
-
 namespace merovingian::media
 {
 namespace
@@ -43,6 +36,23 @@ namespace
 
     constexpr std::string_view request_magic{"MTH1"};
     constexpr std::string_view response_magic{"MTR1"};
+
+    [[nodiscard]] auto open_worker_stderr_sink() noexcept -> core::FileDescriptor
+    {
+        auto sink = core::FileDescriptor{::open("/dev/null", O_WRONLY | O_CLOEXEC)};
+        if (sink.valid() && sink.get() <= STDERR_FILENO)
+        {
+            // A service may start with stdio closed and redirect it later. Keep
+            // our owned sink outside that mutable range, preserving closed stdio.
+            return core::FileDescriptor{::fcntl(sink.get(), F_DUPFD_CLOEXEC, 3)};
+        }
+        return sink;
+    }
+
+    // Pre-open before main can enter Capsicum or another filesystem sandbox.
+    // Immutable RAII ownership keeps concurrent thumbnail requests independent;
+    // CLOEXEC prevents the original descriptor surviving the worker exec.
+    auto const worker_stderr_sink = open_worker_stderr_sink();
 
     auto append_u32(std::string& out, std::uint32_t value) -> void
     {
@@ -58,6 +68,24 @@ namespace
                (static_cast<std::uint32_t>(static_cast<unsigned char>(frame[offset + 1U])) << 16) |
                (static_cast<std::uint32_t>(static_cast<unsigned char>(frame[offset + 2U])) << 8) |
                static_cast<std::uint32_t>(static_cast<unsigned char>(frame[offset + 3U]));
+    }
+
+    [[nodiscard]] auto png_matches_reported_dimensions(ThumbnailWorkerResponse const& response) noexcept -> bool
+    {
+        // Inspect only the fixed PNG header: no image decoder belongs in the parent.
+        constexpr auto png_signature = std::string_view{"\x89PNG\r\n\x1a\n", 8U};
+        constexpr auto ihdr_size = std::size_t{33U}; // signature + length/type + 13-byte IHDR + CRC
+        auto const png = std::string_view{response.png_bytes};
+        if (png.size() < ihdr_size || png.substr(0U, 8U) != png_signature || read_u32(png, 8U) != 13U ||
+            png.substr(12U, 4U) != "IHDR")
+        {
+            return false;
+        }
+        auto const width = read_u32(png, 16U);
+        auto const height = read_u32(png, 20U);
+        constexpr auto max_png_dimension = std::uint32_t{0x7FFFFFFFU};
+        return width != 0U && height != 0U && width <= max_png_dimension && height <= max_png_dimension &&
+               width == response.width && height == response.height;
     }
 
     [[nodiscard]] auto monotonic_ms() -> std::int64_t
@@ -387,6 +415,11 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     // LCOV_EXCL_STOP
     auto const& frame = *frame_opt;
 
+    if (!worker_stderr_sink.valid())
+    {
+        return {false, 500U, {}, {}, 0U, 0U, "thumbnail worker stderr sink unavailable"};
+    }
+
     // stdin: parent writes -> child reads; stdout: child writes -> parent reads.
     auto to_child = std::array<int, 2>{-1, -1};
     auto from_child = std::array<int, 2>{-1, -1};
@@ -403,6 +436,10 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     auto child_stdout_read = core::FileDescriptor{from_child[0]};
     auto child_stdout_write = core::FileDescriptor{from_child[1]};
 
+    // Construct the exec environment before fork; never inherit parent-only or
+    // dynamic-loader entries, and do not allocate in the fork-to-exec window.
+    char minimal_path[] = "PATH=/usr/bin:/bin";
+    char* const exec_env[] = {minimal_path, nullptr};
     auto const pid = ::fork();
     if (pid < 0)
     {
@@ -413,6 +450,10 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         // Child: wire pipes to stdio, drop every other descriptor, then exec.
         ::dup2(child_stdin_read.get(), STDIN_FILENO);
         ::dup2(child_stdout_write.get(), STDOUT_FILENO);
+        if (::dup2(worker_stderr_sink.get(), STDERR_FILENO) < 0)
+        {
+            ::_exit(127); // Never execute a worker with inherited diagnostic access.
+        }
 
         // The parent write-end and child read-end are not needed after dup2.
         // Close them explicitly before the sweep so the sweep does not need to
@@ -434,9 +475,7 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
             core::close_all_file_descriptors_except(std::span<int const>{keep_open_caps});
             child_stdin_read.reset();
             child_stdout_write.reset();
-            // FreeBSD exposes `environ` with C linkage; the global declaration
-            // above provides it for this Capsicum fexecve() path.
-            ::fexecve(config.worker_binary_fd, exec_argv, environ);
+            ::fexecve(config.worker_binary_fd, exec_argv, exec_env);
             ::_exit(127); // fexecve failed
         }
 #endif // __FreeBSD__
@@ -459,7 +498,7 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
 
         child_stdin_read.reset();
         child_stdout_write.reset();
-        ::execv(config.worker_path.c_str(), exec_argv);
+        ::execve(config.worker_path.c_str(), exec_argv, exec_env);
         ::_exit(127); // exec failed
     }
 
@@ -523,6 +562,10 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         if (config.max_output_bytes != 0U && response->png_bytes.size() > config.max_output_bytes)
         {
             return {false, 502U, {}, {}, 0U, 0U, "thumbnail exceeds output limit"};
+        }
+        if (!png_matches_reported_dimensions(*response))
+        {
+            return {false, 502U, {}, {}, 0U, 0U, "invalid worker PNG header or dimensions"};
         }
         return {true, 200U, "image/png", response->png_bytes, response->width, response->height, {}};
     case ThumbnailWorkerStatus::decode_failed:

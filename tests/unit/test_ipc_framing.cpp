@@ -959,3 +959,129 @@ SCENARIO("IpcChannel build_frame emits valid JSON for an empty-object body", "[i
         pair.client->stop();
     }
 }
+
+namespace
+{
+struct Fed12StopChannels final
+{
+    ChannelPair& pair;
+    ~Fed12StopChannels() noexcept
+    {
+        pair.server->stop();
+        pair.client->stop();
+    }
+};
+} // namespace
+
+SCENARIO("EDU authorization uses owned metadata on the exact pending channel", "[ipc][fed-12-live-context]")
+{
+    GIVEN("two authenticated channels whose first requests have colliding numeric IDs")
+    {
+        auto trusted = make_channel_pair();
+        auto generic = make_channel_pair();
+        auto trusted_id_promise = std::promise<std::uint64_t>{};
+        auto generic_id_promise = std::promise<std::uint64_t>{};
+        auto trusted_id = trusted_id_promise.get_future();
+        auto generic_id = generic_id_promise.get_future();
+        auto const stop_trusted = Fed12StopChannels{trusted};
+        auto const stop_generic = Fed12StopChannels{generic};
+        trusted.client->set_request_handler([&](std::uint64_t id, std::string) {
+            trusted_id_promise.set_value(id);
+        });
+        generic.client->set_request_handler([&](std::uint64_t id, std::string) {
+            generic_id_promise.set_value(id);
+        });
+        trusted.server->start();
+        trusted.client->start();
+        generic.server->start();
+        generic.client->start();
+        auto verified_origin = std::string{"a.remote.example"};
+
+        WHEN("one request carries main-owned identity and the other only claims it in JSON")
+        {
+            auto trusted_reply = std::async(std::launch::async, [&] {
+                return trusted.server->send_request(R"({"type":"fed_request"})", std::chrono::seconds{10},
+                                                    verified_origin);
+            });
+            auto generic_reply = std::async(std::launch::async, [&] {
+                return generic.server->send_request(R"({"type":"fed_request","origin":"a.remote.example"})",
+                                                    std::chrono::seconds{10});
+            });
+            THEN("only an exact live identity on the original channel authorizes the relay")
+            {
+                REQUIRE(trusted_id.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                REQUIRE(generic_id.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                auto const parent = trusted_id.get();
+                auto const other_parent = generic_id.get();
+                REQUIRE(parent == other_parent);
+                // Arrival proves the pending entry already owns its identity.
+                verified_origin.clear();
+                verified_origin.shrink_to_fit();
+                CHECK(trusted.server->matches_pending_origin(parent, "a.remote.example"));
+                CHECK_FALSE(trusted.server->matches_pending_origin(parent, "b.remote.example"));
+                CHECK_FALSE(trusted.server->matches_pending_origin(parent, "A.remote.example"));
+                CHECK_FALSE(trusted.server->matches_pending_origin(parent, ""));
+                CHECK_FALSE(trusted.server->matches_pending_origin(0U, "a.remote.example"));
+                CHECK_FALSE(generic.server->matches_pending_origin(parent, "a.remote.example"));
+                CHECK_FALSE(trusted.client->matches_pending_origin(parent, "a.remote.example"));
+                trusted.client->send_response(parent, R"({"type":"fed_response"})");
+                generic.client->send_response(other_parent, R"({"type":"fed_response"})");
+                REQUIRE(trusted_reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                REQUIRE(generic_reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                CHECK(trusted_reply.get().has_value());
+                CHECK(generic_reply.get().has_value());
+                CHECK_FALSE(trusted.server->matches_pending_origin(parent, "a.remote.example"));
+                CHECK_FALSE(generic.server->matches_pending_origin(other_parent, "a.remote.example"));
+            }
+        }
+    }
+}
+
+SCENARIO("expired or stopped pending requests cannot authorize EDU relays", "[ipc][fed-12-live-context]")
+{
+    GIVEN("an authenticated pending request with a short monotonic deadline")
+    {
+        auto pair = make_channel_pair();
+        auto observed_promise = std::promise<std::uint64_t>{};
+        auto observed = observed_promise.get_future();
+        auto const stop = Fed12StopChannels{pair};
+        pair.client->set_request_handler([&](std::uint64_t id, std::string) {
+            observed_promise.set_value(id);
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the deadline expires without a worker response")
+        {
+            auto reply = std::async(std::launch::async, [&] {
+                return pair.server->send_request(R"({"type":"fed_request"})", std::chrono::seconds{1},
+                                                 "a.remote.example");
+            });
+            THEN("the wait ends without a response and its parent no longer authorizes")
+            {
+                REQUIRE(observed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                auto const parent = observed.get();
+                REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                CHECK_FALSE(reply.get().has_value());
+                CHECK_FALSE(pair.server->matches_pending_origin(parent, "a.remote.example"));
+            }
+        }
+        WHEN("the channel stops while the parent is still pending")
+        {
+            auto reply = std::async(std::launch::async, [&] {
+                return pair.server->send_request(R"({"type":"fed_request"})", std::chrono::seconds{10},
+                                                 "a.remote.example");
+            });
+            THEN("stop wakes the waiter and prevents any further admission")
+            {
+                REQUIRE(observed.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                auto const parent = observed.get();
+                REQUIRE(pair.server->matches_pending_origin(parent, "a.remote.example"));
+                pair.server->stop();
+                REQUIRE(reply.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+                CHECK_FALSE(reply.get().has_value());
+                CHECK_FALSE(pair.server->matches_pending_origin(parent, "a.remote.example"));
+            }
+        }
+    }
+}

@@ -46,6 +46,9 @@ struct StateEventReference final
     std::int64_t origin_server_ts{0};
     std::uint64_t depth{0};
     canonicaljson::Value event_json{};
+    // Trusted receipt metadata, never read from event JSON. Rejected events
+    // remain available to auth-chain walks but cannot supply own-auth fallback.
+    bool rejected{false};
 };
 
 struct StateGroup final

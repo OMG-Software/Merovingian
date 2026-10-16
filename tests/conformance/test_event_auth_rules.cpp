@@ -1525,15 +1525,15 @@ namespace
     auto const content = authorised ? std::string{"{\"membership\":\""} + std::string{membership} +
                                           "\",\"join_authorised_via_users_server\":\"@alice:example.org\"}"
                                     : std::string{"{\"membership\":\""} + std::string{membership} + "\"}";
-    auto const signatures = authorised
-                                ? std::string{",\"signatures\":{\"example.org\":{\"ed25519:test\":\"c2ln\"}}"}
-                                : std::string{};
+    auto const signatures =
+        authorised ? std::string{",\"signatures\":{\"example.org\":{\"ed25519:test\":\"c2ln\"}}"} : std::string{};
     auto const event_json =
         std::string{"{\"type\":\"m.room.member\",\"state_key\":\"@bob:example.org\",\"sender\":\"@bob:example.org\","
                     "\"room_id\":\"!room:example.org\",\"content\":"} +
         content +
         ",\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
-        "\"hashes\":{\"sha256\":\"hash\"}" + signatures + "}";
+        "\"hashes\":{\"sha256\":\"hash\"}" +
+        signatures + "}";
     auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
     auto const* policy = merovingian::rooms::find_room_version_policy(version);
@@ -3676,8 +3676,8 @@ constexpr auto k_default_room_power_levels =
                      "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}"};
 
 // The same room's state, with `member` joined and able to send.
-[[nodiscard]] auto joined_member_auth_events(std::string_view prior_power_levels_content,
-                                             std::string_view member) -> merovingian::events::AuthEventMap
+[[nodiscard]] auto joined_member_auth_events(std::string_view prior_power_levels_content, std::string_view member)
+    -> merovingian::events::AuthEventMap
 {
     auto auth_events = merovingian::events::AuthEventMap{};
     // Neither @admin nor @alice is the room creator: under MSC4289 (v12) a creator
@@ -3960,6 +3960,149 @@ SCENARIO("A user's power level is their explicit users entry even when negative"
                 REQUIRE(negative == -1);
                 REQUIRE(zero == 0);
                 REQUIRE(unlisted == 50);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EVT-12 (d), 29 Sep 2026 audit: float power levels before room version 6.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// The Canonical JSON parser refuses floats, so these events are read with the
+// general JSON parser, which keeps them as doubles: the auth rules are judged on
+// the values a v1-v5 event can legitimately carry.
+[[nodiscard]] auto float_auth_events(std::string_view prior_power_levels_content) -> merovingian::events::AuthEventMap
+{
+    auto auth_events = moderator_auth_events(k_moderator_prior_power_levels);
+    auto prior = merovingian::canonicaljson::parse_json(
+        make_power_levels_event_raw("@admin:example.org", prior_power_levels_content));
+    REQUIRE(prior.error == merovingian::canonicaljson::ParseError::none);
+    auth_events.power_levels = std::move(prior.value);
+    return auth_events;
+}
+
+} // namespace
+
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v3.md — "m.room.power_levels events
+// accept values as floats": "When the value is a float - First, exponential
+// notation is applied: 5.114698E4 becomes 51146.98 - Second, the value is
+// truncated at the decimal point: 51146.98 becomes 51146." In the spec's own
+// example @alice (50) and @bob (50.57) "have the same effective power level of 50".
+SCENARIO("Auth rules read float power levels by truncation before room version 6",
+         "[events][auth][power-levels][rule9][room-version][evt12]")
+{
+    GIVEN("a v5 room whose power_levels hold float values")
+    {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50.9,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":0,\"state_default\":50,\"events_default\":0,"
+                                            "\"users\":{\"@admin:example.org\":1.0E2,\"@alice:example.org\":50.57}}"};
+        auto const* policy = merovingian::rooms::find_room_version_policy("5");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = float_auth_events(prior);
+
+        WHEN("alice, at 50.57, lowers kick from 50.9 to 25.99")
+        {
+            auto const pl_json = make_power_levels_event_raw(
+                "@alice:example.org", "{\"ban\":50,\"kick\":25.99,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                                      "\"state_default\":50,\"events_default\":0,"
+                                      "\"users\":{\"@admin:example.org\":1.0E2,\"@alice:example.org\":50.57}}");
+            auto const parsed = merovingian::canonicaljson::parse_json(pl_json);
+            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — 50.57 reads as 50, which covers kick's old value 50")
+            {
+                // Spec MUST: a float power level is truncated, not rejected, in v1-v5.
+                REQUIRE(decision.allowed);
+            }
+        }
+
+        WHEN("alice tries to raise users_default to 50.99, above nothing she holds")
+        {
+            auto const pl_json = make_power_levels_event_raw(
+                "@alice:example.org", "{\"ban\":50,\"kick\":50.9,\"redact\":50,\"invite\":0,\"users_default\":50.99,"
+                                      "\"state_default\":50,\"events_default\":0,"
+                                      "\"users\":{\"@admin:example.org\":1.0E2,\"@alice:example.org\":50.57}}");
+            auto const parsed = merovingian::canonicaljson::parse_json(pl_json);
+            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("it is allowed: 50.99 truncates to 50, equal to her own level")
+            {
+                // Spec MUST: truncation at the decimal point, so 50.99 is 50.
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// A float level must be *read*, not treated as absent: absent would apply a
+// default, a weaker bound than the room set.
+SCENARIO("Float power levels are honoured, not defaulted, before room version 6",
+         "[events][auth][power-levels][rule9][room-version][evt12][security]")
+{
+    GIVEN("a v4 room where ban is 1.0E2 (100) and the sender holds 50.5")
+    {
+        auto const prior = std::string_view{"{\"ban\":1.0E2,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":0,\"state_default\":50,\"events_default\":0,"
+                                            "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50.5}}"};
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                                  "\"state_default\":50,\"events_default\":0,"
+                                  "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50.5}}");
+        auto const parsed = merovingian::canonicaljson::parse_json(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("4");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = float_auth_events(prior);
+
+        WHEN("she tries to lower ban from 100 to 50")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — 1.0E2 is read as 100, above her 50")
+            {
+                // Spec MUST: exponential notation is applied first, so 1.0E2 is 100.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v6.md — "Canonical JSON: Servers MUST
+// strictly enforce the JSON format specified in the appendices", which allows no
+// floats; v6-v9 accept string power levels only.
+SCENARIO("Auth rules reject float power levels from room version 6",
+         "[events][auth][power-levels][rule9][room-version][evt12]")
+{
+    GIVEN("a v6 room presented with a float power level")
+    {
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":50,\"kick\":25.5,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                                  "\"state_default\":50,\"events_default\":0,"
+                                  "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
+        auto const parsed = merovingian::canonicaljson::parse_json(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("6");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = moderator_auth_events(k_moderator_prior_power_levels);
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected")
+            {
+                // Spec MUST: v6+ strictly enforce Canonical JSON, which has no floats.
+                REQUIRE_FALSE(decision.allowed);
             }
         }
     }

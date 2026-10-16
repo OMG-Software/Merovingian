@@ -1,6 +1,6 @@
 # Local membership is projected once, at the local-event choke point
 
-* Status: accepted
+* Status: accepted; refined by [ADR-0149](0149-membership-rows-commit-with-their-event-and-are-reconciled-at-startup.md) (2026-10-15)
 * Date: 2026-10-08
 
 Technical Story: 29 September 2026 security audit, finding CSAZ-6 (membership changes sent through

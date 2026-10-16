@@ -139,8 +139,8 @@ auto constexpr remote_key_seed = "invite-join-test-seed";
     return req;
 }
 
-[[nodiscard]] auto signed_put(std::string const& target,
-                              std::string const& body) -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_put(std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto req = merovingian::federation::SignedFederationRequest{};
     req.method = "PUT";
@@ -216,8 +216,8 @@ struct SignedInvite final
 };
 
 [[nodiscard]] auto make_signed_invite(std::string const& room_id, std::string const& sender,
-                                      std::string const& state_key,
-                                      std::string const& room_version = "12") -> SignedInvite
+                                      std::string const& state_key, std::string const& room_version = "12")
+    -> SignedInvite
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
@@ -286,8 +286,8 @@ namespace
 
 // Navigate a JSON object and return a raw pointer to the Value for `key`.
 // Returns nullptr if the key is absent.
-[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj,
-                            std::string const& key) -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
+    -> merovingian::canonicaljson::Value const*
 {
     for (auto const& m : obj)
         if (m.key == key)
@@ -313,8 +313,8 @@ namespace
 }
 
 // Return true if `arr` (an array of JSON strings) contains `target`.
-[[nodiscard]] auto array_contains_string(merovingian::canonicaljson::Array const& arr,
-                                         std::string const& target) -> bool
+[[nodiscard]] auto array_contains_string(merovingian::canonicaljson::Array const& arr, std::string const& target)
+    -> bool
 {
     return std::any_of(arr.begin(), arr.end(), [&](auto const& v) {
         auto const* s = std::get_if<std::string>(&v.storage());
@@ -1791,8 +1791,8 @@ SCENARIO("ingest_send_join_state stores v12 m.room.create with room_id derived f
 namespace
 {
 
-[[nodiscard]] auto remote_for(std::string const& server_name, std::string const& key_id,
-                              std::string const& seed) -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& server_name, std::string const& key_id, std::string const& seed)
+    -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = server_name;
@@ -1808,10 +1808,11 @@ namespace
 // `{claimed_server, claimed_key_id}` — normally the same as the signing
 // keypair's own server/key, but scenarios that need a signature/key mismatch
 // pass a different `sign_seed` than the resolver's registered key.
-[[nodiscard]] auto signed_member_event(
-    std::string const& room_id, std::string const& user_id, std::string const& claimed_server,
-    std::string const& claimed_key_id, std::string const& sign_seed,
-    merovingian::rooms::RoomVersionPolicy const& policy) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto signed_member_event(std::string const& room_id, std::string const& user_id,
+                                       std::string const& claimed_server, std::string const& claimed_key_id,
+                                       std::string const& sign_seed,
+                                       merovingian::rooms::RoomVersionPolicy const& policy)
+    -> merovingian::canonicaljson::Value
 {
     auto raw = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""};
     raw += user_id;
@@ -2033,8 +2034,8 @@ namespace
     return reparsed.value;
 }
 
-[[nodiscard]] auto unsigned_member_event(std::string const& room_id,
-                                         std::string const& user_id) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto unsigned_member_event(std::string const& room_id, std::string const& user_id)
+    -> merovingian::canonicaljson::Value
 {
     auto raw = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""};
     raw += user_id;
@@ -2051,9 +2052,10 @@ namespace
 
 // A member event for `user_id` signed with this runtime's own current signing
 // key, under the key ID the server publishes for it.
-[[nodiscard]] auto own_signed_member_event(
-    merovingian::homeserver::HomeserverRuntime& runtime, std::string const& room_id, std::string const& user_id,
-    merovingian::rooms::RoomVersionPolicy const& policy) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto own_signed_member_event(merovingian::homeserver::HomeserverRuntime& runtime,
+                                           std::string const& room_id, std::string const& user_id,
+                                           merovingian::rooms::RoomVersionPolicy const& policy)
+    -> merovingian::canonicaljson::Value
 {
     auto const own_key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
     REQUIRE(own_key.has_value());
@@ -2246,8 +2248,8 @@ namespace
     return parsed.value;
 }
 
-[[nodiscard]] auto v12_create_event(std::string const& creator,
-                                    std::string const& nonce) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto v12_create_event(std::string const& creator, std::string const& nonce)
+    -> merovingian::canonicaljson::Value
 {
     return parse_test_event(R"({"type":"m.room.create","state_key":"","sender":")" + creator +
                             R"(","depth":1,"origin_server_ts":1000,"prev_events":[],"auth_events":[],)"
@@ -2457,6 +2459,148 @@ SCENARIO("filter_verified_send_join_events bounds concurrent key resolutions to 
     }
 }
 
+namespace
+{
+
+// A resolver over `keys` that records how many calls it served and the most it
+// served at once; each call takes 30 ms so concurrent calls overlap. The
+// resolver it hands out refers back to this object, which outlives it.
+class CountingResolver final
+{
+public:
+    CountingResolver() = default;
+    CountingResolver(CountingResolver const&) = delete;
+    auto operator=(CountingResolver const&) -> CountingResolver& = delete;
+    CountingResolver(CountingResolver&&) = delete;
+    auto operator=(CountingResolver&&) -> CountingResolver& = delete;
+    ~CountingResolver() = default;
+
+    [[nodiscard]] auto resolver() -> merovingian::federation::RemoteKeyResolver
+    {
+        return [this](std::string_view server_name,
+                      std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            calls.fetch_add(1U);
+            auto const current = in_flight.fetch_add(1U) + 1U;
+            auto previous = peak.load();
+            while (current > previous && !peak.compare_exchange_weak(previous, current))
+            {
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{30});
+            in_flight.fetch_sub(1U);
+            auto const it =
+                keys.find(std::pair<std::string, std::string>{std::string{server_name}, std::string{key_id}});
+            return it != keys.end() ? std::optional{it->second} : std::nullopt;
+        };
+    }
+
+    std::atomic<std::size_t> calls{0U};
+    std::atomic<std::size_t> in_flight{0U};
+    std::atomic<std::size_t> peak{0U};
+    // Filled before resolver() is used; only read afterwards.
+    std::map<std::pair<std::string, std::string>, merovingian::federation::FederationRemoteRuntime> keys{};
+};
+
+} // namespace
+
+// FED-10, ADR-0155, PR #509 review: send_join state verification called the
+// raw resolver up to 1024 at a time, outside every key-resolution budget, so a
+// resident server could name thousands of servers and drive a burst of
+// fetches. It now takes main's shared in-flight slots and failure cache. It
+// waits for a slot rather than being refused, and pays no per-source rate:
+// either would drop member events and leave a large room's state incomplete.
+SCENARIO("send_join key resolutions share the process-wide in-flight cap and wait for a slot",
+         "[homeserver][federation][send_join][security][concurrency][fed10]")
+{
+    GIVEN("two joins of three sender domains each, an in-flight cap of 2 and a per-source rate of 1")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.federation.config.join_state_key_parallelism = 100U;
+        runtime.federation.config.key_resolution_max_in_flight = 2U;
+        runtime.federation.config.key_resolution_per_ip_rate = {1U, 60U};
+
+        auto counting = CountingResolver{};
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto joins = std::array<merovingian::canonicaljson::Array, 2U>{};
+        for (auto i = std::size_t{0U}; i < 6U; ++i)
+        {
+            auto const domain = "shared-cap" + std::to_string(i) + ".example.org";
+            auto const key_id = std::string{"ed25519:auto"};
+            auto const seed = "shared-cap-seed-" + std::to_string(i);
+            counting.keys[{domain, key_id}] = remote_for(domain, key_id, seed);
+            joins[i % 2U].push_back(
+                signed_member_event(room_id, "@user" + std::to_string(i) + ":" + domain, domain, key_id, seed, policy));
+        }
+        runtime.federation.remote_key_resolver = counting.resolver();
+
+        WHEN("both joins verify their state at the same time")
+        {
+            auto sizes = std::array<std::size_t, 2U>{};
+            {
+                auto threads = std::array<std::thread, 2U>{};
+                for (auto j = std::size_t{0U}; j < 2U; ++j)
+                {
+                    threads[j] = std::thread{[&runtime, &joins, &sizes, &policy, j] {
+                        sizes[j] = merovingian::homeserver::filter_verified_send_join_events(runtime, joins[j], policy,
+                                                                                             local_server)
+                                       .size();
+                    }};
+                }
+                for (auto& thread : threads)
+                {
+                    thread.join();
+                }
+            }
+
+            THEN("every event verifies, no more than two fetches ever run at once, and every slot is given back")
+            {
+                CHECK(sizes[0] == 3U);
+                CHECK(sizes[1] == 3U);
+                CHECK(counting.calls.load() == 6U);
+                CHECK(counting.peak.load() <= 2U);
+                CHECK(runtime.federation.key_resolutions_in_flight == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("send_join key resolution does not refetch a server and key that just failed",
+         "[homeserver][federation][send_join][security][fed10]")
+{
+    GIVEN("a member event whose sender's key cannot be resolved")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto counting = CountingResolver{};
+        runtime.federation.remote_key_resolver = counting.resolver();
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(signed_member_event(room_id, "@ghost:unresolvable.example.org", "unresolvable.example.org",
+                                            "ed25519:auto", "unresolvable-seed", policy));
+
+        WHEN("two joins carry it one after the other")
+        {
+            auto const first =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+            auto const second =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("both drop it, and only the first asks the network")
+            {
+                CHECK(first.empty());
+                CHECK(second.empty());
+                CHECK(counting.calls.load() == 1U);
+            }
+        }
+    }
+}
+
 // --- split_send_join_state_events (fast join) --------------------------------
 // Fast join: a send_join `state` array is split into "critical" state (verified
 // and persisted synchronously, before the join response returns) and
@@ -2468,8 +2612,8 @@ SCENARIO("filter_verified_send_join_events bounds concurrent key resolutions to 
 namespace
 {
 
-[[nodiscard]] auto bare_event(std::string const& type, std::string const& state_key,
-                              std::string const& sender) -> merovingian::canonicaljson::Value
+[[nodiscard]] auto bare_event(std::string const& type, std::string const& state_key, std::string const& sender)
+    -> merovingian::canonicaljson::Value
 {
     auto const raw = std::string{"{\"type\":\""} + type + "\",\"state_key\":\"" + state_key + "\",\"sender\":\"" +
                      sender +

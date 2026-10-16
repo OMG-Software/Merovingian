@@ -66,6 +66,7 @@ extern "C"
     char const* merovingian_yyjson_raw_data(MerovingianYyjsonValue* value, size_t* length);
     char const* merovingian_yyjson_string_data(MerovingianYyjsonValue* value, size_t* length);
     int merovingian_yyjson_number_is_integer(MerovingianYyjsonValue* value);
+    int merovingian_yyjson_integer_in_canonical_range(MerovingianYyjsonValue* value);
     long long merovingian_yyjson_number_as_int64(MerovingianYyjsonValue* value);
     double merovingian_yyjson_number_as_double(MerovingianYyjsonValue* value);
     size_t merovingian_yyjson_array_size(MerovingianYyjsonValue* value);

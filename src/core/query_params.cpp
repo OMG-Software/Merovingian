@@ -6,6 +6,7 @@
 #include <cctype>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 
 namespace merovingian::core
 {
@@ -82,8 +83,17 @@ auto percent_decode(std::string_view encoded) -> std::string
     return result;
 }
 
+auto path_component_contains_nul(std::string_view encoded) noexcept -> bool
+{
+    return encoded.find('\0') != std::string_view::npos || encoded.find("%00") != std::string_view::npos;
+}
+
 auto percent_decode_path_component(std::string_view encoded) -> std::string
 {
+    if (path_component_contains_nul(encoded))
+    {
+        throw std::invalid_argument{"path component contains NUL"};
+    }
     auto result = std::string{};
     result.reserve(encoded.size());
     auto i = std::size_t{0U};
@@ -108,6 +118,10 @@ auto percent_decode_path_component(std::string_view encoded) -> std::string
             result.push_back(encoded[i]);
             ++i;
         }
+    }
+    if (result.find('\0') != std::string::npos)
+    {
+        throw std::invalid_argument{"path component contains NUL"};
     }
     return result;
 }

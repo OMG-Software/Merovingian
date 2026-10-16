@@ -67,6 +67,14 @@ shell = find_program('sh')
   )
 
   test(
+    'startup-hardening-gate-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],
+    # Several cases wait out the gate's own timeout on purpose.
+    timeout: 90,
+  )
+
+  test(
     'example-config-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_example_config.py'],
@@ -135,6 +143,7 @@ shell = find_program('sh')
       'unit/test_canonicaljson_limits.cpp',
       'unit/test_client_server.cpp',
       'unit/test_config_defaults.cpp',
+      'unit/test_token_lifetime_policy.cpp',
       'unit/test_config_login_throttle.cpp',
       'unit/test_config_operational_limits.cpp',
       'unit/test_configurable_client_limits.cpp',
@@ -151,8 +160,14 @@ shell = find_program('sh')
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
       'unit/test_crypto.cpp',
+      'unit/test_crypto_token_key_cache.cpp',
       'unit/test_database_backend_config.cpp',
-      'unit/test_database_bounded_text.cpp',
+      'unit/test_database_connection_pool.cpp',
+      'unit/test_postgresql_security_policy.cpp',
+      'unit/test_file_creation_defaults.cpp',
+      'unit/test_sqlite_security_policy.cpp',
+      'unit/test_database_security_boundaries.cpp',
+      'unit/test_observability_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_state_bookkeeping.cpp',
@@ -165,6 +180,7 @@ shell = find_program('sh')
       'unit/test_federation_pdu_ingest_concurrency.cpp',
       'unit/test_pdu_ingestion_state_groups.cpp',
       'unit/test_pdu_ingestion_auth_checks.cpp',
+      'unit/test_event_auth_rejected_fallback.cpp',
       'unit/test_membership_acceptor_receipt_checks.cpp',
       'unit/test_federation_invite_join.cpp',
       'unit/test_federation_key_query.cpp',
@@ -174,6 +190,8 @@ shell = find_program('sh')
       'unit/test_otk_signature_validation.cpp',
       'unit/test_outbound_dispatch.cpp',
       'unit/test_federation_security.cpp',
+      'unit/test_federation_denied_ranges.cpp',
+      'unit/test_cached_server_discovery_bounds.cpp',
       'unit/test_federation_edu_idempotence.cpp',
       'unit/test_federation_server_acl.cpp',
       'unit/test_federation_tls_origin.cpp',
@@ -186,12 +204,14 @@ shell = find_program('sh')
       'unit/test_security_issues_460_463.cpp',
       'unit/test_file_descriptor.cpp',
       'unit/test_file_metadata.cpp',
+      'unit/test_secure_secret_loading.cpp',
       'unit/test_elf_probe.cpp',
       'unit/test_seccomp_hardening.cpp',
       'unit/test_worker_landlock.cpp',
       'unit/test_worker_hardening_threads.cpp',
       'unit/test_signal_hardening.cpp',
       'unit/test_logger_writers.cpp',
+      'unit/test_log_file_sink.cpp',
       'unit/test_hardening_self_check.cpp',
       'unit/test_homeserver_vertical_slice.cpp',
       'unit/test_http_connection_guard.cpp',
@@ -201,6 +221,11 @@ shell = find_program('sh')
       'unit/test_http_rate_limit.cpp',
       'unit/test_http_rate_limit_tiers.cpp',
       'unit/test_security_audit_http_3.cpp',
+      'unit/test_security_audit_db_4.cpp',
+      'unit/test_security_audit_iso_7.cpp',
+      'unit/test_push_gateway_circuit_breaker.cpp',
+      'unit/test_media_thumbnail_cache.cpp',
+      'unit/test_security_audit_fed_10_shards.cpp',
       'unit/test_security_audit_log_controls.cpp',
       'unit/test_security_audit_outbound.cpp',
       'unit/test_http_request.cpp',
@@ -311,8 +336,10 @@ shell = find_program('sh')
       'conformance/test_canonicaljson_parser.cpp',
       'conformance/test_canonicaljson_serializer.cpp',
       'conformance/test_client_server_conformance.cpp',
+      'conformance/test_token_expiry_conformance.cpp',
       'conformance/test_3pid_invite_conformance.cpp',
       'conformance/test_event_auth_rules.cpp',
+      'conformance/test_event_auth_legacy_boundaries.cpp',
       'conformance/test_security_audit_evt_7.cpp',
       'conformance/test_security_audit_state_resolution.cpp',
       'conformance/test_event_graph_conformance.cpp',
@@ -364,8 +391,24 @@ shell = find_program('sh')
 #The thumbnail integration test spawns the real sandboxed worker; pass its
 #build - tree path when it was built(system image codecs available).
   thumbnail_test_args = []
+  thumbnail_gate_test_args = []
+  thumbnail_test_depends = []
   if thumbnail_worker_available
     thumbnail_test_args = ['-DMEROVINGIAN_TEST_THUMBNAIL_WORKER="' + thumbnail_worker_exe.full_path() + '"']
+    thumbnail_test_depends += [thumbnail_worker_exe]
+    if host_machine.system() != 'windows'
+      thumbnail_gate_exe = executable(
+        'merovingian-test-thumbnail-gate',
+        'integration/thumbnail_gate_main.cpp',
+        include_directories: inc,
+        dependencies: [libsodium_dep],
+        link_with: [core_lib],
+        cpp_args: thumbnail_test_args,
+        install: false,
+      )
+      thumbnail_gate_test_args = ['-DMEROVINGIAN_TEST_THUMBNAIL_GATE="' + thumbnail_gate_exe.full_path() + '"']
+      thumbnail_test_depends += [thumbnail_gate_exe]
+    endif
   endif
 
 #The federation worker integration test spawns the real merovingian - fed - worker;
@@ -403,22 +446,30 @@ shell = find_program('sh')
       'integration/test_remote_media_cache_flow.cpp',
       'integration/test_remote_media_fetch_pool_flow.cpp',
       'integration/test_media_thumbnail_flow.cpp',
+      'integration/test_media_thumbnail_revalidation_flow.cpp',
       'integration/test_security_audit_remote_media.cpp',
       'integration/test_observability_flow.cpp',
       'integration/test_pdu_ingestion_backfill_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
+      'integration/test_database_nul_http_flow.cpp',
+      'integration/test_database_nul_remaining_query_flow.cpp',
+      'integration/test_database_nul_transport_flow.cpp',
       'integration/test_security_audit_directory_flow.cpp',
       'integration/test_security_audit_presence_flow.cpp',
       'integration/test_security_audit_to_device_flow.cpp',
       'integration/test_security_audit_login_snapshot_flow.cpp',
       'integration/test_security_audit_auth_4_admission_flow.cpp',
       'integration/test_security_audit_media_write_failures_flow.cpp',
+      'integration/test_security_audit_membership_atomicity_flow.cpp',
+      'integration/test_security_audit_write_pool_flow.cpp',
       'integration/test_security_audit_federated_to_device_flow.cpp',
       'integration/test_security_audit_worker_snapshot_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',
+      'integration/test_postgresql_diagnostic_flow.cpp',
       'integration/test_security_audit_postgresql_reload_flow.cpp',
       'integration/test_security_audit_postgresql_media_flow.cpp',
       'integration/test_push_delivery_flow.cpp',
+      'integration/test_push_user_isolation_flow.cpp',
       'integration/test_request_lock_contention_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
       'integration/test_seccomp_sqlite_flow.cpp',
@@ -433,13 +484,13 @@ shell = find_program('sh')
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
-    cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
+    cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args],
   )
 
 # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
 # worker) and can be slow under sanitizers and on emulated BSD runners;
 # give them the same headroom as the load-test suite.
-  test('integration-tests', integration_tests, timeout: 900)
+  test('integration-tests', integration_tests, timeout: 900, depends: thumbnail_test_depends)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(

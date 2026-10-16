@@ -128,6 +128,39 @@
 * [0125 - Redactions are applied once, at the store, and destroy the original content](0125-redactions-are-applied-once-at-the-store-and-destroy-the-original.md)
 * [0126 - Local membership is projected once, at the local-event choke point](0126-local-membership-is-projected-once-at-the-local-event-choke-point.md)
 * [0127 - Room directory and alias changes need canonical-alias power; aliases record their creator](0127-room-directory-and-alias-changes-need-canonical-alias-power.md)
+* [0128 - Lock derived-key storage without changing persisted derivations](0128-lock-derived-key-storage-without-changing-persisted-derivations.md)
+* [0129 - Restrict main's fchmod to owner-only database mode](0129-restrict-main-fchmod-to-owner-only-database-mode.md)
+* [0130 - Admit only a private startup umask through main's inherited seccomp](0130-admit-only-private-startup-umask-through-main-seccomp.md)
+* [0131 - Keep malformed-first-PDU transactions inside worker shard zero](0131-keep-malformed-first-pdu-transactions-inside-worker-shard-zero.md)
+* [0132 - Separate cached verification keys from budgeted discovery](0132-separate-cached-verification-keys-from-budgeted-discovery.md)
+* [0133 - Preserve local key-admission denial separately from remote failure](0133-preserve-local-key-admission-denial-separately-from-remote-failure.md)
+* [0134 - Share key-resolution admission with main's worker-relay verification](0134-share-key-admission-with-main-worker-relay-verification.md)
+* [0135 - Preserve key-admission denial through backfill recovery](0135-preserve-key-admission-denial-through-backfill-recovery.md)
+* [0136 - Retain path-only, bounded audit targets](0136-retain-path-only-bounded-audit-targets.md)
+* [0137 - Reject NUL before mutation and path decoding](0137-reject-nul-before-mutation-and-path-decoding.md)
+* [0138 - Require explicit remote PostgreSQL TLS policy](0138-require-explicit-remote-postgresql-tls-policy.md)
+* [0139 - Suppress PostgreSQL connection options in diagnostics](0139-suppress-postgresql-connection-options-in-diagnostics.md)
+* [0140 - Isolate push delivery capacity per recipient](0140-isolate-push-delivery-capacity-per-recipient.md)
+* [0141 - Bound configured token lifetimes without coercion](0141-bound-configured-token-lifetimes-without-coercion.md)
+* [0142 - Bind worker EDU relays to live main-verified requests](0142-bind-worker-edu-relays-to-live-main-verified-requests.md)
+* [0143 - Bound thumbnail crop intermediates by the existing pixel budget](0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md)
+* [0144 - Apply the shared media policy before federation media reads](0144-apply-shared-media-policy-before-federation-media-reads.md)
+* [0145 - Bind local thumbnail disclosure to source record identity](0145-bind-local-thumbnail-disclosure-to-source-record-identity.md)
+* [0146 - Open the log file without following links, owner-only, and keep truncating it](0146-open-the-log-file-without-following-links-and-owner-only.md)
+* [0147 - Filter the worker's socket families, and restrict them in the systemd unit](0147-filter-worker-socket-families-and-restrict-systemd-address-families.md)
+* [0148 - Packaging paths pass `--buildtype=release` explicitly; `default_options` keeps Meson's default](0148-packaging-paths-pass-buildtype-release-explicitly.md)
+* [0149 - Membership rows commit with their event, and are reconciled from current state at startup](0149-membership-rows-commit-with-their-event-and-are-reconciled-at-startup.md)
+* [0150 - Legacy float power levels are read by the auth rules, but never hashed](0150-legacy-float-power-levels-are-read-by-the-auth-rules-but-never-hashed.md)
+* [0151 - Cap pusher registration and break the circuit to failing gateways](0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md)
+* [0152 - Cache thumbnails in memory and cap concurrent decodes per requester](0152-cache-thumbnails-in-memory-and-cap-concurrent-decodes-per-requester.md)
+* [0153 - Split the key-resolution budgets across federation worker shards](0153-split-key-resolution-budgets-across-worker-shards.md)
+* [0154 - Pool database write connections up to database.pool_size](0154-pool-database-write-connections.md)
+* [0155 - Bound send_join key fetches by the shared in-flight cap, waiting for a slot](0155-bound-send-join-key-fetches-by-the-shared-in-flight-cap.md)
+* [0157 - Never open a SQLite database file outside SQLite while connections may be open](0157-never-open-a-sqlite-database-file-outside-sqlite.md)
+
+## Proposed Records
+
+* None
 
 ## Rejected Records
 
@@ -135,6 +168,7 @@
 
 ## Superseded Records
 
+* [0029 - Bound pusher delivery rather than registration](0029-bound-pusher-delivery-rather-than-registration.md) — superseded by ADR-0151 for registration: distinct pushers per user are now capped; the per-delivery bound remains
 * [0027 - Bound the connection queue but not the IPC queue](0027-bound-the-connection-queue-but-not-the-ipc-queue.md) — superseded by ADR-0065 for the IPC pools only; the connection-queue half remains accepted
 
 ## Deprecated Records
@@ -148,3 +182,4 @@
 * [0032 - Throttle failed logins per claimed account](0032-throttle-failed-logins-per-claimed-account.md) — Refined by ADR-0122: failures are counted per (account, source) with an account-wide ceiling
 * [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md) — Superseded by ADR-0121 for remote media downloads and thumbnails, which run on their own pool; directory lookups keep this budget
 * [0015 - Keep the signing secret out of the federation worker](0015-keep-the-signing-secret-out-of-the-federation-worker.md) — Superseded by ADR-0078 for the signing-oracle part (the `sign_request` frame); the signing secret still never enters the worker
+* [0126 - Local membership is projected once, at the local-event choke point](0126-local-membership-is-projected-once-at-the-local-event-choke-point.md) — Refined by ADR-0149: the projection commits in the event's own transaction, and a row is realigned if resolution leaves another member event current

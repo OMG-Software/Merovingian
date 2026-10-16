@@ -231,8 +231,8 @@ The master key encrypts the Ed25519 signing secret before it is stored in the
 database. Generate 32 random bytes and protect the file:
 
 ```sh
-openssl rand -out /etc/merovingian/master-key 32
-chmod 0600 /etc/merovingian/master-key
+(umask 077; openssl rand -out /etc/merovingian/master-key 32)
+chmod 0400 /etc/merovingian/master-key
 chown merovingian:merovingian /etc/merovingian/master-key
 ```
 
@@ -255,17 +255,26 @@ or missing secret produces a clear message and a non-zero exit code.
 
 ### 6. Create the first admin account
 
+Run this shell as the service account so the password file has the required
+owner. Use a newly created private directory, not a predictable shared path:
+
 ```sh
-openssl rand -base64 24 > /tmp/admin-pw
-chmod 600 /tmp/admin-pw
+umask 077
+password_dir="$(mktemp -d)" || exit 1
+chmod 0700 "$password_dir"
+trap 'rm -f -- "$password_dir/password"; rmdir -- "$password_dir"' EXIT
+openssl rand -base64 24 > "$password_dir/password"
+chmod 0400 "$password_dir/password"
 merovingian-server --config /etc/merovingian/merovingian.conf \
   --bootstrap-admin alice \
-  --bootstrap-admin-password-file /tmp/admin-pw
-rm /tmp/admin-pw
+  --bootstrap-admin-password-file "$password_dir/password"
 ```
 
-This creates `@alice:<server.name>` with admin privileges and exits. Public
-registration never grants admin privileges.
+This creates `@alice:<server.name>` with admin privileges and then continues
+running the server; it is not a one-shot command. The in-memory password buffer
+is wiped immediately after the bootstrap attempt. Delete the file from another
+service-account shell after the creation message, or stop the server to run the
+cleanup trap. Public registration never grants admin privileges.
 
 ## Configuration
 
@@ -516,6 +525,30 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 |---|---|---|
 | `max_pushers_per_delivery` | `25` | 1..256 |
 | `max_in_flight_deliveries` | `256` | 1..4,096 |
+| `max_pushers_per_user` | `20` | 1..1,000 |
+| `gateway_failure_threshold` | `3` | 1..100 |
+| `gateway_cooldown_seconds` | `300` | 1..86,400 |
+
+`max_pushers_per_user` caps the distinct pushers (`app_id`, `pushkey`) one user may
+register: `POST /pushers/set` refuses a new one beyond it with 400 `M_INVALID_PARAM`;
+updating or deleting an existing pusher is always allowed. A gateway host (its
+case-folded `host:port`) that cannot be reached `gateway_failure_threshold` times in a
+row (a DNS, connection, TLS or timeout failure) is not contacted for
+`gateway_cooldown_seconds`; after that one delivery per cooldown is let through as a
+probe until one reaches it, and deliveries skipped meanwhile are dropped and logged
+(`push.delivery.circuit_open`). Any HTTP answer, a 5xx or 429 included, counts as
+reaching the host: a gateway shared by many users is never closed to all of them
+because it keeps refusing one user's pusher. A gateway's `rejected` list removes only
+the pushers whose pushkeys it names. OUT-3, ADR-0151.
+
+The in-flight limit counts recipient batches, not whole events: gateways for one
+recipient run sequentially in that recipient's task. For global limit `G`, each
+recipient can hold at most `G > 1 ? min(8, G - 1) : 1` batches. At either bound,
+only that batch is dropped; no persistent retry queue is added. At `G=1`, delivery
+remains serial and there is no reserved parallel capacity for another recipient.
+Use at least two slots for single-recipient isolation. Several recipients can
+still collectively fill the global budget; this is not a fairness guarantee.
+See [ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md).
 
 `security.federation.backfill.*`:
 
@@ -739,7 +772,9 @@ listeners.federation.tls_private_key_file=/etc/merovingian/federation.key
 
 Configured certificate files must be regular, non-executable, and not
 group/other-writable. Configured private-key files must additionally be
-owner-only. Startup loads the certificate chain and private key, verifies
+owner-only: a regular file (not a symlink) owned by the service user with mode
+`0400`. The key is read through the descriptor that was checked, so it cannot be
+swapped between the check and the load (ISO-7). Startup loads the certificate chain and private key, verifies
 the key matches the certificate, and fails closed if OpenSSL rejects either
 file. The client listener defaults to `127.0.0.1:8008`; the federation
 listener defaults to `127.0.0.1:8009` so a reverse proxy can own the public
@@ -754,8 +789,32 @@ federation port `8448`.
 | `database.role` | `runtime` | Use `migration` only with `merovingian-db-migrate`. |
 | `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
 | `database.runtime_role` | (empty) | PostgreSQL role assumed to serve requests, dropping DDL rights. Both empty issues no `SET ROLE`, leaving an existing single-role deployment unchanged. |
-| `database.pool_size` | `16` | Tune based on workload; reloadable. |
-| `database.sqlite_path` | `/var/lib/merovingian/merovingian.sqlite3` | Path for SQLite single-file store. Commented out in the shipped example, which defaults to PostgreSQL. |
+| `database.pool_size` | `16` | Database connections persisted writes keep and use at once; a write waits for a free one rather than opening another (DB-7, ADR-0154). Requires restart. |
+| `database.sqlite_path` | `/var/lib/merovingian/merovingian.sqlite3` | Path for SQLite single-file store. Commented out in the shipped example, which defaults to PostgreSQL. The file itself must not be a symlink and is created `0600`; missing directories are created `0700`. Directories that already exist may be symlinks (for example `/var/lib/merovingian` pointing at a data volume). |
+
+#### PostgreSQL TLS admission
+
+Non-local PostgreSQL destinations require `sslmode` to be explicitly set to
+`verify-full` in the connection options stored in the private URI file.
+Omitted, empty or weaker supplied modes are rejected before connecting, even
+when the parent has a secure `PGSSLMODE` default. The minimal federation worker
+does not inherit libpq environment defaults. No insecure remote opt-out is
+provided, and service-file indirection is rejected.
+
+The existing local exemption covers Unix-socket destinations, literal
+`localhost` and IPv4/IPv6 loopback addresses. Every effective `host` and
+`hostaddr` entry must be local to use the exemption; an arbitrary DNS name is
+not treated as local merely because it resolves to loopback.
+
+For remote deployments, provision trusted certificate authorities and a server
+certificate matching the configured host. Configure `sslrootcert` and any
+required client-certificate options in the private connection options rather
+than relying on parent-only environment variables. Trust and client-key files
+must be accessible to the appropriate service process within its sandbox;
+do not relax secret-file admission or forward the parent's environment to
+work around a certificate-access failure. Admission tests do not establish
+live TLS handshakes or worker certificate-file access. See
+[ADR-0138](adr/0138-require-explicit-remote-postgresql-tls-policy.md).
 
 #### Registration — `security.registration.*`
 
@@ -778,7 +837,7 @@ creates a normal user; admin accounts can only be created through
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.secrets.master_key_file` | (empty) | Path to the 32-byte master key file. **Required.** The shipped example sets `/etc/merovingian/master-key`. |
+| `security.secrets.master_key_file` | (empty) | Path to the random master key file (32-byte minimum, 4096-byte maximum; all-zero material is refused). **Required.** The shipped example sets `/etc/merovingian/master-key`. |
 
 The Ed25519 server signing secret is encrypted at rest with `secret_box`
 (`secretbox:v1:...`) before being stored in the database, under a key derived
@@ -830,16 +889,29 @@ signing secret keeps reading it and continues to federate; configure a master ke
 and rotate the signing key to re-encrypt the active secret under the at-rest
 format.
 
+New access and refresh token issuance also requires a usable master key. Losing
+the file, changing it to an insecure mode/owner, or exhausting locked memory
+returns HTTP 503 rather than minting tokens with an unkeyed digest. Existing
+legacy validation formats are not a fallback for new issuance.
+
 #### Token lifetimes — `security.*_token_lifetime_ms`
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.access_token_lifetime_ms` | `3600000` (1 hour) | Milliseconds; `0` disables expiry. |
-| `security.refresh_token_lifetime_ms` | `2592000000` (30 days) | Milliseconds; `0` disables expiry. |
+| `security.access_token_lifetime_ms` | `3600000` (1 hour) | Milliseconds, `0..2592000000` inclusive (30-day maximum); `0` disables expiry. |
+| `security.refresh_token_lifetime_ms` | `2592000000` (30 days) | Milliseconds, `0..31536000000` inclusive (365-day maximum); `0` disables expiry. |
 
-`/login` and `/refresh` advertise `expires_in_ms` from
-`security.access_token_lifetime_ms`, so the advertised TTL always matches the
-enforced one. A token past its TTL is rejected even when its session is not
+Configuration parsing and typed validation report field-specific findings for
+negative or oversized lifetimes. These are project admission limits, not Matrix
+protocol maxima. Use `0` explicitly to disable expiry; values are not clamped or
+replaced, and existing persisted sessions are not rewritten. Direct typed runtime
+snapshot/reload admission, checked clock arithmetic and broader stored-expiry
+hydration are separate OPS-4 requirements, not established by these policy checks.
+See [ADR-0141](adr/0141-bound-configured-token-lifetimes-without-coercion.md).
+
+For finite access lifetimes, `/login` and `/refresh` advertise `expires_in_ms` from
+`security.access_token_lifetime_ms`; zero omits the optional field. A token past its
+TTL is rejected even when its session is not
 revoked — the request returns `401 M_UNKNOWN_TOKEN` and the audit log records
 `access_token.rejected` with reason `token expired`. Existing rows written
 without an expiry remain valid, so upgrading does not invalidate legacy
@@ -884,7 +956,7 @@ rooms.
 | `security.federation.denied_servers` | (empty) | Comma-separated server names always blocked. |
 | `security.federation.require_valid_tls` | `true` | Disable only in controlled test labs. |
 | `security.federation.verify_json_signatures` | `true` | Disable only in controlled test labs. |
-| `security.federation.deny_ip_ranges` | private/loopback ranges | Ranges blocked during remote discovery/fetching. Keep the defaults. |
+| `security.federation.deny_ip_ranges` | private/loopback ranges | IPv4/IPv6 literals or CIDRs blocked during remote discovery/fetching, including public ranges. Keep the defaults; built-in SSRF blocks cannot be disabled. Every entry must be a well-formed address or CIDR range (prefix no longer than the address): a malformed entry is a startup error, because the boundary would otherwise treat it as denying every address. |
 | `security.federation.remote_timeout` | `60s` | General outbound federation HTTP timeout. |
 | `security.federation.max_transaction_size` | `20MiB` | Inbound `/send` body cap, enforced at HTTP admission as well as federation parsing. Positive and at most `64MiB`. |
 
@@ -963,12 +1035,13 @@ events for many users and an abusive remote can rotate sender IDs.
 | `security.federation.per_origin_edu_rate` | `12000/60s` | Weighted EDU budget per verified remote origin per window. |
 | `security.federation.per_origin_request_rate` | `3000/60s` | Per-origin cap on inbound federation requests **outside** `/send` (query, backfill, membership, key and state endpoints). `/send` counts only against the weighted trio above, so a transaction and its contents are never double-counted. |
 
-| `security.federation.key_resolution_per_ip_rate` | `30/60s` | Per-**source-IP** cap on remote signing-key resolutions for an origin with no usable cached key. **Requires restart.** |
-| `security.federation.key_resolution_max_in_flight` | `16` | Process-wide cap on concurrent key resolutions; over it, requests are rejected rather than queued. **Requires restart.** |
-| `security.federation.key_resolution_failure_ttl` | `60s` | How long a failed resolution is remembered so repeats of the same origin are cheap. `0s` disables. **Requires restart.** |
+| `security.federation.key_resolution_per_ip_rate` | `30/60s` | Per-**source-IP** cap on network-capable origin and relayed-PDU sender-key resolutions. Direct verification-key cache reads do not spend it. Each federation worker shard gets this divided by `federation.worker.shards` (at least 1), so all shards together stay within it (FED-10, ADR-0153). **Requires restart.** |
+| `security.federation.key_resolution_max_in_flight` | `16` | Cap on concurrent key resolutions; over it, requests are rejected rather than queued. Main has the whole cap; each federation worker shard gets it divided by `federation.worker.shards` (at least 1) (FED-10, ADR-0153). **Requires restart.** |
+| `security.federation.key_resolution_failure_ttl` | `60s` | How long a failed `(server_name, key_id)` resolution is remembered; includes relayed PDU senders. `0s` disables. Admission overload is not a failed lookup. **Requires restart.** |
 
-The three `key_resolution_*` keys bound work this server does **before** a
-request is authenticated. Resolving a peer's signing key necessarily precedes
+The three `key_resolution_*` keys bound network-capable resolutions both
+**before** request authentication and **after** authentication when a relay names
+other PDU sender domains. Resolving a peer's signing key necessarily precedes
 verifying the signature that key is for, so an unauthenticated sender can name
 any origin in an `X-Matrix` header and cause `.well-known` + SRV + DNS discovery
 plus an outbound `GET /_matrix/key/v2/server` against that host — load here, and
@@ -976,6 +1049,37 @@ a reflection vector at whoever was named. They are keyed on the source IP rather
 than the origin because the origin is the field an attacker varies to miss every
 cache. Setting `default_policy=deny` with a populated `allowed_servers` list
 closes the same hole independently, since the policy check runs first.
+
+The same source budget, runtime-wide cap and `(server_name, key_id)` negative
+cache apply to relayed sender-key resolution, including parallel pre-resolution
+and authorization fallbacks (FED-10). Cached verification uses a separate read
+that performs no DNS or HTTP; it remains available with exhausted outbound limits.
+Known-peer rotation can read another fresh cached key while preserving discovery
+state. A previously unknown origin still needs an admitted discovery-bearing
+resolution even if its persistent key is fresh. Local sender/authorising-key
+admission overload returns 503 for `/send`, not a normal accepted per-event
+response. The original transaction remains retryable and its EDUs are deferred;
+local denial does not penalize or reset relay trust. Actual remote failures
+retain their penalties. Direct membership/invite requests likewise return 503
+before acceptance. See [ADR-0133](adr/0133-preserve-local-key-admission-denial-separately-from-remote-failure.md).
+Main's PDU, membership and invite relay re-verification uses those same controls.
+All main relay misses share one unknown-source bucket: no validated client address
+is available in these frames, and main does not trust a worker-provided address.
+This can defer legitimate cold-key traffic across otherwise unrelated clients.
+Matching cached keys still work without a full resolver and still require a valid
+sender signature and event-time key validity. Main denial returns the existing
+PDU overload status or unaccepted 503 for membership/invites, before mutation.
+See [ADR-0134](adr/0134-share-key-admission-with-main-worker-relay-verification.md).
+Backfill/snapshot/auth-chain verification now uses the same admitted key-only
+helper and shared unknown-source bucket. Local key denial stops further recovery
+and defers the PDU as overload rather than accepted missing state; the unchanged
+transaction can retry. Earlier verified outliers are not rolled back. See
+[ADR-0135](adr/0135-preserve-key-admission-denial-through-backfill-recovery.md).
+Fresh post-backfill full-suite verification and independent source-only review
+passed. Additional sticky-denial/partial-progress tests and end-to-end worker
+socket-HTTP overload coverage for this extension remain pending.
+The limits are per runtime/process, not an aggregate across worker shards. See
+[ADR-0132](adr/0132-separate-cached-verification-keys-from-budgeted-discovery.md).
 
 A legitimate new peer needs exactly one resolution before its record is cached,
 so the defaults are generous for real traffic. If you tighten them and a new
@@ -1019,7 +1123,7 @@ rejection and pinned resolved addresses used during federation discovery.
 | Key | Default | Reload | Notes |
 |---|---|---|---|
 | `security.federation.remote_timeout` | `60s` | requires restart | General outbound federation HTTP timeout for calls other than the join/leave dance. |
-| `security.federation.deny_ip_ranges` | private/loopback ranges | requires restart | Blocks discovered outbound federation targets in private/loopback address space. |
+| `security.federation.deny_ip_ranges` | private/loopback ranges | requires restart | Adds IPv4/IPv6 destination blocks to the mandatory built-in SSRF policy, on main and worker discovery paths. |
 | `security.federation.key_resolution_*` | see above | requires restart | Budgets pre-authentication remote-key resolution. Snapshotted into the federation runtime config at startup, which SIGHUP does not rebuild. |
 | `federation.worker.relay_threads` | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
 
@@ -1115,6 +1219,8 @@ Service API".
 | `security.media.remote_media_cache_ttl_seconds` | `86400` | How long admitted remote media is served from the local copy before it is fetched again. |
 | `security.media.remote_media_cache_max_entries` | `50000` | Maximum remote media files kept; when full, the least recently used one is deleted to make room. `0` disables the cache: every request for remote media goes to the origin, and only the latest fetched file is kept. |
 | `security.media.remote_media_cache_max_size` | `25GiB` | Bytes of cached remote media. The least recently used remote files are deleted to stay within it; a single file larger than this is refused with `507`. Empty means no limit. |
+| `security.media.thumbnail_cache_size` | `64MiB` | Bytes of generated thumbnails kept in memory, least recently used first out, so a repeated thumbnail request does not run the decoder again. A cached thumbnail is served only while its media is still servable. Empty or `0` disables the cache. Requires a restart. |
+| `security.media.thumbnail_max_concurrent_per_user` | `2` | Thumbnail decodes one requester (the user, or the client address when unauthenticated) may run at once, 1..64. A further request is refused with `429 M_LIMIT_EXCEEDED`. Requires a restart. |
 
 The three local capacity limits bound media your users upload, which would otherwise
 be unbounded: upload spam grows it until the database fills. Size limits must be empty
@@ -1308,7 +1414,7 @@ only reports what *would* happen.
 | `server.identity_server.*` | Restart required |
 | `server.push.*` | Restart required |
 | `appservice.*` | Restart required |
-| `database.pool_size` | Reloadable |
+| `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |
@@ -1396,6 +1502,21 @@ scaffolds until the production gates in
 do not publish them as a production release while runtime listeners, durable
 storage, federation verification, or hardening checks remain incomplete.
 
+The server refuses to start unless every check in the table above reports
+`enabled`, and two deployment details decide that:
+
+* **Build optimised.** Meson's default buildtype is `debug` (`-O0`), which
+  leaves `_FORTIFY_SOURCE` undefined, so the `FORTIFY_SOURCE` check stays
+  `unknown`. The packaging scripts and the `Dockerfile` pass
+  `--buildtype=release`; if you build from source, do the same
+  (`meson setup build --buildtype=release -Dhardening=true`). Meson prints a
+  warning at configure time if you do not.
+* **Run with no capabilities.** A non-root process cannot drop its own
+  capability bounding set. The systemd unit empties it with
+  `CapabilityBoundingSet=`; for the Docker image, start the container with
+  `docker run --cap-drop=ALL --security-opt=no-new-privileges ...`, or the
+  `capability bounding` check stays `unknown`.
+
 ## Database backends
 
 ### SQLite (development and evaluation)
@@ -1467,8 +1588,8 @@ merovingian-server --version
 | `--config <path>` | Path to `merovingian.conf`. |
 | `--dry-run` | Validate config and print the startup summary without binding listeners. |
 | `--check-config <path>` | Validate the config file and exit. |
-| `--bootstrap-admin <localpart>` | Create an admin account and exit. Requires `--bootstrap-admin-password-file`. |
-| `--bootstrap-admin-password-file <path>` | File containing the bootstrap admin password. |
+| `--bootstrap-admin <localpart>` | Create an admin account during startup, then continue serving. Requires `--bootstrap-admin-password-file`. |
+| `--bootstrap-admin-password-file <path>` | Nonempty, service-owned mode-0400 regular password file, at most 4096 bytes; symlinks are rejected and the first line is read into locked memory. |
 | `--plan-config-reload <current> <next>` | Compare two configs and report reloadability. |
 | `--debug` | Enable debug-level console diagnostics. |
 | `--log-file <path>` | Write trace/debug diagnostics to a file. |
@@ -2275,7 +2396,11 @@ merovingian-server --debug --log-file /var/log/merovingian/debug.log \
 ```
 
 `--debug` lowers the console sink threshold to `debug`. `--log-file` enables
-the file sink, whose threshold is `trace`. Both sinks still obey the
+the file sink, whose threshold is `trace`. The path must be a regular file owned
+by the server's user, or not exist yet: it is created or tightened to `0600` and
+truncated at start-up. A symlink (including `/dev/stderr`), FIFO, device or
+another user's file is refused: no file output is written, and an error on the
+console says so (ADR-0146). Both sinks still obey the
 configured module/default levels, so set the relevant modules to `debug`
 or `trace` to receive those diagnostics.
 

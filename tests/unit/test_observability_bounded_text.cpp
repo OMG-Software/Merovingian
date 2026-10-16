@@ -6,8 +6,8 @@
 // These scenarios pin the bounding helper on its own; test_audit_flood.cpp
 // covers the wiring through the audit-append layer.
 
-#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -83,7 +83,7 @@ constexpr auto replacement = std::string_view{"\xEF\xBF\xBD"};
 
 } // namespace
 
-SCENARIO("bounded_utf8 leaves short well-formed text untouched", "[database][audit][utf8]")
+SCENARIO("bounded_utf8 leaves short well-formed text untouched", "[observability][audit][utf8]")
 {
     GIVEN("a short ASCII string and a short multi-byte string")
     {
@@ -92,8 +92,8 @@ SCENARIO("bounded_utf8 leaves short well-formed text untouched", "[database][aud
 
         WHEN("each is bounded to 255 bytes")
         {
-            auto const bounded_ascii = merovingian::database::bounded_utf8(ascii, 255U);
-            auto const bounded_multibyte = merovingian::database::bounded_utf8(multibyte, 255U);
+            auto const bounded_ascii = merovingian::observability::bounded_utf8(ascii, 255U);
+            auto const bounded_multibyte = merovingian::observability::bounded_utf8(multibyte, 255U);
 
             THEN("the text is unchanged")
             {
@@ -104,7 +104,8 @@ SCENARIO("bounded_utf8 leaves short well-formed text untouched", "[database][aud
     }
 }
 
-SCENARIO("bounded_utf8 never exceeds the byte limit and never splits a multi-byte sequence", "[database][audit][utf8]")
+SCENARIO("bounded_utf8 never exceeds the byte limit and never splits a multi-byte sequence",
+         "[observability][audit][utf8]")
 {
     GIVEN("a 60 KiB string of ASCII and a string of 3-byte characters whose boundary straddles the limit")
     {
@@ -117,8 +118,8 @@ SCENARIO("bounded_utf8 never exceeds the byte limit and never splits a multi-byt
 
         WHEN("each is bounded to 255 bytes")
         {
-            auto const bounded_ascii = merovingian::database::bounded_utf8(ascii, 255U);
-            auto const bounded_euro = merovingian::database::bounded_utf8(euro, 255U);
+            auto const bounded_ascii = merovingian::observability::bounded_utf8(ascii, 255U);
+            auto const bounded_euro = merovingian::observability::bounded_utf8(euro, 255U);
 
             THEN("both fit, and the multi-byte string was cut on a character boundary")
             {
@@ -132,7 +133,7 @@ SCENARIO("bounded_utf8 never exceeds the byte limit and never splits a multi-byt
 
         WHEN("the string is bounded to a limit that falls inside a character")
         {
-            auto const bounded = merovingian::database::bounded_utf8(euro, 254U);
+            auto const bounded = merovingian::observability::bounded_utf8(euro, 254U);
 
             THEN("the partial character is dropped rather than emitted half-written")
             {
@@ -143,7 +144,8 @@ SCENARIO("bounded_utf8 never exceeds the byte limit and never splits a multi-byt
     }
 }
 
-SCENARIO("bounded_utf8 replaces invalid UTF-8 so stored and logged text stays well-formed", "[database][audit][utf8]")
+SCENARIO("bounded_utf8 replaces invalid UTF-8 so stored and logged text stays well-formed",
+         "[observability][audit][utf8]")
 {
     GIVEN("input holding a lone continuation byte, a truncated sequence, an overlong form and a surrogate")
     {
@@ -155,10 +157,10 @@ SCENARIO("bounded_utf8 replaces invalid UTF-8 so stored and logged text stays we
 
         WHEN("each is bounded")
         {
-            auto const one = merovingian::database::bounded_utf8(lone_continuation, 255U);
-            auto const two = merovingian::database::bounded_utf8(truncated, 255U);
-            auto const three = merovingian::database::bounded_utf8(overlong, 255U);
-            auto const four = merovingian::database::bounded_utf8(surrogate, 255U);
+            auto const one = merovingian::observability::bounded_utf8(lone_continuation, 255U);
+            auto const two = merovingian::observability::bounded_utf8(truncated, 255U);
+            auto const three = merovingian::observability::bounded_utf8(overlong, 255U);
+            auto const four = merovingian::observability::bounded_utf8(surrogate, 255U);
 
             THEN("every result is well-formed UTF-8 and the valid bytes around the damage survive")
             {
@@ -177,7 +179,7 @@ SCENARIO("bounded_utf8 replaces invalid UTF-8 so stored and logged text stays we
 }
 
 SCENARIO("bounded_utf8 replaces control characters so a value cannot forge log lines",
-         "[database][audit][utf8][security]")
+         "[observability][audit][utf8][security]")
 {
     GIVEN("a value carrying a newline, a NUL and a DEL")
     {
@@ -188,7 +190,7 @@ SCENARIO("bounded_utf8 replaces control characters so a value cannot forge log l
 
         WHEN("it is bounded")
         {
-            auto const bounded = merovingian::database::bounded_utf8(hostile, 255U);
+            auto const bounded = merovingian::observability::bounded_utf8(hostile, 255U);
 
             THEN("no control character remains")
             {
@@ -204,14 +206,14 @@ SCENARIO("bounded_utf8 replaces control characters so a value cannot forge log l
     }
 }
 
-SCENARIO("bounded_utf8 handles degenerate limits", "[database][audit][utf8]")
+SCENARIO("bounded_utf8 handles degenerate limits", "[observability][audit][utf8]")
 {
     GIVEN("an ordinary string")
     {
         WHEN("the limit is zero or smaller than a replacement character")
         {
-            auto const zero = merovingian::database::bounded_utf8("abc", 0U);
-            auto const tiny = merovingian::database::bounded_utf8(std::string{"\x80\x80"}, 2U);
+            auto const zero = merovingian::observability::bounded_utf8("abc", 0U);
+            auto const tiny = merovingian::observability::bounded_utf8(std::string{"\x80\x80"}, 2U);
 
             THEN("the result is empty or within the limit, never longer")
             {
@@ -239,9 +241,9 @@ SCENARIO("append_audit_event bounds actor, target and reason before storing them
             {
                 REQUIRE(appended);
                 REQUIRE(store.audit_log.size() == 1U);
-                REQUIRE(store.audit_log.back().actor.size() <= merovingian::database::max_audit_field_bytes);
-                REQUIRE(store.audit_log.back().target.size() <= merovingian::database::max_audit_field_bytes);
-                REQUIRE(store.audit_log.back().reason.size() <= merovingian::database::max_audit_field_bytes);
+                REQUIRE(store.audit_log.back().actor.size() <= merovingian::observability::max_audit_field_bytes);
+                REQUIRE(store.audit_log.back().target.size() <= merovingian::observability::max_audit_field_bytes);
+                REQUIRE(store.audit_log.back().reason.size() <= merovingian::observability::max_audit_field_bytes);
             }
         }
     }

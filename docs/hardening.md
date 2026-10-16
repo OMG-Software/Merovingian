@@ -47,13 +47,15 @@ The project uses C++26 with strict rules that reduce memory-safety bugs:
 * Smart pointers for dynamic ownership; references preferred over pointers.
 * `core::FileDescriptor` is a move-only RAII wrapper that closes its fd on
   destruction and provides `set_cloexec()`.
-* `core::SecretBuffer` holds signing-key material mlocked via `sodium_mlock`
-  on construction and wiped on destruction with `sodium_munlock` (which
-  zeroises and unpins and is an optimisation barrier the compiler cannot
-  elide, unlike the prior `std::ranges::fill` dead store). Custom move-ctor
-  and move-assign transfer the mlock to the destination and wipe the source,
-  so the secret is never duplicated and never left pinned in a moved-from
-  object. It is move-only and non-copyable. `src/core` links libsodium.
+* `core::SecretBuffer` owns isolated `sodium_malloc` pages, explicitly checks
+  `sodium_mlock` success, and wipes/unlocks through `sodium_free` on destruction.
+  Moves transfer ownership and leave the source empty. Separate allocations do
+  not share data pages, so destroying one cannot unlock another live secret.
+  It is move-only and non-copyable. Derived 32-byte keys use `SecureKeyBytes`;
+  every copy must obtain its own locked allocation or fail. Linux kernel mapping
+  checks and forced locked-memory exhaustion cover the storage and both caches.
+  No key-derivation or new-token-issuance path silently accepts an unlocked key.
+  `src/core` links libsodium; historical derivations are retained (ADR-0128).
 
 ### Cryptographic boundary
 
@@ -79,6 +81,18 @@ own primitives.
   (`src/homeserver/auth_service.cpp` registration-token handling).
 * The seccomp-bpf allowlist permits `mlock`, `munlock`, `mlockall`,
   `munlockall`, and `getrandom` so libsodium can lock pages and fetch entropy.
+* Main alone admits `fchmod(fd, 0600)` for descriptor-bound SQLite permission
+  tightening; any other mode is denied. Federation and thumbnail profiles still
+  deny all `fchmod`, and path-based chmod remains denied.
+  The grant is mode-specific, not file-specific; database admission separately
+  validates descriptor ownership/type. See
+  [ADR-0129](adr/0129-restrict-main-fchmod-to-owner-only-database-mode.md).
+* Main also admits only `umask(0077)`: supervised executables inherit main's
+  seccomp across exec and must establish their private startup mask before their
+  own sandbox installation. Other masks remain denied in main, and both workers
+  deny every umask change once their stricter profiles are installed. Direct
+  launches still run the same private-mask startup call. See
+  [ADR-0130](adr/0130-admit-only-private-startup-umask-through-main-seccomp.md).
 
 ### Configuration and secret file permissions
 
@@ -98,6 +112,10 @@ POSIX metadata:
   0.12.13. Before then the file was opened with a plain `std::ifstream` without
   an ownership, symlink, or file-kind check, so a group/world-readable or
   swapped-in master key was silently accepted.
+* The `--log-file` path (ISO-6, [ADR-0146](adr/0146-open-the-log-file-without-following-links-and-owner-only.md))
+  is opened `O_NOFOLLOW|O_CLOEXEC` and used only when it is a regular file the
+  process owns; it is then made 0600 and truncated. A symlink, FIFO, device or
+  another user's file is refused and the logger writes no file output.
 
 - **Core-dump policy.** `setrlimit(RLIMIT_CORE, 0)` *and*, on Linux,
   `prctl(PR_SET_DUMPABLE, 0)` must both succeed. The prctl result was discarded
@@ -198,7 +216,7 @@ child is killed without the call and that it survives with it.
 ### Out-of-process thumbnail worker sandbox
 
 The main server **never** decodes untrusted image bytes in-process. It spawns
-`merovingian-thumbnail-worker` via `fork()`/`execv()` (`src/media/thumbnailer.cpp`
+`merovingian-thumbnail-worker` via `fork()`/`execve()` (`src/media/thumbnailer.cpp`
 and `src/media/thumbnail_worker_main.cpp`):
 
 * Parent and child communicate through `O_CLOEXEC` pipes (`pipe2()` on Linux,
@@ -212,7 +230,13 @@ and `src/media/thumbnail_worker_main.cpp`):
   * skips `/dev/fd` directory walks on FreeBSD, NetBSD, and OpenBSD (those
     directories contain an entry for every *possible* fd, not only open ones);
   * falls back to a capped `fcntl(F_GETFD)` scan of at most 1024 descriptors.
-* Before `execv()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
+* The child executes with only `PATH=/usr/bin:/bin`, including the FreeBSD
+  descriptor-based `fexecve()` path. Parent environment entries are not inherited.
+  Before exec, fd 2 is redirected to an immutable, RAII-owned `/dev/null` sink
+  opened before filesystem sandboxing. Its original descriptor is CLOEXEC and
+  kept above stdio even when the service starts with stderr closed. A missing
+  sink or failed stderr duplication prevents execution with inherited diagnostics.
+* Before `execve()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
   so a compromised worker cannot escalate through setuid/setcap helpers.
 * Inside the worker, `main()` calls `media::apply_decoder_hardening()`
   (`include/merovingian/media/decoder_hardening.hpp`,
@@ -245,8 +269,23 @@ and `src/media/thumbnail_worker_main.cpp`):
     can assert the fail-closed sequencing and the failed-control name for
     every control without actually installing a broken sandbox in the test
     process.
-* The worker rejects images whose width or height exceeds 4096 and whose pixel
-  count exceeds the request's `max_pixels`.
+* The parent independently validates the complete PNG signature, the first
+  chunk's 13-byte IHDR framing and nonzero, legal dimensions, and their equality
+  to the worker's reported dimensions. A malformed or mismatched successful
+  response produces 502 without media bytes, content type or dimensions. This is
+  fixed-header validation, not parent-side decoding or CRC/image-data validation.
+* The worker rejects decoded images when either axis exceeds 4096 or their area
+  exceeds the effective pixel budget. Zero requests still use its
+  4,096,000-pixel ceiling; positive requests cannot raise that ceiling. The final
+  thumbnail and actual crop-fill intermediate share that pixel budget (MED-8).
+  Before resampling, the worker checks the rounded fill axes in `uint64_t` and
+  uses division to reject excess area before narrowing or allocating. This does
+  not add a decoded-axis limit to intermediate images or an aggregate-memory cap.
+  After hardening, a prebuilt empty `internal_error` frame lets the main exception
+  boundary contain unexpected C++ failures without another string allocation.
+  Startup exceptions before that frame exists fail closed without reading input.
+  Signals and closed-pipe delivery are not guaranteed by the exception boundary.
+  See proposed [ADR-0143](adr/0143-bound-thumbnail-crop-intermediates-by-pixel-budget.md).
 
 ### Out-of-process federation worker IPC security
 
@@ -423,6 +462,15 @@ separate process on the same host:
   `kill(getppid(), SIGSTOP)`. `[iso2]` in
   `tests/unit/test_worker_hardening_threads.cpp` runs the real filter in a
   forked child.
+* **The worker opens only the socket families it uses** (ISO-8,
+  [ADR-0147](adr/0147-filter-worker-socket-families-and-restrict-systemd-address-families.md)):
+  `socket()` admits `AF_UNIX`, `AF_INET` and `AF_INET6`; `AF_NETLINK` returns
+  `EAFNOSUPPORT` so glibc's `getaddrinfo` address-sorting probe falls back instead
+  of killing the worker; any other family (`AF_ALG`, `AF_PACKET`, …) kills it.
+  `socketpair()` admits `AF_UNIX` only. Landlock does not govern `connect()` to a
+  pathname `AF_UNIX` socket, so give the worker's PostgreSQL role password or
+  certificate authentication, not `peer`. `[iso8]` in
+  `tests/unit/test_seccomp_hardening.cpp` runs the real filter in forked children.
 * **No thread exists before hardening; seccomp is installed with `TSYNC`
   (ISO-1, [ADR-0082](adr/0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)):**
   seccomp filters and Landlock rulesets attach to the calling thread only, so
@@ -517,7 +565,7 @@ Linux receives the richest set of in-process controls.
 | Core dump policy | `apply_linux_core_dump_policy()` | `setrlimit(RLIMIT_CORE, {0, 0})` and `prctl(PR_SET_DUMPABLE, 0)`. |
 | Self-check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2` and `NoNewPrivs: 1` for every task under `/proc/self/task`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
 | Ignored SIGPIPE | `src/platform/signal_hardening.cpp` | `platform::ignore_sigpipe()` is the first call in every executable's `main()`. |
-| systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, etc. |
+| systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, `UMask=0077`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces=true`, `ProtectKernelTunables=`/`Modules=`/`Logs=`, `ProtectControlGroups=`, `ProtectClock=`, `ProtectHostname=` (ISO-8, ADR-0147), etc. |
 
 The seccomp-bpf filter is deliberately narrow: it allows only the syscalls the
 runtime actually needs. The filter is installed in `main.cpp` before
@@ -686,6 +734,53 @@ advertises:
   pass the same flags and strip conflicting `_FORTIFY_SOURCE` definitions from
   the distribution's `%optflags`.
 
+Every packaging path also asks for an optimised build (0.12.26, audit OPS-5).
+Meson builds `debug` (`-O0`) when no buildtype is given, `_FORTIFY_SOURCE` is
+only defined when optimising, and the startup self-check refuses to start a
+binary whose `FORTIFY_SOURCE` check is not `enabled`. So:
+
+* `scripts/build-deb.sh`, `scripts/build-freebsd-pkg.sh`,
+  `scripts/build-netbsd-pkg.sh`, `scripts/build-openbsd-pkg.sh`,
+  `scripts/build-static-linux.sh` and the `Dockerfile` pass
+  `--buildtype=release`. The RPM specs use the distribution `%meson` macro,
+  whose `%optflags` supply `-O2`. `meson.build` keeps Meson's `debug` default
+  for development and test builds ([ADR-0148](adr/0148-packaging-paths-pass-buildtype-release-explicitly.md)),
+  and warns at configure time when hardening is on at `optimization=0`.
+* `tests/tooling/test_packages_workflow.py` fails if any of those scripts, or
+  the Dockerfile, configures Meson without `--buildtype=release`.
+
+The `Dockerfile`:
+
+* pins both stages' `debian:trixie-slim` base by the digest of its
+  multi-architecture index, so a re-pushed tag cannot change the image;
+* builds with libpq, OpenSSL, libpng and libturbojpeg, so the thumbnail worker
+  is built rather than silently skipped;
+* ships `merovingian-server`, `merovingian-db-migrate`, and both workers
+  (`/usr/libexec/merovingian/merovingian-fed-worker`, the path the server
+  spawns by default, and `merovingian-thumbnail-worker`), with their runtime
+  libraries, and fails the image build if `ldd` finds an unresolved library in
+  any of them;
+* runs as the unprivileged `merovingian` user. A non-root process cannot drop
+  its own capability bounding set, so the container must be started with
+  `--cap-drop=ALL` (and should be started with
+  `--security-opt=no-new-privileges`), or the `capability bounding` check
+  stays `unknown` and the server refuses to start. The systemd unit gets the
+  same result from `CapabilityBoundingSet=`.
+
+`scripts/check-startup-hardening-gate.sh` proves a packaged binary actually
+passes the gate. It boots the server against a throwaway SQLite config bound
+to loopback with a fresh owner-only master key, waits for the final self-check,
+and passes only when every check reports `enabled`, the number of `enabled`
+checks equals the number the server says it ran, readiness is
+`ready=true blockers=0`, the federation worker is spawned and still running a few
+seconds later (its own seccomp and Landlock policy applies after it starts, and a
+worker killed by it would otherwise go unnoticed while the supervisor restarts it), and
+the server then exits 0 on `SIGTERM`. Unless
+`--federation-worker` is given it leaves the worker path to the binary's
+built-in libexec default, so a pass also proves the package installed the
+worker where the server looks for it. Its decisions are covered by
+`tests/tooling/test_startup_hardening_gate.py` against a fake server.
+
 ## CI gates
 
 Hardening is exercised by automated tests:
@@ -734,6 +829,13 @@ Hardening is exercised by automated tests:
   against every shipped binary in the `ubuntu-hardened-listener-coverage`
   CI job and per-platform in `.github/workflows/release.yml` via
   `scripts/collect-release-evidence.sh`.
+* `scripts/check-startup-hardening-gate.sh` (0.12.26, audit OPS-5) runs the
+  real startup gate against what is shipped. In
+  `.github/workflows/packages.yml` the `deb` and `debian-pkg` jobs install the
+  built `.deb` and run it as the `merovingian` user under
+  `setpriv --bounding-set=-all`, and the `docker-image` job builds the
+  `Dockerfile` and runs it inside the image with `--cap-drop=ALL
+  --security-opt=no-new-privileges`. The BSD package jobs do not run it yet.
 
 Because seccomp/pledge/unveil are permanent in-process, the test suite sets
 `MEROVINGIAN_TEST_DISABLE_HARDENING=1` when invoking `meson test`. The build

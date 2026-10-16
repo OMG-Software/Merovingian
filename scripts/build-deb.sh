@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.12.25.
+# Build for merovingian 0.12.26.
 set -e
 
-VERSION="0.12.25"
+VERSION="0.12.26"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
@@ -12,7 +12,11 @@ STAGING="staging-deb"
 #    source-pinned wraps; OS-supplied libraries (OpenSSL, libsodium, libpq,
 #    libcurl) are resolved from the system with allow_fallback=false.
 #    -pie: position-independent executable so the kernel applies ASLR.
+#    --buildtype=release: Meson otherwise builds `debug` (-O0), where
+#    _FORTIFY_SOURCE has no effect and the server's startup hardening gate
+#    refuses to start (ADR-0148).
 CC=clang CXX=clang++ meson setup build-deb \
+    --buildtype=release \
     --prefix=/usr \
     --sysconfdir=/etc \
     --wrap-mode=forcefallback \
@@ -26,7 +30,9 @@ CC=clang CXX=clang++ meson setup build-deb \
 meson compile -C build-deb
 
 # 3. Install into staging tree
-meson install -C build-deb --destdir "$(pwd)/${STAGING}/"
+# --skip-subprojects: the vendored sqlite3 archive and headers are build inputs,
+# not files the package ships (as in every other package script).
+meson install -C build-deb --destdir "$(pwd)/${STAGING}/" --skip-subprojects
 
 # 4. Install systemd service unit
 install -D -m 0644 packaging/systemd/merovingian.service \
@@ -51,7 +57,7 @@ Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: James Chapman <james@merovingian-homeserver.example>
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libssl3, libsodium23, libpq5, libcurl4, libpng16-16, libturbojpeg0
+Depends: adduser, libssl3, libsodium23, libpq5, libcurl4, libpng16-16, libturbojpeg0
 Recommends: ca-certificates
 Section: net
 Priority: optional

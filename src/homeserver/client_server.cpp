@@ -21,6 +21,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/encoding.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
@@ -1688,7 +1689,7 @@ namespace
         return room_alias.substr(colon + 1U);
     }
 
-    [[nodiscard]] auto parse_join_servers_query(std::string_view query) -> std::vector<std::string>
+    [[nodiscard]] auto parse_join_servers_query(std::string_view query) -> std::optional<std::vector<std::string>>
     {
         auto servers = std::vector<std::string>{};
         while (!query.empty())
@@ -1706,7 +1707,12 @@ namespace
             {
                 continue;
             }
-            auto decoded = core::percent_decode_path_component(pair.substr(eq + 1U));
+            auto const encoded_server = pair.substr(eq + 1U);
+            if (core::path_component_contains_nul(encoded_server))
+            {
+                return std::nullopt;
+            }
+            auto decoded = core::percent_decode_path_component(encoded_server);
             if (!decoded.empty() && std::ranges::find(servers, decoded) == servers.end())
             {
                 servers.push_back(std::move(decoded));
@@ -1910,7 +1916,8 @@ namespace
     {
         auto const iterator = std::ranges::find_if(
             rt.registration_validation_sessions, [&](RegistrationValidationSession const& session) {
-                if (session.purpose != purpose || session.sid != sid || session.client_secret != client_secret)
+                if (session.purpose != purpose || session.sid != sid ||
+                    !crypto::constant_time_equal_variable_length(session.client_secret, client_secret))
                 {
                     return false;
                 }
@@ -1964,8 +1971,8 @@ namespace
                                                  std::string_view sid, std::string_view client_secret) -> void
     {
         std::erase_if(rt.registration_validation_sessions, [&](RegistrationValidationSession& session) {
-            auto const matches =
-                session.purpose == purpose && session.sid == sid && session.client_secret == client_secret;
+            auto const matches = session.purpose == purpose && session.sid == sid &&
+                                 crypto::constant_time_equal_variable_length(session.client_secret, client_secret);
             if (matches)
             {
                 scrub_session_credentials(session);
@@ -6857,7 +6864,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto const rest = target.substr(prefix.size());
+        auto const path = target.substr(0U, target.find('?'));
+        auto const rest = path.substr(prefix.size());
         // Expect: {eventType}/{txnId}
         auto const slash = rest.find('/');
         if (slash == std::string_view::npos || slash == 0U)
@@ -7130,7 +7138,7 @@ namespace
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr marker = std::string_view{"/send/"};
-        auto const suffix = route_suffix(target, prefix);
+        auto const suffix = route_suffix(target_path(target), prefix);
         auto const marker_pos = suffix.find(marker);
         if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
             marker_pos + marker.size() >= suffix.size())
@@ -7153,7 +7161,7 @@ namespace
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr marker = std::string_view{"/redact/"};
-        auto const suffix = route_suffix(target, prefix);
+        auto const suffix = route_suffix(target_path(target), prefix);
         auto const marker_pos = suffix.find(marker);
         // The room ID is the first segment: "/redact/" inside a state key or an event type must not match.
         if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
@@ -7212,7 +7220,7 @@ namespace
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr marker = std::string_view{"/state/"};
-        auto const suffix = route_suffix(target, prefix);
+        auto const suffix = route_suffix(target_path(target), prefix);
         auto const marker_pos = suffix.find(marker);
         if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
             marker_pos + marker.size() > suffix.size())
@@ -7384,7 +7392,7 @@ namespace
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr marker = std::string_view{"/typing/"};
-        auto const suffix = route_suffix(target, prefix);
+        auto const suffix = route_suffix(target_path(target), prefix);
         auto const marker_pos = suffix.find(marker);
         if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
             marker_pos + marker.size() >= suffix.size())
@@ -8728,7 +8736,7 @@ namespace
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr separator_text = std::string_view{"/report/"};
-        auto const suffix = route_suffix(target, prefix);
+        auto const suffix = route_suffix(target_path(target), prefix);
         auto const separator = suffix.find(separator_text);
         if (suffix.empty() || separator == std::string_view::npos || separator == 0U ||
             separator + separator_text.size() >= suffix.size())
@@ -9032,7 +9040,7 @@ namespace
         }
         case auth::KeyApiEndpoint::delete_key_backup_version: {
             auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
-            auto const version_str = route_suffix(req.target, prefix);
+            auto const version_str = route_suffix(target_path(req.target), prefix);
             if (version_str.empty())
                 return false;
             return database::delete_key_backup_version(store, user, version_str);
@@ -9408,7 +9416,7 @@ namespace
             // display name and notify all local users who share a room with
             // this user that their device list has changed.
             auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
-            auto const device_id_from_path = req.target.substr(dev_prefix.size());
+            auto const device_id_from_path = target_path(req.target).substr(dev_prefix.size());
             auto* device = find_device(rt, user, device_id_from_path);
             if (device == nullptr)
             {
@@ -11040,8 +11048,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, refresh_token.status, "M_UNKNOWN", refresh_token.reason);
             }
             response_body.push_back(json_member("refresh_token", json_str(refresh_token.value)));
-            response_body.push_back(
-                json_member("expires_in_ms", json_int(rt.homeserver.config.security().access_token_lifetime_ms)));
+            if (rt.homeserver.config.security().access_token_lifetime_ms > 0)
+            {
+                response_body.push_back(
+                    json_member("expires_in_ms", json_int(rt.homeserver.config.security().access_token_lifetime_ms)));
+            }
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response_body))));
     }
@@ -11076,13 +11087,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             rt.devices.push_back({refreshed.user_id, refreshed.device_id, refreshed.device_id});
         }
-        return dispatch_resp(
-            req, rt, 200U,
-            json_serialize(json_obj({
-                json_member("access_token", json_str(refreshed.access_token)),
-                json_member("refresh_token", json_str(refreshed.refresh_token)),
-                json_member("expires_in_ms", json_int(rt.homeserver.config.security().access_token_lifetime_ms)),
-            })));
+        auto response_body = canonicaljson::Object{
+            json_member("access_token", json_str(refreshed.access_token)),
+            json_member("refresh_token", json_str(refreshed.refresh_token)),
+        };
+        if (rt.homeserver.config.security().access_token_lifetime_ms > 0)
+        {
+            response_body.push_back(
+                json_member("expires_in_ms", json_int(rt.homeserver.config.security().access_token_lifetime_ms)));
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response_body))));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
     {
@@ -11140,7 +11154,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
     if (req.method == "GET" && starts_with(req.target, profile_prefix))
     {
-        auto const path_remainder = std::string_view{req.target}.substr(profile_prefix.size());
+        auto const path_remainder = request_path.substr(profile_prefix.size());
         // A sub-path selects a single profile field (Matrix getProfileField);
         // no sub-path returns the whole profile object (getUserProfile).
         auto const slash = path_remainder.find('/');
@@ -12301,6 +12315,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // (store_pusher/delete_pusher each commit and update the in-memory
         // mirror independently), so ordering is the fix rather than a new
         // transaction primitive.
+        // OUT-3, ADR-0151: a user's distinct pushers are capped. Only a new
+        // (app_id, pushkey) counts; updating an existing pusher is allowed.
+        auto const max_pushers = rt.homeserver.config.server().push.max_pushers_per_user;
+        if (!database::find_pusher(store, *user, body->app_id, body->pushkey).has_value() &&
+            std::ranges::count_if(store.pushers, [&user](database::PersistentPusher const& existing) {
+                return existing.user_id == *user;
+            }) >= static_cast<std::ptrdiff_t>(max_pushers))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "this account already has the maximum of " + std::to_string(max_pushers) +
+                                    " pushers; remove one before adding another");
+        }
         auto const stored = database::store_pusher(
             store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
                                               body->device_display_name, body->profile_tag, body->lang, body->data_url,
@@ -12822,7 +12848,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr profile_put_prefix = std::string_view{"/_matrix/client/v3/profile/"};
     if (req.method == "PUT" && starts_with(req.target, profile_put_prefix))
     {
-        auto const path_remainder = std::string_view{req.target}.substr(profile_put_prefix.size());
+        auto const path_remainder = request_path.substr(profile_put_prefix.size());
         auto constexpr displayname_suffix = std::string_view{"/displayname"};
         auto constexpr avatar_url_suffix = std::string_view{"/avatar_url"};
         auto const is_displayname = path_remainder.ends_with(displayname_suffix);
@@ -12962,7 +12988,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
     if (req.method == "GET" && starts_with(req.target, dev_prefix))
     {
-        auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
+        auto const device_id = request_path.substr(dev_prefix.size());
         auto const* device = find_device(rt, *user, device_id);
         if (device == nullptr)
         {
@@ -13015,7 +13041,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
-        auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
+        auto const device_id = request_path.substr(dev_prefix.size());
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
         if (!result.ok)
         {
@@ -13499,7 +13525,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto constexpr read_markers_s = std::string_view{"/read_markers"};
         auto constexpr receipt_s = std::string_view{"/receipt/"};
         auto constexpr upgrade_s = std::string_view{"/upgrade"};
-        auto const suffix = std::string_view{req.target}.substr(room_prefix.size());
+        auto const suffix = request_path.substr(room_prefix.size());
         if (req.method == "PUT")
         {
             // Spec: PUT /_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId}
@@ -14049,12 +14075,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // m.room.member events. Optional query params:
         //   membership     - include only this type (join/leave/invite/ban/knock)
         //   not_membership - exclude this type (commonly "leave")
-        //   at             - snapshot token (ignored; we return current state)
+        //   at             - historical membership snapshot token
         {
             auto constexpr members_s = std::string_view{"/members"};
-            auto const path_suffix = suffix.substr(0U, suffix.find('?'));
-            auto const query_string =
-                suffix.size() > path_suffix.size() ? suffix.substr(path_suffix.size() + 1U) : std::string_view{};
+            auto const path_suffix = suffix;
+            auto const query_start = req.target.find('?');
+            auto const query_string = query_start == std::string_view::npos
+                                          ? std::string_view{}
+                                          : std::string_view{req.target}.substr(query_start + 1U);
             auto const path_ends_with_members = req.method == "GET" && path_suffix.size() > members_s.size() &&
                                                 path_suffix.substr(path_suffix.size() - members_s.size()) == members_s;
             if (path_ends_with_members)
@@ -14132,6 +14160,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
 
                 auto const membership_allowed = [&](std::string_view membership) {
+                    // Matrix v1.19 combines two specified filters with OR, not intersection.
+                    if (!membership_filter.empty() && !not_membership.empty())
+                    {
+                        return membership == membership_filter || membership != not_membership;
+                    }
                     if (!not_membership.empty() && membership == not_membership)
                     {
                         return false;
@@ -15069,7 +15102,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr presence_suffix = std::string_view{"/status"};
     if (req.method == "PUT" && starts_with(req.target, presence_prefix))
     {
-        auto const path_after_prefix = std::string_view{req.target}.substr(presence_prefix.size());
+        auto const path_after_prefix = request_path.substr(presence_prefix.size());
         auto const suffix_pos = path_after_prefix.rfind(presence_suffix);
         if (suffix_pos != std::string_view::npos)
         {
@@ -15151,7 +15184,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         auto const decoded_room_segment = core::percent_decode_path_component(room_segment);
         auto resolved_room_id = decoded_room_segment;
-        auto resolved_via_servers = parse_join_servers_query(join_query);
+        auto parsed_via_servers = parse_join_servers_query(join_query);
+        if (!parsed_via_servers.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "join server parameter must not contain NUL");
+        }
+        auto resolved_via_servers = std::move(*parsed_via_servers);
         if (!decoded_room_segment.empty() && decoded_room_segment.front() == '#')
         {
             auto const& our_server = rt.homeserver.config.server().server_name;
@@ -15251,8 +15289,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr knock_by_id_prefix = std::string_view{"/_matrix/client/v3/knock/"};
     if (req.method == "POST" && starts_with(req.target, knock_by_id_prefix))
     {
-        auto const room_id =
-            core::percent_decode_path_component(std::string_view{req.target}.substr(knock_by_id_prefix.size()));
+        auto const room_id = core::percent_decode_path_component(request_path.substr(knock_by_id_prefix.size()));
         if (room_id.empty())
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room id or alias must not be empty");
@@ -15268,7 +15305,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
     if (starts_with(req.target, user_prefix))
     {
-        auto const suffix = std::string_view{req.target}.substr(user_prefix.size());
+        auto const suffix = request_path.substr(user_prefix.size());
         auto constexpr filter_s = std::string_view{"/filter"};
         auto constexpr filter_m = std::string_view{"/filter/"};
         auto constexpr openid_request_token_s = std::string_view{"/openid/request_token"};
@@ -15724,6 +15761,16 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
 auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req,
                                   ClientServerDispatchOptions const& options) -> DispatchResult
 {
+    auto const path = std::string_view{req.target}.substr(0U, req.target.find('?'));
+    if (core::path_component_contains_nul(path))
+    {
+        // Refuse before any decoder or handler runs, without catching unrelated
+        // invalid_argument failures or reflecting the untrusted target (DB-6).
+        auto const guard = std::lock_guard<RuntimeMutex>{rt.homeserver.mutex};
+        auto result = dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "request path must not contain NUL");
+        apply_cors_headers(req, result.response, rt.cors);
+        return result;
+    }
     // ADR-0121: the fetch deep in the media service reads this mode. In defer
     // mode a fetch that would go to the network records a deferral and returns;
     // its placeholder response is discarded here and the transport hands the

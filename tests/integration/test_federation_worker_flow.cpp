@@ -9,8 +9,11 @@
 // +-------------------------------------------------------------------------+
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/edu_relay_context.hpp"
+#include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
+#include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -23,9 +26,12 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
+#include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -34,12 +40,18 @@
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/net/shutdown_signal.hpp"
+#include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/thread_pool.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -52,8 +64,11 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sodium.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -446,6 +461,191 @@ constexpr auto relay_key_id = "ed25519:auto";
 
 } // namespace
 
+namespace
+{
+
+// The socket client is deliberately independent of the production outbound
+// federation transport: that transport rejects cleartext/loopback destinations.
+[[nodiscard]] auto fed10_socket_request(std::uint16_t port, std::string const& request) -> LocalHttpResponse
+{
+    auto socket = merovingian::core::FileDescriptor{::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)};
+    REQUIRE(socket.valid());
+    auto const timeout = timeval{15, 0};
+    REQUIRE(::setsockopt(socket.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
+    REQUIRE(::setsockopt(socket.get(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0);
+    auto address = sockaddr_in{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1);
+    REQUIRE(::connect(socket.get(), reinterpret_cast<sockaddr const*>(&address), sizeof(address)) == 0);
+    auto sent = std::size_t{};
+    while (sent < request.size())
+    {
+        auto const count = ::send(socket.get(), request.data() + sent, request.size() - sent, MSG_NOSIGNAL);
+        if (count < 0 && errno == EINTR)
+            continue;
+        REQUIRE(count > 0);
+        sent += static_cast<std::size_t>(count);
+    }
+    auto response = std::string{};
+    auto bytes = std::array<char, 4096>{};
+    for (;;)
+    {
+        auto const count = ::recv(socket.get(), bytes.data(), bytes.size(), 0);
+        if (count < 0 && errno == EINTR)
+            continue;
+        REQUIRE(count >= 0);
+        if (count == 0)
+            break;
+        response.append(bytes.data(), static_cast<std::size_t>(count));
+        REQUIRE(response.size() <= 65536U);
+    }
+    auto const body_offset = response.find("\r\n\r\n");
+    REQUIRE(body_offset != std::string::npos);
+    REQUIRE(response.starts_with("HTTP/1.1 "));
+    auto result = LocalHttpResponse{};
+    auto const status = std::from_chars(response.data() + 9, response.data() + 12, result.status);
+    REQUIRE(status.ec == std::errc{});
+    result.body = response.substr(body_offset + 4U);
+    return result;
+}
+
+class Fed10TempDirectory final
+{
+public:
+    explicit Fed10TempDirectory(std::filesystem::path path)
+        : path_(std::move(path))
+    {
+    }
+    Fed10TempDirectory(Fed10TempDirectory const&) = delete;
+    auto operator=(Fed10TempDirectory const&) -> Fed10TempDirectory& = delete;
+    ~Fed10TempDirectory() noexcept
+    {
+        auto error = std::error_code{};
+        std::ignore = std::filesystem::remove_all(path_, error);
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+// Stop the listener and drain request threads even if a REQUIRE unwinds.
+class Fed10SocketListener final
+{
+public:
+    explicit Fed10SocketListener(merovingian::homeserver::ClientServerRuntime& runtime)
+    {
+        REQUIRE(acceptor_.bind("127.0.0.1", 0U).ok);
+        REQUIRE(shutdown_.valid());
+        thread_ = std::thread{[this, &runtime]() {
+            merovingian::homeserver::serve_http(acceptor_, runtime, shutdown_, stats_,
+                                                merovingian::homeserver::HttpDispatchMode::federation, pool_);
+        }};
+    }
+    Fed10SocketListener(Fed10SocketListener const&) = delete;
+    auto operator=(Fed10SocketListener const&) -> Fed10SocketListener& = delete;
+    ~Fed10SocketListener() noexcept
+    {
+        shutdown_.fire();
+        if (thread_.joinable())
+            thread_.join();
+        pool_.request_stop();
+    }
+    [[nodiscard]] auto port() const noexcept -> std::uint16_t
+    {
+        return acceptor_.bound_port();
+    }
+
+private:
+    merovingian::net::TcpAcceptor acceptor_{};
+    merovingian::net::ShutdownSignal shutdown_{};
+    merovingian::homeserver::HttpServeStats stats_{};
+    merovingian::net::ThreadPool pool_{2U};
+    std::thread thread_{};
+};
+
+// Stop the worker before the scenario's callback counters leave scope.
+class Fed10ProxyLifetime final
+{
+public:
+    explicit Fed10ProxyLifetime(merovingian::homeserver::HomeserverRuntime& runtime)
+        : runtime_(runtime)
+    {
+    }
+    Fed10ProxyLifetime(Fed10ProxyLifetime const&) = delete;
+    auto operator=(Fed10ProxyLifetime const&) -> Fed10ProxyLifetime& = delete;
+    ~Fed10ProxyLifetime() noexcept
+    {
+        runtime_.federation_proxy.reset();
+    }
+
+private:
+    merovingian::homeserver::HomeserverRuntime& runtime_;
+};
+
+// The shared genesis helper populates mirrors, not the room/event SQL rows.
+// Persist every row and graph edge before spawning the independent worker.
+auto fed10_persist_remote_room(merovingian::homeserver::HomeserverRuntime& runtime, std::string const& room_id) -> void
+{
+    using namespace merovingian;
+    tests::remote_room::seed_room_with_genesis_state_group(runtime, room_id);
+    auto& store = runtime.database.persistent_store;
+    auto rooms = std::move(store.rooms);
+    auto events = std::move(store.events);
+    auto state = std::move(store.state);
+    auto memberships = std::move(store.memberships);
+    store.rooms.clear();
+    store.events.clear();
+    store.state.clear();
+    store.memberships.clear();
+    for (auto& room : rooms)
+        REQUIRE(database::store_room(store, std::move(room)));
+    for (auto& event : events)
+    {
+        if (event.depth > 0U)
+        {
+            event.prev_event_ids = {events[static_cast<std::size_t>(event.depth - 1U)].event_id};
+            event.auth_event_ids = {room_id + ":create"};
+        }
+        // Match the durably stored graph to the event JSON read by the child.
+        auto parsed = canonicaljson::parse_lossless(event.json);
+        REQUIRE(parsed.error == canonicaljson::ParseError::none);
+        auto& object = std::get<canonicaljson::Object>(parsed.value.storage());
+        for (auto& member : object)
+        {
+            if (member.key != "prev_events" && member.key != "auth_events")
+                continue;
+            auto array = canonicaljson::Array{};
+            for (auto const& id : member.key == "prev_events" ? event.prev_event_ids : event.auth_event_ids)
+                array.emplace_back(id);
+            *member.value = canonicaljson::Value{std::move(array)};
+        }
+        auto const serialized = canonicaljson::serialize_canonical(parsed.value);
+        REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+        event.json = serialized.output;
+        REQUIRE(database::store_event(store, event));
+    }
+    for (auto& entry : state)
+        REQUIRE(database::store_state(store, std::move(entry)));
+    for (auto& membership : memberships)
+        REQUIRE(database::store_membership(store, std::move(membership)) == database::MembershipStoreResult::stored);
+    auto const remote = tests::remote_room::remote_runtime();
+    REQUIRE(database::store_server_signing_key(
+        store, {remote.server_name, remote.signing_key.key_id,
+                federation::test::pubkey_b64(federation::test::keypair_from_seed(tests::remote_room::remote_key_seed)),
+                remote.signing_key.valid_until_ts}));
+}
+
+[[nodiscard]] auto fed10_target_count(merovingian::database::PersistentStore const& store, std::string const& event_id)
+    -> std::size_t
+{
+    return static_cast<std::size_t>(std::ranges::count_if(store.events, [&](auto const& event) {
+        return event.event_id == event_id;
+    }));
+}
+
+} // namespace
+
 SCENARIO("The federation worker pool starts real worker processes and routes non-room requests",
          "[integration][federation-worker][routing]")
 {
@@ -732,6 +932,243 @@ SCENARIO("PUT /send transactions are routed to a worker and receive a JSON respo
             {
                 REQUIRE(response.status != 503U);
                 REQUIRE_FALSE(response.body.empty());
+            }
+        }
+    }
+}
+
+// Matrix v1.19, server-server API, PUT /send/{txnId}: unsuccessful
+// transactions remain retryable; completed transactions must not redeliver EDUs.
+SCENARIO("main key-admission overload survives real worker socket HTTP and unchanged transaction retry",
+         "[integration][federation][worker][send][fed10][fed10-worker-http]")
+{
+    using namespace merovingian;
+    using namespace merovingian::tests::remote_room;
+    GIVEN("a durable resident room and public remote key shared with one actual worker shard")
+    {
+        WHEN("main's PDU key cache misses while quota or in-flight admission is full")
+        {
+            THEN("both admission branches return retryable 503 without delivery, then accept and deduplicate the same "
+                 "request")
+            {
+                for (auto const occupied_slot : {false, true})
+                {
+                    INFO((occupied_slot ? "main slot-full" : "main quota-full"));
+                    auto const tmp = unique_temp_dir("merovingian-fed10-worker-http-");
+                    auto cleanup = Fed10TempDirectory{tmp};
+                    auto config = make_federation_worker_config(tmp);
+                    config.server().server_name = local_server;
+                    config.federation_worker().shards = 1U;
+                    auto const config_path = tmp / "worker.conf";
+                    write_worker_config(config_path, config);
+                    auto started = homeserver::start_client_server(config);
+                    REQUIRE(started.started);
+                    auto& client = started.runtime;
+                    auto& runtime = client.homeserver;
+                    homeserver::wire_federation_callbacks(runtime);
+                    REQUIRE(static_cast<bool>(runtime.federation.pdu_sink));
+                    REQUIRE(static_cast<bool>(runtime.federation.edu_sink));
+                    auto const room_id = std::string{"!fed10-worker-http:"} + local_server;
+                    fed10_persist_remote_room(runtime, room_id);
+                    // A numeric relay origin plus a durable fresh public key lets
+                    // the real child resolve its peer without external DNS/HTTP.
+                    // The PDU sender remains a different, cache-known server.
+                    auto const relay_server = std::string{"203.0.113.20"};
+                    auto const relay_member = std::string{"@relay:"} + relay_server;
+                    REQUIRE(database::store_membership(runtime.database.persistent_store,
+                                                       {room_id, relay_member, "join"}) ==
+                            database::MembershipStoreResult::stored);
+                    auto relay = remote_runtime();
+                    relay.server_name = relay_server;
+                    relay.signing_key.server_name = relay_server;
+                    relay.discovery.server_name = relay_server;
+                    relay.discovery.resolved_host = relay_server;
+                    relay.discovery.resolved_addresses = {relay_server};
+                    REQUIRE(database::store_server_signing_key(
+                        runtime.database.persistent_store,
+                        {relay_server, relay.signing_key.key_id,
+                         events::matrix_base64_from_bytes(relay.signing_key.public_key_bytes),
+                         relay.signing_key.valid_until_ts}));
+                    auto const signed_pdu = make_remote_message_json(
+                        room_id, {room_id + ":member"}, {room_id + ":create", room_id + ":pl", room_id + ":member:bob"},
+                        4, 50);
+                    auto const envelope = federation::parse_inbound_pdu_envelope(signed_pdu, room_version);
+                    REQUIRE(envelope.has_value());
+                    auto const event_id = envelope->event_id;
+                    auto const body = std::string{"{\"origin\":\""} + relay_server +
+                                      "\",\"origin_server_ts\":50,\"pdus\":[" + signed_pdu +
+                                      "],\"edus\":[{\"edu_type\":\"m.typing\",\"content\":{\"room_id\":\"" + room_id +
+                                      "\",\"user_id\":\"" + relay_member + "\",\"typing\":true}}]}";
+                    auto const target = std::string{"/_matrix/federation/v1/send/fed10-unchanged"};
+                    auto call = federation::OutboundCall{};
+                    call.transaction =
+                        federation::make_outbound_transaction(local_server, "PUT", target, relay_server, body);
+                    call.key_id = remote_key_id;
+                    call.secret_key =
+                        federation::test::secret_key_buffer(federation::test::keypair_from_seed(remote_key_seed));
+                    auto const outbound = federation::build_outbound_request(call);
+                    auto const authorization = std::ranges::find_if(outbound.headers, [](auto const& header) {
+                        return header.name == "Authorization";
+                    });
+                    REQUIRE(authorization != outbound.headers.end());
+                    auto const credentials = federation::parse_x_matrix_authorization_header(authorization->value);
+                    REQUIRE(credentials.has_value());
+                    auto authenticated = federation::SignedFederationRequest{};
+                    authenticated.method = "PUT";
+                    authenticated.target = target;
+                    authenticated.origin = relay_server;
+                    authenticated.destination = local_server;
+                    authenticated.key_id = credentials->key_id;
+                    authenticated.signature = credentials->signature;
+                    authenticated.body = body;
+                    authenticated.canonical_json_verified = true;
+                    authenticated.remote_addr = "127.0.0.1";
+                    authenticated.now_ts =
+                        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                       std::chrono::system_clock::now().time_since_epoch())
+                                                       .count());
+                    auto raw_calls = std::atomic<std::size_t>{};
+                    auto cache_misses = std::atomic<std::size_t>{};
+                    auto edu_deliveries = std::atomic<std::size_t>{};
+                    runtime.federation.remotes = {relay};
+                    runtime.federation.cached_pdu_key_lookup =
+                        [&cache_misses](std::string_view server,
+                                        std::string_view id) -> std::optional<federation::FederationKeyRecord> {
+                        if (server == remote_server && id == remote_key_id)
+                            ++cache_misses;
+                        return std::nullopt;
+                    };
+                    runtime.federation.remote_key_resolver = [&raw_calls](std::string_view server,
+                                                                          std::string_view id) {
+                        ++raw_calls;
+                        return genuine_key_resolver()(server, id);
+                    };
+                    // Observe, but always execute, the genuine production typing sink.
+                    auto real_edu_sink = runtime.federation.edu_sink;
+                    runtime.federation.edu_sink = [&edu_deliveries, real_edu_sink](auto const& edu) {
+                        ++edu_deliveries;
+                        return real_edu_sink(edu);
+                    };
+                    auto const warm_auth =
+                        federation::verify_inbound_federation_signature(runtime.federation, authenticated);
+                    REQUIRE(warm_auth.accepted);
+                    REQUIRE(raw_calls.load() == 0U);
+                    // Read independently using the child's restricted table profile.
+                    {
+                        auto durable = database::open_sqlite_persistent_store(
+                            config.database().sqlite_path, database::TableLoadProfile::federation_worker);
+                        REQUIRE(durable.ok);
+                        CHECK(durable.store.rooms.size() == 1U);
+                        CHECK(durable.store.events.size() == 4U);
+                        CHECK(durable.store.state.size() == 4U);
+                        CHECK(durable.store.memberships.size() == 3U);
+                        CHECK(durable.store.event_edges.size() == 3U);
+                        CHECK(durable.store.event_auth.size() == 3U);
+                        CHECK(durable.store.event_state_groups.size() == 4U);
+                        auto const key = database::find_server_signing_key(durable.store, remote_server, remote_key_id);
+                        REQUIRE(key.has_value());
+                        CHECK(key->secret_key.empty());
+                        CHECK(key->valid_until_ts > authenticated.now_ts);
+                    }
+                    runtime.federation_proxy = std::make_unique<FederationProxy>(
+                        config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
+                    auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
+                    std::ignore = proxy_lifetime;
+                    REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
+                    auto listener = Fed10SocketListener{client};
+                    {
+                        auto guard = std::lock_guard{*runtime.federation.mutex};
+                        runtime.federation.config.key_resolution_max_in_flight = 1U;
+                        runtime.federation.config.key_resolution_per_ip_rate = {1U, 3600U};
+                        runtime.federation.key_resolution_buckets.clear();
+                        runtime.federation.key_resolution_failures.clear();
+                        runtime.federation.key_resolutions_in_flight = occupied_slot ? 1U : 0U;
+                        if (!occupied_slot)
+                            runtime.federation.key_resolution_buckets.push_back(
+                                {"<unknown>", 1U, std::chrono::steady_clock::now()});
+                    }
+                    // Reuse these exact bytes, including txid and signed body, for all three sends.
+                    auto const wire =
+                        "PUT " + target + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: " + authorization->value +
+                        "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+                        "\r\nConnection: close\r\n\r\n" + body;
+                    auto const denied = fed10_socket_request(listener.port(), wire);
+                    CHECK(denied.status == 503U);
+                    auto const denied_json = canonicaljson::parse_lossless(denied.body);
+                    REQUIRE(denied_json.error == canonicaljson::ParseError::none);
+                    auto const* denied_object = std::get_if<canonicaljson::Object>(&denied_json.value.storage());
+                    REQUIRE(denied_object != nullptr);
+                    auto const errcode = std::ranges::find_if(*denied_object, [](auto const& member) {
+                        return member.key == "errcode";
+                    });
+                    REQUIRE(errcode != denied_object->end());
+                    auto const* code = std::get_if<std::string>(&errcode->value->storage());
+                    REQUIRE(code != nullptr);
+                    CHECK(*code == "M_UNKNOWN");
+                    CHECK(runtime.federation_proxy->healthy());
+                    CHECK(cache_misses.load() > 0U);
+                    CHECK(raw_calls.load() == 0U);
+                    CHECK(edu_deliveries.load() == 0U);
+                    {
+                        auto guard = std::lock_guard{runtime.mutex};
+                        CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 0U);
+                        CHECK(homeserver::current_typing_users_in_room(runtime, room_id).empty());
+                        auto durable = database::open_sqlite_persistent_store(config.database().sqlite_path);
+                        REQUIRE(durable.ok);
+                        CHECK(fed10_target_count(durable.store, event_id) == 0U);
+                    }
+                    {
+                        auto guard = std::lock_guard{*runtime.federation.mutex};
+                        CHECK(runtime.federation.key_resolutions_in_flight == (occupied_slot ? 1U : 0U));
+                        CHECK(runtime.federation.key_resolution_failures.empty());
+                        runtime.federation.key_resolution_buckets.clear();
+                        runtime.federation.key_resolutions_in_flight = 0U;
+                    }
+                    auto const accepted = fed10_socket_request(listener.port(), wire);
+                    CHECK(accepted.status == 200U);
+                    auto const accepted_json = canonicaljson::parse_lossless(accepted.body);
+                    REQUIRE(accepted_json.error == canonicaljson::ParseError::none);
+                    auto const* accepted_object = std::get_if<canonicaljson::Object>(&accepted_json.value.storage());
+                    REQUIRE(accepted_object != nullptr);
+                    auto const pdus = std::ranges::find_if(*accepted_object, [](auto const& member) {
+                        return member.key == "pdus";
+                    });
+                    REQUIRE(pdus != accepted_object->end());
+                    auto const* pdu_results = std::get_if<canonicaljson::Object>(&pdus->value->storage());
+                    REQUIRE(pdu_results != nullptr);
+                    // The production response lists only PDU errors. Prove
+                    // acceptance below with the real in-memory and durable event.
+                    CHECK(pdu_results->empty());
+                    CHECK(runtime.federation_proxy->healthy());
+                    CHECK(raw_calls.load() == 1U);
+                    CHECK(edu_deliveries.load() == 1U);
+                    auto const misses_after_accept = cache_misses.load();
+                    {
+                        auto guard = std::lock_guard{runtime.mutex};
+                        CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 1U);
+                        CHECK(homeserver::current_typing_users_in_room(runtime, room_id) ==
+                              std::vector<std::string>{relay_member});
+                        auto durable = database::open_sqlite_persistent_store(config.database().sqlite_path);
+                        REQUIRE(durable.ok);
+                        CHECK(fed10_target_count(durable.store, event_id) == 1U);
+                    }
+                    auto const duplicate = fed10_socket_request(listener.port(), wire);
+                    CHECK(duplicate.status == 200U);
+                    CHECK(bool{duplicate.body == accepted.body});
+                    CHECK(runtime.federation_proxy->healthy());
+                    CHECK(cache_misses.load() == misses_after_accept);
+                    CHECK(raw_calls.load() == 1U);
+                    CHECK(edu_deliveries.load() == 1U);
+                    {
+                        auto guard = std::lock_guard{runtime.mutex};
+                        CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 1U);
+                        CHECK(homeserver::current_typing_users_in_room(runtime, room_id) ==
+                              std::vector<std::string>{relay_member});
+                        auto durable = database::open_sqlite_persistent_store(config.database().sqlite_path);
+                        REQUIRE(durable.ok);
+                        CHECK(fed10_target_count(durable.store, event_id) == 1U);
+                    }
+                }
             }
         }
     }
@@ -1063,7 +1500,8 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
             auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
                                       R"("origin":"matrix.example.org","content_json":)" + escape(content_json) + "}";
 
-            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+            auto const response_json =
+                merovingian::tests::ingest_edu_with_live_context(runtime, request_json, "matrix.example.org");
 
             THEN("the response reports the EDU as accepted")
             {
@@ -1151,7 +1589,8 @@ SCENARIO("handle_edu_ingest_request delivers a realistically-shaped Olm-encrypte
                                       R"("origin":"matrix.ping.me.uk","content_json":)" +
                                       ipc_escape_json_string(content_json) + "}";
 
-            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+            auto const response_json =
+                merovingian::tests::ingest_edu_with_live_context(runtime, request_json, "matrix.ping.me.uk");
 
             THEN("the response reports the EDU as accepted")
             {
@@ -1207,24 +1646,19 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.edu_sink);
 
-        auto channels = make_ipc_test_channel_pair();
+        auto channels = merovingian::tests::make_edu_relay_channels();
         // Mirrors worker_pool.cpp's WorkerSupervisor::set_request_handler's
         // "edu_ingest" branch: dispatch the request body to
         // handle_edu_ingest_request() against main's own runtime and send the
         // result back over the same channel.
-        channels.server->set_request_handler(
-            [&runtime, srv = channels.server.get()](std::uint64_t id, std::string json) {
-                auto const response = merovingian::homeserver::handle_edu_ingest_request(runtime, json);
-                srv->send_response(id, response);
-            });
-        channels.server->start();
-        // The client also needs its reader thread running: send_request()
-        // blocks on a condition variable that only the reader thread signals
-        // when it reads a matching reply_to frame back from the server.
-        // Without this, every send_request() call times out even though the
-        // server processes the request and writes to the database correctly
-        // — exactly the trap this scenario exists to avoid falling into.
-        channels.client->start();
+        channels.main->set_request_handler([&runtime, &channels](std::uint64_t id, std::string json) {
+            auto const response = merovingian::homeserver::handle_edu_ingest_request(runtime, json, *channels.main);
+            channels.main->send_response(id, response);
+        });
+        // Keep a real main-owned parent live while the worker relays the EDU.
+        // The trusted origin is chosen by this testcase, not read from JSON.
+        auto relay_context = merovingian::tests::EduRelayContext{*channels.main, *channels.worker};
+        REQUIRE(relay_context.establish("matrix.ping.me.uk"));
 
         WHEN("the worker side sends a real edu_ingest wire frame carrying an Olm-encrypted room-key share over the "
              "encrypted channel")
@@ -1259,7 +1693,8 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
                                       R"("origin":"matrix.ping.me.uk","content_json":)" +
                                       ipc_escape_json_string(content_json) + "}";
 
-            auto const reply = channels.client->send_request(request_json, std::chrono::seconds{10});
+            auto const reply =
+                channels.worker->send_request(relay_context.wrap(request_json), std::chrono::seconds{10});
 
             THEN("a reply arrives reporting the EDU as accepted")
             {
@@ -1283,8 +1718,7 @@ SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a
             }
         }
 
-        channels.server->stop();
-        channels.client->stop();
+        REQUIRE(relay_context.finish());
     }
 }
 
@@ -1413,7 +1847,8 @@ SCENARIO("handle_edu_ingest_request rejects a malformed m.direct_to_device EDU i
                                       R"("origin":"matrix.example.org","content_json":)" +
                                       ipc_escape_json_string(content_json) + "}";
 
-            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+            auto const response_json =
+                merovingian::tests::ingest_edu_with_live_context(runtime, request_json, "matrix.example.org");
 
             THEN("the response reports the EDU as rejected_invalid, not accepted")
             {
@@ -1453,7 +1888,8 @@ SCENARIO("handle_edu_ingest_request reports rejected_invalid when edu_sink is no
                                       R"("origin":"matrix.example.org","content_json":)" +
                                       ipc_escape_json_string(content_json) + "}";
 
-            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+            auto const response_json =
+                merovingian::tests::ingest_edu_with_live_context(runtime, request_json, "matrix.example.org");
 
             THEN("the response reports rejected_invalid rather than crashing or silently dropping the EDU")
             {
@@ -2707,6 +3143,509 @@ SCENARIO("WorkerSupervisor::stop() escalates to SIGKILL when the worker ignores 
                 REQUIRE(stop_elapsed < std::chrono::seconds{10});
                 REQUIRE_FALSE(supervisor.healthy());
                 REQUIRE(supervisor.worker_pid() == -1);
+            }
+        }
+    }
+}
+
+// FED-12 exercises the public relay handler with real pending channel requests.
+// This deliberately mirrors only WorkerPool's EDU dispatch branch: it does not
+// prove production handler registration, restart wiring, or signed-body binding.
+#include <condition_variable>
+#include <future>
+#include <limits>
+#include <optional>
+#include <utility>
+#include <variant>
+
+namespace
+{
+
+[[nodiscard]] auto fed12_json(merovingian::canonicaljson::Object object) -> std::string
+{
+    auto const encoded =
+        merovingian::canonicaljson::serialize_canonical_strict(merovingian::canonicaljson::Value{std::move(object)});
+    REQUIRE(encoded.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    return encoded.output;
+}
+
+[[nodiscard]] auto fed12_text(std::string_view text) -> merovingian::canonicaljson::Value
+{
+    return merovingian::canonicaljson::Value{std::string{text}};
+}
+
+[[nodiscard]] auto fed12_random_credential() -> std::string
+{
+    auto bytes = merovingian::core::SecretBuffer{32U};
+    randombytes_buf(bytes.bytes().data(), bytes.bytes().size());
+    auto const alphabet = std::string_view{"0123456789abcdef"};
+    auto result = std::string{};
+    for (auto const byte : bytes.bytes())
+    {
+        result += alphabet[byte >> 4U];
+        result += alphabet[byte & 15U];
+    }
+    return result;
+}
+
+[[nodiscard]] auto fed12_authenticated_channels() -> IpcTestChannelPair
+{
+    auto [server_fd, client_fd] = make_ipc_test_socketpair();
+    auto material = merovingian::core::SecretBuffer{32U};
+    randombytes_buf(material.bytes().data(), material.bytes().size());
+    auto const authentication = merovingian::crypto::derive_ipc_auth_key(material.bytes());
+    REQUIRE(authentication.has_value());
+    auto channels = IpcTestChannelPair{};
+    auto server_error = std::exception_ptr{};
+    auto client_error = std::exception_ptr{};
+    // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+    auto handshakes = merovingian::tests::JoiningThreads{};
+    handshakes.emplace_back([&] {
+        try
+        {
+            channels.server = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, *authentication);
+        }
+        catch (...)
+        {
+            server_error = std::current_exception();
+        }
+    });
+    handshakes.emplace_back([&] {
+        try
+        {
+            channels.client = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, *authentication);
+        }
+        catch (...)
+        {
+            client_error = std::current_exception();
+        }
+    });
+    handshakes.join();
+    REQUIRE(!server_error);
+    REQUIRE(!client_error);
+    return channels;
+}
+
+struct Fed12ReceivedParent final
+{
+    std::uint64_t id{};
+    merovingian::homeserver::LocalHttpRequest request{};
+};
+
+class Fed12PendingRelay final
+{
+public:
+    explicit Fed12PendingRelay(merovingian::homeserver::HomeserverRuntime& runtime)
+        : runtime_(runtime)
+        , channels_(fed12_authenticated_channels())
+    {
+        channels_.server->set_request_handler([this](std::uint64_t id, std::string frame) {
+            // Validate against this exact receiving main channel's live parent.
+            auto const response =
+                merovingian::homeserver::handle_edu_ingest_request(runtime_, frame, *channels_.server);
+            channels_.server->send_response(id, response);
+        });
+        channels_.client->set_request_handler([this](std::uint64_t id, std::string frame) {
+            auto const request = merovingian::ipc::deserialize_fed_request(frame);
+            auto guard = std::lock_guard{mutex_};
+            if (releasing_)
+            {
+                channels_.client->send_response(id, completion_);
+                return;
+            }
+            parents_.push_back({id, request});
+            received_.notify_all();
+            // The dispatch thread returns without replying. A separate test
+            // future sends EDU RPCs while this real main->worker call is pending.
+        });
+        channels_.server->start();
+        channels_.client->start();
+    }
+    Fed12PendingRelay(Fed12PendingRelay const&) = delete;
+    auto operator=(Fed12PendingRelay const&) -> Fed12PendingRelay& = delete;
+    ~Fed12PendingRelay() noexcept
+    {
+        std::ignore = finish();
+        channels_.server->stop();
+        channels_.client->stop();
+    }
+
+    [[nodiscard]] auto send_parent(merovingian::homeserver::LocalHttpRequest const& request)
+        -> std::optional<Fed12ReceivedParent>
+    {
+        auto index = std::size_t{};
+        {
+            auto guard = std::lock_guard{mutex_};
+            index = parents_.size();
+        }
+        auto frame = merovingian::ipc::serialize_fed_request(request);
+        pending_.push_back(
+            std::async(std::launch::async, [this, frame = std::move(frame), origin = request.verified_origin] {
+                return channels_.server->send_request(frame, std::chrono::seconds{60}, origin);
+            }));
+        auto guard = std::unique_lock{mutex_};
+        if (!received_.wait_for(guard, std::chrono::seconds{10}, [&] {
+                return parents_.size() > index;
+            }))
+            return std::nullopt;
+        return parents_[index];
+    }
+
+    [[nodiscard]] auto parent_is_pending(std::size_t index) -> bool
+    {
+        return pending_.at(index).wait_for(std::chrono::seconds{0}) == std::future_status::timeout;
+    }
+
+    [[nodiscard]] auto relay(std::string frame) -> std::optional<std::string>
+    {
+        auto response = std::async(std::launch::async, [this, frame = std::move(frame)] {
+            return channels_.client->send_request(frame, std::chrono::seconds{10});
+        });
+        return response.get();
+    }
+
+    // Also called on unwinding: release the held responses before joining any
+    // callers or destroying either channel. Never wait with a runtime/list lock.
+    [[nodiscard]] auto finish() noexcept -> bool
+    {
+        if (finished_)
+            return completion_ok_;
+        try
+        {
+            {
+                auto guard = std::lock_guard{mutex_};
+                releasing_ = true;
+                for (auto const& parent : parents_)
+                    channels_.client->send_response(parent.id, completion_);
+            }
+            for (auto& pending : pending_)
+            {
+                if (pending.wait_for(std::chrono::seconds{5}) != std::future_status::ready)
+                {
+                    completion_ok_ = false;
+                    channels_.server->stop();
+                    channels_.client->stop();
+                }
+                auto const response = pending.get();
+                if (!response.has_value() || merovingian::ipc::deserialize_fed_response(*response).status != 200U)
+                    completion_ok_ = false;
+            }
+        }
+        catch (...)
+        {
+            completion_ok_ = false;
+            channels_.server->stop();
+            channels_.client->stop();
+            for (auto& pending : pending_)
+                if (pending.valid())
+                    pending.wait();
+        }
+        finished_ = true;
+        return completion_ok_;
+    }
+
+private:
+    merovingian::homeserver::HomeserverRuntime& runtime_;
+    IpcTestChannelPair channels_;
+    std::mutex mutex_{};
+    std::condition_variable received_{};
+    std::vector<Fed12ReceivedParent> parents_{};
+    std::vector<std::future<std::optional<std::string>>> pending_{};
+    std::string completion_{merovingian::ipc::serialize_fed_response({200U, "{}"})};
+    bool releasing_{false};
+    bool finished_{false};
+    bool completion_ok_{true};
+};
+
+} // namespace
+
+SCENARIO("Main binds worker EDU origins to genuinely verified pending federation requests",
+         "[integration][federation][federation-worker][fed-12-origin-binding]")
+{
+    using namespace merovingian;
+    using canonicaljson::make_member;
+    using canonicaljson::Value;
+
+    GIVEN("a SQLite client runtime, a publicly registered device, and two genuine federation signing identities")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const directory = unique_temp_dir("fed12-origin-binding");
+        auto cleanup = Fed10TempDirectory{directory};
+        auto config = make_federation_worker_config(directory);
+        config.security().registration.enabled = true;
+        config.security().registration.require_token = true;
+        auto const registration_token = fed12_random_credential();
+        auto const registration_token_path = directory / "registration.allow";
+        write_file(registration_token_path, registration_token + "\n");
+        std::filesystem::permissions(registration_token_path, std::filesystem::perms::owner_read);
+        config.security().registration.token_file = registration_token_path.string();
+        auto started = homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& client = started.runtime;
+        auto& runtime = client.homeserver;
+        homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(static_cast<bool>(runtime.federation.edu_sink));
+        REQUIRE(static_cast<bool>(client.sync_notifier));
+
+        // Public registration creates both the durable account/device and the
+        // separate client device read model. No fixture-only vector insertion.
+        auto password = fed12_random_credential();
+        // Keep the generated password random while satisfying the real policy.
+        password[0] = static_cast<char>(65U + static_cast<unsigned char>(password[0]) % 26U);
+        password[1] = static_cast<char>(97U + static_cast<unsigned char>(password[1]) % 26U);
+        password[2] = static_cast<char>(48U + static_cast<unsigned char>(password[2]) % 10U);
+        password[3] = static_cast<char>(33U + static_cast<unsigned char>(password[3]) % 15U);
+        auto const registration_body = fed12_json({
+            make_member("username", fed12_text("fed12recipient")),
+            make_member("password", fed12_text(password)),
+            make_member("device_id", fed12_text("FED12DEVICE")),
+            make_member("auth", Value{canonicaljson::Object{
+                                    make_member("type", fed12_text("m.login.registration_token")),
+                                    make_member("token", fed12_text(registration_token)),
+                                }}
+             ),
+        });
+        auto const registration = homeserver::handle_client_server_request(
+            client, {"POST", "/_matrix/client/v3/register", {}, registration_body});
+        REQUIRE(registration.response.status == 200U);
+        auto const recipient = ipc::ipc_json_get_str(registration.response.body, "user_id");
+        auto const device = ipc::ipc_json_get_str(registration.response.body, "device_id");
+        auto const access = ipc::ipc_json_get_str(registration.response.body, "access_token");
+        REQUIRE(!recipient.empty());
+        REQUIRE(!device.empty());
+        REQUIRE(!access.empty());
+        REQUIRE(homeserver::device_count(client, recipient) == 1U);
+        auto const listed =
+            homeserver::handle_client_server_request(client, {"GET", "/_matrix/client/v3/devices", access, {}});
+        REQUIRE(listed.response.status == 200U);
+
+        auto key_a = crypto::generate_ed25519_keypair();
+        auto key_b = crypto::generate_ed25519_keypair();
+        REQUIRE(key_a.has_value());
+        REQUIRE(key_b.has_value());
+        auto const origin_a = std::string{"fed12-a.example"};
+        auto const origin_b = std::string{"fed12-b.example"};
+        auto const id_a = std::string{"ed25519:"} + fed12_random_credential().substr(0U, 12U);
+        auto const id_b = std::string{"ed25519:"} + fed12_random_credential().substr(0U, 12U);
+        auto const now = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        auto const remote_record = [&](std::string const& origin, std::string const& id,
+                                       crypto::Ed25519Keypair const& key) {
+            auto remote = federation::FederationRemoteRuntime{};
+            remote.server_name = origin;
+            remote.discovery.server_name = origin;
+            remote.discovery.resolved_host = origin;
+            remote.discovery.resolved_addresses = {"1.1.1.1"};
+            remote.signing_key = {
+                origin, id, now + 3600000U, std::string{key.public_key.begin(), key.public_key.end()}
+            };
+            return remote;
+        };
+        auto const remote_a = remote_record(origin_a, id_a, *key_a);
+        auto const remote_b = remote_record(origin_b, id_b, *key_b);
+        // This provider returns published key data only for the exact generated
+        // identities. The production verifier still performs Ed25519 verification.
+        runtime.federation.remote_key_resolver =
+            [remote_a, remote_b](std::string_view origin,
+                                 std::string_view id) -> std::optional<federation::FederationRemoteRuntime> {
+            if (origin == remote_a.server_name && id == remote_a.signing_key.key_id)
+                return remote_a;
+            if (origin == remote_b.server_name && id == remote_b.signing_key.key_id)
+                return remote_b;
+            return std::nullopt;
+        };
+
+        auto const message_type = std::string{"org.merovingian.fed12.origin_binding"};
+        auto const marker_a = fed12_json({make_member("marker", fed12_text("same-origin-control"))});
+        auto const marker_b = fed12_json({make_member("marker", fed12_text("foreign-origin-retry"))});
+        auto const content = [&](std::string const& origin, std::string_view message_id, std::string const& marker) {
+            auto parsed_marker = canonicaljson::parse_lossless(marker);
+            REQUIRE(parsed_marker.error == canonicaljson::ParseError::none);
+            return fed12_json({
+                make_member("sender", fed12_text("@sender:" + origin)),
+                make_member("type", fed12_text(message_type)),
+                make_member("message_id", fed12_text(message_id)),
+                make_member("messages", Value{canonicaljson::Object{
+                                            make_member(recipient, Value{canonicaljson::Object{make_member(
+                                                                       device, std::move(parsed_marker.value))}})}}),
+            });
+        };
+        auto const content_a = content(origin_a, "fed12-control", marker_a);
+        auto const content_b = content(origin_b, "fed12-unchanged-retry", marker_b);
+        auto const verified_parent = [&](std::string const& origin, std::string const& id,
+                                         crypto::Ed25519Keypair const& key, std::string const& edu_content,
+                                         std::string_view transaction_id) {
+            auto const body = federation::build_edu_transaction_body(origin, "m.direct_to_device", edu_content);
+            REQUIRE(body.has_value());
+            auto const target = std::string{"/_matrix/federation/v1/send/"} + std::string{transaction_id};
+            auto call = federation::OutboundCall{};
+            call.transaction = federation::make_outbound_transaction(runtime.config.server().server_name, "PUT", target,
+                                                                     origin, *body);
+            call.key_id = id;
+            call.secret_key = core::SecretBuffer{key.secret_key.bytes()};
+            auto const signed_http = federation::build_outbound_request(call);
+            auto const authorization = std::ranges::find_if(signed_http.headers, [](auto const& header) {
+                return header.name == "Authorization";
+            });
+            REQUIRE(bool{authorization != signed_http.headers.end()});
+            auto const credentials = federation::parse_x_matrix_authorization_header(authorization->value);
+            REQUIRE(credentials.has_value());
+            auto signed_request = federation::SignedFederationRequest{};
+            signed_request.method = "PUT";
+            signed_request.target = target;
+            signed_request.origin = credentials->origin;
+            signed_request.destination = credentials->destination;
+            signed_request.key_id = credentials->key_id;
+            signed_request.signature = credentials->signature;
+            signed_request.body = *body;
+            signed_request.now_ts = now;
+            signed_request.remote_addr = "203.0.113.12";
+            signed_request.canonical_json_verified =
+                canonicaljson::parse_lossless(*body).error == canonicaljson::ParseError::none;
+            auto const verification =
+                federation::verify_inbound_federation_signature(runtime.federation, signed_request);
+            REQUIRE(verification.accepted);
+            REQUIRE(bool{verification.identity.origin == origin});
+            REQUIRE(bool{verification.identity.key_id == id});
+            auto request = make_fed_request("PUT", target, *body);
+            request.sig_verified = true;
+            request.verified_origin = verification.identity.origin;
+            request.verified_key_id = verification.identity.key_id;
+            return request;
+        };
+
+        auto const request_a = verified_parent(origin_a, id_a, *key_a, content_a, "fed12-parent-a");
+        auto relay = Fed12PendingRelay{runtime};
+        auto const parent_a = relay.send_parent(request_a);
+        REQUIRE(parent_a.has_value());
+        REQUIRE(parent_a->id > 0U);
+        REQUIRE(parent_a->request.sig_verified);
+        REQUIRE(bool{parent_a->request.verified_origin == origin_a});
+        REQUIRE(bool{parent_a->request.verified_key_id == request_a.verified_key_id});
+        REQUIRE(bool{parent_a->request.body == request_a.body});
+        REQUIRE(parent_a->request.access_token.empty());
+        REQUIRE(relay.parent_is_pending(0U));
+
+        auto const frame = [&](std::uint64_t parent_id, std::string const& origin, std::string const& edu_content) {
+            // IDs come from the receiving channel, never a guessed counter.
+            // canonicaljson stores integers as int64; check before conversion.
+            REQUIRE(parent_id <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+            return fed12_json({
+                make_member("type", fed12_text("edu_ingest")),
+                make_member("parent_request_id", Value{static_cast<std::int64_t>(parent_id)}),
+                make_member("origin", fed12_text(origin)),
+                make_member("edu_type", fed12_text("m.direct_to_device")),
+                make_member("content_json", fed12_text(edu_content)),
+            });
+        };
+        auto const same_rows = [](auto const& left, auto const& right) {
+            return std::ranges::equal(left, right, [](auto const& a, auto const& b) {
+                return a.stream_id == b.stream_id && a.sender_user_id == b.sender_user_id &&
+                       a.target_user_id == b.target_user_id && a.target_device_id == b.target_device_id &&
+                       a.message_type == b.message_type && a.content_json == b.content_json;
+            });
+        };
+        struct Snapshot final
+        {
+            std::vector<database::PersistentToDeviceMessage> rows{};
+            std::uint64_t watermark{};
+            std::uint64_t notified{};
+        };
+        auto const snapshot = [&] {
+            auto guard = std::lock_guard{runtime.mutex};
+            auto durable = database::open_sqlite_persistent_store(config.database().sqlite_path);
+            REQUIRE(durable.ok);
+            auto const addressed = [&](auto const& store) {
+                auto rows = std::vector<database::PersistentToDeviceMessage>{};
+                for (auto const& row : store.to_device_messages)
+                    if (row.target_user_id == recipient && row.target_device_id == device)
+                        rows.push_back(row);
+                return rows;
+            };
+            auto rows = addressed(durable.store);
+            REQUIRE(same_rows(rows, addressed(runtime.database.persistent_store)));
+            REQUIRE(durable.store.next_sync_stream_id == runtime.database.persistent_store.next_sync_stream_id);
+            return Snapshot{std::move(rows), durable.store.next_sync_stream_id,
+                            client.sync_notifier->current_sync_stream_id()};
+        };
+        auto const marker_count = [&](Snapshot const& state, std::string const& origin, std::string const& marker) {
+            return std::ranges::count_if(state.rows, [&](auto const& row) {
+                return row.sender_user_id == "@sender:" + origin && row.message_type == message_type &&
+                       row.content_json == marker;
+            });
+        };
+
+        WHEN("the worker relays B's valid sender and EDU under A's still-pending authenticated parent")
+        {
+            THEN("the origin mismatch has no durable or sync effects and does not poison B's unchanged retry")
+            {
+                auto const before_control = snapshot();
+                REQUIRE(before_control.rows.empty());
+                auto const control = relay.relay(frame(parent_a->id, origin_a, content_a));
+                REQUIRE(control.has_value());
+                REQUIRE(bool{ipc::ipc_json_get_str(*control, "status") == "accepted"});
+                auto const before_forgery = snapshot();
+                REQUIRE(before_forgery.rows.size() == 1U);
+                REQUIRE(marker_count(before_forgery, origin_a, marker_a) == 1);
+                REQUIRE(marker_count(before_forgery, origin_b, marker_b) == 0);
+                REQUIRE(before_forgery.watermark > before_control.watermark);
+                REQUIRE(before_forgery.notified > before_control.notified);
+                REQUIRE(relay.parent_is_pending(0U));
+
+                auto const forged = relay.relay(frame(parent_a->id, origin_b, content_b));
+                REQUIRE(forged.has_value());
+                // Nonfatal behavioral RED checks: cleanup and the dedup control
+                // must still execute against the currently vulnerable handler.
+                CHECK(bool{ipc::ipc_json_get_str(*forged, "status") == "rejected_invalid"});
+                auto const after_forgery = snapshot();
+                CHECK(same_rows(after_forgery.rows, before_forgery.rows));
+                CHECK(marker_count(after_forgery, origin_b, marker_b) == 0);
+                CHECK(after_forgery.watermark == before_forgery.watermark);
+                CHECK(after_forgery.notified == before_forgery.notified);
+                REQUIRE(relay.parent_is_pending(0U));
+
+                auto const request_b = verified_parent(origin_b, id_b, *key_b, content_b, "fed12-parent-b");
+                auto const parent_b = relay.send_parent(request_b);
+                REQUIRE(parent_b.has_value());
+                REQUIRE(parent_b->id != parent_a->id);
+                REQUIRE(parent_b->request.sig_verified);
+                REQUIRE(bool{parent_b->request.verified_origin == origin_b});
+                REQUIRE(bool{parent_b->request.verified_key_id == request_b.verified_key_id});
+                REQUIRE(bool{parent_b->request.body == request_b.body});
+                REQUIRE(relay.parent_is_pending(0U));
+                REQUIRE(relay.parent_is_pending(1U));
+                // Identical B content, sender, marker and message_id. Only the
+                // parent correlation changes to B's genuinely verified call.
+                auto const retried = relay.relay(frame(parent_b->id, origin_b, content_b));
+                REQUIRE(retried.has_value());
+                CHECK(bool{ipc::ipc_json_get_str(*retried, "status") == "accepted"});
+                auto const after_retry = snapshot();
+                CHECK(after_retry.rows.size() == before_forgery.rows.size() + 1U);
+                CHECK(marker_count(after_retry, origin_a, marker_a) == 1);
+                CHECK(marker_count(after_retry, origin_b, marker_b) == 1);
+                CHECK(after_retry.watermark > after_forgery.watermark);
+                CHECK(after_retry.notified > after_forgery.notified);
+                auto const fresh_b = std::ranges::any_of(after_retry.rows, [&](auto const& row) {
+                    return row.sender_user_id == "@sender:" + origin_b && row.message_type == message_type &&
+                           row.content_json == marker_b && row.stream_id > after_forgery.watermark;
+                });
+                CHECK(fresh_b);
+                REQUIRE(relay.parent_is_pending(0U));
+                REQUIRE(relay.parent_is_pending(1U));
+                REQUIRE(relay.finish());
+                // Both real parent futures have consumed their fed_response;
+                // their channel pending entries are gone before the stale RPC.
+                auto const stale_content = content(origin_b, "fed12-after-completion", marker_b);
+                auto const stale = relay.relay(frame(parent_b->id, origin_b, stale_content));
+                REQUIRE(stale.has_value());
+                CHECK(bool{ipc::ipc_json_get_str(*stale, "status") == "rejected_invalid"});
+                auto const after_completion = snapshot();
+                CHECK(same_rows(after_completion.rows, after_retry.rows));
+                CHECK(after_completion.watermark == after_retry.watermark);
+                CHECK(after_completion.notified == after_retry.notified);
             }
         }
     }

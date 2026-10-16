@@ -88,6 +88,12 @@ struct PushGatewayRejection final
 // wrong-typed `rejected`).
 [[nodiscard]] auto parse_notify_response(std::string_view body) -> std::optional<PushGatewayRejection>;
 
+// The gateway a pusher's URL names, as `host:port` with the host case-folded and
+// any trailing dot removed, so every spelling of one gateway shares a key; or
+// nullopt for a URL notify() would refuse. Keys the gateway circuit breaker
+// (OUT-3, ADR-0151).
+[[nodiscard]] auto push_gateway_host(std::string_view gateway_url) -> std::optional<std::string>;
+
 // Outcome of one PushGatewayClient::notify() call.
 //   - `disabled == true` means config.enabled was false and no network call
 //     was made at all (the config-gate fail-closed path).
@@ -107,6 +113,26 @@ struct PushGatewayResult final
     http::OutboundError error{http::OutboundError::network_error};
     std::string error_detail{};
 };
+
+// What a delivery says about whether its gateway host can be reached
+// (OUT-3, ADR-0151). Only `transport_failure` counts toward opening the host's
+// circuit: any HTTP answer, a 5xx or 429 included, is about one notification,
+// and a host shared by many users must not be closed to all of them by one
+// user's pusher. `not_attempted` (delivery disabled, or a URL or response this
+// server refused) neither counts nor resets.
+enum class GatewayCircuitOutcome : std::uint8_t
+{
+    reachable,
+    transport_failure,
+    not_attempted,
+};
+
+[[nodiscard]] auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> GatewayCircuitOutcome;
+
+// Whether the gateway answered and listed `pushkey` as rejected. The spec's
+// `rejected` names "all pushkeys given in the notification request that are not
+// valid", so a list naming only other pushkeys does not reject this pusher.
+[[nodiscard]] auto pushkey_was_rejected(PushGatewayResult const& result, std::string_view pushkey) -> bool;
 
 // Test-only override for one push-gateway host. Mirrors
 // identity::TestForcedIdentityResolution's contract exactly (see that type's

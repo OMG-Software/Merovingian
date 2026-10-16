@@ -97,8 +97,71 @@ audit's expectations did not match the spec and were not implemented as written:
 banned through the state API still reads the room's history up to the ban (CSAZ-6), and a
 report from a non-member answers 404, not 403 (CSAZ-12).
 
+**Update:** 9 October 2026, branch `fix/remaining-low-security-audit` (intended 0.12.26) —
+HTTP-7, EVT-10, EVT-11, OUT-6 and OUT-8 have inspected fixes and freshly rebuilt focused
+regression evidence. EVT-12(a,c) are implemented and tested; the legacy fractional
+power-level issue in (d) remains unresolved. Parent runs passed 1717 assertions in 15
+unit cases and 1331 assertions in 4 conformance cases. The full combined suite and the
+rest of the low-severity pass are not complete.
+
+**Update:** 11 October 2026 — the inspected crypto batch accepts CRY-3, CRY-4,
+CRY-5, CRY-6 and OPS-6 with focused regression evidence. Parent rebuilt crypto/auth
+tests passed 777 assertions in 102 cases. ISO-7 is partial: descriptor-bound text
+readers are implemented, but TLS/private-key and cache identity/load association
+review remains. ADR-0128 records why the proposed unversioned KDF replacement is
+not applied. Combined-suite acceptance and the remaining pass are still pending.
+
+**Update:** 11 October 2026 — ISO-5 is accepted after source review and independent
+execution in the normal integration binary: 554 assertions in 4 cases, plus
+13 assertions in the closed-stderr case. BSD execution and sink fault injection
+were not run. The earlier full WSL run completed with 52 OK, 4 FAIL and 0 TIMEOUT;
+it is not an acceptance result. Three fixture/format/diagnostic repairs and
+two genuine inherited-seccomp compatibility fixes followed. Main now admits
+only `fchmod(0600)` and `umask(0077)`, while both hardened worker profiles deny
+both syscalls. New kernel tests were observed RED then GREEN. Focused parent
+runs passed 378 assertions in 20 unit cases and 606 assertions in 13 integration
+cases, including real startup. ADR-0129/0130 document the bounded grants.
+The whole ISO-6/DB-10 reviews remain pending.
+
+**Update:** 11 October 2026 — the post-repair unified WSL CLI exited 0.
+Both Meson's completed text log and all 56 JSON result records report OK;
+there were zero failing targets and zero timeouts. Catch2 reports one skipped
+Landlock ABI-6 unit case on this kernel. FED-9 is accepted after parent review
+of the source, proxy fallback and shard selection plus independent normal-target
+execution: 27 assertions in 1 `[fed9]` case and 167 assertions in 26 `[routing]`
+cases. No dedicated live worker IPC regression ran. This verifies the current
+checkpoint, not the remaining low findings or final release/version acceptance.
+
+**Update:** 15 October 2026 — MED-7 and MED-8 are accepted, and MED-4's local
+thumbnail path now revalidates the source record after the unlocked decode. The fresh
+full WSL run completed 56 OK, 0 failed, 0 timed out; tag runs of the new integration
+scenarios passed MED-4 255 / 1, MED-7 132 / 2 and MED-8 201 / 3 (ADR-0143, ADR-0144,
+ADR-0145).
+
+**Update:** 15 October 2026 — ISO-4, ISO-6, ISO-8 and DB-10 are fixed. The SQLite,
+umask and package-script parts were on the branch already and were reviewed; the
+`--log-file` sink, the worker's socket-family filter and the systemd directives are new
+(ADR-0146, ADR-0147). Fresh full WSL run: 56 OK, 0 failed, 0 timed out.
+
+**Update:** 15 October 2026 — OPS-5 is fixed. Every packaging path builds
+`--buildtype=release`; the Dockerfile pins its base by digest and ships both workers and
+their libraries; the packages workflow boots the installed deb and the Docker image
+through `scripts/check-startup-hardening-gate.sh` (ADR-0148).
+
+**Update:** 15 October 2026 — DB-4 is fixed. A member event's `membership` row and invite
+change commit in the event's own transaction on both backends, and hydration reconciles
+the rows from current state (ADR-0149). Fresh full WSL run: 57 OK, 0 failed, 0 timed out.
+
+**Update:** 15 October 2026 — the five partly fixed lows are fixed: EVT-12 (d) (ADR-0150),
+ISO-7, OUT-3 (ADR-0151), MED-4 (ADR-0152) and FED-10's cross-shard aggregate (ADR-0153).
+
+**Update:** 15 October 2026 — the last seven lows are fixed. DB-7 is new (pooled write
+connections, ADR-0154); FED-12, DB-6, DB-8, DB-9, OPS-2 and OPS-4 were implemented earlier on this
+branch and are accepted after their fixes were checked against each finding and their regressions
+re-run (ADR-0137, ADR-0138, ADR-0139 and ADR-0142 accepted).
+
 **Summary:** the critical finding, all 23 high findings and all 31 medium findings are
-fixed. Of the 46 low findings, 14 are fixed, 3 are partly fixed and 29 are open.
+fixed. All 46 low findings are fixed.
 
 ### Fixed
 
@@ -108,7 +171,10 @@ fixed. Of the 46 low findings, 14 are fixed, 3 are partly fixed and 29 are open.
 - **Medium:** all 31 — AUTH-3, AUTH-4, AUTH-6, CSAZ-5, CSAZ-7, CSAZ-8, CSAZ-10, HTTP-3,
   HTTP-4, HTTP-8, FED-6, FED-8, FED-11, EVT-5, EVT-7, EVT-8, EVT-9, OUT-1, OUT-2, OUT-4,
   CRY-2, ISO-2, ISO-3, MED-1, MED-2, MED-3, MED-5, MED-6, DB-2, DB-3, DB-5.
-- **Low:** AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-9, AUTH-10, AUTH-12, HTTP-6, OUT-5, OPS-3.
+- **Low:** AUTH-2, AUTH-5, AUTH-7, AUTH-8, AUTH-9, AUTH-10, AUTH-12, CSAZ-6, CSAZ-9,
+  CSAZ-11, CSAZ-12, HTTP-6, HTTP-7, EVT-10, EVT-11, OUT-5, OUT-6, OUT-8, OPS-3,
+  CRY-3, CRY-4, CRY-5, CRY-6, OPS-6, ISO-5, FED-9, MED-7, MED-8, ISO-4, ISO-6, ISO-8,
+  DB-10, DB-4, OPS-5.
   The AUTH rows are in "Fixed — low, AUTH" below. OUT-5: `CURLOPT_PROXY` is set to `""` on the
   only curl handle, but there is no regression test with `https_proxy` set. OPS-3: media
   size limits that do not parse are rejected by `validate()`, the effective limits are
@@ -176,26 +242,98 @@ Residual notes on fixed findings:
 | CSAZ-11 | Redactions are judged by the room version's "Handling redactions" rule against the power levels in the redaction's own `auth_events`, applied by overwriting the target's stored JSON (the original is deleted), and withheld from clients until they apply; `PUT /redact` is routed. The capability-gaps row is corrected. ADR-0125. |
 | CSAZ-12 | (a) `/report/{eventId}` answers `404 M_NOT_FOUND` unless the reporter is joined and the event is in the room and visible to them (the spec's 404, not a 403), and a repeat report writes no second audit row. (b) `/upgrade` refuses with `403` before creating anything unless the user may send `m.room.tombstone`. (c) directory visibility needs canonical-alias power or a server administrator. (d) alias `PUT` validates the grammar and this server's domain (`400 M_INVALID_PARAM`) and needs canonical-alias power or an administrator; aliases record their creator (migration 021); `DELETE` is implemented for the creator, a user with canonical-alias power, or an administrator. ADR-0127. |
 
+### Fixed — low, crypto and bootstrap, 11 October 2026
+
+| ID | Resolution |
+|----|------------|
+| CRY-3 | Master files require 32–4096 bytes and must not be all zero. Operators still need random material. Existing BLAKE2b derivations are retained to preserve persisted ciphertext/digests; changing the primitive without a new format and migration is rejected in ADR-0128. Compatibility regression covers all four historical labels and message/key orientation. |
+| CRY-4 | SecretBuffer uses isolated sodium allocations, and derived-key values/copies own independently locked allocations. Kernel mapping checks cover live survivors and all derived-key copies. Both token and signing-box caches fail closed under forced locked-memory exhaustion. |
+| CRY-5 | Validation-session lookup and consumption use the variable-length constant-time helper; source-boundary guard and 3PID behavior tests cover the sinks. |
+| CRY-6 | New access/refresh credentials require the v4 keyed digest. Missing/insecure/unreadable roots and failed locked cached-key copies return 503 rather than downgrade or add credential rows. Legacy validation remains separate. |
+| OPS-6 | Bootstrap passwords use the bounded, mode/owner/type-checked descriptor reader and locked SecretBuffer, wiped after use. The manual uses a private directory and correctly says successful bootstrap continues serving; no one-shot exit behavior is claimed. |
+
+### Fixed — low, thumbnail isolation, 11 October 2026
+
+| ID | Resolution |
+|----|------------|
+| ISO-5 | Both thumbnail exec paths receive only fixed PATH; fd 2 is duplicated onto a CLOEXEC, RAII-owned null sink opened before filesystem sandboxing and kept above stdio. Main validates the complete PNG signature, initial 13-byte IHDR framing and legal nonzero dimensions against the worker report. Invalid/mismatched output returns 502 without bytes, content type or dimensions. No image decoder or CRC/image-data validation enters main. Normal-binary parent verification and the closed-stderr case passed; BSD execution and sink fault injection remain unverified. |
+
+### Fixed — low, federation routing, 11 October 2026
+
+| ID | Resolution |
+|----|------------|
+| FED-9 | EDU-only `/send` bypass requires a parsed object with an explicitly empty `pdus` array. Nonempty malformed-first-PDU transactions retain the empty shard key, skip main's room-sync fallback and enter worker shard zero; later PDUs are not used to replace the key. Parent review traced the proxy and shard selector. Independent normal-target runs passed 27 assertions / 1 case and related routing passed 167 / 26. ADR-0131. No dedicated live worker IPC regression ran. |
+
+### Fixed — low, media, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| MED-7 | The federation media download consults the same media-policy decision as client downloads before resolving the repository or reading a blob; a denial answers 403 with no bytes and the federation dispatcher returns its JSON error, not a multipart success. Real SQLite tests cover a persisted admin rule against a genuinely signed request, recovery after the rule is removed, and the configured unavailable-policy hook with and without fail-open. ADR-0144. |
+| MED-8 | The thumbnail worker checks the crop's fill area against the request's effective pixel budget (never above the 4,096,000-pixel worker ceiling) in 64-bit arithmetic before allocating, answering `too_large` (413) instead of allocating the intermediate. `main` prepares an empty `internal_error` frame before reading input and returns it if anything throws. Tested against the real worker, including the audit's 64 GiB inputs. ADR-0143. |
+
+### Fixed — low, isolation and SQLite, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| ISO-4 | The worker opens main's SQLite file `SQLITE_OPEN_READONLY` and refuses a WAL-mode file (a read-only connection would still write its shared-memory index); its Landlock grant on the database directory is read-only. Tested by a production worker bootstrap whose writes fail and by a Landlocked child whose raw writable `open()` is denied (`[iso4]`). The threat model's "read-write" wording is corrected. |
+| ISO-6 | Every executable sets `umask(0077)` first and the unit sets `UMask=0077`; package scripts write the registration token under `umask 077`; SQLite creates missing directories 0700 and the file 0600 (`[iso6_defaults]`, `[iso6]`). `--log-file` is opened `O_NOFOLLOW\|O_CLOEXEC`, only as a regular file this process owns, then made 0600 (ADR-0146). |
+| ISO-8 | The worker filter admits `socket()` for `AF_UNIX`/`AF_INET`/`AF_INET6`, answers `AF_NETLINK` with `EAFNOSUPPORT`, and kills on any other family; `socketpair()` is `AF_UNIX` only. The unit adds `RestrictAddressFamilies=`, `RestrictNamespaces=` and the kernel-protection directives. The `peer`-authentication caveat is documented. Tested in forked children against the real kernel (`[iso8]`). ADR-0147. |
+| DB-10 | SQLite opens with `SQLITE_OPEN_NOFOLLOW` after descriptor-relative, no-follow traversal; files are 0600; `secure_delete=ON` and `trusted_schema=OFF` (`[db10]`). Residual: the path is reopened by name after the checks. |
+
+### Fixed — low, packaging, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| OPS-5 | `scripts/build-deb.sh`, the three BSD package scripts and the `Dockerfile` pass `--buildtype=release` (the static script already did; the RPM specs get `-O2` from `%optflags`); `meson.build` keeps Meson's `debug` default for development builds and warns when hardening meets `optimization=0` (ADR-0148). The Dockerfile pins `debian:trixie-slim` by index digest, builds with libpq, OpenSSL, libpng and libturbojpeg, ships `merovingian-db-migrate`, `merovingian-fed-worker` and `merovingian-thumbnail-worker` with their runtime libraries, and fails its own build on an unresolved `ldd` entry. `scripts/check-startup-hardening-gate.sh` boots a packaged server and passes only when every startup hardening check reports `enabled` and it stops cleanly; the `deb`, `debian-pkg` and new `docker-image` jobs run it against the installed package and the built image. Tested by `test_packages_workflow.py` and `test_startup_hardening_gate.py`. The BSD package jobs do not run the gate yet. |
+
+### Fixed — low, membership atomicity, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| DB-4 | `database::MembershipProjection` writes the `membership` row (upsert) and the invite change (upsert, or keyed delete for join/leave/ban) in the same transaction as the member event and its `current_state` row, on SQLite and PostgreSQL. Every member-event path passes one: `persist_composed_event`, the federated `join_room`, inbound `send_join`/`send_leave`/`send_knock`, `/invite` and `/send` PDUs; a federated leave and `/invite` for a held room use `store_membership_projection`. `hydrate_local_database` runs `reconcile_memberships_with_current_state` for main's full load profile only (never in the federation worker) before building the roster: a missing row, a `join` row the current member event does not support, or a row older than that event is rewritten; a newer row is kept. Tested by a tampered SQLite store restarted through the client API, a SQLite trigger refusing the row during a ban, a gated PostgreSQL trigger variant (run against the local test database) and in-memory reconciliation cases (`[db4]`). ADR-0149. Residual: state-group, extremity and recomputed current-state rows still commit separately from the event. |
+
+### Fixed — low, completed partials, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| EVT-12 | (a), (b) and (c) as before. (d): `RoomVersionPolicy::power_levels_accept_floats` (v3–v5) and `events::PowerLevelEncoding` (integers / plus strings in v1–v9 / plus floats in v1–v5, derived only by `power_level_encoding(policy)`) make the auth rules, the state resolver's power sort, redaction judgement and push read a float power level as `rooms/v3.md` says: truncated, Infinity/NaN rejected; a value beyond int64 is also refused (fails closed). Hashing stays strict: Canonical JSON defines no float encoding, so a float-bearing event still cannot be parsed for its event ID or content hash (ADR-0150). Tested by conformance scenarios for v4/v5 acceptance and honouring and v6 rejection (`[evt12]`); RED: the two acceptance cases were refused. |
+| ISO-7 | Master, registration-token, main/worker database URI and bootstrap-password reads were already descriptor-bound. The TLS private key is now read the same way (`O_NOFOLLOW`, regular, owned by this user, mode 0400, into locked memory) and passed to OpenSSL from a memory BIO instead of `SSL_CTX_use_PrivateKey_file`. The signing-secret-box and token-HMAC caches took the master key's identity and its bytes from two separate opens, so a file swapped in between could leave a key from one file cached under the other's identity; `crypto::open_master_key_file` now supplies both from one descriptor. Tested: a group-readable or symlinked TLS key is refused, a 0400 key loads, and material read from an opened master key file is that file's even after a rename replaces the path (`[iso7]`). RED: both TLS refusals failed; the master-key API did not exist. |
+| OUT-3 | The per-recipient in-flight cap (min(8, max_in_flight - 1) batches) was already in place and is now tested. New `server.push.max_pushers_per_user` (20): `POST /pushers/set` refuses a new pusher beyond it (400 `M_INVALID_PARAM`; updates allowed). New `push::GatewayCircuitBreaker` keyed by gateway host: after `server.push.gateway_failure_threshold` (3) consecutive transport failures, timeouts or 5xx it skips the host for `server.push.gateway_cooldown_seconds` (300), then probes once per cooldown; at most 4096 hosts tracked. Tested (`[out3]`): a 21st pusher refused, five events to a failing gateway reach it three times, a saturated recipient does not block another; breaker unit cases. ADR-0151 (supersedes ADR-0029's unbounded registration). RED: 21st pusher accepted; 5 of 5 notifies sent. |
+| MED-4 | Decoding already ran unlocked (0.12.20) with local records revalidated after it (ADR-0145). Now: `media::ThumbnailCache`, an in-memory LRU (`security.media.thumbnail_cache_size`, 64 MiB) keyed by source record, size and method, served only after the record is checked servable; `security.media.thumbnail_max_concurrent_per_user` (2) caps decodes in flight per user or client address (429 `M_LIMIT_EXCEEDED` beyond it); a remote thumbnail carries the cached local record its bytes were admitted as and is revalidated like a local one, and every thumbnail re-checks the media policy after the decode (ADR-0152). Tested with the real worker and the gate (`[med-4-cache]`, `[med-4-concurrency]`, `[med-4-remote]`) and LRU unit cases. RED: repeat thumbnail 404 without the worker; a third concurrent decode entered the decoder; a quarantined remote record's thumbnail was served. |
+| FED-10 | Every network-capable sender/origin key resolution (direct, relayed, IPC re-verification, backfill/state/auth-chain) is admitted against the source-address budget, the in-flight cap and the server/key failure cache, as recorded in the earlier FED-10 entries (ADR-0132 to ADR-0135). The remaining aggregate gap is closed: each federation worker shard starts with its share of `key_resolution_max_in_flight` and the per-IP rate (`federation::shard_key_resolution_budget`, limit / shards rounded down, at least 1), so all shards together stay within the configured limits; main keeps the whole budget (ADR-0153). Tested `[fed10-shards]`; RED: the split did not exist. The PR #509 review found one path still outside the budgets: `/send_join` state verification called the raw resolver up to 1024 at a time. It now takes main's shared in-flight slots and honours the server/key failure cache, waiting for a slot rather than being refused and paying no per-source rate, since refusing would drop member events (ADR-0155). Tested `[send_join][fed10]`; RED: peak concurrency above the cap and a failed pair fetched twice. Residual: main's own budget is separate, so main plus workers may reach twice the limits; the earlier direct state/auth-chain denial and backfill negative-cache coverage suggestions remain coverage, not open defects. |
+
+### Fixed — low, previously open, 15 October 2026
+
+| ID | Resolution |
+|----|------------|
+| FED-12 | A worker's `edu_ingest` relay must name a live, still-pending request on the exact IPC channel that delivered it whose origin main itself verified (`IpcChannel::matches_pending_origin`, checked after the runtime-lock wait); a wrong origin, a completed or expired parent, or an ordinary unsigned request authorises nothing. Main verifies every signed request before forwarding, and EDU-only transactions bypass the worker. Tested through real signature verification, encrypted IPC and reopened SQLite (`[fed-12-origin-binding]`, `[fed-12-live-context]`). ADR-0142 (accepted). Residual: EDU content is bound to the verified origin, not to the signed transaction body. |
+| DB-6 | A `state_key` containing NUL is rejected in event validation (`state_key_contains_nul`) and before local composition or `createRoom` persists anything; NUL in percent-decoded path components is refused (`path_component_contains_nul`); text `BoundValue`s with NUL are refused by `prepared_statement_is_valid`. Tested by real SQLite/HTTP admission, query-path and gated PostgreSQL scenarios (`[db6]`). ADR-0137 (accepted). |
+| DB-7 | Persisted writes lease connections from a per-store `ConnectionPool` capped at `database.pool_size` (now restart-required) instead of opening one per transaction. PostgreSQL connections take the runtime role once and are reused only while idle with nothing to read, so a server-closed connection is replaced. Tested with 64 concurrent writers against real SQLite and PostgreSQL (at most four connections opened; all pooled backends killed between rounds without a failed write) (`[db7]`). ADR-0154. |
+| DB-8 | A non-loopback PostgreSQL connection must state `sslmode=verify-full` explicitly; an omitted or parent-default mode, service indirection and insecure opt-outs are refused at the single connect choke point. Documented in the user manual and persistence guide (`[db8]`). ADR-0138 (accepted). |
+| DB-9 | No connection string or option is ever logged or returned: diagnostics carry a fixed redacted identity and generic reasons, which is stricter than logging host and database. Tested with quoted, spaced, escaped and URI passwords reaching real libpq failure at DEBUG (`[db9]`). ADR-0139 (accepted). |
+| OPS-2 | `make_audit_event` drops the whole query string and keeps a control-safe, UTF-8-safe 255-byte path for every audit target, so durable rows, the in-memory window and the `audit.append` debug line never carry `?token=`. Tested with real rate limiting, an unavailable runtime and SQLite reopen (`[ops2]`). |
+| OPS-4 | Negative token lifetimes are refused with field-specific findings; access lifetimes are capped at 30 days and refresh at 365, so no conversion overflows; `/login` and `/refresh` omit `expires_in_ms` when the access lifetime is 0 (`/register` issues no refresh tokens). Tested by parser/typed matrices and a real SQLite dispatcher conformance scenario (`[ops4-negative-lifetime]`, `[ops-4-upper-bound]`, `[ops-4]`). ADR-0141. |
+
+### FED-10 history — low, federation key admission, 11 October 2026 (fixed 15 October, see completed partials)
+
+| ID | Resolution |
+|----|------------|
+| FED-10 | Core inbound network-capable relayed sender lookups use the source-address budget, per-runtime in-flight cap and server/key failure cache across parallel and authorization fallback paths. A separate network-free verification-key provider preserves fresh remote/owned local cache reads and known-peer rotation; a fresh key no longer exempts production discovery. Raw and verified router paths populate the source key. Cache-served origin calls cannot release another request's reservation, and asynchronous resolver/permit lifetimes are exception-safe. Earlier normal-target runs passed 474 assertions / 5 unit cases, 41 / 3 real database/router integration cases and 963 / 54 related inbound cases. Independent review identified local admission rejection being treated as relay misbehavior and recorded as an accepted transaction. That regression is repaired: explicit outcomes preserve local denial, original-transaction retry and genuine failure penalties. Independent all-target build and normal-target runs passed 681 assertions / 9 unit cases, 122 / 4 integration cases and 1170 / 58 related inbound cases. ADR-0132/0133. Independent review subsequently confirmed the core repair, and its completed WSL checkpoint passed 56 targets with zero failures/timeouts. Main IPC PDU/membership/invite re-verification now shares the admitted key-only helper, with a common unknown-source bucket rather than worker-chosen source identities (ADR-0134). Genuine encrypted-IPC RED had 94 failures; final normal integration runs passed 1228 assertions / 3 new cases and 1350 / 7 total FED-10 cases. A mixed negative-cache/EDU regression exposed a genuine penalty lost before a later main-overload return; its RED failed one assertion and the conditional trust persistence fix passed. Final unit FED-10 passed 716 assertions / 10 cases; related inbound passed 1205 / 59. The first main full run had 55 OK / 1 fixture failure; the 50-PDU membership fixture now uses its already-known cache key without weakening production limits. The fresh completed WSL CLI exited 0: 56 OK targets, zero failed/timed-out targets, all JSON return codes 0; the unit binary retains one skipped platform-dependent case. Completed JSON/text logs are archived and the six focused source/test hashes remain unchanged. Independent source-only review approved the unchanged six-file main slice with no material security/logic findings. Real separate-process worker/socket-HTTP execution is now verified with the production serializer/worker decoder: 262 assertions in one case cover main overload, unchanged-transaction retry, persistence, deferred EDU delivery and deduplication; the earlier substituted IPC fixture remains narrower evidence. Backfill/snapshot/auth-chain verification now shares the admitted key-only helper and common unknown-source bucket; request-local denial stops further recovery and returns the existing PDU overload result, rather than accepted missing state. Genuine TLS/SQLite RED failed 13 of 172 assertions; post-format normal integration passed the new 172 / 1 case, all backfill 2173 / 17 and FED-10 1522 / 8. ADR-0135. The fresh post-backfill full CLI completed exit 0: 56 OK targets, zero failed/timed-out targets, all JSON return codes 0, one skipped unit case. Completed JSON/text logs are archived as fed10-backfill-completed-testlog.{json,txt}; all eight tracked source/test hashes remain unchanged. Independent source-only backfill review approved the unchanged slice with no material security/logic findings. It identified additional coverage gaps: sticky denial with remaining recovery capacity/multiple events, partial-progress outlier retry, direct state/auth-chain denial cases, cache identity/signature/event-time/negative-hit backfill cases, and worker HTTP propagation. Both later test delegates failed provider limits; the parent preserved, inspected and repaired their partial fixtures directly. Post-format independent normal integration passed sticky denial 200 / 1, partial-progress retry 314 / 1, all backfill 2687 / 19, worker/socket-HTTP overload 262 / 1 and total FED-10 2298 / 11. The recovered full checkpoint completed 56 OK / zero failures/timeouts / all return codes 0 with ten tracked source/test hashes unchanged; archived low-recovery-completed-testlog.{json,txt}. These are coverage-only tests for previously repaired production behavior, not new RED/fix evidence. Direct state/auth-chain denial and backfill cache rejection/negative-hit cases remain unexecuted coverage suggestions; aggregate cross-shard admission and whole-finding acceptance remain pending. No BSD execution is claimed. |
+
 ### Outstanding — medium
 
 None.
 
 ### Outstanding — low
 
-| ID | State | What remains |
-|----|-------|--------------|
-| EVT-12 | Partial | (b) the creator-without-member-event fallback is removed. (a) there is still no v3–v5 `m.room.aliases` rule, and (c) rejected events are still accepted as auth events. |
-| OUT-3 | Partial | Pushers per delivery are capped (`push.max_pushers_per_delivery`). There is still no per-user in-flight cap, no stalled-gateway circuit breaker and no cap on pusher registrations. |
-| MED-4 | Partial | Thumbnails are decoded, and their source bytes read, with the runtime mutex released (0.12.20). There is no thumbnail cache, no per-user concurrency cap, and no test with a slow decoder stub. |
+No low finding is partly fixed.
 
-Open, with no code, test or documentation change found: HTTP-7, FED-9,
-FED-10, FED-12, EVT-10, EVT-11, OUT-6, OUT-8, CRY-3, CRY-4, CRY-5, CRY-6, ISO-4, ISO-5,
-ISO-6, ISO-7, ISO-8, MED-7, MED-8, DB-4, DB-6, DB-7, DB-8, DB-9, DB-10, OPS-2, OPS-4,
-OPS-5, OPS-6.
+No low finding is open.
 
-The documentation corrections listed under "Documentation found to be wrong about the
-code" for CRY-6, ISO-4, OPS-2 and OUT-8 (`deny_ip_ranges`) have not been made;
-the AUTH-2 correction was made in 0.12.23 and the CSAZ-11 correction in 0.12.25.
+
+The `deny_ip_ranges` documentation correction (OUT-8) and fail-closed token issuance
+correction (CRY-6) are accepted on the current branch. ISO-4 and OPS-2 corrections
+have not yet been accepted; AUTH-2 was corrected in 0.12.23 and CSAZ-11 in 0.12.25.
 
 ---
 

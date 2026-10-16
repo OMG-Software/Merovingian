@@ -240,6 +240,14 @@ quickly finding everything a given `AGENTS.md` file contributed.
   comparison doesn't leak the secret's *length* through an early size check.
   Source: `src/crypto/AGENTS.md`, `src/auth/AGENTS.md`.
 
+- **A secret is checked and read through one descriptor; a derived-key cache takes the master
+  key's identity and bytes from one open (`crypto::open_master_key_file`).**
+  Why: checking a path and then opening it again, or taking a cache identity from one open and
+  the key material from another, lets a file swapped in between be used: the TLS private key
+  was loaded by path after its startup check, and a cache could hold a key derived from a
+  different file than its identity described (audit ISO-7).
+  Source: `src/crypto/AGENTS.md`.
+
 - **Fail closed. If the signing key is unavailable, signing must fail — never fall back to
   an unsigned output or a weaker operation.**
   Why: a silent downgrade to unsigned data breaks the integrity guarantee every downstream
@@ -401,9 +409,17 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/homeserver/AGENTS.md`.
 
 - **A locally created `m.room.member` event is projected into the membership tables only by
-  `persist_composed_event`, and only when it became current state.**
+  `persist_composed_event`, and the row follows current state.**
   Why: when each endpoint projected for itself, a ban sent through the state API changed room
   state but left the user listed as joined, able to rejoin (audit CSAZ-6, ADR-0126).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **A `memberships` row and its invite change commit in the same transaction as the member
+  event and its `current_state` row (`database::MembershipProjection`), never after it; startup
+  reconciles the rows from current state before building the roster.**
+  Why: written separately, a fault between the two left a durable ban with a row still saying
+  `join`, and hydration made the banned user a member again on every restart (audit DB-4,
+  ADR-0149).
   Source: `src/homeserver/AGENTS.md`.
 
 ## Federation (the highest-risk surface — all input comes from untrusted remote servers)
@@ -739,6 +755,15 @@ media-fetch-pool task.
   non-UTF-8, and an undecoded `bytea` read returns its hex text. Either breaks
   `server_signing_keys.secret_key`, after which the server cannot load its own signing
   key (0.12.14 audit, DB-1).
+  Source: `src/database/AGENTS.md`.
+
+- **Nothing in the process opens a SQLite database file except SQLite: check it by name
+  (`fstatat` with `AT_SYMLINK_NOFOLLOW`) or read it through SQLite's own handle
+  (`SQLITE_FCNTL_FILE_POINTER`).**
+  Why: closing any descriptor of a file releases every POSIX lock the process holds on it.
+  A check that opened and closed the database released another connection's write lock, so
+  another process took the live transaction's journal for a hot one and could roll it back
+  (PR #509 CI, ADR-0157).
   Source: `src/database/AGENTS.md`.
 
 - **Higher-level modules receive a `PersistentStore&` and must not downcast to a

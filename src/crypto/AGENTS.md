@@ -41,6 +41,11 @@ or `src/core/secret_buffer.cpp`.** `scripts/reject-unsafe.sh` enforces this for 
 5. **Validate key IDs.** Call `ed25519_key_id_is_valid()` — key IDs must start with `ed25519:`
    and contain only printable non-space ASCII.
 
+6. **A derived-key cache takes the master key's identity and its bytes from one open.** Use
+   `open_master_key_file()` and `load_master_key_material(opened)`; never call
+   `master_key_file_identity(path)` and then `load_master_key_material(path)`. Two opens let a
+   file swapped in between leave a key from one file cached under another's identity (ISO-7).
+
 ## Provider interface pattern
 
 `Ed25519Provider` (in `ed25519.hpp`) decouples signing from the libsodium implementation.

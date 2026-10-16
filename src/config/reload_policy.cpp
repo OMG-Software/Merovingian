@@ -17,7 +17,8 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         key == "listeners.client.tls_certificate_file" || key == "listeners.client.tls_private_key_file" ||
         key == "listeners.client.reverse_proxy" || key == "listeners.federation.tls_certificate_file" ||
         key == "listeners.federation.tls_private_key_file" || key == "listeners.federation.reverse_proxy" ||
-        key == "security.registration.token_file")
+        key == "security.registration.token_file" || key == "database.pool_size" ||
+        key == "security.media.thumbnail_cache_size" || key == "security.media.thumbnail_max_concurrent_per_user")
     {
         return ReloadPolicy::restart_required;
     }

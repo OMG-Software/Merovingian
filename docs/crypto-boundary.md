@@ -10,12 +10,12 @@ implementing custom cryptographic primitives.
 - Constant-time comparison boundary (fixed and variable-length inputs).
 - Variable-length comparison uses domain-separated hashing so it does not leak
   input length through a premature length check.
-- Runtime signing secret material is held in `core::SecretBuffer` (mlocked,
-  zeroised-on-destruction) while in process memory. The destructor and custom
-  move operations use `sodium_munlock`/`sodium_memzero`, which are optimisation
-  barriers the compiler cannot elide, and the `mlock`/`munlock` pair stays
-  aligned across moves so a move over a mlocked buffer neither leaks the lock
-  nor leaves the source bytes unwiped.
+- Runtime signing secret material uses `core::SecretBuffer`, backed by
+  `sodium_malloc`/`sodium_free` rather than the shared general-purpose heap.
+  Separate allocations occupy isolated data pages, so freeing one small secret
+  cannot unlock another live secret that happened to share a heap page.
+  Explicit `sodium_mlock` records lock success; destruction wipes and unlocks
+  only the owned allocation, and moves transfer ownership without copying bytes.
 - Random-source interface for future reviewed RNG integration.
 - Ed25519 provider interface for reviewed signing and verification integration.
 - Server signing-key store interface.
@@ -78,26 +78,30 @@ implementing custom cryptographic primitives.
 - `secret_box` authenticated encryption for at-rest signing-secret storage,
   using a domain-separated XSalsa20-Poly1305 key derived from a configured
   master key (`security.secrets.master_key_file`).
-- `crypto::load_master_key_material()` (the single source of truth for reading
-  the master-key file, shared by the main process, the auth service, and the
-  federation worker) reads directly into a `core::SecretBuffer` rather than a
-  plain `std::vector`, and zeroises its stack read buffer after every chunk —
-  the master key is the root secret every derived key below is drawn from, so
-  it must not sit unwiped in freed heap memory or swap. `SecretBoxKey`,
-  `TokenHmacKey`, and `IpcAuthKey` (the 32-byte keys derived from it) each
-  zeroise their `bytes` array with `sodium_memzero` on destruction and on the
-  losing side of every copy/move, while staying ordinary copyable/movable
-  value types — unlike `SecretBuffer`, which is heap-based and move-only, a
-  mismatch for these small keys that are passed by value throughout the
-  codebase.
+- `crypto::load_master_key_material()` reads root bytes directly into a locked
+  `core::SecretBuffer` through the descriptor-bound secret reader. The file
+  must be a regular, effective-UID-owned, mode-0400 file; the final path
+  component must not be a symlink. Inputs outside 32–4096 bytes, and all-zero
+  roots, are rejected. These checks are not an entropy test: operators must
+  provision cryptographically random material.
+- `SecretBoxKey`, `TokenHmacKey` and `IpcAuthKey` store their 32-byte values in
+  `crypto::SecureKeyBytes`. Each copy owns its own locked sodium allocation;
+  moves transfer ownership. Derivation and cache return paths fail closed
+  when a locked allocation cannot be obtained. Both caches return no key on
+  allocation failure rather than leaking an exception through their callers.
+  The historical BLAKE2b message/key orientation and all domain labels are
+  deliberately unchanged: silently replacing the derivation would make stored
+  signing-key ciphertext and token hashes unusable. See
+  [ADR-0128](adr/0128-lock-derived-key-storage-without-changing-persisted-derivations.md).
 - **The master key file is no longer read once per HMAC key derivation.**
   `token_hmac_keys()` (`src/homeserver/auth_service.cpp`) derives the v3 and
   v4 access-token HMAC keys once and caches them, invalidated on the file's
-  `(path, size, mtime)` identity so replacing the key still takes effect
+  descriptor-validated file identity (path, device, inode, size, timestamps,
+  mode and owner) so replacing the key still takes effect
   without a restart. Previously every authenticated request opened and read
   the master key file twice (once per key version) and ran the load-time
   `sodium_mlock`/`munlock` cycle on a fresh 4 KiB scratch buffer twice —
-  narrowing that to a `stat()` on the steady-state path matters for a crypto
+  narrowing that to a validated open plus `fstat()` on the steady-state path matters for a crypto
   boundary specifically because it shrinks how often the root secret every
   other key is derived from is actually materialised in process memory, and
   removes the concurrent `mlock` churn that could exhaust `RLIMIT_MEMLOCK`
@@ -221,9 +225,9 @@ The boundary provides these guarantees:
   public server identity values.
 - Newly issued bearer-token digests are keyed, so a database leak no longer
   exposes reusable unkeyed token hashes for offline correlation.
-- The server signing secret is encrypted at rest when a master key is configured;
-  deployments without a master key fall back to plaintext with a diagnostic so the
-  operator can rotate to encrypted storage.
+- New signing secrets require an available master key and are encrypted at
+  rest. Legacy plaintext records remain a separate read-compatibility path;
+  absence of a master key never authorizes a new plaintext record.
 - Commma-delimited PDUs without JSON body are rejected rather than bypassing
   Ed25519 cryptographic verification.
 

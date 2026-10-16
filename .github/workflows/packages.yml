@@ -41,6 +41,16 @@ jobs:
           restore-keys: ccache-deb-
       - name: Build .deb
         run: sh scripts/build-deb.sh
+      - name: Run the installed package's startup hardening gate
+        # OPS-5: install the .deb as an operator would, then boot the installed
+        # server as the package's unprivileged user with an empty capability
+        # bounding set (what the systemd unit's CapabilityBoundingSet= gives
+        # it) and require every startup hardening check to report enabled.
+        run: |
+          apt-get install -y --no-install-recommends ./merovingian_*.deb
+          setpriv --reuid=merovingian --regid=merovingian --init-groups \
+            --bounding-set=-all --inh-caps=-all \
+            sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
       - name: Attest Debian package
         uses: actions/attest-build-provenance@v2
         with:
@@ -383,6 +393,13 @@ jobs:
           restore-keys: ccache-debian-pkg-
       - name: Build .deb
         run: sh scripts/build-deb.sh
+      - name: Run the installed package's startup hardening gate
+        # OPS-5: see the same step in the deb job.
+        run: |
+          apt-get install -y --no-install-recommends ./merovingian_*.deb
+          setpriv --reuid=merovingian --regid=merovingian --init-groups \
+            --bounding-set=-all --inh-caps=-all \
+            sh scripts/check-startup-hardening-gate.sh /usr/bin/merovingian-server
       - name: Attest Debian package
         uses: actions/attest-build-provenance@v2
         with:
@@ -392,6 +409,30 @@ jobs:
           name: debian-package
           path: merovingian_*.deb
           retention-days: 30
+
+  docker-image:
+    name: Docker image startup gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image
+        run: docker build --tag merovingian:ci .
+      - name: Run the image's startup hardening gate
+        # OPS-5: boot the shipped server inside the image as the image's own
+        # unprivileged user, with every capability dropped as the Dockerfile
+        # documents, and require every startup hardening check to report
+        # enabled. Without --federation-worker the server spawns the worker
+        # from its libexec path, so this also proves the image ships it.
+        run: |
+          docker run --rm \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --volume "$PWD/scripts/check-startup-hardening-gate.sh:/usr/local/bin/check-startup-hardening-gate.sh:ro" \
+            --entrypoint /bin/sh \
+            merovingian:ci \
+            /usr/local/bin/check-startup-hardening-gate.sh /usr/bin/merovingian-server
 
   rhel-rpm:
     name: RHEL-compatible (AlmaLinux 10) RPM

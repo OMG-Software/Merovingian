@@ -5,6 +5,7 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -15,6 +16,8 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/observability/bounded_text.hpp"
+#include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -23,6 +26,10 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -877,5 +884,517 @@ SCENARIO("Admin safety-report listing keeps earlier reports after unauthenticate
         }
 
         std::filesystem::remove(sqlite_path);
+    }
+}
+
+namespace
+{
+
+class AuditConsoleCapture final
+{
+public:
+    AuditConsoleCapture()
+        : previous_{*std::cout.rdbuf(output_.rdbuf())}
+    {
+    }
+    ~AuditConsoleCapture()
+    {
+        std::cout.rdbuf(&previous_.get());
+    }
+    AuditConsoleCapture(AuditConsoleCapture const&) = delete;
+    auto operator=(AuditConsoleCapture const&) -> AuditConsoleCapture& = delete;
+    [[nodiscard]] auto text() const -> std::string
+    {
+        return output_.str();
+    }
+
+private:
+    std::ostringstream output_{};
+    std::reference_wrapper<std::streambuf> previous_;
+};
+
+class AuditDebugCapture final
+{
+public:
+    explicit AuditDebugCapture(
+        merovingian::observability::SingleLog& logger = merovingian::observability::SingleLog::instance())
+        : logger_{logger}
+    {
+        // This test observes actual synchronous output. Never redirect a buffer
+        // concurrently with the singleton's asynchronous writer threads.
+        REQUIRE_FALSE(logger.writers_started());
+        REQUIRE(std::cout.rdbuf() != nullptr);
+        // All owning members are constructed first. The only allocating policy
+        // operation precedes the no-throw console exchange and buffer redirect.
+        previous_module_level_ = logger.exchange_module_log_level(module_, merovingian::observability::LogLevel::debug);
+        previous_console_level_ = logger.exchange_console_log_level(merovingian::observability::LogLevel::debug);
+        previous_buffer_ = std::ref(*std::cout.rdbuf(output_.rdbuf()));
+    }
+    ~AuditDebugCapture()
+    {
+        std::cout.rdbuf(&previous_buffer_->get());
+        auto& logger = logger_.get();
+        std::ignore = logger.exchange_console_log_level(previous_console_level_);
+        std::ignore = logger.exchange_module_log_level(module_, previous_module_level_);
+    }
+    AuditDebugCapture(AuditDebugCapture const&) = delete;
+    auto operator=(AuditDebugCapture const&) -> AuditDebugCapture& = delete;
+    [[nodiscard]] auto text() const -> std::string
+    {
+        return output_.str();
+    }
+
+private:
+    std::reference_wrapper<merovingian::observability::SingleLog> logger_;
+    std::ostringstream output_{};
+    std::string module_{"local_services"};
+    std::optional<std::reference_wrapper<std::streambuf>> previous_buffer_{};
+    std::optional<merovingian::observability::LogLevel> previous_module_level_{};
+    merovingian::observability::LogLevel previous_console_level_{};
+};
+
+class AuditSqliteCleanup final
+{
+public:
+    explicit AuditSqliteCleanup(std::filesystem::path path)
+        : path_{std::move(path)}
+    {
+    }
+    ~AuditSqliteCleanup()
+    {
+        auto error = std::error_code{};
+        for (auto const suffix : {"", "-wal", "-shm", "-journal"})
+        {
+            std::ignore = std::filesystem::remove(path_.string() + suffix, error);
+        }
+    }
+    AuditSqliteCleanup(AuditSqliteCleanup const&) = delete;
+    auto operator=(AuditSqliteCleanup const&) -> AuditSqliteCleanup& = delete;
+
+private:
+    std::filesystem::path path_;
+};
+
+// Compare admission-owned data, not audit rows: refusal may legitimately be audited.
+// Length-prefix fields and sort rows so embedded bytes and hydration order are immaterial.
+[[nodiscard]] auto local_admission_snapshot(merovingian::database::PersistentStore const& store)
+    -> std::vector<std::string>
+{
+    auto rows = std::vector<std::string>{};
+    auto const append = [&rows](std::vector<std::string> const& fields) {
+        auto encoded = std::string{};
+        for (auto const& field : fields)
+        {
+            encoded += std::to_string(field.size()) + ":" + field;
+        }
+        rows.push_back(std::move(encoded));
+    };
+    for (auto const& row : store.rooms)
+        append({"room", row.room_id, row.creator_user_id, std::to_string(row.directory_public)});
+    for (auto const& row : store.memberships)
+        append({"membership", row.room_id, row.user_id, row.membership, std::to_string(row.stream_ordering)});
+    for (auto const& row : store.events)
+        append({"event", row.event_id, row.room_id, row.sender_user_id, row.json, std::to_string(row.depth),
+                std::to_string(row.stream_ordering), row.status});
+    for (auto const& row : store.state)
+        append({"state", row.room_id, row.event_type, row.state_key, row.event_id});
+    for (auto const& row : store.state_transitions)
+        append({"transition", row.room_id, row.event_type, row.state_key, row.event_id, row.previous_event_id});
+    for (auto const& row : store.state_groups)
+        append({"group", row.state_group_id, row.room_id, row.parent_state_group_id.value_or(""),
+                std::to_string(row.delta_depth)});
+    for (auto const& row : store.state_group_state)
+        append({"group-state", row.state_group_id, row.event_type, row.state_key, row.event_id});
+    for (auto const& row : store.event_state_groups)
+        append({"event-group", row.event_id, row.state_group_id});
+    for (auto const& row : store.event_edges)
+        append({"edge", row.event_id, row.prev_event_id});
+    for (auto const& row : store.event_auth)
+        append({"auth", row.event_id, row.auth_event_id});
+    for (auto const& row : store.forward_extremities)
+        append({"extremity", row.room_id, row.event_id});
+    append({"watermark", std::to_string(store.event_stream_watermark)});
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+[[nodiscard]] auto local_admission_login(merovingian::homeserver::HomeserverRuntime& runtime) -> std::string
+{
+    auto password = std::string(40U, 'p');
+    password += std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    password.push_back('A');
+    password.push_back('!');
+    auto const registered = merovingian::homeserver::register_local_user(runtime, "db6local", password,
+                                                                         merovingian::tests::registration_token);
+    REQUIRE(registered.ok);
+    auto const login = merovingian::homeserver::login_local_user_by_id(runtime, registered.value, "DB6LOCAL");
+    REQUIRE(login.ok);
+    REQUIRE_FALSE(login.value.empty());
+    return login.value;
+}
+
+[[nodiscard]] auto local_admission_initial_state(std::string const& escaped_key) -> merovingian::canonicaljson::Value
+{
+    auto parsed =
+        merovingian::canonicaljson::parse_lossless(R"({"type":"org.example.db6.state","state_key":")" + escaped_key +
+                                                   R"(","content":{"body":"before\u0000after"}})");
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    return std::move(parsed.value);
+}
+
+} // namespace
+
+SCENARIO("DB-6 createRoom rejects NUL initial-state keys before local admission",
+         "[db6][db6-local-admission][homeserver][database]")
+{
+    GIVEN("real SQLite stores and authenticated local room creators")
+    {
+        WHEN("a valid initial-state entry precedes a NUL-key entry through either createRoom API")
+        {
+            THEN("every NUL position returns 400 without runtime or durable room and stream mutations")
+            {
+                for (auto const through_http : {false, true})
+                {
+                    for (auto const& escaped_key :
+                         {std::string{R"(\u0000tail)"}, std::string{R"(head\u0000tail)"}, std::string{R"(head\u0000)"}})
+                    {
+                        CAPTURE(through_http, escaped_key);
+                        auto const path = unique_sqlite_path();
+                        auto const cleanup = AuditSqliteCleanup{path};
+                        auto const config = sqlite_registration_enabled_config(path);
+                        auto durable_before = std::vector<std::string>{};
+                        {
+                            auto started = merovingian::homeserver::start_client_server(config);
+                            REQUIRE(started.started);
+                            auto& runtime = started.runtime.homeserver;
+                            auto const token = local_admission_login(runtime);
+                            // Establish successful room composition/persistence before the malformed request.
+                            auto const existing = merovingian::homeserver::create_room(runtime, token);
+                            REQUIRE(existing.ok);
+                            REQUIRE_FALSE(runtime.database.persistent_store.rooms.empty());
+                            REQUIRE_FALSE(runtime.database.persistent_store.events.empty());
+                            auto const before = local_admission_snapshot(runtime.database.persistent_store);
+                            auto const next_before = runtime.database.next_stream_ordering;
+                            auto const rooms_before = runtime.database.rooms.size();
+                            REQUIRE(rooms_before == 1U);
+                            auto const events_before = runtime.database.rooms.front().events.size();
+                            {
+                                auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+                                REQUIRE(opened.ok);
+                                durable_before = local_admission_snapshot(opened.store);
+                            }
+                            if (through_http)
+                            {
+                                auto const body =
+                                    std::string{
+                                        R"({"initial_state":[{"type":"org.example.db6.earlier","state_key":"valid","content":{}},{"type":"org.example.db6.state","state_key":")"} +
+                                    escaped_key + R"(","content":{}}]})";
+                                auto const rejected = merovingian::homeserver::handle_client_server_request(
+                                    started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, body});
+                                CHECK(rejected.response.status == 400U);
+                            }
+                            else
+                            {
+                                auto options = merovingian::homeserver::CreateRoomOptions{};
+                                options.initial_state.push_back(local_admission_initial_state("valid"));
+                                options.initial_state.push_back(local_admission_initial_state(escaped_key));
+                                auto const rejected = merovingian::homeserver::create_room(runtime, token, options);
+                                CHECK_FALSE(rejected.ok);
+                                CHECK(rejected.status == 400U);
+                            }
+                            // Boolean comparisons prevent event JSON/signing material entering diagnostics.
+                            CHECK(bool{local_admission_snapshot(runtime.database.persistent_store) == before});
+                            CHECK(runtime.database.next_stream_ordering == next_before);
+                            CHECK(runtime.database.rooms.size() == rooms_before);
+                            REQUIRE_FALSE(runtime.database.rooms.empty());
+                            CHECK(runtime.database.rooms.front().events.size() == events_before);
+                        }
+                        auto reopened = merovingian::database::open_sqlite_persistent_store(path.string());
+                        REQUIRE(reopened.ok);
+                        CHECK(bool{local_admission_snapshot(reopened.store) == durable_before});
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("DB-6 send_event rejects NUL state keys before local stream allocation",
+         "[db6][db6-local-admission][homeserver][database]")
+{
+    GIVEN("a real SQLite store with a successfully created owned room")
+    {
+        WHEN("local event JSON contains an escaped NUL state key")
+        {
+            THEN("all NUL positions return 400 without event state or watermark changes across reopen")
+            {
+                for (auto const& escaped_key :
+                     {std::string{R"(\u0000tail)"}, std::string{R"(head\u0000tail)"}, std::string{R"(head\u0000)"}})
+                {
+                    CAPTURE(escaped_key);
+                    auto const path = unique_sqlite_path();
+                    auto const cleanup = AuditSqliteCleanup{path};
+                    auto const config = sqlite_registration_enabled_config(path);
+                    auto durable_before = std::vector<std::string>{};
+                    {
+                        auto started = merovingian::homeserver::start_client_server(config);
+                        REQUIRE(started.started);
+                        auto& runtime = started.runtime.homeserver;
+                        auto const token = local_admission_login(runtime);
+                        auto const room = merovingian::homeserver::create_room(runtime, token);
+                        REQUIRE(room.ok);
+                        auto const valid = merovingian::homeserver::send_event(
+                            runtime, token, room.value,
+                            R"({"type":"org.example.db6.state","state_key":"valid","content":{}})");
+                        REQUIRE(valid.ok);
+                        REQUIRE_FALSE(runtime.database.persistent_store.state.empty());
+                        auto const before = local_admission_snapshot(runtime.database.persistent_store);
+                        auto const next_before = runtime.database.next_stream_ordering;
+                        auto const rooms_before = runtime.database.rooms.size();
+                        REQUIRE(rooms_before == 1U);
+                        auto const events_before = runtime.database.rooms.front().events.size();
+                        {
+                            auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+                            REQUIRE(opened.ok);
+                            durable_before = local_admission_snapshot(opened.store);
+                        }
+                        auto const rejected = merovingian::homeserver::send_event(
+                            runtime, token, room.value,
+                            R"({"type":"org.example.db6.state","state_key":")" + escaped_key + R"(","content":{}})");
+                        CHECK_FALSE(rejected.ok);
+                        CHECK(rejected.status == 400U);
+                        CHECK(bool{local_admission_snapshot(runtime.database.persistent_store) == before});
+                        CHECK(runtime.database.next_stream_ordering == next_before);
+                        CHECK(runtime.database.rooms.size() == rooms_before);
+                        REQUIRE_FALSE(runtime.database.rooms.empty());
+                        CHECK(runtime.database.rooms.front().events.size() == events_before);
+                    }
+                    auto reopened = merovingian::database::open_sqlite_persistent_store(path.string());
+                    REQUIRE(reopened.ok);
+                    CHECK(bool{local_admission_snapshot(reopened.store) == durable_before});
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("DB-6 local admission preserves empty Unicode keys and escaped NUL content",
+         "[db6][db6-local-admission][homeserver][database]")
+{
+    GIVEN("real SQLite stores with authenticated local users")
+    {
+        WHEN("createRoom initial state and direct sends use supported keys with escaped NUL content")
+        {
+            THEN("empty and Unicode keys compose and persist unchanged through both createRoom APIs")
+            {
+                for (auto const through_http : {false, true})
+                {
+                    for (auto const& escaped_key : {std::string{}, std::string{R"(\u00e9\u96ea)"}})
+                    {
+                        CAPTURE(through_http, escaped_key);
+                        auto const path = unique_sqlite_path();
+                        auto const cleanup = AuditSqliteCleanup{path};
+                        auto const config = sqlite_registration_enabled_config(path);
+                        auto room_id = std::string{};
+                        auto sent_id = std::string{};
+                        auto expected_key = std::string{};
+                        {
+                            auto parsed = merovingian::canonicaljson::parse_lossless("\"" + escaped_key + "\"");
+                            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                            expected_key = std::get<std::string>(parsed.value.storage());
+                        }
+                        {
+                            auto started = merovingian::homeserver::start_client_server(config);
+                            REQUIRE(started.started);
+                            auto& runtime = started.runtime.homeserver;
+                            auto const token = local_admission_login(runtime);
+                            if (through_http)
+                            {
+                                auto const body =
+                                    std::string{R"({"initial_state":[{"type":"org.example.db6.state","state_key":")"} +
+                                    escaped_key + R"(","content":{"body":"before\u0000after"}}]})";
+                                auto const room = merovingian::homeserver::handle_client_server_request(
+                                    started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, body});
+                                REQUIRE(room.response.status == 200U);
+                                room_id = room_from_body(room.response.body);
+                            }
+                            else
+                            {
+                                auto options = merovingian::homeserver::CreateRoomOptions{};
+                                options.initial_state.push_back(local_admission_initial_state(escaped_key));
+                                auto const room = merovingian::homeserver::create_room(runtime, token, options);
+                                REQUIRE(room.ok);
+                                room_id = room.value;
+                            }
+                            REQUIRE(std::any_of(runtime.database.persistent_store.state.begin(),
+                                                runtime.database.persistent_store.state.end(), [&](auto const& row) {
+                                                    return row.room_id == room_id &&
+                                                           row.event_type == "org.example.db6.state" &&
+                                                           row.state_key == expected_key;
+                                                }));
+                            auto const sent = merovingian::homeserver::send_event(
+                                runtime, token, room_id,
+                                R"({"type":"org.example.db6.sent","state_key":")" + escaped_key +
+                                    R"(","content":{"body":"before\u0000after"}})");
+                            REQUIRE(sent.ok);
+                            sent_id = sent.value;
+                        }
+                        auto reopened = merovingian::database::open_sqlite_persistent_store(path.string());
+                        REQUIRE(reopened.ok);
+                        for (auto const& type : {"org.example.db6.state", "org.example.db6.sent"})
+                        {
+                            auto const state = std::find_if(
+                                reopened.store.state.begin(), reopened.store.state.end(), [&](auto const& row) {
+                                    return row.room_id == room_id && row.event_type == type &&
+                                           row.state_key == expected_key;
+                                });
+                            REQUIRE(state != reopened.store.state.end());
+                            if (std::string_view{type} == "org.example.db6.sent")
+                                CHECK(bool{state->event_id == sent_id});
+                            auto const event = std::find_if(reopened.store.events.begin(), reopened.store.events.end(),
+                                                            [&](auto const& row) {
+                                                                return row.event_id == state->event_id;
+                                                            });
+                            REQUIRE(event != reopened.store.events.end());
+                            auto const parsed = merovingian::canonicaljson::parse_lossless(event->json);
+                            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                            auto const& object = std::get<merovingian::canonicaljson::Object>(parsed.value.storage());
+                            auto const content = std::find_if(object.begin(), object.end(), [](auto const& member) {
+                                return member.key == "content";
+                            });
+                            REQUIRE(content != object.end());
+                            auto const& members =
+                                std::get<merovingian::canonicaljson::Object>(content->value->storage());
+                            auto const body = std::find_if(members.begin(), members.end(), [](auto const& member) {
+                                return member.key == "body";
+                            });
+                            REQUIRE(body != members.end());
+                            auto expected_body = std::string{"before"};
+                            expected_body.push_back('\0');
+                            expected_body += "after";
+                            CHECK(bool{std::get<std::string>(body->value->storage()) == expected_body});
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Rate-limit audit rows and debug lines never retain registration query values",
+         "[homeserver][audit][persistent][security][ops2]")
+{
+    GIVEN("a real SQLite homeserver with a one-request per-route IP budget")
+    {
+        auto const path = unique_sqlite_path();
+        auto const cleanup = AuditSqliteCleanup{path};
+        std::ignore = cleanup;
+        auto const route = std::string{"/_matrix/client/v1/register/m.login.registration_token/validity"};
+        auto config = sqlite_registration_enabled_config(path);
+        auto limits = merovingian::config::ClientRateLimitsConfig{};
+        limits.per_ip[route] = {1U, 60U};
+        config = merovingian::config::Config{config.server(), config.listeners(),  config.database(), config.security(),
+                                             limits,          config.log_modules()};
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const marker = std::string(32U, 'q');
+        auto const request =
+            merovingian::homeserver::LocalHttpRequest{"GET", route + "?token=" + marker, {}, {}, {}, "203.0.113.80"};
+        auto const first = merovingian::homeserver::handle_client_server_request(runtime, request);
+        REQUIRE(first.response.status != 429U);
+
+        WHEN("the same caller exceeds the budget, and a later request reaches a stopped runtime")
+        {
+            auto const capture = AuditDebugCapture{};
+            auto const denied = merovingian::homeserver::handle_client_server_request(runtime, request);
+            runtime.homeserver.started = false;
+            auto const unavailable = merovingian::homeserver::handle_client_server_request(runtime, request);
+            auto const debug_lines = capture.text();
+            auto reopened = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("429 and 503 audit targets are path-only in memory, on disk and in the actual debug output")
+            {
+                CHECK(denied.response.status == 429U);
+                CHECK(unavailable.response.status == 503U);
+                auto rate_limited = false;
+                auto stopped = false;
+                for (auto const& row : reopened.store.audit_log)
+                {
+                    if (row.event_type == "rate_limit.exceeded" || row.event_type == "request.rejected")
+                    {
+                        CHECK(row.target == route);
+                        CHECK(row.target.find(marker) == std::string::npos);
+                        rate_limited = rate_limited || row.event_type == "rate_limit.exceeded";
+                        stopped = stopped || (row.event_type == "request.rejected" && row.reason.starts_with("503:"));
+                    }
+                }
+                CHECK(rate_limited);
+                CHECK(stopped);
+                for (auto const& event : runtime.homeserver.database.audit_events)
+                {
+                    CHECK(event.target.find(marker) == std::string::npos);
+                }
+                CHECK(debug_lines.find("event=audit.append") != std::string::npos);
+                CHECK(debug_lines.find("target=" + route) != std::string::npos);
+                CHECK(debug_lines.find(marker) == std::string::npos);
+                // The non-durable audit entry path must use the same boundary.
+                merovingian::homeserver::remember_local_audit(runtime.homeserver.database,
+                                                              merovingian::observability::AuditCategory::auth,
+                                                              "test.remember", "actor", request.target, "reason");
+                CHECK(runtime.homeserver.database.audit_events.back().target == route);
+                CHECK(capture.text().find(marker) == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Audit debug capture restores the exact logger policy", "[observability][audit][ops2][ops2-log-scope]")
+{
+    GIVEN("a synchronous independent logger with warning thresholds and an inherited module policy")
+    {
+        auto logger = merovingian::observability::SingleLog{};
+        logger.set_console_log_level(merovingian::observability::LogLevel::warning);
+        logger.set_default_log_level(merovingian::observability::LogLevel::warning);
+        logger.set_module_log_level("probe", merovingian::observability::LogLevel::info);
+        auto const outer = AuditConsoleCapture{};
+
+        WHEN("a debug capture leaves scope, including exception unwinding")
+        {
+            THEN("the console threshold and absence of a module override are preserved")
+            {
+                for (auto const explicit_override : {false, true})
+                {
+                    for (auto const unwind : {false, true})
+                    {
+                        logger.set_default_log_level(merovingian::observability::LogLevel::warning);
+                        auto const prior = explicit_override
+                                               ? std::optional{merovingian::observability::LogLevel::error}
+                                               : std::optional<merovingian::observability::LogLevel>{};
+                        std::ignore = logger.exchange_module_log_level(std::string{"local_services"}, prior);
+                        try
+                        {
+                            auto const capture = AuditDebugCapture{logger};
+                            logger.debug("local_services", "captured diagnostic");
+                            CHECK(capture.text().find("captured diagnostic") != std::string::npos);
+                            if (unwind)
+                            {
+                                throw std::runtime_error{"fixture unwind"};
+                            }
+                        }
+                        catch (std::runtime_error const&)
+                        {
+                        }
+                        logger.info("probe", "console threshold was not restored");
+                        CHECK(outer.text().find("console threshold was not restored") == std::string::npos);
+                        // A former inherited policy must follow later default changes.
+                        logger.set_default_log_level(merovingian::observability::LogLevel::debug);
+                        CHECK(logger.module_log_level("local_services") ==
+                              prior.value_or(merovingian::observability::LogLevel::debug));
+                    }
+                }
+            }
+        }
     }
 }

@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.12.25',
+  version: '0.12.26',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -110,6 +110,12 @@ if get_option('hardening')
     # value. Musl-based toolchains (e.g. Alpine) may predefine it as 2, and
     # -Werror treats the resulting macro redefinition as a hard error.
     hardening_compile_flags += ['-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=3']
+  else
+    # Meson's default buildtype is `debug`. Packaging paths pass
+    # --buildtype=release explicitly (ADR-0148); say so for anyone else.
+    warning('optimization=0: _FORTIFY_SOURCE is not defined, so merovingian-server will fail its ' +
+            'startup hardening self-check and refuse to start. Configure with --buildtype=release ' +
+            '(or debugoptimized) for a binary that can serve.')
   endif
   add_project_arguments(cpp.get_supported_arguments(hardening_compile_flags), language: 'cpp')
   add_project_link_arguments(cpp.get_supported_link_arguments(hardening_link_flags), language: 'cpp')

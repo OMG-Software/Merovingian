@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-namespace merovingian::database
+namespace merovingian::observability
 {
 
 // AUTH-1 (security-audit-report-2026-09-29.md): the longest an attacker-
@@ -28,4 +28,4 @@ inline constexpr auto max_audit_field_bytes = std::size_t{255U};
 // abandoned as soon as the output is full.
 [[nodiscard]] auto bounded_utf8(std::string_view value, std::size_t max_bytes) -> std::string;
 
-} // namespace merovingian::database
+} // namespace merovingian::observability

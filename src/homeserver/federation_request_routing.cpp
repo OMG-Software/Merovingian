@@ -97,11 +97,24 @@ namespace
         return prefixes;
     }
 
-    // For /send/{txnId} the room ID is inside the request body. We parse the
-    // whole body and extract the first PDU's room_id. All PDUs in a transaction
-    // are for the same room in practice; routing by the first PDU is sufficient
-    // for shard selection.  Using the canonical JSON parser avoids the escape
-    // and substring pitfalls of the previous hand-rolled scanner.
+    // An absent shard key is not proof that a transaction contains no PDUs.
+    // Only an explicitly empty PDU array is safe for the EDU-only fast path.
+    [[nodiscard]] auto send_body_has_empty_pdus(std::string_view body) -> bool
+    {
+        auto const parsed = canonicaljson::parse_json(body);
+        if (parsed.error != canonicaljson::ParseError::none ||
+            !std::holds_alternative<canonicaljson::Object>(parsed.value.storage()))
+        {
+            return false;
+        }
+        auto const* pdus = array_member(std::get<canonicaljson::Object>(parsed.value.storage()), "pdus");
+        return pdus != nullptr && pdus->empty();
+    }
+
+    // For /send/{txnId}, use the first PDU's room_id as a shard hint only.
+    // If it is malformed, leave the key empty so the whole transaction goes to
+    // shard 0, rather than inspecting later PDUs or bypassing the worker.
+    // Using the canonical JSON parser avoids escape and substring pitfalls.
     [[nodiscard]] auto room_id_from_send_body(std::string_view body) -> std::string
     {
         auto const parsed = canonicaljson::parse_json(body);
@@ -178,11 +191,11 @@ auto federation_worker_room_id_from_request(LocalHttpRequest const& request) -> 
 
 auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool
 {
-    // EDU-only /send transactions have no room_id to shard by and ultimately
-    // relay back to main's edu_sink anyway. Handling them in main avoids shard
-    // 0 becoming a choke point for to-device key shares.
-    if (request.method == "PUT" && is_federation_send_target(request.target) &&
-        room_id_from_send_body(request.body).empty())
+    // EDU-only /send transactions relay back to main's edu_sink anyway.
+    // Require an explicitly empty PDU array: a missing or malformed first
+    // room_id must never bring the transaction's later PDUs into main.
+    // Handling EDU-only sends in main avoids shard 0 becoming a choke point.
+    if (request.method == "PUT" && is_federation_send_target(request.target) && send_body_has_empty_pdus(request.body))
     {
         return true;
     }

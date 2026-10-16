@@ -59,7 +59,8 @@ struct HomeserverRuntime;
 // handle_membership_ingest_request is: a seam tests can drive directly
 // without spawning a real worker subprocess. Takes and returns the same wire
 // JSON a worker sends/receives over the IPC channel.
-[[nodiscard]] auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string;
+[[nodiscard]] auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json,
+                                             ipc::IpcChannel const& receiving_channel) -> std::string;
 
 // Handles an "invite_ingest" IPC request (a worker relaying an inbound
 // PUT /_matrix/federation/{v1,v2}/invite acceptance so the invite's

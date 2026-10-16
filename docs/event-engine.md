@@ -55,6 +55,23 @@ Implemented now:
   rule 9.8 — a user at or above the sender's power cannot be changed or
   removed by a non-superior sender), state-default and events-default power
   enforcement.
+- **Legacy authorization boundaries (EVT-10, EVT-11, EVT-12(a,c)).**
+  In v3-v9, both state and message `events[type]` thresholds honor integer
+  strings (including a single sign, leading zeroes and surrounding ASCII
+  whitespace). Any present `content.third_party_invite` on an invite enters
+  third-party authorization; a scalar, null or array is rejected rather than
+  treated as an ordinary invite. In v3-v5 only, `m.room.aliases` is allowed
+  after the create/federation checks exactly when its `state_key` equals the
+  sender's complete domain, without a membership or power-level requirement.
+  Named inbound auth events with persistent status `rejected` are refused.
+  State resolution carries that trusted status separately from signed JSON and
+  skips rejected own-auth fallback entries without truncating auth-chain walks;
+  `soft_failed` and `outlier` are not rejection. This does not blanket-remove
+  rejected state-resolution candidates, which the spec can reauthorize.
+- **Remaining legacy compatibility gap (EVT-12(d)).** v3-v5 permit finite
+  floating power levels with truncation. The strict event parser and scalar
+  power-level validation still refuse these; this pass characterizes that
+  fail-closed divergence without relaxing the signed-event parsing boundary.
 - **rule 1 (`m.room.create`)**, complete since 0.12.4: no `prev_events`; the
   `room_id`/`sender` domain relationship for v1-v11 and the absence of
   `room_id` for v12 (MSC4291); a recognised `content.room_version`; and the
@@ -81,7 +98,7 @@ Implemented now:
   `state_default`, so a level-50 moderator could rewrite a room whose
   `events["m.room.power_levels"]` was 100 (the createRoom default), and
   conformant peers rejected the event. The `events` value is read with the room
-  version's rules (string-encoded before v10).
+  version's rules (string-encoded before v10; float before v6, truncated, ADR-0150).
 - **A negative `users` entry is the user's level.** The `users` lookup returns
   `std::optional<int64_t>` and `users_default` applies only when the user is
   absent from `users`. Before this fix a `-1` sentinel meant "absent", so a user
@@ -429,7 +446,9 @@ stating explicitly, because all three were defects (the first two until
   the authorization path already parses them, so an integer-only read in the
   resolver silently demoted such a sender to `users_default` and let a
   lower-power event win. `reverse_topological_power_sort` therefore takes a
-  `RoomVersionPolicy` and honours `power_levels_require_integers`. **The
+  `RoomVersionPolicy` and reads levels through `effective_sender_power`, which
+  follows `events::power_level_encoding(policy)` (integers; plus strings in
+  v1-v9; plus floats, truncated, in v1-v5: EVT-12 (d), ADR-0150). **The
   resolver and `authorization.cpp` must agree on this**: if they disagree,
   events are ordered by a power level the auth rules cannot see.
 - **The auth-event map built from resolved state includes
@@ -609,10 +628,41 @@ that cannot fit in any event (`name`, `topic`, `creation_content`, `power_level_
 `initial_state`) before it stores the room; content that fits alone but not once signed is refused after the
 room exists, with the same error.
 
-`persist_composed_event` projects every `m.room.member` event it stores that is now the current state for its
-user (`project_local_membership`, ADR-0126): the `memberships` row, `LocalRoom.members`, device-list share
-changes and invite metadata. That covers the membership APIs and `PUT /state/m.room.member` alike; callers do
-not project on their own.
+NUL is not representable in PostgreSQL text state keys (DB-6). The shared
+`events::state_key_contains_nul` admission rule is used by inbound envelope
+parsing and local composition. Local composition reports `invalid_state_key`
+before any stream ordering is allocated; `send_event` maps it to
+`400 M_INVALID_PARAM`. `createRoom` scans the complete client initial-state
+list before persisting room/bootstrap state, so a bad later entry cannot
+leave earlier entries or an empty-key collision behind. Empty state keys and
+ordinary Unicode remain allowed. Escaped NUL inside JSON **content** is not a
+text state key and is not blanket-rejected by this policy. This is a storage-
+compatibility admission constraint, not a claim that all Matrix strings
+forbid NUL. The live PostgreSQL admission regression uses the real worker-
+relay `handle_pdu_ingest_request` and production-wired PDU sink, with a signed
+successfully persisted control. Leading/interior/trailing NUL state keys
+produce no captured statements or event/state/group/graph/membership/watermark
+changes, including after reopening the store. Separate positive coverage
+preserves empty/Unicode state keys, escaped-NUL JSON content and binary media.
+This supplies inbound storage verification, not proxy or whole-finding
+acceptance. Separate real no-proxy and healthy proxy/separate-worker socket
+coverage now verifies controlled NUL-path refusals and unchanged business
+rows/watermarks; its transport boundary and exclusions are described in
+[HTTP transport](http-transport.md#structured-errors). The choice to reject
+before mutation rather than rely on SQL binding, and to preserve one-pass
+path decoding without blanket payload filtering, is recorded in proposed
+[ADR-0137](adr/0137-reject-nul-before-mutation-and-path-decoding.md).
+
+`persist_composed_event` projects every `m.room.member` event it stores (ADR-0126): the `memberships` row,
+`LocalRoom.members`, device-list share changes and invite metadata. That covers the membership APIs and
+`PUT /state/m.room.member` alike; callers do not project on their own. The row and the invite change are a
+`database::MembershipProjection` committed in the event's own transaction, with its `current_state` row
+(`local_membership_projection`, DB-4, ADR-0149); `finish_local_membership` then updates the roster and
+device lists, and realigns the row if state resolution left a different member event current. Inbound member
+events (`send_join`, `send_leave`, `send_knock`, `/invite`, PDUs over `/send`) pass a projection the same
+way. At main's startup (never in the federation worker) `hydrate_local_database` runs `reconcile_memberships_with_current_state` before building the
+roster: a row is rewritten to the current member event when it is missing, when it says `join` and the event
+does not, or when the event is newer; a row newer than its event (a federated leave, an `/invite`) is kept.
 
 ### Phase B2: the receipt-order auth checks themselves (ADR-0064)
 

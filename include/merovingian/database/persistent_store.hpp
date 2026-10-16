@@ -299,6 +299,21 @@ struct PersistentInvite final
     std::uint64_t stream_ordering{0U};
 };
 
+// DB-4: the `membership` row, and the change to the user's invite metadata, that
+// an m.room.member event implies. Passed with the event to store_event_with_state
+// (or prepare_store_event_with_state) so the event, its current_state row, the
+// membership row and the invite change commit in ONE transaction: a ban can never
+// be durable while the row still says join. The invite change follows the
+// membership: "invite" writes `invite` (when given); "join", "leave" and "ban"
+// delete the user's invite metadata; anything else leaves it alone.
+struct MembershipProjection final
+{
+    std::string user_id{};
+    std::string membership{};
+    std::uint64_t stream_ordering{0U};
+    std::optional<PersistentInvite> invite{};
+};
+
 struct PersistentEvent final
 {
     std::string event_id{};
@@ -806,6 +821,18 @@ struct RedactionState final
 
 struct PersistentStore;
 
+namespace detail
+{
+    // DB-7, ADR-0154: each backend's pool of write connections, defined in its
+    // own source file. Shared, not copied, by copies of a store.
+    struct SqliteWritePool;
+    struct PostgresqlWritePool;
+    auto set_write_pool_limit(SqliteWritePool& pool, std::uint32_t limit) -> void;
+    auto set_write_pool_limit(PostgresqlWritePool& pool, std::uint32_t limit) -> void;
+    [[nodiscard]] auto write_pool_opened(SqliteWritePool const& pool) -> std::uint64_t;
+    [[nodiscard]] auto write_pool_opened(PostgresqlWritePool const& pool) -> std::uint64_t;
+} // namespace detail
+
 // Called after an event has been added to `PersistentStore::events`, with the event's ID. The
 // homeserver installs the redaction reconciler here (see homeserver/redaction_service.hpp).
 using RedactionObserver = std::function<void(PersistentStore&, std::string const&)>;
@@ -817,7 +844,9 @@ struct PersistentStore final
         : open{other.open}
         , backend{other.backend}
         , postgresql_conninfo{other.postgresql_conninfo}
+        , postgresql_runtime_role{other.postgresql_runtime_role}
         , sqlite_path{other.sqlite_path}
+        , sqlite_read_only{other.sqlite_read_only}
         , schema{other.schema}
         , users{other.users}
         , devices{other.devices}
@@ -875,6 +904,9 @@ struct PersistentStore final
         , force_next_persist_failures{other.force_next_persist_failures}
         , force_failure_statement_names{other.force_failure_statement_names}
         , statement_capture_mutex{std::make_unique<std::mutex>()}
+        , write_connection_limit{other.write_connection_limit}
+        , sqlite_write_pool{other.sqlite_write_pool}
+        , postgresql_write_pool{other.postgresql_write_pool}
         , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
@@ -892,7 +924,9 @@ struct PersistentStore final
         open = other.open;
         backend = other.backend;
         postgresql_conninfo = other.postgresql_conninfo;
+        postgresql_runtime_role = other.postgresql_runtime_role;
         sqlite_path = other.sqlite_path;
+        sqlite_read_only = other.sqlite_read_only;
         schema = other.schema;
         users = other.users;
         devices = other.devices;
@@ -955,6 +989,9 @@ struct PersistentStore final
         event_stream_watermark = other.event_stream_watermark;
         max_to_device_messages_per_user_device = other.max_to_device_messages_per_user_device;
         to_device_message_ttl_seconds = other.to_device_message_ttl_seconds;
+        write_connection_limit = other.write_connection_limit;
+        sqlite_write_pool = other.sqlite_write_pool;
+        postgresql_write_pool = other.postgresql_write_pool;
         return *this;
     }
     auto operator=(PersistentStore&& other) noexcept -> PersistentStore& = default;
@@ -970,6 +1007,8 @@ struct PersistentStore final
     // SET ROLE, preserving single-role deployments.
     std::string postgresql_runtime_role{};
     std::string sqlite_path{};
+    // Worker snapshots never migrate, create files, or persist transactions.
+    bool sqlite_read_only{false};
     SchemaState schema{};
     std::vector<PersistentUser> users{};
     std::vector<PersistentDevice> devices{};
@@ -1064,6 +1103,14 @@ struct PersistentStore final
     // stripe locks because capture access is independent of any room. Wrapped
     // in unique_ptr so PersistentStore remains moveable.
     mutable std::unique_ptr<std::mutex> statement_capture_mutex{std::make_unique<std::mutex>()};
+    // DB-7, ADR-0154: persisted writes reuse at most this many connections
+    // (database.pool_size, applied by set_write_connection_limit), instead of
+    // opening one per transaction. The pool of the store's backend is created
+    // when the store is opened; copies share it.
+    std::uint32_t write_connection_limit{16U};
+    std::shared_ptr<detail::SqliteWritePool> sqlite_write_pool{}; // SHARED_PTR: reviewed - shared by store copies.
+    std::shared_ptr<detail::PostgresqlWritePool> // SHARED_PTR: reviewed - shared by store copies.
+        postgresql_write_pool{};
     // Guards server_signing_keys. The remote-key resolver stores and reads
     // keys from federation relay threads and from backfill, both with the
     // runtime mutex released, so after start-up hydration every access goes
@@ -1123,10 +1170,18 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto parse_expires_at(std::string_view text) -> std::optional<std::chrono::system_clock::time_point>;
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state = {}) -> PersistentStoreOpenResult;
-[[nodiscard]] auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult;
+[[nodiscard]] auto open_sqlite_persistent_store(std::string const& path,
+                                                TableLoadProfile profile = TableLoadProfile::full)
+    -> PersistentStoreOpenResult;
 [[nodiscard]] auto validate_persistent_store(PersistentStore const& store) -> MigrationValidationResult;
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
+// DB-7, ADR-0154: caps the connections persisted writes keep and use at once
+// (database.pool_size). A write waits for a free connection rather than opening
+// another. Takes effect for the next write.
+auto set_write_connection_limit(PersistentStore& store, std::uint32_t limit) -> void;
+// Connections ever opened for persisted writes (both backends' pools).
+[[nodiscard]] auto write_connections_opened(PersistentStore const& store) -> std::uint64_t;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
 [[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
     -> bool;
@@ -1231,8 +1286,33 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
+// With `membership`, also writes that membership row and invite change in the same
+// transaction (DB-4). The projection must name the state event's own user: `state`
+// must be the m.room.member entry whose state_key is `membership->user_id`, or
+// nothing is stored.
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
-                                          std::optional<PersistentStateEvent> state) -> bool;
+                                          std::optional<PersistentStateEvent> state,
+                                          std::optional<MembershipProjection> membership = std::nullopt) -> bool;
+// DB-4: writes a membership row and its invite change in one transaction, for a
+// membership change this server records without storing an event of its own (a
+// federated leave, an invite received over /invite for a room whose state it
+// holds). The in-memory mirror changes only after the commit.
+[[nodiscard]] auto store_membership_projection(PersistentStore& store, std::string_view room_id,
+                                               MembershipProjection projection) -> bool;
+// DB-4: makes each `membership` row agree with its room's current m.room.member
+// state event, which is the user's membership (Matrix v1.19 "m.room.member").
+// A row is rewritten to the event's membership when the row is missing, when it
+// says "join" and the event does not (a row never grants more than current
+// state), or when the event is newer than the row (higher stream_ordering). A
+// row newer than the event is kept: it is a change recorded here before its
+// event arrived (a federated leave, an /invite). Rewritten rows take a fresh
+// stream ordering from `allocate_stream_ordering` so incremental /sync sees the
+// change, and "join"/"leave"/"ban" drop the user's invite metadata, all in one
+// transaction. The in-memory rows are corrected even when that commit fails —
+// they then match current_state, which is already durable — and the next
+// startup retries the write. Returns the number of rows corrected.
+[[nodiscard]] auto reconcile_memberships_with_current_state(
+    PersistentStore& store, std::function<std::uint64_t()> const& allocate_stream_ordering) -> std::size_t;
 
 // ---- ADR-0064 phase A: delta state groups, forward extremities, event status ----
 //
@@ -1351,13 +1431,15 @@ struct PreparedStateUpdate final
 {
     PersistentEvent event{};
     std::optional<PersistentStateEvent> state{};
+    std::optional<MembershipProjection> membership{};
     std::vector<PreparedStatement> statements{};
     bool state_already_existed{false};
     std::string previous_event_id{};
 };
 
 [[nodiscard]] auto prepare_store_event_with_state(PersistentStore& store, PersistentEvent event,
-                                                  std::optional<PersistentStateEvent> state)
+                                                  std::optional<PersistentStateEvent> state,
+                                                  std::optional<MembershipProjection> membership = std::nullopt)
     -> std::optional<PreparedStateUpdate>;
 auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate const& update) -> void;
 // Startup repair: finds events in store.events that are state events (JSON has a
