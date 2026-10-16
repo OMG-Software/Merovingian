@@ -10,6 +10,7 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/edu_relay_context.hpp"
+#include "../support/joining_threads.hpp"
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
 #include "../support/remote_room_fixture.hpp"
@@ -635,8 +636,8 @@ auto fed10_persist_remote_room(merovingian::homeserver::HomeserverRuntime& runti
                 remote.signing_key.valid_until_ts}));
 }
 
-[[nodiscard]] auto fed10_target_count(merovingian::database::PersistentStore const& store,
-                                      std::string const& event_id) -> std::size_t
+[[nodiscard]] auto fed10_target_count(merovingian::database::PersistentStore const& store, std::string const& event_id)
+    -> std::size_t
 {
     return static_cast<std::size_t>(std::ranges::count_if(store.events, [&](auto const& event) {
         return event.event_id == event_id;
@@ -3197,7 +3198,9 @@ namespace
     auto channels = IpcTestChannelPair{};
     auto server_error = std::exception_ptr{};
     auto client_error = std::exception_ptr{};
-    auto server_thread = std::jthread{[&] {
+    // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+    auto handshakes = merovingian::tests::JoiningThreads{};
+    handshakes.emplace_back([&] {
         try
         {
             channels.server = std::make_unique<merovingian::ipc::IpcChannel>(
@@ -3207,8 +3210,8 @@ namespace
         {
             server_error = std::current_exception();
         }
-    }};
-    auto client_thread = std::jthread{[&] {
+    });
+    handshakes.emplace_back([&] {
         try
         {
             channels.client = std::make_unique<merovingian::ipc::IpcChannel>(
@@ -3218,9 +3221,8 @@ namespace
         {
             client_error = std::current_exception();
         }
-    }};
-    server_thread.join();
-    client_thread.join();
+    });
+    handshakes.join();
     REQUIRE(!server_error);
     REQUIRE(!client_error);
     return channels;

@@ -18,6 +18,7 @@
 // Tags: [worker_relay_signature].
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/joining_threads.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -183,7 +184,9 @@ public:
             crypto::derive_ipc_auth_key(std::span<std::uint8_t const>{std::array<std::uint8_t, 32>{}});
         REQUIRE(auth_key.has_value());
         auto server_exception = std::exception_ptr{};
-        auto handshake = std::jthread{[&]() {
+        // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+        auto handshake = tests::JoiningThreads{};
+        handshake.emplace_back([&]() {
             try
             {
                 server_ =
@@ -193,7 +196,7 @@ public:
             {
                 server_exception = std::current_exception();
             }
-        }};
+        });
         client_ = std::make_unique<ipc::IpcChannel>(std::move(client_fd), ipc::IpcChannel::Role::client, *auth_key);
         handshake.join();
         REQUIRE(server_exception == nullptr);

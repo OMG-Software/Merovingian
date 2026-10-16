@@ -57,7 +57,7 @@ Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: James Chapman <james@merovingian-homeserver.example>
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libssl3, libsodium23, libpq5, libcurl4, libpng16-16, libturbojpeg0
+Depends: adduser, libssl3, libsodium23, libpq5, libcurl4, libpng16-16, libturbojpeg0
 Recommends: ca-certificates
 Section: net
 Priority: optional

@@ -21,7 +21,18 @@ FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the fina
   `groupadd`/`useradd`). The `.deb` also stopped shipping the vendored sqlite3 archive and
   headers (`--skip-subprojects`, as every other package script). Tests:
   `test_packages_workflow.py` (conffiles name files the package installs, the image creates
-  its user with tools its base ships, no subproject install); RED 3 failures.
+  its user with tools its base ships, no subproject install); RED 3 failures. The first CI
+  run on these fixes found three more: the `.deb` postinst runs `adduser` but the package
+  did not depend on it, which container base images do not ship (`Depends: adduser`,
+  tooling test added, RED 1); gcc at `-O2` flagged the thumbnail cache's eviction loop under
+  `-Werror=null-dereference` (the iterator is now checked against `end()`); and six tests
+  added on this branch used `std::jthread`, which the FreeBSD and OpenBSD libc++ lack (now
+  `JoiningThreads` or `std::thread` with an explicit stop flag). The CRY-4 scenarios that
+  read kernel lock state from `/proc/self/smaps`, or drop `RLIMIT_MEMLOCK` to make a lock
+  fail, are skipped under AddressSanitizer, whose `mlock` interceptor locks nothing and never
+  fails. The ISO-5 decoder-stderr scenario compares stderr with `/dev/null` only on Linux:
+  NetBSD's `/dev/fd/2` is a static device node without fdescfs, so `-ef` could not compare
+  it; the write and the empty parent capture still prove the property everywhere.
 - **FIXED (PR #509 review, auth):** the token-key cache dereferenced an empty optional when
   the first master-key open failed and a second open by path succeeded, and every
   authenticated request copied both token keys into fresh locked allocations, which could

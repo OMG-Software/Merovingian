@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/joining_threads.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -21,8 +22,8 @@ public:
     std::atomic<std::uint64_t> calls{0U};
     bool ok{true};
 
-    [[nodiscard]] auto fetch_well_known(std::string_view,
-                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
     {
         return {};
     }
@@ -30,8 +31,8 @@ public:
     {
         return {};
     }
-    [[nodiscard]] auto lookup_addresses(std::string_view,
-                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         ++calls;
         return {ok, ok ? std::vector<std::string>{"203.0.113.10"} : std::vector<std::string>{}, "unreachable"};
@@ -150,7 +151,8 @@ SCENARIO("concurrent discovery admissions cannot exceed the cache capacity", "[f
                                                                      3U};
         auto start = std::barrier{16};
         auto all_allowed = std::atomic<bool>{true};
-        auto callers = std::vector<std::jthread>{};
+        // JoiningThreads, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+        auto callers = merovingian::tests::JoiningThreads{};
         WHEN("each caller discovers its own name")
         {
             for (auto index = 0U; index < 16U; ++index)
@@ -164,7 +166,7 @@ SCENARIO("concurrent discovery admissions cannot exceed the cache capacity", "[f
                     }
                 });
             }
-            callers.clear();
+            callers.join();
             THEN("every discovery succeeds within the shared capacity")
             {
                 REQUIRE(all_allowed.load());

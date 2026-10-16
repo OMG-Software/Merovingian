@@ -495,9 +495,16 @@ SCENARIO("decoder stderr is a writable null sink rather than the parent's diagno
             auto result = merovingian::media::ThumbnailResult{};
             {
                 auto const redirect = ScopedStderrRedirect{capture};
-                result = request_from_worker(
-                    response, "printf 'iso5-stderr-probe' >&2 || exit 42\n"
-                              "if [ -e /dev/fd/2 ] && ! [ /dev/fd/2 -ef /dev/null ]; then exit 42; fi\n");
+                // The write failing would mean stderr is closed; nothing reaching
+                // the capture means it is not the parent's stream. On Linux,
+                // /proc/self/fd/2 also names the open file, so its identity with
+                // /dev/null is checked too. Elsewhere /dev/fd/2 may be a static
+                // device node (NetBSD without fdescfs), which -ef cannot compare.
+                result = request_from_worker(response, "printf 'iso5-stderr-probe' >&2 || exit 42\n"
+#if defined(__linux__)
+                                                       "if ! [ /proc/self/fd/2 -ef /dev/null ]; then exit 42; fi\n"
+#endif
+                );
             }
             REQUIRE(::lseek(capture.get(), 0, SEEK_SET) == 0);
             auto buffer = std::array<char, 64U>{};

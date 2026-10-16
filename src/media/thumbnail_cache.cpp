@@ -60,6 +60,12 @@ auto ThumbnailCache::insert(ThumbnailCacheKey const& key, CachedThumbnail thumbn
         auto const oldest = std::ranges::min_element(entries_, {}, [](auto const& entry) {
             return entry.second.last_used;
         });
+        // Not reachable with entries present; stated so that gcc's flow
+        // analysis (-Wnull-dereference) can see the iterator is valid.
+        if (oldest == entries_.end())
+        {
+            break;
+        }
         bytes_ -= oldest->second.cost;
         entries_.erase(oldest);
     }

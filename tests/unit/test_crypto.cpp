@@ -819,6 +819,21 @@ namespace
 
 namespace
 {
+// AddressSanitizer intercepts mlock and munlock and locks nothing, and a zero
+// RLIMIT_MEMLOCK then never makes a lock fail. Kernel lock state is not
+// observable under it, so the scenarios that inspect it are skipped there.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr auto address_sanitizer_active = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr auto address_sanitizer_active = true;
+#else
+constexpr auto address_sanitizer_active = false;
+#endif
+#else
+constexpr auto address_sanitizer_active = false;
+#endif
+
 [[nodiscard]] auto mapping_is_locked([[maybe_unused]] void const* address) -> bool
 {
 #if defined(__linux__)
@@ -847,6 +862,10 @@ namespace
 
 SCENARIO("Live secret allocations remain independently locked", "[core][crypto][cry4]")
 {
+    if (address_sanitizer_active)
+    {
+        SKIP("AddressSanitizer's mlock locks nothing, so kernel lock state is not observable");
+    }
     GIVEN("two live small secret allocations")
     {
         auto survivor = merovingian::core::SecretBuffer{32U};
@@ -870,6 +889,10 @@ SCENARIO("Live secret allocations remain independently locked", "[core][crypto][
 
 SCENARIO("Derived keys and their copies occupy locked allocations", "[crypto][cry4]")
 {
+    if (address_sanitizer_active)
+    {
+        SKIP("AddressSanitizer's mlock locks nothing, so kernel lock state is not observable");
+    }
     GIVEN("master material for all key purposes")
     {
         auto material = std::array<std::uint8_t, 32U>{};
@@ -906,6 +929,10 @@ SCENARIO("Derived keys and their copies occupy locked allocations", "[crypto][cr
 #if defined(__linux__)
 SCENARIO("Signing box cache fails closed when its key copy cannot be locked", "[crypto][cry4-cache]")
 {
+    if (address_sanitizer_active)
+    {
+        SKIP("AddressSanitizer's mlock never fails, so a locked-memory limit cannot be exercised");
+    }
     GIVEN("a secure master file with a warmed signing-box cache")
     {
         auto const path = write_master_key_file(std::string(32U, 'k'));

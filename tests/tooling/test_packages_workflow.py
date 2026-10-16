@@ -333,6 +333,22 @@ class PackagesWorkflowTests(unittest.TestCase):
                 self.assertRegex(path, r"^/etc/merovingian/[^/]+$")
                 self.assertIn(f'"${{STAGING}}{path}"', build_script)
 
+    def test_deb_depends_on_the_tools_its_maintainer_scripts_run(self) -> None:
+        # GIVEN the Debian maintainer scripts and the control file the build writes.
+        postinst = (REPO_ROOT / "packaging" / "deb" / "postinst").read_text(encoding="utf-8")
+        build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")
+        depends = re.search(r"(?m)^Depends: (.*)$", build_script)
+        self.assertIsNotNone(depends, "build-deb.sh writes no Depends line")
+        packages = {entry.strip().split(" ")[0] for entry in depends.group(1).split(",")}
+
+        # WHEN postinst creates the service account with adduser, which is not
+        # essential and is absent from container base images.
+        uses_adduser = re.search(r"(?m)^\s*adduser\b", postinst) is not None
+
+        # THEN the package depends on adduser, so installing it pulls adduser in.
+        self.assertTrue(uses_adduser, "postinst no longer uses adduser; update this test")
+        self.assertIn("adduser", packages)
+
     def test_deb_does_not_ship_vendored_subproject_files(self) -> None:
         # GIVEN the Debian package build script.
         build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")

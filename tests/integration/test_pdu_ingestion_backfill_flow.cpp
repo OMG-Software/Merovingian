@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -411,10 +412,9 @@ public:
     [[nodiscard]] auto hold_foreign() -> bool
     {
         auto entered = entered_.get_future();
-        foreign_ = std::jthread{[this](std::stop_token stop) {
-            auto const on_stop = std::stop_callback{stop, [this] {
-                                                        release_.set_value();
-                                                    }};
+        // std::thread, not std::jthread: FreeBSD and OpenBSD libc++ lack jthread.
+        // release_foreign() releases the held resolution, then joins.
+        foreign_ = std::thread{[this] {
             foreign_result_ = federation::resolve_verification_key(runtime_.federation, "foreign-source",
                                                                    foreign_server, remote_key_id);
         }};
@@ -425,7 +425,7 @@ public:
     {
         if (foreign_.joinable())
         {
-            foreign_.request_stop();
+            release_.set_value();
             foreign_.join();
         }
     }
@@ -446,20 +446,25 @@ private:
     std::promise<void> entered_{};
     std::shared_future<void> released_;
     std::optional<federation::VerificationKeyResolution> foreign_result_{};
-    std::jthread foreign_{};
+    std::thread foreign_{};
 };
 
 // Keep a live peer available until ingestion finishes. Unexpected fallback
 // requests get a bounded 404 and are counted, rather than hanging in connect
 // or being hidden by a one-response server that has already exited.
-[[nodiscard]] auto ingest_with_bounded_backfill_peer(
-    HomeserverRuntime& runtime, InboundPduEnvelope const& pdu, net::TcpAcceptor& acceptor,
-    homeserver::TlsServerContext& tls_context, std::string const& response,
-    std::vector<std::string>& request_lines) -> federation::PduIngestionResult
+[[nodiscard]] auto ingest_with_bounded_backfill_peer(HomeserverRuntime& runtime, InboundPduEnvelope const& pdu,
+                                                     net::TcpAcceptor& acceptor,
+                                                     homeserver::TlsServerContext& tls_context,
+                                                     std::string const& response,
+                                                     std::vector<std::string>& request_lines)
+    -> federation::PduIngestionResult
 {
     auto const not_found = tests::tls_mock::json_http_response("404 Not Found", R"({"errcode":"M_NOT_FOUND"})");
-    auto server = std::jthread{[&](std::stop_token stop) {
-        for (auto served = 0U; served < 16U && !stop.stop_requested();)
+    // std::thread with a stop flag, not std::jthread: FreeBSD and OpenBSD libc++
+    // lack jthread. The guard stops and joins the peer however ingestion ends.
+    auto stop = std::atomic<bool>{false};
+    auto server = std::thread{[&] {
+        for (auto served = 0U; served < 16U && !stop.load();)
         {
             auto const fd = tests::tls_mock::accept_loopback(acceptor, 100);
             if (fd < 0)
@@ -477,10 +482,30 @@ private:
             std::ignore = connection.write(missing ? response : not_found);
         }
     }};
-    auto const result = homeserver::ingest_pdu_event(runtime, pdu);
-    server.request_stop();
-    server.join();
-    return result;
+    struct StopAndJoin final
+    {
+        StopAndJoin(std::atomic<bool>& stop_flag, std::thread& peer) noexcept
+            : stop{stop_flag}
+            , thread{peer}
+        {
+        }
+        std::atomic<bool>& stop;
+        std::thread& thread;
+        StopAndJoin(StopAndJoin const&) = delete;
+        auto operator=(StopAndJoin const&) -> StopAndJoin& = delete;
+        StopAndJoin(StopAndJoin&&) = delete;
+        auto operator=(StopAndJoin&&) -> StopAndJoin& = delete;
+        ~StopAndJoin()
+        {
+            stop.store(true);
+            if (thread.joinable())
+            {
+                thread.join();
+            }
+        }
+    };
+    auto const finish = StopAndJoin{stop, server};
+    return homeserver::ingest_pdu_event(runtime, pdu);
 }
 
 [[nodiscard]] auto make_cache_signed_message_pdu(std::string const& room_id, std::vector<std::string> const& prev_ids,
