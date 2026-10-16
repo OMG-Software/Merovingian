@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 
 namespace merovingian::push
@@ -291,7 +292,53 @@ PushGatewayClient::PushGatewayClient(
 auto push_gateway_host(std::string_view gateway_url) -> std::optional<std::string>
 {
     auto const parsed = parse_push_gateway_url(gateway_url);
-    return parsed.has_value() ? std::optional<std::string>{parsed->host} : std::nullopt;
+    if (!parsed.has_value())
+    {
+        return std::nullopt;
+    }
+    auto host = parsed->host;
+    std::ranges::transform(host, host.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    if (host.size() > 1U && host.back() == '.')
+    {
+        host.pop_back();
+    }
+    return host + ':' + std::to_string(parsed->port);
+}
+
+auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> GatewayCircuitOutcome
+{
+    if (result.disabled)
+    {
+        return GatewayCircuitOutcome::not_attempted;
+    }
+    if (result.ok)
+    {
+        return GatewayCircuitOutcome::reachable;
+    }
+    switch (result.error)
+    {
+    case http::OutboundError::unresolved_host:
+    case http::OutboundError::tls_verification_failed:
+    case http::OutboundError::connection_failed:
+    case http::OutboundError::timeout:
+    case http::OutboundError::network_error:
+        return GatewayCircuitOutcome::transport_failure;
+    case http::OutboundError::none:
+    case http::OutboundError::invalid_url:
+    case http::OutboundError::invalid_method:
+    case http::OutboundError::https_required:
+    case http::OutboundError::redirect_rejected:
+    case http::OutboundError::response_too_large:
+        return GatewayCircuitOutcome::not_attempted;
+    }
+    return GatewayCircuitOutcome::not_attempted;
+}
+
+auto pushkey_was_rejected(PushGatewayResult const& result, std::string_view pushkey) -> bool
+{
+    return result.ok && std::ranges::find(result.rejected_pushkeys, pushkey) != result.rejected_pushkeys.end();
 }
 
 auto PushGatewayClient::notify(std::string_view gateway_url, PushGatewayNotification const& notification)

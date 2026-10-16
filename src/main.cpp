@@ -482,9 +482,13 @@ auto configure_logging(ParsedArgs const& args) -> void
         merovingian::observability::SingleLog::instance().set_console_log_level(
             merovingian::observability::LogLevel::debug);
     }
-    if (args.log_file.has_value())
+    if (args.log_file.has_value() &&
+        !merovingian::observability::SingleLog::instance().set_log_file_path(*args.log_file))
     {
-        merovingian::observability::SingleLog::instance().set_log_file_path(*args.log_file);
+        // Logging continues on the console only; without this the operator
+        // would find neither a log file nor any reason for its absence.
+        LOG_ERROR("Log file refused, logging to the console only: --log-file must name a regular file owned by "
+                  "the service user, not a symlink or device (ISO-6, ADR-0146)");
     }
 }
 

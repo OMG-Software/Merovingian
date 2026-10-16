@@ -25,7 +25,9 @@
 
 #include <arpa/inet.h>
 #include <libpq-fe.h>
+#include <netinet/in.h>
 #include <poll.h>
+#include <sys/socket.h>
 
 namespace merovingian::database
 {

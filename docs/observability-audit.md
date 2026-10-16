@@ -297,7 +297,7 @@ or memory, so the audit-append layer bounds the volume.
   that fills the window therefore cannot hide an earlier abuse report.
 - **Bounded field length.** `actor`, `target` and `reason` are cut to
   `database::max_audit_field_bytes` (255) bytes at `database::append_audit_event`
-  and `append_local_audit`, on a UTF-8 character boundary (`database::bounded_utf8`).
+  and `append_local_audit`, on a UTF-8 character boundary (`observability::bounded_utf8`).
   Invalid UTF-8 bytes and ASCII control characters (including NUL and newline) are
   replaced by U+FFFD, so a value can neither split a multi-byte character, forge a
   log line, nor put a NUL in a text column. Diagnostic field values passed to

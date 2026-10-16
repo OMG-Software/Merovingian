@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -180,95 +181,44 @@ namespace
     // merovingian/crypto/master_key.hpp) so both processes derive the same keys
     // from the same file without the material crossing the IPC boundary.
 
-    // v3 HMAC key: derived from the operator's master key file with a distinct
-    // domain separator from the v4 key (issue #322). Retained only for validating
-    // legacy tokens; new tokens MUST use the v4 key. Deriving v3 from the master
-    // key — instead of copying the Ed25519 signing seed — enforces key
-    // separation. This invalidates stored token-hash:v3: hashes; affected
-    // sessions re-login and are upgraded to v4 via upgrade_v3_access_token_to_v4.
-    // If no master key is configured, v3 hashing is unavailable (fail-closed).
-    // Both token HMAC keys, derived together and cached.
-    //
-    // #487: these derivations are on the hot path — lookup_token_hashes() calls
-    // both on every authenticated request — and each one used to read the
-    // operator's master key file from disk. That meant two open+read cycles of
-    // the server's root secret per request, and two sodium_mlock/munlock pairs
-    // of a 4 KiB SecretBuffer. Besides the blocking I/O, the mlock churn could
-    // exhaust RLIMIT_MEMLOCK under concurrency. Root and derived keys must
-    // remain locked; allocation failure makes the keys unavailable.
-    //
-    // The cache is invalidated on the file's identity (see
-    // crypto::master_key_file_identity) rather than on the path alone, so
-    // replacing the master key file still takes effect without a restart — the
-    // steady-state cost is one stat() instead of two full reads.
-    struct TokenHmacKeys final
+    // Both token HMAC keys come from crypto::cached_token_hmac_keys, derived
+    // once per master key file and shared (#487, ISO-7, CRY-4): every
+    // authenticated request looks them up, so a lookup costs one open and fstat
+    // and never a fresh pair of locked copies. Replacing the master key file
+    // takes effect without a restart. No master key, or an unreadable one, means
+    // no keys: v4 issuance fails closed and v3 lookup is skipped.
+
+    // The key `member` of the shared pair, sharing the pair's ownership.
+    [[nodiscard]] auto token_hmac_key(HomeserverRuntime const& runtime,
+                                      std::optional<crypto::TokenHmacKey> crypto::TokenHmacKeys::* member)
+        -> std::shared_ptr<crypto::TokenHmacKey const> // SHARED_PTR: reviewed — locked keys shared by readers
     {
-        std::optional<crypto::TokenHmacKey> v3{};
-        std::optional<crypto::TokenHmacKey> v4{};
-    };
-
-    [[nodiscard]] auto token_hmac_keys(HomeserverRuntime const& runtime) -> TokenHmacKeys
-    try
-    {
-        auto const& path = runtime.config.security().secrets.master_key_file;
-        if (path.empty())
+        auto keys = crypto::cached_token_hmac_keys(runtime.config.security().secrets.master_key_file);
+        if (keys == nullptr || !((*keys).*member).has_value())
         {
-            return {};
+            return nullptr;
         }
-
-        // Guards the cache below. Held only across the derivation itself, never
-        // across a call that can block on anything but this file read.
-        static auto cache_mutex = std::mutex{};
-        static auto cached_identity = std::string{};
-        static auto cached_keys = TokenHmacKeys{};
-
-        // ISO-7: identity and material from one open, so the cached keys are
-        // always the ones derived from the file the cached identity describes.
-        auto const opened = crypto::open_master_key_file(path);
-        auto guard = std::lock_guard{cache_mutex};
-        // An unreadable file has no identity, so this falls through to a fresh
-        // (and failing) load rather than serving keys for a file that has since
-        // become unreadable.
-        if (opened.has_value() && opened->identity == cached_identity)
-        {
-            return cached_keys;
-        }
-
-        auto const material =
-            opened.has_value() ? crypto::load_master_key_material(*opened) : crypto::load_master_key_material(path);
-        if (!material.has_value())
-        {
-            cached_identity.clear();
-            cached_keys = {};
-            return {};
-        }
-        auto keys = TokenHmacKeys{crypto::derive_token_hmac_key_v3(material->bytes()),
-                                  crypto::derive_token_hmac_key(material->bytes())};
-        cached_keys = std::move(keys);
-        cached_identity = opened->identity;
-        return cached_keys;
-    }
-    catch (std::bad_alloc const&)
-    {
-        // A cache hit still creates an independently locked key copy. Never
-        // leak its allocation failure to callers or downgrade new issuance.
-        return {};
+        auto const& key = *((*keys).*member);
+        return {std::move(keys), &key};
     }
 
-    // v3 HMAC key: retained only for validating legacy tokens; new tokens MUST
-    // use the v4 key.
-    [[nodiscard]] auto token_hmac_key_v3(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
+    // v3 HMAC key: derived from the master key with a domain separator distinct
+    // from v4 (issue #322). Retained only for validating legacy tokens; affected
+    // sessions are upgraded to v4 via upgrade_v3_access_token_to_v4.
+    [[nodiscard]] auto token_hmac_key_v3(HomeserverRuntime const& runtime)
+        -> std::shared_ptr<crypto::TokenHmacKey const> // SHARED_PTR: reviewed — locked keys shared by readers
     {
-        return token_hmac_keys(runtime).v3;
+        return token_hmac_key(runtime, &crypto::TokenHmacKeys::v3);
     }
 
     // v4 HMAC key: derived from the operator's master key file, completely
     // independent from the Ed25519 signing secret. If no master key is configured,
     // v4 hashing is unavailable and new issuance fails closed. Legacy token
     // validation remains separate and retains its historical hash formats.
-    [[nodiscard]] auto token_hmac_key_v4(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
+    [[nodiscard]] auto token_hmac_key_v4(HomeserverRuntime const& runtime)
+        -> std::shared_ptr<crypto::TokenHmacKey const> // SHARED_PTR: reviewed — locked keys shared by readers
     {
-        return token_hmac_keys(runtime).v4;
+        return token_hmac_key(runtime, &crypto::TokenHmacKeys::v4);
     }
 
     // Failed-login throttle (#487, AUTH-2, AUTH-10). Policy: docs/auth-identity.md
@@ -421,7 +371,7 @@ namespace
     {
         // Issuance is v4-only. Legacy v2/v3 remain available solely for lookup.
         auto const key = token_hmac_key_v4(runtime);
-        if (!key.has_value())
+        if (key == nullptr)
         {
             return std::nullopt;
         }
@@ -432,14 +382,14 @@ namespace
         -> std::vector<std::string>
     {
         auto hashes = std::vector<std::string>{};
-        if (auto const key = token_hmac_key_v4(runtime); key.has_value())
+        if (auto const key = token_hmac_key_v4(runtime); key != nullptr)
         {
             if (auto const v4 = auth::hash_access_token_v4(token, *key); v4.has_value())
             {
                 hashes.push_back(*v4);
             }
         }
-        if (auto const key = token_hmac_key_v3(runtime); key.has_value())
+        if (auto const key = token_hmac_key_v3(runtime); key != nullptr)
         {
             if (auto const v3 = auth::hash_access_token_v3(token, *key); v3.has_value())
             {
@@ -659,7 +609,7 @@ namespace
             return;
         }
         auto const key = token_hmac_key_v4(runtime);
-        if (!key.has_value())
+        if (key == nullptr)
         {
             return;
         }
@@ -1438,7 +1388,7 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
 
 auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token) -> SessionRefreshResult
 {
-    if (!token_hmac_key_v4(runtime).has_value())
+    if (token_hmac_key_v4(runtime) == nullptr)
     {
         return {false, 503U, {}, {}, {}, {}, "token key unavailable"};
     }

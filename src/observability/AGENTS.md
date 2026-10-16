@@ -87,7 +87,7 @@ durability distinction:
   added to `audit_event_is_rate_capped` (ADR-0080). Never gate authenticated or administrative
   events.
 - Client-supplied text in an audit `actor`, `target` or `reason` is cut to 255 bytes and
-  sanitised (`database::bounded_utf8`) by `append_local_audit` / `append_audit_event`; do not
+  sanitised (`observability::bounded_utf8`) by `append_local_audit` / `append_audit_event`; do not
   write around those two functions.
 - Every new log call added to security-sensitive paths must be reviewed in `docs/observability-audit.md`.
 

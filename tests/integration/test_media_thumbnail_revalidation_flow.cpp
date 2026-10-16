@@ -23,9 +23,11 @@
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/net/thread_pool.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -743,6 +745,95 @@ SCENARIO("MED-4 a generated thumbnail is served from the cache only while its re
                 auto const released = transact(port, request("POST", "/_merovingian/admin/media/release/" + id, token));
                 REQUIRE(released.status == 200U);
                 require_thumbnail(transact(port, request("GET", thumbnail_target(id, 4U), token)), 4U);
+            }
+        }
+    }
+}
+
+SCENARIO("MED-4 a record quarantined while the post-decode policy check is in flight is neither served nor cached",
+         "[med-4-policy-order][media][database][http][trust-safety]")
+{
+    // PR #509 review: the post-decode check asked whether the record was still
+    // servable and only then asked the policy server. The policy round trip
+    // releases runtime.mutex, so a quarantine landing during it was missed and
+    // the thumbnail was served and cached.
+    GIVEN("an uploaded image and a policy server that allows media")
+    {
+        auto const directory = PrivateDirectory{};
+        auto const path = directory.path() / "media.sqlite3";
+        auto config = sqlite_config(path);
+        config.security().trust_safety.enabled = true;
+        config.security().trust_safety.policy_server_url = "https://policy.example.org/check";
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        use_worker(runtime, MEROVINGIAN_TEST_THUMBNAIL_WORKER);
+
+        // Counts media policy calls once `counting` is set; on call number
+        // `quarantine_on_call` it quarantines `target` first, as an
+        // administrator would while the request has released the lock.
+        auto counting = std::atomic<bool>{false};
+        auto calls = std::atomic<unsigned>{0U};
+        auto quarantine_on_call = std::atomic<unsigned>{0U};
+        auto target = std::string{};
+        auto target_mutex = std::mutex{};
+        runtime.homeserver.trust_safety_policy_server = [&](merovingian::trust_safety::PolicySurface surface,
+                                                            std::string_view) {
+            if (surface == merovingian::trust_safety::PolicySurface::media && counting.load())
+            {
+                auto const call = calls.fetch_add(1U) + 1U;
+                if (call == quarantine_on_call.load())
+                {
+                    auto const id = [&] {
+                        auto const lock = std::lock_guard{target_mutex};
+                        return target;
+                    }();
+                    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+                    std::ignore = merovingian::media::quarantine_local_media(runtime.homeserver.media_repository, id,
+                                                                             "MED-4 policy order");
+                }
+            }
+            auto hook = merovingian::trust_safety::PolicyServerHook{};
+            hook.enabled = true;
+            hook.reachable = true;
+            hook.decision_received = true;
+            hook.action = merovingian::trust_safety::PolicyAction::allow;
+            return hook;
+        };
+
+        auto listener = DispatchedListener{runtime};
+        auto const port = listener.port();
+        auto const token = login_admin(runtime, port);
+        auto const image = sample_png();
+        auto const id = upload(port, token, image);
+        {
+            auto const lock = std::lock_guard{target_mutex};
+            target = id;
+        }
+
+        // A control decode counts the media policy calls one thumbnail makes;
+        // the last of them is the post-decode check.
+        counting.store(true);
+        require_thumbnail(transact(port, request("GET", thumbnail_target(id, 4U), token)), 4U);
+        auto const calls_per_thumbnail = calls.exchange(0U);
+        REQUIRE(calls_per_thumbnail >= 2U);
+
+        WHEN("an administrator quarantines the record during the post-decode policy check of a new size")
+        {
+            quarantine_on_call.store(calls_per_thumbnail);
+            auto const during = transact(port, request("GET", thumbnail_target(id, 3U), token));
+            quarantine_on_call.store(0U);
+            counting.store(false);
+
+            THEN("that thumbnail is not served, and it was not cached for after the record is released")
+            {
+                check_not_served(during, image);
+                {
+                    auto const lock = std::lock_guard{runtime.homeserver.mutex};
+                    REQUIRE(merovingian::media::release_local_media(runtime.homeserver.media_repository, id).ok);
+                }
+                use_worker(runtime, (directory.path() / "no-such-worker").string());
+                check_not_served(transact(port, request("GET", thumbnail_target(id, 3U), token)), image);
             }
         }
     }

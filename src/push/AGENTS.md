@@ -44,8 +44,10 @@ concurrency caps are in `homeserver/room_service.cpp`.
    `server.push.max_in_flight_deliveries` are dropped rather than queued (ADR-0028), each recipient
    has an in-flight cap of its own, at most `server.push.max_pushers_per_delivery` pushers are
    contacted per event (ADR-0029), `POST /pushers/set` refuses a user's pusher beyond
-   `server.push.max_pushers_per_user`, and `GatewayCircuitBreaker` skips a gateway host after
-   consecutive failures (ADR-0151, OUT-3). The delivery caps and the breaker are applied in
+   `server.push.max_pushers_per_user`, and `GatewayCircuitBreaker` skips a gateway host that
+   could not be reached several times in a row (ADR-0151, OUT-3). Only a transport failure counts
+   (`gateway_circuit_outcome`); never count an HTTP answer such as a 5xx, which concerns one
+   notification on a host other users share. The delivery caps and the breaker are applied in
    `room_service.cpp`; any change to how push is invoked must preserve them.
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.

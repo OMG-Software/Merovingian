@@ -319,15 +319,30 @@ struct MainRelayEvent final
 
 // Count persistent mutations, including timeline allocation and invite metadata,
 // not just the absence of the particular rejected event.
-[[nodiscard]] auto main_relay_state(homeserver::HomeserverRuntime const& runtime)
+// A struct with only operator==, not a std::tuple: Catch2's expression
+// decomposer cannot wrap a tuple comparison under clang with libstdc++ 14,
+// whose tuple operator<=> is then matched against Catch::Decomposer.
+struct MainRelayState final
+{
+    std::size_t events{};
+    std::size_t memberships{};
+    std::size_t invites{};
+    std::size_t state{};
+    std::size_t rooms{};
+    std::uint64_t next_stream_ordering{};
+
+    [[nodiscard]] auto operator==(MainRelayState const&) const -> bool = default;
+};
+
+[[nodiscard]] auto main_relay_state(homeserver::HomeserverRuntime const& runtime) -> MainRelayState
 {
     auto const& store = runtime.database.persistent_store;
-    return std::tuple{store.events.size(), store.memberships.size(), store.invites.size(),
-                      store.state.size(),  store.rooms.size(),       runtime.database.next_stream_ordering};
+    return {store.events.size(), store.memberships.size(), store.invites.size(),
+            store.state.size(),  store.rooms.size(),       runtime.database.next_stream_ordering};
 }
 
-auto check_relay_mutation(homeserver::HomeserverRuntime const& runtime, MainRelayPath path,
-                          MainRelayEvent const& event) -> void
+auto check_relay_mutation(homeserver::HomeserverRuntime const& runtime, MainRelayPath path, MainRelayEvent const& event)
+    -> void
 {
     // Invitations record invite metadata, not the event graph (FED-5).
     if (path != MainRelayPath::invite)

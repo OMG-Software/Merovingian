@@ -3,8 +3,8 @@
 
 #include "merovingian/homeserver/local_services.hpp"
 
-#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -97,8 +97,8 @@ namespace
 
 } // namespace
 
-[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason,
-                                         std::uint16_t status) -> OperationResult
+[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason, std::uint16_t status)
+    -> OperationResult
 {
     auto const resolved_status = status == 0U ? static_cast<std::uint16_t>(ok ? 200U : 400U) : status;
     return {ok, resolved_status, std::move(value), std::move(reason)};
@@ -119,15 +119,15 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
     // AUTH-1: actor, target and reason can carry client-supplied text (a login
     // `user`, a request target). Bound and sanitise them once, here, so the log
     // line, the in-memory window and the durable row all see the same value.
-    auto const safe_actor = database::bounded_utf8(actor, database::max_audit_field_bytes);
+    auto const safe_actor = observability::bounded_utf8(actor, observability::max_audit_field_bytes);
     auto const safe_target = observability::sanitized_audit_target(target);
     auto const safe_reason = [&]() {
         if (admission.suppressed == 0U)
         {
-            return database::bounded_utf8(reason, database::max_audit_field_bytes);
+            return observability::bounded_utf8(reason, observability::max_audit_field_bytes);
         }
         auto const suffix = " suppressed=" + std::to_string(admission.suppressed);
-        return database::bounded_utf8(reason, database::max_audit_field_bytes - suffix.size()) + suffix;
+        return observability::bounded_utf8(reason, observability::max_audit_field_bytes - suffix.size()) + suffix;
     }();
     log_diagnostic("audit.append", {
                                        {"category",   std::string{observability::audit_category_name(category)}, false},
@@ -150,9 +150,9 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
 auto remember_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
                           std::string_view actor, std::string_view target, std::string_view reason) -> void
 {
-    auto const safe_actor = database::bounded_utf8(actor, database::max_audit_field_bytes);
+    auto const safe_actor = observability::bounded_utf8(actor, observability::max_audit_field_bytes);
     auto const safe_target = observability::sanitized_audit_target(target);
-    auto const safe_reason = database::bounded_utf8(reason, database::max_audit_field_bytes);
+    auto const safe_reason = observability::bounded_utf8(reason, observability::max_audit_field_bytes);
     log_diagnostic("audit.append", {
                                        {"category",   std::string{observability::audit_category_name(category)}, false},
                                        {"event_type", std::string{event_type},                                   false},
@@ -178,9 +178,9 @@ auto log_diagnostic_audit(LocalDatabase& database, std::string_view logger, std:
     // a request target), so cap each value before it is written to the log.
     for (auto& field : fields)
     {
-        if (field.value.size() > database::max_audit_field_bytes)
+        if (field.value.size() > observability::max_audit_field_bytes)
         {
-            field.value = database::bounded_utf8(field.value, database::max_audit_field_bytes);
+            field.value = observability::bounded_utf8(field.value, observability::max_audit_field_bytes);
         }
     }
     // Always emit the diagnostic line. The helper takes ownership of

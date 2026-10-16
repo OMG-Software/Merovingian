@@ -30,7 +30,9 @@ CC=clang CXX=clang++ meson setup build-deb \
 meson compile -C build-deb
 
 # 3. Install into staging tree
-meson install -C build-deb --destdir "$(pwd)/${STAGING}/"
+# --skip-subprojects: the vendored sqlite3 archive and headers are build inputs,
+# not files the package ships (as in every other package script).
+meson install -C build-deb --destdir "$(pwd)/${STAGING}/" --skip-subprojects
 
 # 4. Install systemd service unit
 install -D -m 0644 packaging/systemd/merovingian.service \

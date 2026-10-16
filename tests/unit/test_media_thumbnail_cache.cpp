@@ -10,6 +10,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -122,6 +123,72 @@ SCENARIO("the runtime media config does not hand the thumbnailer a stray worker 
                 CHECK(runtime.thumbnail_timeout_seconds == 10U);
                 CHECK(runtime.thumbnail_cache_max_bytes == 64U * 1024U * 1024U);
                 CHECK(runtime.thumbnail_max_concurrent_per_user == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("a thumbnail cache size of empty or 0 disables the cache, as documented", "[media][med4]")
+{
+    // PR #509 review: the manual and ADR-0152 say empty or `0` disables the
+    // cache, but `0` failed validation because a size limit rejects zero.
+    for (auto const* value : {"0", ""})
+    {
+        GIVEN(std::string{"security.media.thumbnail_cache_size = '"} + value + "'")
+        {
+            auto config = merovingian::config::Config{};
+            config.security().media.thumbnail_cache_size = value;
+
+            WHEN("the configuration is validated and the runtime media config built")
+            {
+                auto const findings = merovingian::config::validate(config);
+                auto const runtime = merovingian::media::make_runtime_media_config(config);
+
+                THEN("the value is accepted and no thumbnail bytes are cached")
+                {
+                    CHECK(std::ranges::none_of(findings, [](auto const& finding) {
+                        return finding.field == "security.media.thumbnail_cache_size";
+                    }));
+                    CHECK(runtime.thumbnail_cache_max_bytes == 0U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("thumbnail requests beyond the decoder's largest dimension share one cache entry", "[media][med4]")
+{
+    // PR #509 review: the worker clamps each axis to 4096, so width=5000,
+    // 5001, ... produce the same bytes. Keying on the raw request let one
+    // client fill the cache with copies and evict everyone else's thumbnails.
+    GIVEN("a cached thumbnail requested at 9000x9000")
+    {
+        auto cache = ThumbnailCache{};
+        auto constexpr budget = std::uint64_t{1U} << 20U;
+        auto const huge = ThumbnailCacheKey{"a", "storage-a", 9000U, 9000U, ThumbnailMethod::scale};
+        cache.insert(huge, thumbnail(100U), budget);
+
+        WHEN("other sizes past the largest dimension are inserted and looked up")
+        {
+            cache.insert({"a", "storage-a", 5000U, 4097U, ThumbnailMethod::scale}, thumbnail(100U), budget);
+            cache.insert({"a", "storage-a", 4294967295U, 70000U, ThumbnailMethod::scale}, thumbnail(100U), budget);
+            auto const at_limit = cache.find({"a", "storage-a", merovingian::media::max_thumbnail_dimension,
+                                              merovingian::media::max_thumbnail_dimension, ThumbnailMethod::scale});
+
+            THEN("they are one entry, which the largest real size also finds")
+            {
+                CHECK(cache.entry_count() == 1U);
+                CHECK(at_limit.has_value());
+            }
+        }
+
+        WHEN("a size within the limit is inserted")
+        {
+            cache.insert({"a", "storage-a", 4096U, 4095U, ThumbnailMethod::scale}, thumbnail(100U), budget);
+
+            THEN("it is a distinct entry")
+            {
+                CHECK(cache.entry_count() == 2U);
             }
         }
     }

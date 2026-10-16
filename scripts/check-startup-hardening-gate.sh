@@ -21,6 +21,7 @@
 set -eu
 
 timeout=60
+worker_settle=3
 client_port=18008
 federation_port=18009
 federation_worker=""
@@ -34,6 +35,7 @@ options:
   --client-port <port>         Loopback port for the client listener (default 18008).
   --federation-port <port>     Loopback port for the federation listener (default 18009).
   --federation-worker <path>   Federation worker binary (default: the server's libexec path).
+  --worker-settle <seconds>    Seconds the spawned federation worker must stay up (default 3).
 EOF
     exit 2
 }
@@ -65,6 +67,11 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -gt 0 ] || usage
             federation_worker=$1
             ;;
+        --worker-settle)
+            shift
+            [ "$#" -gt 0 ] || usage
+            worker_settle=$1
+            ;;
         -h | --help)
             usage
             ;;
@@ -79,6 +86,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$#" -eq 1 ] || usage
+for number in "$timeout" "$client_port" "$federation_port" "$worker_settle"; do
+    case "$number" in
+        '' | *[!0-9]*) usage ;;
+    esac
+done
 server=$1
 [ -x "$server" ] || fail "server binary is not executable: $server"
 
@@ -184,6 +196,23 @@ grep -q 'Hardening readiness: ready=true blockers=0' "$log" || fail_with_log "se
 # A refusal after the self-check (or a crash) means it never served.
 sleep 1
 [ ! -e "$status_file" ] || fail_with_log "server exited with status $(cat "$status_file") after its hardening self-check"
+
+# The federation worker applies its own seccomp and Landlock policy after it
+# is spawned. A rule it trips kills it, the supervisor restarts it, and the
+# main process stays up, so the checks above would still pass. Require the
+# worker to start, then to stay up for a few seconds.
+elapsed=0
+while ! grep -q 'Federation worker spawned: ' "$log" 2>/dev/null; do
+    if [ "$elapsed" -ge "$timeout" ]; then
+        fail_with_log "federation worker was not spawned within ${timeout}s"
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+sleep "$worker_settle"
+if grep -q 'Federation worker exited: \|Federation worker restart failed' "$log"; then
+    fail_with_log "federation worker exited after it was spawned"
+fi
 
 show_checks
 

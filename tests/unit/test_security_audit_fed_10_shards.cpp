@@ -106,3 +106,33 @@ SCENARIO("FED-10 a runtime started for one of several worker shards resolves wit
         }
     }
 }
+
+SCENARIO("FED-10 one transaction's sender-key pre-pass never asks for more admissions than its runtime's cap",
+         "[federation][fed10][fed10-shards]")
+{
+    // PR #509 review: admission refuses work over the in-flight cap rather than
+    // queueing it. With four shards the cap is 4, but the pre-pass ran
+    // join_parallelism (default 8) resolutions at once, so any transaction with
+    // five or more cold sender servers always got a 503 from its own fan-out.
+    GIVEN("a pre-pass parallelism and an in-flight cap")
+    {
+        auto const parallelism = [](std::uint32_t join_parallelism, std::uint32_t in_flight) {
+            auto config = budget(in_flight, 30U);
+            config.join_parallelism = join_parallelism;
+            return merovingian::federation::sender_key_prepass_parallelism(config);
+        };
+
+        WHEN("the parallelism is computed for shard-sized and whole budgets")
+        {
+            THEN("it is the configured parallelism, bounded by the in-flight cap, 64, and at least 1")
+            {
+                CHECK(parallelism(8U, 4U) == 4U);
+                CHECK(parallelism(8U, 1U) == 1U);
+                CHECK(parallelism(8U, 16U) == 8U);
+                CHECK(parallelism(100U, 1000U) == 64U);
+                CHECK(parallelism(0U, 16U) == 1U);
+                CHECK(parallelism(8U, 0U) == 1U);
+            }
+        }
+    }
+}

@@ -3,7 +3,7 @@
 
 #include "merovingian/observability/observability.hpp"
 
-#include "merovingian/database/bounded_text.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -414,8 +414,8 @@ auto sanitized_audit_target(std::string_view target) -> std::string
     // Never keep even a prefix of an unknown query value. Limit the delimiter
     // search as well as the output work: a delimiter beyond the output cap
     // cannot affect the retained path.
-    auto const query_start = target.substr(0U, database::max_audit_field_bytes).find('?');
-    return database::bounded_utf8(target.substr(0U, query_start), database::max_audit_field_bytes);
+    auto const query_start = target.substr(0U, observability::max_audit_field_bytes).find('?');
+    return observability::bounded_utf8(target.substr(0U, query_start), observability::max_audit_field_bytes);
 }
 
 auto sanitized_http_target(std::string_view target) -> std::string

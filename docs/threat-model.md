@@ -910,7 +910,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   destruction. The 0.12.26 fix (CRY-4) uses isolated sodium allocations for roots
   and every derived-key/cached-key copy, with kernel lock checks in Linux tests.
   Cached-key copy failures return no key instead of throwing or downgrading
-  token issuance (CRY-6). Root files require at least 32 bytes and reject all-zero
+  token issuance (CRY-6). The access-token keys are cached once per master key
+  file and shared by every request (`crypto::cached_token_hmac_keys`), so an
+  authenticated request no longer makes fresh locked copies that could exhaust
+  `RLIMIT_MEMLOCK` under load, and a moved-from key cannot be copied into a
+  valid all-zero key. Root files require at least 32 bytes and reject all-zero
   material (CRY-3), without silently changing persisted derivations (ADR-0128).
   Validation-session lookup and consumption use the variable-length
   constant-time helper (CRY-5). Descriptor-bound text secret readers validate
@@ -1104,6 +1108,16 @@ threat it closes; the controls above are the standing defences these reinforce.
   unchanged files including the reviewed sources. Gateway circuits, registration
   quotas and general fairness are not supplied by this bounded repair.
   See [ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md).
+
+- **Closing a shared push gateway for everyone (PR #509 review, 0.12.26):**
+  the OUT-3 gateway circuit is keyed by host, and one host (Sygnal for a
+  popular app) serves many users. Counting 5xx answers let one user register a
+  pusher with bad data on that host and open its circuit for every user for the
+  whole cooldown. Only a failure to reach the host (DNS, connection, TLS,
+  timeout) counts now; the key is the case-folded `host:port`, so spellings of
+  one host cannot dodge each other's circuit; and a `rejected` list removes only
+  the pushers whose pushkeys it names. See
+  [ADR-0151](adr/0151-cap-pusher-registration-and-break-the-circuit-to-failing-gateways.md).
 
 - **Sync pool exhaustion by one account (audit HTTP-4, 0.12.16):**
   v3 and sliding sync share transport admission: four live waits per account,

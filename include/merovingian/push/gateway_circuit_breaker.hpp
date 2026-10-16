@@ -13,8 +13,10 @@
 namespace merovingian::push
 {
 
-// OUT-3, ADR-0151: when a push gateway host fails `failure_threshold` times in a
-// row (a transport failure, a timeout or a 5xx), its circuit opens and the host
+// OUT-3, ADR-0151: when a push gateway host cannot be reached
+// `failure_threshold` times in a row (see push::gateway_circuit_outcome: a
+// connection, TLS, DNS or timeout failure; never an HTTP answer such as a 5xx,
+// which concerns one notification), its circuit opens and the host
 // is not contacted for `cooldown`. After that, one request per cooldown window
 // is let through as a probe until one succeeds. Gateway URLs are client-supplied,
 // so the number of hosts tracked is bounded by `max_hosts` (the least recently

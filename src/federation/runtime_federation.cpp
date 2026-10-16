@@ -44,6 +44,12 @@ namespace
 
 } // namespace
 
+auto sender_key_prepass_parallelism(RuntimeFederationConfig const& config) noexcept -> std::uint32_t
+{
+    auto const configured = std::clamp<std::uint32_t>(config.join_parallelism, 1U, 64U);
+    return std::min(configured, std::max(config.key_resolution_max_in_flight, std::uint32_t{1U}));
+}
+
 auto shard_key_resolution_budget(RuntimeFederationConfig config, std::uint32_t shards) -> RuntimeFederationConfig
 {
     if (shards <= 1U)

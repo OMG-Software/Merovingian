@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/temp_directory.hpp"
 #include "merovingian/observability/log_file_sink.hpp"
 #include "merovingian/observability/logger.hpp"
-
-#include "../support/temp_directory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -239,14 +238,15 @@ SCENARIO("The logger writes nothing through a refused log path", "[observability
         write_text(target, "original\n");
         std::filesystem::create_symlink(target, link);
 
-        WHEN("an error is logged")
+        WHEN("the path is set and an error is logged")
         {
             auto logger = merovingian::observability::SingleLog{};
-            logger.set_log_file_path(link.string());
+            auto const accepted = logger.set_log_file_path(link.string());
             logger.error("iso6", "must not reach the symlink target");
 
-            THEN("the target is unchanged")
+            THEN("the logger reports the path refused, so the caller can say so, and the target is unchanged")
             {
+                CHECK_FALSE(accepted);
                 REQUIRE(read_text(target) == "original\n");
             }
         }

@@ -27,6 +27,7 @@
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -799,6 +800,66 @@ SCENARIO("a pushkey the gateway rejects is removed from the recipient's pushers"
             THEN("bob's rejected pusher was deleted")
             {
                 REQUIRE(pusher_count(started.runtime, bob) == 0U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Push Gateway API v1.19, POST /_matrix/push/v1/notify — 200 response
+// URL: ../../docs/matrix-v1.19-spec/push-gateway-api.md#post_matrixpushv1notify
+//
+// `rejected` lists "all pushkeys given in the notification request that are not
+// valid". Only a pusher whose own pushkey is listed is removed (PR #509 review:
+// any non-empty list used to delete the pusher that made the request).
+SCENARIO("a gateway rejecting a pushkey this request did not carry leaves the recipient's pusher",
+         "[integration][push]")
+{
+    GIVEN("push delivery enabled, alice and bob in a room, and a mock gateway that rejects some other pushkey")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        auto const gateway_host = std::string{"push-reject-other.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-pushkey-valid", gateway_url);
+        REQUIRE(pusher_count(started.runtime, bob) == 1U);
+
+        auto const notify_response =
+            merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":["someone-elses-pushkey"]})");
+        auto server_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_one_shot_tls_server(acceptor, *tls_ctx.context, notify_response);
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("alice sends a message and the background delivery drains")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-reject-other", "hello bob");
+            REQUIRE(send.response.status == 200U);
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("bob's pusher is kept")
+            {
+                REQUIRE(pusher_count(started.runtime, bob) == 1U);
             }
         }
     }
@@ -1757,11 +1818,12 @@ SCENARIO("a user cannot register more pushers than server.push.max_pushers_per_u
 }
 
 // Spec: Matrix Push Gateway API v1.19 POST /_matrix/push/v1/notify. A gateway
-// host that fails server.push.gateway_failure_threshold (3) times in a row is
-// not contacted again until server.push.gateway_cooldown_seconds (300) pass.
-SCENARIO("a push gateway host that keeps failing is skipped for a cooldown", "[integration][push][out3]")
+// host that cannot be reached server.push.gateway_failure_threshold (3) times in
+// a row is not contacted again until server.push.gateway_cooldown_seconds (300)
+// pass (OUT-3, ADR-0151).
+SCENARIO("a push gateway host that cannot be reached is skipped for a cooldown", "[integration][push][out3]")
 {
-    GIVEN("alice and bob in a room, and bob's only pusher on a gateway that answers every notify with 500")
+    GIVEN("alice and bob in a room, and bob's only pusher on a gateway host that drops every connection")
     {
         auto started = merovingian::homeserver::start_client_server(push_test_config());
         REQUIRE(started.started);
@@ -1772,6 +1834,72 @@ SCENARIO("a push gateway host that keeps failing is skipped for a cooldown", "[i
 
         auto const gateway_host = std::string{"push-out3-breaker.localhost.test"};
         auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-out3-breaker", gateway_url);
+
+        // Accepts each connection and closes it before the TLS handshake: a
+        // transport failure, not an HTTP answer. Stops once nobody connects.
+        auto constexpr events_sent = 5U;
+        auto connections = std::atomic<unsigned>{0U};
+        auto server_thread = std::thread{[&] {
+            for (auto i = 0U; i < events_sent; ++i)
+            {
+                auto const client_fd = merovingian::tests::tls_mock::accept_loopback(acceptor, 3000);
+                if (client_fd < 0)
+                {
+                    return;
+                }
+                auto const dropped = merovingian::core::SocketHandle{client_fd};
+                connections.fetch_add(1U);
+            }
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("alice sends five messages, each delivery finishing before the next")
+        {
+            for (auto i = 0U; i < events_sent; ++i)
+            {
+                auto const send = send_text_message(started.runtime, alice, room_id, "txn-out3-" + std::to_string(i),
+                                                    "hello " + std::to_string(i));
+                REQUIRE(send.response.status == 200U);
+                wait_for_background_tasks(started.runtime.homeserver);
+            }
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("only the first three reached the host; the circuit was open for the rest")
+            {
+                CHECK(connections.load() == 3U);
+            }
+        }
+    }
+}
+
+// ADR-0151: an HTTP answer, even a 5xx, shows the host is reachable. The
+// error is about one notification, so a gateway shared by many users is not
+// closed to all of them by one pusher it keeps refusing (PR #509 review).
+SCENARIO("a push gateway that answers with server errors is still contacted for every delivery",
+         "[integration][push][out3]")
+{
+    GIVEN("alice and bob in a room, and bob's only pusher on a gateway that answers every notify with 500")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        auto const gateway_host = std::string{"push-out3-answering.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
         auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
         REQUIRE(tls_ctx.ok());
         auto acceptor = merovingian::net::TcpAcceptor{};
@@ -1781,7 +1909,7 @@ SCENARIO("a push gateway host that keeps failing is skipped for a cooldown", "[i
         auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
         started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
             merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
-        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-out3-breaker", gateway_url);
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-out3-answering", gateway_url);
 
         auto constexpr events_sent = 5U;
         auto const failure = merovingian::tests::tls_mock::json_http_response("500 Internal Server Error", "{}");
@@ -1801,8 +1929,8 @@ SCENARIO("a push gateway host that keeps failing is skipped for a cooldown", "[i
         {
             for (auto i = 0U; i < events_sent; ++i)
             {
-                auto const send = send_text_message(started.runtime, alice, room_id, "txn-out3-" + std::to_string(i),
-                                                    "hello " + std::to_string(i));
+                auto const send = send_text_message(started.runtime, alice, room_id,
+                                                    "txn-out3-500-" + std::to_string(i), "hello " + std::to_string(i));
                 REQUIRE(send.response.status == 200U);
                 wait_for_background_tasks(started.runtime.homeserver);
             }
@@ -1811,9 +1939,9 @@ SCENARIO("a push gateway host that keeps failing is skipped for a cooldown", "[i
                 server_thread.join();
             }
 
-            THEN("only the first three reached the gateway; the circuit was open for the rest")
+            THEN("every delivery reached the gateway")
             {
-                CHECK(captured_requests.size() == 3U);
+                CHECK(captured_requests.size() == events_sent);
             }
         }
     }

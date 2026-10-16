@@ -75,7 +75,12 @@ namespace
 // --- bootstrap_admin_user --------------------------------------------------------
 
 #if defined(__linux__)
-SCENARIO("Credential issuance refuses a cached key copy that cannot be locked", "[homeserver][auth][cry6-lock]")
+// CRY-4/CRY-6, PR #509 review: issuance used to copy the cached keys into new
+// locked pages on every call, so a process out of locked-memory budget could
+// not issue at all. The cached keys are now shared, already locked, so
+// issuance needs no new locked allocation and never throws or falls back.
+SCENARIO("Credential issuance uses the already-locked cached keys without a new locked copy",
+         "[homeserver][auth][cry6-lock]")
 {
     GIVEN("a started runtime with a populated token-key cache")
     {
@@ -102,10 +107,12 @@ SCENARIO("Credential issuance refuses a cached key copy that cannot be locked", 
                 {
                     auto const result =
                         merovingian::homeserver::issue_refresh_token_for_session(runtime, user.value, "INITIAL");
-                    ::_exit(!result.ok && result.status == 503U && result.value.empty() &&
-                                    runtime.database.persistent_store.refresh_tokens.size() == count
-                                ? 0
-                                : 21);
+                    if (result.ok && !result.value.empty() &&
+                        runtime.database.persistent_store.refresh_tokens.size() == count + 1U)
+                    {
+                        ::_exit(0);
+                    }
+                    ::_exit(result.status == 503U ? 23 : 21);
                 }
                 catch (...)
                 {
@@ -114,7 +121,7 @@ SCENARIO("Credential issuance refuses a cached key copy that cannot be locked", 
             }
             auto status = int{};
             REQUIRE(::waitpid(child, &status, 0) == child);
-            THEN("issuance returns 503 rather than throwing or weakening the key")
+            THEN("issuance succeeds rather than throwing or needing more locked memory")
             {
                 REQUIRE(WIFEXITED(status));
                 REQUIRE(WEXITSTATUS(status) == 0);

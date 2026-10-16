@@ -13,15 +13,18 @@ namespace merovingian::media
 namespace
 {
 
+    // Requested axes past the worker's largest dimension are keyed as that
+    // dimension: the worker clamps them, so they are the same thumbnail, and
+    // keying them apart would let one client fill the cache with copies.
     [[nodiscard]] auto cache_key(ThumbnailCacheKey const& key) -> std::string
     {
         auto result = key.media_id;
         result += '\0';
         result += key.storage_id;
         result += '\0';
-        result += std::to_string(key.width);
+        result += std::to_string(std::min(key.width, max_thumbnail_dimension));
         result += 'x';
-        result += std::to_string(key.height);
+        result += std::to_string(std::min(key.height, max_thumbnail_dimension));
         result += key.method == ThumbnailMethod::crop ? "/crop" : "/scale";
         return result;
     }

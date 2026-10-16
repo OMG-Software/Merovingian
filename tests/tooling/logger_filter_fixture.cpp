@@ -26,7 +26,10 @@ auto main(int argc, char** argv) -> int
     auto& logger = merovingian::observability::SingleLog::instance();
     logger.set_console_log_level(LogLevel::trace);
     logger.set_file_log_level(LogLevel::trace);
-    logger.set_log_file_path(std::string{argv[1]});
+    if (!logger.set_log_file_path(std::string{argv[1]}))
+    {
+        return 3;
+    }
 
     if (mode == "explicit")
     {

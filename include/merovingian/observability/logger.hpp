@@ -277,8 +277,8 @@ public:
     // nullopt removes an override, preserving inheritance rather than copying
     // the current default into a permanent explicit module level. The caller
     // retains its name so restoration of an existing entry needs no allocation.
-    [[nodiscard]] auto exchange_module_log_level(std::string const& logger,
-                                                 std::optional<LogLevel> level) -> std::optional<LogLevel>
+    [[nodiscard]] auto exchange_module_log_level(std::string const& logger, std::optional<LogLevel> level)
+        -> std::optional<LogLevel>
     {
         auto lock = std::lock_guard<std::shared_mutex>{m_module_levels_lock};
         auto const current = m_module_levels.find(logger);
@@ -307,14 +307,15 @@ public:
         return m_default_log_level.load();
     }
 
-    auto set_log_file_path(std::string const& path) -> void
+    // Whether the log file was opened. A refused path (ISO-6: a symlink, a
+    // non-regular file, another user's file) leaves the sink closed: no file
+    // output, never a write through the link. The caller reports a refusal;
+    // it cannot be logged from here, with the file lock held.
+    [[nodiscard]] auto set_log_file_path(std::string const& path) -> bool
     {
         auto lock = std::lock_guard<std::mutex>{m_file_lock};
         m_file_path = path;
-        // A refused path (ISO-6: a symlink, a non-regular file, another
-        // user's file) leaves the sink closed: no file output, never a
-        // write through the link.
-        std::ignore = m_file_sink.open(m_file_path);
+        return m_file_sink.open(m_file_path);
     }
 
     auto trace(std::string const& module, std::string const& message) -> void

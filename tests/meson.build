@@ -24,9 +24,6 @@ shell = find_program('sh')
   logger_filter_fixture = executable(
     'logger-filter-fixture',
     'tooling/logger_filter_fixture.cpp',
-    # Keep this logger-only fixture independent of database/network libraries,
-    # but supply the pure UTF-8 audit-target encoder used by observability.
-    '../src/database/bounded_text.cpp',
     include_directories: inc,
     dependencies: thread_dep,
     link_with: [observability_lib, platform_lib],
@@ -73,6 +70,8 @@ shell = find_program('sh')
     'startup-hardening-gate-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],
+    # Several cases wait out the gate's own timeout on purpose.
+    timeout: 90,
   )
 
   test(
@@ -161,12 +160,14 @@ shell = find_program('sh')
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
       'unit/test_crypto.cpp',
+      'unit/test_crypto_token_key_cache.cpp',
       'unit/test_database_backend_config.cpp',
+      'unit/test_database_connection_pool.cpp',
       'unit/test_postgresql_security_policy.cpp',
       'unit/test_file_creation_defaults.cpp',
       'unit/test_sqlite_security_policy.cpp',
       'unit/test_database_security_boundaries.cpp',
-      'unit/test_database_bounded_text.cpp',
+      'unit/test_observability_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_state_bookkeeping.cpp',

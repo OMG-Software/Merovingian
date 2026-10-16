@@ -143,3 +143,25 @@ SCENARIO("Reload policy names are stable for logs and diagnostics", "[config][re
         }
     }
 }
+
+SCENARIO("Thumbnail cache and decode-cap keys require restart", "[config][reload][med4]")
+{
+    // PR #509 review: the thumbnail cache budget and per-user decode cap are
+    // copied into the media repository at startup and nothing rebuilds them on
+    // SIGHUP, so a reload plan must not call them reloadable.
+    GIVEN("the MED-4 thumbnail keys")
+    {
+        WHEN("their reload policies are requested")
+        {
+            auto const cache_size = merovingian::config::reload_policy_for_key("security.media.thumbnail_cache_size");
+            auto const decode_cap =
+                merovingian::config::reload_policy_for_key("security.media.thumbnail_max_concurrent_per_user");
+
+            THEN("both require a restart")
+            {
+                CHECK(cache_size == merovingian::config::ReloadPolicy::restart_required);
+                CHECK(decode_cap == merovingian::config::ReloadPolicy::restart_required);
+            }
+        }
+    }
+}

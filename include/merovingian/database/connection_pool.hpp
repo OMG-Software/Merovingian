@@ -89,37 +89,37 @@ public:
     // Waits until fewer than `limit` connections are in use, then hands out an
     // idle connection that `reusable` accepts (others are closed), or one made by
     // `open` (returning std::optional<Connection>). nullopt when `open` fails.
+    // The pool's mutex is never held while `open` or `reusable` runs (a network
+    // round trip for PostgreSQL), so neither blocks other writers.
     template <typename Open, typename Reusable>
     [[nodiscard]] auto acquire(Open const& open, Reusable const& reusable) -> std::optional<Lease>
     {
-        auto lock = std::unique_lock{mutex_};
-        available_.wait(lock, [this] {
-            return in_use_ < limit_;
-        });
-        ++in_use_;
-        while (!idle_.empty())
         {
-            auto candidate = std::move(idle_.back());
-            idle_.pop_back();
-            lock.unlock(); // LOCK_RELEASE: reviewed — the pool's own mutex, released so the liveness check never
-                           // blocks other writers; the slot is already counted in in_use_.
-            if (reusable(candidate))
-            {
-                return Lease{*this, std::move(candidate)};
-            }
-            lock.lock();
+            auto lock = std::unique_lock{mutex_};
+            available_.wait(lock, [this] {
+                return in_use_ < limit_;
+            });
+            ++in_use_;
         }
-        lock.unlock(); // LOCK_RELEASE: reviewed — the pool's own mutex, released so opening a connection (a
-                       // network round trip for PostgreSQL) never blocks other writers.
+        // Gives the slot back on every way out (a failed open, or `open` or
+        // `reusable` throwing) unless a lease takes it over. A slot not given
+        // back is lost for good: waiting for one has no timeout.
+        auto reservation = SlotReservation{*this};
+        while (auto candidate = take_idle())
+        {
+            if (reusable(*candidate))
+            {
+                reservation.hand_to_lease();
+                return Lease{*this, std::move(*candidate)};
+            }
+        }
         auto opened = open();
         if (!opened.has_value())
         {
-            lock.lock();
-            --in_use_;
-            available_.notify_one();
             return std::nullopt;
         }
         opened_.fetch_add(1U, std::memory_order_relaxed);
+        reservation.hand_to_lease();
         return Lease{*this, std::move(*opened)};
     }
 
@@ -129,7 +129,60 @@ public:
         return opened_.load(std::memory_order_relaxed);
     }
 
+    // Slots held by leases and acquisitions in progress.
+    [[nodiscard]] auto in_use() const -> std::uint32_t
+    {
+        auto const lock = std::lock_guard{mutex_};
+        return in_use_;
+    }
+
 private:
+    class SlotReservation final
+    {
+    public:
+        explicit SlotReservation(ConnectionPool& pool) noexcept
+            : pool_{pool}
+        {
+        }
+        SlotReservation(SlotReservation const&) = delete;
+        auto operator=(SlotReservation const&) -> SlotReservation& = delete;
+        SlotReservation(SlotReservation&&) = delete;
+        auto operator=(SlotReservation&&) -> SlotReservation& = delete;
+        ~SlotReservation()
+        {
+            if (!handed_over_)
+            {
+                auto& pool = pool_.get();
+                auto const lock = std::lock_guard{pool.mutex_};
+                --pool.in_use_;
+                pool.available_.notify_one();
+            }
+        }
+
+        auto hand_to_lease() noexcept -> void
+        {
+            handed_over_ = true;
+        }
+
+    private:
+        std::reference_wrapper<ConnectionPool> pool_;
+        bool handed_over_{false};
+    };
+
+    // The most recently returned idle connection, taken out of the pool, or
+    // nullopt when there is none.
+    [[nodiscard]] auto take_idle() -> std::optional<Connection>
+    {
+        auto const lock = std::lock_guard{mutex_};
+        if (idle_.empty())
+        {
+            return std::nullopt;
+        }
+        auto candidate = std::optional<Connection>{std::move(idle_.back())};
+        idle_.pop_back();
+        return candidate;
+    }
+
     auto give_back(Connection connection, bool keep) -> void
     {
         auto const lock = std::lock_guard{mutex_};
@@ -141,7 +194,7 @@ private:
         available_.notify_one();
     }
 
-    std::mutex mutex_{};
+    mutable std::mutex mutex_{};
     std::condition_variable available_{};
     std::vector<Connection> idle_{};
     std::uint32_t limit_{1U};

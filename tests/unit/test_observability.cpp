@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/database/statement.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
@@ -311,11 +311,11 @@ SCENARIO("Audit target path retention is bounded and UTF-8 safe", "[observabilit
                 for (auto const& path : paths)
                 {
                     auto const expected =
-                        merovingian::database::bounded_utf8(std::string_view{path}.substr(0U, path.find('?')),
-                                                            merovingian::database::max_audit_field_bytes);
+                        merovingian::observability::bounded_utf8(std::string_view{path}.substr(0U, path.find('?')),
+                                                                 merovingian::observability::max_audit_field_bytes);
                     auto const target = merovingian::observability::sanitized_audit_target(path);
                     CHECK(target == expected);
-                    CHECK(target.size() <= merovingian::database::max_audit_field_bytes);
+                    CHECK(target.size() <= merovingian::observability::max_audit_field_bytes);
                     CHECK(target.find('?') == std::string::npos);
                     CHECK(target.find('\n') == std::string::npos);
                     CHECK(target.find('\0') == std::string::npos);

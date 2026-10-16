@@ -7,8 +7,8 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
-#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/events/limits.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -3466,9 +3466,9 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
             return false;
         }
     }
-    audit.actor = bounded_utf8(audit.actor, max_audit_field_bytes);
-    audit.target = bounded_utf8(audit.target, max_audit_field_bytes);
-    audit.reason = bounded_utf8(audit.reason, max_audit_field_bytes);
+    audit.actor = observability::bounded_utf8(audit.actor, observability::max_audit_field_bytes);
+    audit.target = observability::bounded_utf8(audit.target, observability::max_audit_field_bytes);
+    audit.reason = observability::bounded_utf8(audit.reason, observability::max_audit_field_bytes);
     auto statements = std::vector<PreparedStatement>{
         record_statement("moderate_media_state", "UPDATE media SET quarantined = $2, removed = $3 WHERE media_id = $1",
                          {public_value(media_id), public_value(quarantined ? "true" : "false"),
@@ -3640,9 +3640,9 @@ auto read_media_blob(MediaBlobRead const& read) -> std::optional<std::string>
     // here, at the lowest audit-append layer, so no caller can store more than
     // `max_audit_field_bytes` of it or leave it as malformed UTF-8. Idempotent,
     // so a caller that already bounded its values is unaffected.
-    event.actor = bounded_utf8(event.actor, max_audit_field_bytes);
-    event.target = bounded_utf8(event.target, max_audit_field_bytes);
-    event.reason = bounded_utf8(event.reason, max_audit_field_bytes);
+    event.actor = observability::bounded_utf8(event.actor, observability::max_audit_field_bytes);
+    event.target = observability::bounded_utf8(event.target, observability::max_audit_field_bytes);
+    event.reason = observability::bounded_utf8(event.reason, observability::max_audit_field_bytes);
     if (!record_and_persist(store, record_statement("append_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
                                                     {
                                                         {event.category,   false},

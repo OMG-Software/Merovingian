@@ -25,6 +25,13 @@ time.
   tells the client.
 * Retry with backoff per delivery instead of a breaker. Rejected: the spec makes retry a SHOULD, and
   retries of a stalled host make the slot problem worse, not better.
+* Count 5xx answers toward the host's circuit (the first version of this record). Rejected in review:
+  one gateway host (Sygnal for a popular app) serves many users, and a 5xx is its answer about one
+  notification. A user registering a pusher with bad data on that host could open the circuit for
+  every user of it for the whole cooldown.
+* Count 5xx answers, but key the circuit by `(host, app_id, pushkey)`. Rejected: it protects other
+  users, but a host that stalls for everyone then needs a failure per pusher before any of them stop
+  holding delivery slots, which is the problem the breaker exists to solve.
 
 ## Decision Outcome
 
@@ -34,14 +41,23 @@ Chosen option: both caps, as configuration with these defaults.
   it with 400 `M_INVALID_PARAM` (the endpoint's documented 400, "pusher values were invalid";
   `M_LIMIT_EXCEEDED` means rate limiting and `M_RESOURCE_LIMIT_EXCEEDED` needs an `admin_contact`).
   Updating or deleting an existing pusher is always allowed.
-* `push::GatewayCircuitBreaker`, keyed by the gateway URL's host: after
-  `server.push.gateway_failure_threshold` (3) consecutive transport failures, timeouts or 5xx responses
-  the host is skipped for `server.push.gateway_cooldown_seconds` (300); then one delivery per cooldown is
-  let through as a probe until one succeeds. A 4xx counts as reaching the gateway. At most 4096 hosts are
-  tracked, the least recently failing forgotten first, because the hosts are client-supplied.
+* `push::GatewayCircuitBreaker`, keyed by the gateway's case-folded `host:port` (a trailing dot
+  removed), so spellings of one gateway cannot dodge each other's circuit: after
+  `server.push.gateway_failure_threshold` (3) consecutive deliveries that could not reach the host
+  (`push::gateway_circuit_outcome`: DNS, connection, TLS or timeout failure) the host is skipped for
+  `server.push.gateway_cooldown_seconds` (300); then one delivery per cooldown is let through as a probe
+  until one reaches it. Any HTTP answer, a 5xx or 429 included, counts as reaching the gateway and
+  resets the count; a delivery this server refused to attempt (delivery disabled, a URL or response it
+  rejects) neither counts nor resets. At most 4096 hosts are tracked, the least recently failing
+  forgotten first, because the hosts are client-supplied.
+* A gateway's `rejected` list removes only a pusher whose own pushkey it names (Push Gateway API: the
+  pushkeys "given in the notification request that are not valid"), not any pusher whose request got
+  a non-empty list.
 
 ### Negative Consequences
 
 * A user with more than 20 devices that each register a pusher cannot add more without removing one.
 * Deliveries to a host whose circuit is open are dropped, not queued; a gateway that recovers within the
   cooldown misses those notifications.
+* A gateway that answers every request with a 5xx still holds a delivery slot for each request. It
+  answers promptly, so the slot is short; a gateway that stalls ends in a timeout, which counts.

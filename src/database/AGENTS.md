@@ -33,7 +33,7 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
 6. **In-memory mirrors of append-only tables are bounded windows.** `PersistentStore::audit_log`
    holds the newest `max_in_memory_audit_events` rows; append through `append_audit_event` and
    hydrate through `remember_audit_event`, never `push_back`. `append_audit_event` bounds
-   `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`bounded_utf8`).
+   `actor`, `target` and `reason` to 255 bytes on a UTF-8 boundary (`observability::bounded_utf8`).
 
 7. **Persisted writes lease a pooled connection; nothing else opens one per write.** `commit_persistent_transaction`
    goes through the store's `ConnectionPool` (at most `database.pool_size` in use, ADR-0154). Hold a lease for exactly

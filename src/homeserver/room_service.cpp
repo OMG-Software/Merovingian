@@ -6184,12 +6184,16 @@ namespace
                 continue;
             }
             auto const result = client.notify(delivery.pusher.data_url, delivery.notification);
-            if (host.has_value() && runtime.push_gateway_breaker_ != nullptr && !result.disabled)
+            // ADR-0151: only an unreachable host counts toward its circuit; any
+            // HTTP answer, a 5xx included, shows the shared host is reachable.
+            if (auto const outcome = push::gateway_circuit_outcome(result);
+                host.has_value() && runtime.push_gateway_breaker_ != nullptr &&
+                outcome != push::GatewayCircuitOutcome::not_attempted)
             {
-                runtime.push_gateway_breaker_->record(*host, result.ok && result.status < 500U,
+                runtime.push_gateway_breaker_->record(*host, outcome == push::GatewayCircuitOutcome::reachable,
                                                       std::chrono::steady_clock::now(), breaker_policy);
             }
-            if (result.ok && !result.rejected_pushkeys.empty())
+            if (push::pushkey_was_rejected(result, delivery.pusher.pushkey))
             {
                 auto lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
                 std::ignore = database::delete_pusher(runtime.database.persistent_store, delivery.pusher.user_id,

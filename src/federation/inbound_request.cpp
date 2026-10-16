@@ -503,8 +503,8 @@ namespace
     };
 
     [[nodiscard]] auto resolve_admitted_sender_key(FederationRuntimeState& runtime, std::string_view source,
-                                                   std::string_view server_name,
-                                                   std::string_view key_id) -> SenderKeyResolution
+                                                   std::string_view server_name, std::string_view key_id)
+        -> SenderKeyResolution
     {
         if (runtime.cached_pdu_key_lookup)
         {
@@ -536,9 +536,11 @@ namespace
     // The public authorization resolver predates admission and returns optional.
     // Adapt only around its synchronous invocation: no denial flag is shared
     // across the parallel sender tasks, which return their own explicit results.
-    [[nodiscard]] auto authorize_admitted_federation_pdu(
-        FederationRuntimeState& runtime, SignedFederationRequest const& request, FederationPdu const& pdu,
-        std::optional<FederationKeyRecord> const& key) -> FederationDecision
+    [[nodiscard]] auto authorize_admitted_federation_pdu(FederationRuntimeState& runtime,
+                                                         SignedFederationRequest const& request,
+                                                         FederationPdu const& pdu,
+                                                         std::optional<FederationKeyRecord> const& key)
+        -> FederationDecision
     {
         auto failure = std::optional<KeyResolutionFailureKind>{};
         auto const resolver = [&runtime, &request,
@@ -3121,8 +3123,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         }
         if (!distinct_pairs.empty())
         {
-            auto const configured = runtime.config.join_parallelism;
-            auto const parallelism = std::clamp<std::uint32_t>(configured == 0U ? 1U : configured, 1U, 64U);
+            auto const parallelism = sender_key_prepass_parallelism(runtime.config);
             auto resolved = std::vector<SenderKeyResolution>(distinct_pairs.size());
             auto sem = PortableSemaphore{static_cast<int>(parallelism)};
             auto tasks = std::vector<std::future<void>>{};

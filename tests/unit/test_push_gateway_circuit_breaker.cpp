@@ -4,11 +4,13 @@
 // for a cooldown, so its stalled requests stop occupying delivery capacity.
 
 #include "merovingian/push/gateway_circuit_breaker.hpp"
+#include "merovingian/push/push_gateway_client.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -114,6 +116,107 @@ SCENARIO("a gateway host opens after consecutive failures and reopens for one pr
             THEN("it tracks no more than its bound")
             {
                 CHECK(breaker.tracked_hosts() <= 4U);
+            }
+        }
+    }
+}
+
+SCENARIO("only a gateway that could not be reached counts toward opening its circuit", "[push][out3]")
+{
+    // PR #509 review: a 5xx (or 429) is the gateway answering about one
+    // notification. Counting it let one user's bad pusher open the circuit of a
+    // shared gateway for every user of that host.
+    using merovingian::http::OutboundError;
+    using merovingian::push::GatewayCircuitOutcome;
+    using merovingian::push::PushGatewayResult;
+
+    GIVEN("delivery results")
+    {
+        auto const answered = [](std::uint16_t status) {
+            auto result = PushGatewayResult{};
+            result.ok = true;
+            result.status = status;
+            result.error = OutboundError::none;
+            return merovingian::push::gateway_circuit_outcome(result);
+        };
+        auto const failed = [](OutboundError error) {
+            auto result = PushGatewayResult{};
+            result.error = error;
+            return merovingian::push::gateway_circuit_outcome(result);
+        };
+
+        WHEN("they are classified")
+        {
+            THEN("any HTTP answer is reachable, a transport failure is a failure, and a refusal is neither")
+            {
+                for (auto const status : {200U, 400U, 404U, 429U, 500U, 502U, 503U})
+                {
+                    INFO(status);
+                    CHECK(answered(static_cast<std::uint16_t>(status)) == GatewayCircuitOutcome::reachable);
+                }
+                for (auto const error :
+                     {OutboundError::unresolved_host, OutboundError::connection_failed,
+                      OutboundError::tls_verification_failed, OutboundError::timeout, OutboundError::network_error})
+                {
+                    CHECK(failed(error) == GatewayCircuitOutcome::transport_failure);
+                }
+                for (auto const error : {OutboundError::invalid_url, OutboundError::https_required,
+                                         OutboundError::redirect_rejected, OutboundError::response_too_large})
+                {
+                    CHECK(failed(error) == GatewayCircuitOutcome::not_attempted);
+                }
+                auto disabled = PushGatewayResult{};
+                disabled.disabled = true;
+                disabled.error = OutboundError::none;
+                CHECK(merovingian::push::gateway_circuit_outcome(disabled) == GatewayCircuitOutcome::not_attempted);
+            }
+        }
+    }
+}
+
+SCENARIO("a gateway's circuit is keyed by its case-folded host and port", "[push][out3]")
+{
+    // PR #509 review: case and trailing-dot variants of one host had separate
+    // circuits (a way round the breaker), and different ports shared one.
+    GIVEN("gateway URLs naming one host in different spellings, and another port")
+    {
+        auto const host = [](std::string_view url) {
+            return merovingian::push::push_gateway_host(url).value_or("<none>");
+        };
+
+        WHEN("their circuit keys are computed")
+        {
+            THEN("spellings of one host and port share a key, and ports do not")
+            {
+                CHECK(host("https://push.example.org/_matrix/push/v1/notify") == "push.example.org:443");
+                CHECK(host("https://PUSH.Example.ORG/_matrix/push/v1/notify") == "push.example.org:443");
+                CHECK(host("https://push.example.org./_matrix/push/v1/notify") == "push.example.org:443");
+                CHECK(host("https://push.example.org:443/_matrix/push/v1/notify") == "push.example.org:443");
+                CHECK(host("https://push.example.org:8443/_matrix/push/v1/notify") == "push.example.org:8443");
+                CHECK(host("not a url") == "<none>");
+            }
+        }
+    }
+}
+
+SCENARIO("only a pusher whose own pushkey the gateway rejects is rejected", "[push][out3]")
+{
+    GIVEN("a gateway answer that rejects one pushkey")
+    {
+        auto result = merovingian::push::PushGatewayResult{};
+        result.ok = true;
+        result.status = 200U;
+        result.rejected_pushkeys = {"rejected-key"};
+
+        WHEN("pushers are checked against it")
+        {
+            THEN("the listed pushkey is rejected and any other is not")
+            {
+                CHECK(merovingian::push::pushkey_was_rejected(result, "rejected-key"));
+                CHECK_FALSE(merovingian::push::pushkey_was_rejected(result, "other-key"));
+                auto failed = result;
+                failed.ok = false;
+                CHECK_FALSE(merovingian::push::pushkey_was_rejected(failed, "rejected-key"));
             }
         }
     }

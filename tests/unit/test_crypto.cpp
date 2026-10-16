@@ -819,7 +819,7 @@ namespace
 
 namespace
 {
-[[nodiscard]] auto mapping_is_locked(void const* address) -> bool
+[[nodiscard]] auto mapping_is_locked([[maybe_unused]] void const* address) -> bool
 {
 #if defined(__linux__)
     auto maps = std::ifstream{"/proc/self/smaps"};
@@ -1610,18 +1610,16 @@ SCENARIO("Master key material is refused when it cannot be locked into memory", 
     }
 }
 
-SCENARIO("The multi-key signing provider takes ownership of secrets in locked memory",
-         "[crypto][signing][security]")
+SCENARIO("The multi-key signing provider takes ownership of secrets in locked memory", "[crypto][signing][security]")
 {
     GIVEN("an Ed25519 keypair whose secret is held in a SecretBuffer")
     {
         auto keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(keypair.has_value());
 
-        auto const public_key =
-            merovingian::crypto::Ed25519PublicKey{std::string{reinterpret_cast<char const*>(
-                                                                 keypair->public_key.data()),
-                                                             keypair->public_key.size()}};
+        auto const public_key = merovingian::crypto::Ed25519PublicKey{
+            std::string{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}
+        };
 
         auto entries = std::vector<std::pair<std::string, merovingian::core::SecretBuffer>>{};
         entries.emplace_back("ed25519:audit", std::move(keypair->secret_key));
@@ -1696,8 +1694,8 @@ SCENARIO("The signing-secret box key is cached rather than re-derived from the m
                 REQUIRE_FALSE(second.has_value());
             }
 
-            std::filesystem::permissions(path, std::filesystem::perms::owner_read |
-                                                   std::filesystem::perms::owner_write);
+            std::filesystem::permissions(path,
+                                         std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
         }
 
         std::filesystem::remove(path);
@@ -1735,8 +1733,7 @@ SCENARIO("A replaced master key file invalidates the cached signing-secret box k
     }
 }
 
-SCENARIO("The master key file identity changes when the file's contents are replaced",
-         "[crypto][master_key][security]")
+SCENARIO("The master key file identity changes when the file's contents are replaced", "[crypto][master_key][security]")
 {
     GIVEN("a master key file")
     {

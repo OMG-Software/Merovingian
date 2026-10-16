@@ -1043,3 +1043,48 @@ SCENARIO("Key-value config parser rejects negative token lifetimes", "[config][p
         }
     }
 }
+
+SCENARIO("Every federation deny range must be a well-formed address or CIDR range", "[config][federation][fed10]")
+{
+    // PR #509 review: the federation boundary treats an unparsable deny entry
+    // as "deny every address" so a typo can never open it. Validation only
+    // checked that a private range was listed, so a typo such as `/33` passed
+    // and silently stopped all federation. It is now a startup error.
+    GIVEN("the default deny ranges plus one more entry")
+    {
+        auto const findings_with = [](std::string const& entry) {
+            auto config = merovingian::config::Config{};
+            config.security().federation.deny_ip_ranges.push_back(entry);
+            auto const findings = merovingian::config::validate(config);
+            return std::ranges::count_if(findings, [](auto const& finding) {
+                return finding.field == "security.federation.deny_ip_ranges";
+            });
+        };
+
+        WHEN("the extra entry is malformed")
+        {
+            THEN("validation names the deny ranges")
+            {
+                for (auto const* entry : {"10.0.0.0/33", "::/129", " 10.0.0.0/8", "10.0.0.0/8 # lab", "10.0.0.0/",
+                                          "10.0.0.0/+8", "10.0.0/8", "example.org", "", "/8", "10.0.0.0/8/8"})
+                {
+                    INFO(entry);
+                    CHECK(findings_with(entry) == 1);
+                }
+            }
+        }
+
+        WHEN("the extra entry is a well-formed address or range")
+        {
+            THEN("validation accepts it")
+            {
+                for (auto const* entry : {"100.64.0.0/10", "198.18.0.0/15", "192.0.2.1", "::ffff:0:0/96",
+                                          "2001:db8::/32", "fe80::/10", "0.0.0.0/0", "::/0", "10.0.0.0/32"})
+                {
+                    INFO(entry);
+                    CHECK(findings_with(entry) == 0);
+                }
+            }
+        }
+    }
+}

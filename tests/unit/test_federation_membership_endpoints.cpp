@@ -11,9 +11,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -178,6 +180,49 @@ SCENARIO("Invite path parser splits room/event suffixes for v1 and v2 invite rou
                 REQUIRE(invite_url_encoded->subject == "$event:example.org");
                 REQUIRE_FALSE(malformed.has_value());
                 REQUIRE_FALSE(empty_event.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Backfill query parser refuses an encoded NUL without throwing", "[federation][backfill][routing][nul]")
+{
+    // PR #509 review: the path NUL guards stop before `?`, and the `v` values
+    // were decoded with the path decoder, which throws on NUL. An authenticated
+    // peer's `?v=%00` then escaped every handler instead of getting a 400.
+    GIVEN("backfill targets carrying a NUL in an event id, in the room id, or as a raw byte")
+    {
+        auto const encoded_in_query =
+            std::string_view{"/_matrix/federation/v1/backfill/!room:example.org?v=%00&limit=5"};
+        auto const among_valid = std::string_view{"/_matrix/federation/v1/backfill/!room:example.org?v=$e1&v=$e%002"};
+        auto const encoded_in_path = std::string_view{"/_matrix/federation/v1/backfill/!ro%00om:example.org?v=$e1"};
+        auto const raw = std::string{"/_matrix/federation/v1/backfill/!room:example.org?v=$e"} + '\0' + "1";
+
+        WHEN("each is parsed")
+        {
+            auto parse = [](std::string_view target) {
+                auto result = std::optional<merovingian::federation::BackfillRequest>{};
+                auto threw = false;
+                try
+                {
+                    result = merovingian::federation::parse_backfill_query(target);
+                }
+                catch (...)
+                {
+                    threw = true;
+                }
+                return std::pair{threw, result.has_value()};
+            };
+            auto const results =
+                std::array{parse(encoded_in_query), parse(among_valid), parse(encoded_in_path), parse(raw)};
+
+            THEN("each is refused as malformed, never by an exception")
+            {
+                for (auto const& [threw, parsed] : results)
+                {
+                    CHECK_FALSE(threw);
+                    CHECK_FALSE(parsed);
+                }
             }
         }
     }

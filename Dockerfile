@@ -66,8 +66,9 @@ RUN apt-get update \
         libssl3t64 \
         libturbojpeg0 \
     && rm -rf /var/lib/apt/lists/* \
-    && addgroup --system merovingian \
-    && adduser --system --ingroup merovingian --home /var/lib/merovingian --no-create-home merovingian \
+    && groupadd --system merovingian \
+    && useradd --system --gid merovingian --home-dir /var/lib/merovingian --no-create-home \
+        --shell /usr/sbin/nologin merovingian \
     && install -d -o merovingian -g merovingian -m 0750 /etc/merovingian /var/lib/merovingian /var/log/merovingian
 
 COPY --from=build /pkgroot/usr/bin/merovingian-server /usr/bin/merovingian-server

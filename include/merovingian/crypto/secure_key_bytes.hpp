@@ -6,7 +6,9 @@
 #include "merovingian/crypto/constant_time.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <new>
+#include <stdexcept>
 #include <utility>
 
 namespace merovingian::crypto
@@ -15,17 +17,27 @@ namespace merovingian::crypto
 class SecureKeyBytes final
 {
 public:
+    // Every key this type holds: the HMAC and secretbox keys are 32 bytes.
+    static constexpr auto key_bytes = std::size_t{32U};
+
     SecureKeyBytes()
-        : m_storage(32U)
+        : m_storage(key_bytes)
     {
         if (!m_storage.is_locked())
         {
             throw std::bad_alloc{};
         }
     }
+    // A moved-from key holds no bytes. Copying it would otherwise produce a
+    // valid, locked, all-zero key that a caller could use as an HMAC or
+    // secretbox key without noticing; that is a programming error, so it throws.
     SecureKeyBytes(SecureKeyBytes const& other)
         : SecureKeyBytes()
     {
+        if (other.m_storage.bytes().size() != key_bytes)
+        {
+            throw std::logic_error{"copy of a moved-from SecureKeyBytes"};
+        }
         std::copy(other.m_storage.bytes().begin(), other.m_storage.bytes().end(), m_storage.bytes().begin());
     }
     auto operator=(SecureKeyBytes const& other) -> SecureKeyBytes&

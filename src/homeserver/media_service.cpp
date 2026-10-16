@@ -1212,14 +1212,18 @@ namespace
             {
                 // The local record, not a shared blob or an earlier admission,
                 // authorizes disclosure after the unlocked decode. Remote
-                // sources do not yet carry this local identity through fetch.
-                // Remote sources carry the cached local record the bytes were
-                // admitted as (MED-4), and the media policy is asked again: either
-                // may have changed while the lock was released.
-                if ((local_source.has_value() &&
+                // sources carry the cached local record the bytes were
+                // admitted as (MED-4), and the media policy is asked again:
+                // either may have changed while the lock was released.
+                //
+                // Policy first, record last: a policy server round trip
+                // releases runtime.mutex too, so the record is checked only
+                // once nothing else can release the lock before the cache
+                // insert and the response (PR #509 review).
+                if (!media_policy_decision(runtime, media_id).allowed ||
+                    (local_source.has_value() &&
                      !media::local_media_still_servable(runtime.media_repository, local_source->media_id,
-                                                        local_source->storage_id, local_source->legacy_endpoint)) ||
-                    !media_policy_decision(runtime, media_id).allowed)
+                                                        local_source->storage_id, local_source->legacy_endpoint)))
                 {
                     return make_operation_result(false, {}, "thumbnail source no longer available", 404U);
                 }

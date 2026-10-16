@@ -302,6 +302,48 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("ldd", runtime_stage)
         self.assertIn("not found", runtime_stage)
 
+    def test_docker_runtime_stage_creates_its_user_with_tools_the_base_image_ships(self) -> None:
+        # GIVEN the Dockerfile runtime stage, built on debian:trixie-slim, which
+        # ships passwd (groupadd/useradd) but not the adduser package.
+        runtime_stage = dockerfile_stages(DOCKERFILE.read_text(encoding="utf-8"))[-1]
+
+        # WHEN it creates the unprivileged service account.
+        # THEN it uses groupadd/useradd, never addgroup/adduser, which would
+        # exit 127 and fail the image build.
+        self.assertRegex(runtime_stage, r"\bgroupadd --system merovingian\b")
+        self.assertRegex(runtime_stage, r"\buseradd --system\b")
+        self.assertNotRegex(runtime_stage, r"\b(addgroup|adduser)\b")
+
+    def test_deb_conffiles_name_only_files_the_package_installs(self) -> None:
+        # GIVEN the Debian conffiles list and the script that stages the package.
+        conffiles = [
+            line.strip()
+            for line in (REPO_ROOT / "packaging" / "deb" / "conffiles").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")
+
+        # WHEN dpkg unpacks each conffile as `<path>.dpkg-new`.
+        # THEN every entry is a file the script installs, not a directory:
+        # a directory entry is unpacked as `/etc/merovingian.dpkg-new`, so the
+        # files inside it have no parent and the install fails.
+        self.assertTrue(conffiles, "conffiles is empty")
+        for path in conffiles:
+            with self.subTest(path=path):
+                self.assertRegex(path, r"^/etc/merovingian/[^/]+$")
+                self.assertIn(f'"${{STAGING}}{path}"', build_script)
+
+    def test_deb_does_not_ship_vendored_subproject_files(self) -> None:
+        # GIVEN the Debian package build script.
+        build_script = (REPO_ROOT / "scripts" / "build-deb.sh").read_text(encoding="utf-8")
+
+        # WHEN it installs the build into the staging tree.
+        installs = re.findall(r"(?m)^meson install .*$", build_script)
+
+        # THEN the vendored sqlite3 archive and headers are skipped.
+        self.assertEqual(len(installs), 1)
+        self.assertIn("--skip-subprojects", installs[0])
+
     def test_packaged_server_startup_gate_runs_in_ci(self) -> None:
         # GIVEN the startup hardening gate script.
         self.assertTrue((REPO_ROOT / GATE_SCRIPT).is_file(), f"{GATE_SCRIPT} is missing")

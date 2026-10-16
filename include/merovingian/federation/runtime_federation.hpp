@@ -101,6 +101,11 @@ struct FederationServerPolicyDecision final
 // a limit, the total is `shards`. Every other field is unchanged.
 [[nodiscard]] auto shard_key_resolution_budget(RuntimeFederationConfig config, std::uint32_t shards)
     -> RuntimeFederationConfig;
+// How many sender keys one transaction's pre-pass resolves at once:
+// `join_parallelism` (1 to 64), but never more than `key_resolution_max_in_flight`.
+// Admission refuses resolutions over that cap instead of queueing them, so a
+// wider fan-out would have one transaction deny itself (PR #509 review).
+[[nodiscard]] auto sender_key_prepass_parallelism(RuntimeFederationConfig const& config) noexcept -> std::uint32_t;
 [[nodiscard]] auto federation_summary(RuntimeFederationConfig const& config) -> std::string;
 [[nodiscard]] auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)
     -> FederationServerPolicyDecision;

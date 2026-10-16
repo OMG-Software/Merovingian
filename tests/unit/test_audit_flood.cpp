@@ -10,12 +10,12 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
-#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -225,15 +225,15 @@ SCENARIO("A login carrying 60 KiB identifiers records audit fields of at most 25
                 REQUIRE(rejected != database.persistent_store.audit_log.end());
                 for (auto const& event : database.persistent_store.audit_log)
                 {
-                    REQUIRE(event.actor.size() <= merovingian::database::max_audit_field_bytes);
-                    REQUIRE(event.target.size() <= merovingian::database::max_audit_field_bytes);
-                    REQUIRE(event.reason.size() <= merovingian::database::max_audit_field_bytes);
+                    REQUIRE(event.actor.size() <= merovingian::observability::max_audit_field_bytes);
+                    REQUIRE(event.target.size() <= merovingian::observability::max_audit_field_bytes);
+                    REQUIRE(event.reason.size() <= merovingian::observability::max_audit_field_bytes);
                 }
                 for (auto const& event : database.audit_events)
                 {
-                    REQUIRE(event.actor.size() <= merovingian::database::max_audit_field_bytes);
-                    REQUIRE(event.target.size() <= merovingian::database::max_audit_field_bytes);
-                    REQUIRE(event.reason_code.size() <= merovingian::database::max_audit_field_bytes);
+                    REQUIRE(event.actor.size() <= merovingian::observability::max_audit_field_bytes);
+                    REQUIRE(event.target.size() <= merovingian::observability::max_audit_field_bytes);
+                    REQUIRE(event.reason_code.size() <= merovingian::observability::max_audit_field_bytes);
                 }
             }
         }

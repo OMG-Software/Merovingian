@@ -76,27 +76,18 @@ not an otherwise unbounded blocking write operation.
 
 ## Verification and Acceptance
 
-Proposed, not accepted. The real-signature/encrypted-IPC/SQLite regression has an
-inspected behavioral RED: normal build succeeded, 109 assertions executed,
-97 passed and 12 failed at mismatch, poisoned retry and completed-parent checks.
-Healthy A delivery and both real signature controls passed. Earlier fixture
-registration/discovery failures are not behavioral RED and are retained separately.
+Accepted with the change that closed FED-12 (0.12.26). The real-signature,
+encrypted-IPC and SQLite regression failed before the repair (12 of 109
+assertions, at the mismatch, poisoned-retry and completed-parent checks) and
+passes after it, alongside the worker EDU, worker integration, separate-worker
+socket-HTTP and federation-proxy suites.
 
-The repair, worker propagation and legitimate-fixture migration are implemented.
-Normal post-format runs pass the origin regression (109 assertions / 1 case),
-related worker EDUs (173 / 5), worker integration (2059 / 38), actual socket-HTTP
-and separate-worker mixed PDU/EDU control (262 / 1), and federation proxy (12 / 2).
-Unit runs pass lifecycle checks (49 / 2), IPC (396 / 50), worker (340 / 42) and
-sync handlers (382 / 16). The lifecycle scenarios are supplemental first-GREEN
-coverage, not an additional tests-first RED. All 79 focused bindings are stable
-and current. The 11-file added-lines scan, including the complete new helper,
-has no pattern indicators; all 11 owned range-format checks pass.
-
-Independent source review and a fresh combined checkpoint remain pending.
-Mirrored encrypted-pair dispatch alone does not establish production wiring;
-the separate-worker control verifies legitimate production propagation, not an
-adversarial worker-generation restart race. No whole-finding or release closure
-is claimed.
+The review of PR #509 found no defect in the binding: a parent is registered
+before its frame is written, ids are never reused, and a completed, expired or
+foreign-origin parent is refused. The residual weakness is the one stated
+above: a compromised worker can still relay EDUs of any content for an origin
+while that origin has a live request, because the EDU is not bound to the
+signed request body.
 
 ## Links
 

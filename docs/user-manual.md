@@ -531,11 +531,15 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 
 `max_pushers_per_user` caps the distinct pushers (`app_id`, `pushkey`) one user may
 register: `POST /pushers/set` refuses a new one beyond it with 400 `M_INVALID_PARAM`;
-updating or deleting an existing pusher is always allowed. A gateway host that fails
-`gateway_failure_threshold` times in a row (a transport error, a timeout or a 5xx) is
-not contacted for `gateway_cooldown_seconds`; after that one delivery per cooldown is
-let through as a probe until one succeeds, and deliveries skipped meanwhile are dropped
-and logged (`push.delivery.circuit_open`). OUT-3, ADR-0151.
+updating or deleting an existing pusher is always allowed. A gateway host (its
+case-folded `host:port`) that cannot be reached `gateway_failure_threshold` times in a
+row (a DNS, connection, TLS or timeout failure) is not contacted for
+`gateway_cooldown_seconds`; after that one delivery per cooldown is let through as a
+probe until one reaches it, and deliveries skipped meanwhile are dropped and logged
+(`push.delivery.circuit_open`). Any HTTP answer, a 5xx or 429 included, counts as
+reaching the host: a gateway shared by many users is never closed to all of them
+because it keeps refusing one user's pusher. A gateway's `rejected` list removes only
+the pushers whose pushkeys it names. OUT-3, ADR-0151.
 
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each
@@ -786,7 +790,7 @@ federation port `8448`.
 | `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
 | `database.runtime_role` | (empty) | PostgreSQL role assumed to serve requests, dropping DDL rights. Both empty issues no `SET ROLE`, leaving an existing single-role deployment unchanged. |
 | `database.pool_size` | `16` | Database connections persisted writes keep and use at once; a write waits for a free one rather than opening another (DB-7, ADR-0154). Requires restart. |
-| `database.sqlite_path` | `/var/lib/merovingian/merovingian.sqlite3` | Path for SQLite single-file store. Commented out in the shipped example, which defaults to PostgreSQL. |
+| `database.sqlite_path` | `/var/lib/merovingian/merovingian.sqlite3` | Path for SQLite single-file store. Commented out in the shipped example, which defaults to PostgreSQL. The file itself must not be a symlink and is created `0600`; missing directories are created `0700`. Directories that already exist may be symlinks (for example `/var/lib/merovingian` pointing at a data volume). |
 
 #### PostgreSQL TLS admission
 
@@ -952,7 +956,7 @@ rooms.
 | `security.federation.denied_servers` | (empty) | Comma-separated server names always blocked. |
 | `security.federation.require_valid_tls` | `true` | Disable only in controlled test labs. |
 | `security.federation.verify_json_signatures` | `true` | Disable only in controlled test labs. |
-| `security.federation.deny_ip_ranges` | private/loopback ranges | IPv4/IPv6 literals or CIDRs blocked during remote discovery/fetching, including public ranges. Keep the defaults; built-in SSRF blocks cannot be disabled. |
+| `security.federation.deny_ip_ranges` | private/loopback ranges | IPv4/IPv6 literals or CIDRs blocked during remote discovery/fetching, including public ranges. Keep the defaults; built-in SSRF blocks cannot be disabled. Every entry must be a well-formed address or CIDR range (prefix no longer than the address): a malformed entry is a startup error, because the boundary would otherwise treat it as denying every address. |
 | `security.federation.remote_timeout` | `60s` | General outbound federation HTTP timeout. |
 | `security.federation.max_transaction_size` | `20MiB` | Inbound `/send` body cap, enforced at HTTP admission as well as federation parsing. Positive and at most `64MiB`. |
 
@@ -1215,8 +1219,8 @@ Service API".
 | `security.media.remote_media_cache_ttl_seconds` | `86400` | How long admitted remote media is served from the local copy before it is fetched again. |
 | `security.media.remote_media_cache_max_entries` | `50000` | Maximum remote media files kept; when full, the least recently used one is deleted to make room. `0` disables the cache: every request for remote media goes to the origin, and only the latest fetched file is kept. |
 | `security.media.remote_media_cache_max_size` | `25GiB` | Bytes of cached remote media. The least recently used remote files are deleted to stay within it; a single file larger than this is refused with `507`. Empty means no limit. |
-| `security.media.thumbnail_cache_size` | `64MiB` | Bytes of generated thumbnails kept in memory, least recently used first out, so a repeated thumbnail request does not run the decoder again. A cached thumbnail is served only while its media is still servable. Empty or `0` disables the cache. |
-| `security.media.thumbnail_max_concurrent_per_user` | `2` | Thumbnail decodes one requester (the user, or the client address when unauthenticated) may run at once, 1..64. A further request is refused with `429 M_LIMIT_EXCEEDED`. |
+| `security.media.thumbnail_cache_size` | `64MiB` | Bytes of generated thumbnails kept in memory, least recently used first out, so a repeated thumbnail request does not run the decoder again. A cached thumbnail is served only while its media is still servable. Empty or `0` disables the cache. Requires a restart. |
+| `security.media.thumbnail_max_concurrent_per_user` | `2` | Thumbnail decodes one requester (the user, or the client address when unauthenticated) may run at once, 1..64. A further request is refused with `429 M_LIMIT_EXCEEDED`. Requires a restart. |
 
 The three local capacity limits bound media your users upload, which would otherwise
 be unbounded: upload spam grows it until the database fills. Size limits must be empty
@@ -2395,7 +2399,8 @@ merovingian-server --debug --log-file /var/log/merovingian/debug.log \
 the file sink, whose threshold is `trace`. The path must be a regular file owned
 by the server's user, or not exist yet: it is created or tightened to `0600` and
 truncated at start-up. A symlink (including `/dev/stderr`), FIFO, device or
-another user's file is refused and no file output is written (ADR-0146). Both sinks still obey the
+another user's file is refused: no file output is written, and an error on the
+console says so (ADR-0146). Both sinks still obey the
 configured module/default levels, so set the relevant modules to `debug`
 or `trace` to receive those diagnostics.
 

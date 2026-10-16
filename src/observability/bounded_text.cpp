@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/database/bounded_text.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 
 #include <cstdint>
 
-namespace merovingian::database
+namespace merovingian::observability
 {
 
 namespace
@@ -91,4 +91,4 @@ auto bounded_utf8(std::string_view value, std::size_t max_bytes) -> std::string
     return output;
 }
 
-} // namespace merovingian::database
+} // namespace merovingian::observability

@@ -1,5 +1,4 @@
 database_sources = files(
-  'bounded_text.cpp',
   'connection.cpp',
   'migration_files.cpp',
   'migration.cpp',

@@ -772,7 +772,10 @@ passes the gate. It boots the server against a throwaway SQLite config bound
 to loopback with a fresh owner-only master key, waits for the final self-check,
 and passes only when every check reports `enabled`, the number of `enabled`
 checks equals the number the server says it ran, readiness is
-`ready=true blockers=0`, and the server then exits 0 on `SIGTERM`. Unless
+`ready=true blockers=0`, the federation worker is spawned and still running a few
+seconds later (its own seccomp and Landlock policy applies after it starts, and a
+worker killed by it would otherwise go unnoticed while the supervisor restarts it), and
+the server then exits 0 on `SIGTERM`. Unless
 `--federation-worker` is given it leaves the worker path to the binary's
 built-in libexec default, so a pass also proves the package installed the
 worker where the server looks for it. Its decisions are covered by

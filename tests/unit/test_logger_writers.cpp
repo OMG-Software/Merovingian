@@ -235,7 +235,7 @@ SCENARIO("A message logged before the writers start is not lost", "[observabilit
         logger->set_console_log_level(LogLevel::trace);
         logger->set_file_log_level(LogLevel::trace);
         logger->set_default_log_level(LogLevel::trace);
-        logger->set_log_file_path(log_path.string());
+        REQUIRE(logger->set_log_file_path(log_path.string()));
 
         WHEN("messages are logged before start_writers, more after it, and the logger is then destroyed")
         {
@@ -318,7 +318,7 @@ SCENARIO("A CRITICAL log is written synchronously even after writer threads have
         auto logger = SingleLog{};
         logger.set_console_log_level(LogLevel::info);
         logger.set_file_log_level(LogLevel::info);
-        logger.set_log_file_path(log_path.string());
+        REQUIRE(logger.set_log_file_path(log_path.string()));
         REQUIRE(logger.start_writers());
 
         WHEN("a CRITICAL message is logged and the logger is left running")

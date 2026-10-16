@@ -6,6 +6,80 @@ marked PARTIAL or IN PROGRESS further down record intermediate steps on this bra
 FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the final commit:
 57 OK, 0 failed, 0 timed out.
 
+- **FIXED (PR #509 review, CI):** the branch did not build outside WSL/gcc. A Catch2
+  `CHECK` on a `std::tuple` comparison failed to compile under clang with libstdc++ 14
+  (`test_worker_relay_signature_flow.cpp` now compares a struct); `postgresql_store.cpp`
+  lacked `<netinet/in.h>`/`<sys/socket.h>` on the BSDs; a Linux-only test helper left a
+  parameter unused elsewhere; and `observability` called `database::bounded_utf8`, a
+  dependency against the module order (database depends on observability) that broke the
+  fuzz link. `bounded_utf8` and `max_audit_field_bytes` now live in
+  `observability/bounded_text.hpp`, and the logger fixture's workaround is gone. The docs
+  build failed on a broken anchor in ADR-0132. The new package gates exposed two packaging
+  bugs: `packaging/deb/conffiles` listed the directory `/etc/merovingian`, so dpkg unpacked
+  it as `/etc/merovingian.dpkg-new` and the file inside could not be created, and the
+  `Dockerfile` used `addgroup`/`adduser`, which `debian:trixie-slim` does not ship (now
+  `groupadd`/`useradd`). The `.deb` also stopped shipping the vendored sqlite3 archive and
+  headers (`--skip-subprojects`, as every other package script). Tests:
+  `test_packages_workflow.py` (conffiles name files the package installs, the image creates
+  its user with tools its base ships, no subproject install); RED 3 failures.
+- **FIXED (PR #509 review, auth):** the token-key cache dereferenced an empty optional when
+  the first master-key open failed and a second open by path succeeded, and every
+  authenticated request copied both token keys into fresh locked allocations, which could
+  exhaust `RLIMIT_MEMLOCK` under load and turn auth into 503s. The cache moved into
+  `crypto::cached_token_hmac_keys`: one open per lookup, keys derived only from that open,
+  shared (not copied) on a hit, and an unreadable file logged once per outage rather than
+  per request. Copying a moved-from `SecureKeyBytes` now throws instead of yielding a valid
+  all-zero key. Tests: new `test_crypto_token_key_cache.cpp` (`[cry4][token_key]`); the
+  `[cry6-lock]` scenario now asserts that issuance with no locked-memory budget left
+  succeeds from the already-locked cached keys, where it used to expect a 503 from the copy.
+- **FIXED (PR #509 review, federation):** `GET /backfill/{room}?v=%00` threw out of
+  `parse_backfill_query` (the path decoder throws on NUL and the transport's guards stop at
+  `?`), dropping the connection instead of answering; the parser now refuses a NUL anywhere
+  in the target (ADR-0137). Every `security.federation.deny_ip_ranges` entry must now be a
+  well-formed address or CIDR range: the boundary treats a malformed entry as denying every
+  address, so a typo such as `/33` silently stopped all federation. A transaction's
+  sender-key pre-pass no longer runs more resolutions at once than the runtime's in-flight
+  cap, which admission refuses rather than queues: with four worker shards (cap 4) any
+  transaction naming five or more cold sender servers used to deny itself a 503
+  (`federation::sender_key_prepass_parallelism`). Tests: `[nul]` backfill scenario,
+  `test_config_parser.cpp` deny-range scenario, `[fed10-shards]` parallelism scenario.
+- **FIXED (PR #509 review, media):** after a decode, the record was checked before the media
+  policy, whose policy-server round trip releases the runtime mutex, so a quarantine landing
+  during it was missed and the thumbnail was served and cached; the policy is now asked
+  first and the record checked last. `security.media.thumbnail_cache_size=0` failed
+  validation although the manual and ADR-0152 say it disables the cache. Cache keys clamp
+  each axis to the worker's 4096 maximum, so `width=5000, 5001, ...` no longer fill the
+  cache with copies of one thumbnail. The thumbnail cache size and per-user decode cap are
+  restart-required: nothing rebuilt them on reload. Tests: integration
+  `[med-4-policy-order]`; unit `[med4]` cache-size and dimension scenarios; reload policy.
+- **FIXED (PR #509 review, push):** the gateway circuit counted 5xx answers and was keyed by
+  the raw host, so one user's pusher with bad data on a shared gateway could close it to
+  every user for the cooldown, and case or trailing-dot spellings had separate circuits.
+  Only failures to reach the host (DNS, connection, TLS, timeout) count now
+  (`push::gateway_circuit_outcome`), and the key is the case-folded `host:port`. A
+  `rejected` list now removes only a pusher whose own pushkey it names; any non-empty list
+  used to delete the requesting pusher. ADR-0151 amended. Tests: `[out3]` classification,
+  key and rejection scenarios; integration: an unreachable host is skipped after three
+  failures, a host answering 500 is still contacted, a rejection of another pushkey keeps
+  the pusher.
+- **FIXED (PR #509 review, database):** SQLite refused any symlinked ancestor directory, so
+  a data directory linked to another volume stopped the server starting; existing
+  directories are now followed, the database file itself must still not be a symlink, and
+  everything below a directory the server creates is opened without following links.
+  SQLite is handed the database's real directory, since `SQLITE_OPEN_NOFOLLOW` refuses a
+  link anywhere in the name it is given.
+  `ConnectionPool::acquire` leaked its slot if opening or probing a connection threw, and a
+  wait for a slot has no timeout. Tests: `[db10]` symlinked data directory scenario; new
+  `test_database_connection_pool.cpp` (`[db7][pool]`).
+- **FIXED (PR #509 review, operations):** a refused `--log-file` now says so on the console
+  (`SingleLog::set_log_file_path` returns whether the file opened). The startup hardening
+  gate also requires the federation worker to be spawned and still running a few seconds
+  later (`--worker-settle`, default 3 s), and rejects a non-numeric `--timeout`, port or
+  settle time. ADR-0142's verification section
+  contradicted its status and is rewritten; internal agent and process IDs are removed from
+  this changelog and the audit report. Tests: `test_startup_hardening_gate.py` (worker dies,
+  worker never starts, non-numeric timeout), `[iso6]` refused-path scenario.
+
 - **FIXED (DB-7):** every persisted write opened a fresh database connection (an SQLite
   open with its no-follow checks, or a PostgreSQL connect, TLS and `SET ROLE`), usually
   with the runtime mutex held. Writes now lease connections from a per-store
@@ -465,7 +539,7 @@ FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the fina
   Production limits are unchanged. Fresh completed WSL CLI passed 56 targets,
   zero failures/timeouts, with one skipped unit case; logs are archived and the
   six focused source/test hashes remain unchanged. Independent source-only
-  review (deleg_18fcd7ae) approved this main slice with no material findings.
+  review approved this main slice with no material findings.
   End-to-end worker HTTP overload propagation remains a coverage gap: the IPC
   fixture substitutes PDU result serialization; production serialization,
   worker decoding and HTTP propagation were source-traced only.
@@ -669,16 +743,16 @@ FIXED and ACCEPTED entries at the top supersede them. Full WSL suite at the fina
   A subsequent 56-target run preceded review correction and is not final acceptance.
   ADR-0136 records the intentional loss of even safe query values; historical
   rows, backups and logs are not rewritten. Independent re-review
-  (deleg_98159855) approved the repaired slice with no material findings. Its
+  approved the repaired slice with no material findings. Its
   first final full run had 55 OK / 1 unrelated to-device TTL fixture failure.
   Its exact cause was not established; the previous test depended on a
   1.2-second sleep to establish an expired-row precondition. The memory-store
   regression now seeds a definitely old positive timestamp instead of depending
   on wall-clock progress, proving already-expired non-delivery and purge rather
   than enqueue timestamp correctness or exact TTL boundaries. Production TTL
-  logic is unchanged. Independent source-only fixture review (deleg_d766b186)
+  logic is unchanged. Independent source-only fixture review
   passed with no material findings; five focused runs and the related CSAZ-10
-  cases passed. The resumed full verification (proc_caf4c67c3b51) exited 0:
+  cases passed. The resumed full verification exited 0:
   all 56 targets reported OK with return code 0, no failures or timeouts, and
   all 95 snapshotted files were unchanged. Exact completed reports are archived;
   the previous 55 OK / 1 failed run remains recorded rather than overwritten.

@@ -80,9 +80,12 @@ current in-process runtime path.
   runtime mutex released, and the record is checked again afterwards, so media removed or quarantined
   during the read is not served.
 - Generated thumbnails are cached in memory (`security.media.thumbnail_cache_size`,
-  64 MiB, least recently used first out), keyed by the source record, size and method;
-  a hit is served only after the record has been checked as servable, so moderation
-  needs no cache invalidation. Each requester (the user, or the client address when
+  64 MiB, least recently used first out; empty or `0` disables it), keyed by the source
+  record, size and method, with each axis past the decoder's largest (4096) keyed as
+  4096, since the worker clamps it to that; a hit is served only after the record has
+  been checked as servable, so moderation needs no cache invalidation. After a decode,
+  the media policy is asked first and the record checked last, so a quarantine that
+  lands while a policy-server round trip has released the lock is not missed. Each requester (the user, or the client address when
   unauthenticated) runs at most `security.media.thumbnail_max_concurrent_per_user` (2)
   decodes at once; a further request gets `429 M_LIMIT_EXCEEDED`. A remote thumbnail
   carries the cached local record its bytes were admitted as and is revalidated like a

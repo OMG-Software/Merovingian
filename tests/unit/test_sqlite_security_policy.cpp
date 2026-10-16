@@ -1,29 +1,47 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
-#include <catch2/catch_test_macros.hpp>
-#include <filesystem>
-#include <string>
-#include <stdexcept>
-#include <cstdlib>
-#include <tuple>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/wait.h>
 
-namespace {
-class DatabaseScratch final {
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstdlib>
+#include <filesystem>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace
+{
+class DatabaseScratch final
+{
 public:
-    DatabaseScratch() { auto pattern = (std::filesystem::temp_directory_path() / "merov-db-security-XXXXXX").string(); auto const* made = ::mkdtemp(pattern.data()); if (made == nullptr) { throw std::runtime_error{"temporary directory unavailable"}; } path = made; }
-    ~DatabaseScratch() { auto ec = std::error_code{}; std::filesystem::remove_all(path, ec); }
+    DatabaseScratch()
+    {
+        auto pattern = (std::filesystem::temp_directory_path() / "merov-db-security-XXXXXX").string();
+        auto const* made = ::mkdtemp(pattern.data());
+        if (made == nullptr)
+        {
+            throw std::runtime_error{"temporary directory unavailable"};
+        }
+        path = made;
+    }
+    ~DatabaseScratch()
+    {
+        auto ec = std::error_code{};
+        std::filesystem::remove_all(path, ec);
+    }
     std::filesystem::path path;
 };
-}
+} // namespace
 SCENARIO("Production SQLite worker bootstrap cannot persist changes", "[database][iso4]")
 {
     GIVEN("main's initialized SQLite database")
@@ -36,15 +54,22 @@ SCENARIO("Production SQLite worker bootstrap cannot persist changes", "[database
         auto database = merovingian::config::DatabaseConfig{};
         database.backend = merovingian::config::DatabaseBackend::sqlite;
         database.sqlite_path = path;
-        auto const config = merovingian::config::Config{merovingian::config::ServerConfig{}, merovingian::config::ListenersConfig{}, database, merovingian::config::SecurityConfig{}, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{}};
+        auto const config = merovingian::config::Config{merovingian::config::ServerConfig{},
+                                                        merovingian::config::ListenersConfig{},
+                                                        database,
+                                                        merovingian::config::SecurityConfig{},
+                                                        merovingian::config::ClientRateLimitsConfig{},
+                                                        merovingian::config::LogModulesConfig{}};
         WHEN("the production worker load profile bootstraps a snapshot")
         {
-            auto worker = merovingian::homeserver::bootstrap_local_database(config, {}, merovingian::database::TableLoadProfile::federation_worker);
+            auto worker = merovingian::homeserver::bootstrap_local_database(
+                config, {}, merovingian::database::TableLoadProfile::federation_worker);
             THEN("reads work and writes fail without affecting main's write path")
             {
                 REQUIRE(worker.opened);
                 REQUIRE(worker.persistent_store.rooms.size() == 1U);
-                REQUIRE_FALSE(merovingian::database::store_room(worker.persistent_store, {"!worker:example.org", "@a:example.org"}));
+                REQUIRE_FALSE(merovingian::database::store_room(worker.persistent_store,
+                                                                {"!worker:example.org", "@a:example.org"}));
                 REQUIRE(merovingian::database::store_room(main.store, {"!main:example.org", "@a:example.org"}));
                 auto const reopened = merovingian::database::open_sqlite_persistent_store(path);
                 REQUIRE(reopened.ok);
@@ -54,12 +79,16 @@ SCENARIO("Production SQLite worker bootstrap cannot persist changes", "[database
     }
 }
 #if defined(__linux__)
-SCENARIO("Landlocked production SQLite worker cannot open main's database for writing", "[database][iso4][iso4_landlock]")
+SCENARIO("Landlocked production SQLite worker cannot open main's database for writing",
+         "[database][iso4][iso4_landlock]")
 {
     GIVEN("main's initialized SQLite database and the real kernel Landlock API")
     {
         auto const ops = merovingian::platform::LandlockHardeningOps{};
-        if (ops.query_abi_version() < 1) { SKIP("kernel has no Landlock support"); }
+        if (ops.query_abi_version() < 1)
+        {
+            SKIP("kernel has no Landlock support");
+        }
         auto scratch = DatabaseScratch{};
         auto const path = (scratch.path / "store.db").string();
         auto main = merovingian::database::open_sqlite_persistent_store(path);
@@ -68,20 +97,40 @@ SCENARIO("Landlocked production SQLite worker cannot open main's database for wr
         auto database = merovingian::config::DatabaseConfig{};
         database.backend = merovingian::config::DatabaseBackend::sqlite;
         database.sqlite_path = path;
-        auto const config = merovingian::config::Config{merovingian::config::ServerConfig{}, merovingian::config::ListenersConfig{}, database, merovingian::config::SecurityConfig{}, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{}};
+        auto const config = merovingian::config::Config{merovingian::config::ServerConfig{},
+                                                        merovingian::config::ListenersConfig{},
+                                                        database,
+                                                        merovingian::config::SecurityConfig{},
+                                                        merovingian::config::ClientRateLimitsConfig{},
+                                                        merovingian::config::LogModulesConfig{}};
         WHEN("a child installs the exact worker filesystem policy before production bootstrap")
         {
             auto const pid = ::fork();
             REQUIRE(pid >= 0);
             if (pid == 0)
             {
-                auto const hardened = merovingian::platform::apply_worker_landlock(merovingian::platform::build_worker_landlock_rules(config), false);
-                if (!hardened.applied) { ::_exit(10); }
+                auto const hardened = merovingian::platform::apply_worker_landlock(
+                    merovingian::platform::build_worker_landlock_rules(config), false);
+                if (!hardened.applied)
+                {
+                    ::_exit(10);
+                }
                 auto write = merovingian::core::FileDescriptor{::open(path.c_str(), O_RDWR | O_CLOEXEC)};
-                if (write.valid()) { ::_exit(11); }
-                auto worker = merovingian::homeserver::bootstrap_local_database(config, {}, merovingian::database::TableLoadProfile::federation_worker);
-                if (!worker.opened || worker.persistent_store.rooms.size() != 1U) { ::_exit(12); }
-                if (merovingian::database::store_room(worker.persistent_store, {"!worker:example.org", "@a:example.org"})) { ::_exit(13); }
+                if (write.valid())
+                {
+                    ::_exit(11);
+                }
+                auto worker = merovingian::homeserver::bootstrap_local_database(
+                    config, {}, merovingian::database::TableLoadProfile::federation_worker);
+                if (!worker.opened || worker.persistent_store.rooms.size() != 1U)
+                {
+                    ::_exit(12);
+                }
+                if (merovingian::database::store_room(worker.persistent_store,
+                                                      {"!worker:example.org", "@a:example.org"}))
+                {
+                    ::_exit(13);
+                }
                 ::_exit(0);
             }
             auto status = int{};
@@ -127,24 +176,54 @@ SCENARIO("SQLite creation is private under a permissive process umask", "[databa
         }
     }
 }
-SCENARIO("SQLite refuses symlinked database paths without changing their targets", "[database][db10]")
+SCENARIO("SQLite refuses a symlinked database file without changing its target", "[database][db10]")
 {
-    GIVEN("a database symlink and a directory symlink")
+    GIVEN("a database and a symlink to it")
     {
         auto scratch = DatabaseScratch{};
         auto const target = scratch.path / "target.db";
         REQUIRE(merovingian::database::open_sqlite_persistent_store(target.string()).ok);
         auto const alias = scratch.path / "alias.db";
         std::filesystem::create_symlink(target, alias);
-        auto const dir_alias = scratch.path / "alias-dir";
-        std::filesystem::create_directory_symlink(scratch.path, dir_alias);
-        WHEN("either path is opened")
+        WHEN("the symlink is opened")
         {
-            THEN("both are refused and the original database remains usable")
+            THEN("it is refused and the original database remains usable")
             {
                 REQUIRE_FALSE(merovingian::database::open_sqlite_persistent_store(alias.string()).ok);
-                REQUIRE_FALSE(merovingian::database::open_sqlite_persistent_store((dir_alias / "target.db").string()).ok);
                 REQUIRE(merovingian::database::open_sqlite_persistent_store(target.string()).ok);
+            }
+        }
+    }
+}
+SCENARIO("SQLite follows an operator's existing symlinked data directory", "[database][db10]")
+{
+    // PR #509 review: refusing every symlinked ancestor broke common layouts
+    // (/var/lib/merovingian -> /data/merovingian, Fedora Atomic's /home ->
+    // /var/home). A directory that already exists belongs to the operator; only
+    // the database file itself must not be a symlink.
+    GIVEN("a data directory reached through a symlink, holding one database")
+    {
+        auto scratch = DatabaseScratch{};
+        auto const real = scratch.path / "real";
+        std::filesystem::create_directory(real);
+        REQUIRE(merovingian::database::open_sqlite_persistent_store((real / "store.db").string()).ok);
+        auto const linked = scratch.path / "linked";
+        std::filesystem::create_directory_symlink(real, linked);
+        WHEN("a database is opened through the symlink, and another created in new directories beneath it")
+        {
+            auto const existing = merovingian::database::open_sqlite_persistent_store((linked / "store.db").string());
+            auto const nested = linked / "new" / "nested" / "other.db";
+            auto const created = merovingian::database::open_sqlite_persistent_store(nested.string());
+            THEN("both open, in the real directory, and the new directories and file are private")
+            {
+                REQUIRE(existing.ok);
+                REQUIRE(created.ok);
+                REQUIRE(std::filesystem::is_regular_file(real / "new" / "nested" / "other.db"));
+                struct stat status{};
+                REQUIRE(::stat((real / "new").c_str(), &status) == 0);
+                REQUIRE((status.st_mode & 0777) == 0700);
+                REQUIRE(::stat((real / "new" / "nested" / "other.db").c_str(), &status) == 0);
+                REQUIRE((status.st_mode & 0777) == 0600);
             }
         }
     }

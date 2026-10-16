@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -137,8 +138,15 @@ namespace
     }
 
     // Create each missing directory with its final mode, never chmod an
-    // operator's existing directory. Descriptor-relative traversal refuses
-    // directory symlinks as well as a symlink in the final database component.
+    // operator's existing directory, and never let the database file itself be
+    // a symlink (DB-10).
+    //
+    // Directories that already exist are the operator's and are followed as
+    // the kernel resolves them, symlinks included: refusing a symlinked
+    // ancestor broke ordinary layouts such as /var/lib/merovingian -> /data
+    // (PR #509 review). From the first directory this function creates, every
+    // later component is created here too and opened without following links,
+    // so nothing can be slipped into a directory the server made.
     [[nodiscard]] auto prepare_sqlite_file(std::string const& path) -> bool
     {
         if (path.empty() || path.find('\0') != std::string::npos)
@@ -152,13 +160,31 @@ namespace
         {
             return false;
         }
+        auto creating = false;
         for (auto const& component : target.parent_path().relative_path())
         {
             auto const name = component.string();
-            if (::mkdirat(directory.get(), name.c_str(), 0700) != 0 && errno != EEXIST)
+            if (!creating)
+            {
+                auto existing =
+                    core::FileDescriptor{::openat(directory.get(), name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+                if (existing.valid())
+                {
+                    directory = std::move(existing);
+                    continue;
+                }
+                if (errno != ENOENT)
+                {
+                    return false;
+                }
+            }
+            // A name that appears between the lookup and here (a dangling
+            // symlink, or a race) is refused rather than adopted.
+            if (::mkdirat(directory.get(), name.c_str(), 0700) != 0)
             {
                 return false;
             }
+            creating = true;
             auto next = core::FileDescriptor{
                 ::openat(directory.get(), name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
             if (!next.valid())
@@ -179,31 +205,61 @@ namespace
                metadata.st_uid == ::geteuid() && ::fchmod(file.get(), 0600) == 0;
     }
 
+    // `path` with its directory resolved to the real one. SQLITE_OPEN_NOFOLLOW
+    // refuses a symlink anywhere in the name SQLite is given, so SQLite gets the
+    // real directory while the final component is still checked as a link (by
+    // O_NOFOLLOW here and by SQLite). An operator's symlinked data directory
+    // then works (PR #509 review); a symlinked database file still does not.
+    [[nodiscard]] auto resolve_sqlite_directory(std::string const& path) -> std::optional<std::string>
+    try
+    {
+        auto const target = std::filesystem::path{path};
+        if (path.empty() || path.find('\0') != std::string::npos || target.filename().empty())
+        {
+            return std::nullopt;
+        }
+        auto const directory = target.parent_path().empty() ? std::filesystem::current_path()
+                                                            : std::filesystem::canonical(target.parent_path());
+        return (directory / target.filename()).string();
+    }
+    catch (std::filesystem::filesystem_error const&)
+    {
+        return std::nullopt;
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto open_sqlite_connection(std::string const& path, bool read_only = false)
         -> std::optional<SqliteConnection>
     {
+        if (!read_only && !prepare_sqlite_file(path))
+        {
+            return std::nullopt;
+        }
+        auto const resolved = resolve_sqlite_directory(path);
+        if (!resolved.has_value())
+        {
+            return std::nullopt;
+        }
         if (read_only)
         {
             // READONLY alone can write a WAL shared-memory index. Refuse WAL
             // before SQLite opens it; immutable=1 would silently ignore WAL.
-            auto file = core::FileDescriptor{::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)};
+            auto file = core::FileDescriptor{::open(resolved->c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)};
             auto header = std::array<unsigned char, 20>{};
             struct stat metadata{};
-            if (path.empty() || path.find('\0') != std::string::npos || !file.valid() ||
-                ::fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+            if (!file.valid() || ::fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
                 ::pread(file.get(), header.data(), header.size(), 0) != static_cast<ssize_t>(header.size()) ||
                 header[18] != 1U || header[19] != 1U)
             {
                 return std::nullopt;
             }
         }
-        else if (!prepare_sqlite_file(path))
-        {
-            return std::nullopt;
-        }
         auto* raw = static_cast<sqlite3*>(nullptr);
         auto const mode = read_only ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
-        if (sqlite3_open_v2(path.c_str(), &raw, mode | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX, nullptr) !=
+        if (sqlite3_open_v2(resolved->c_str(), &raw, mode | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX, nullptr) !=
             SQLITE_OK)
         {
             sqlite3_close(raw);

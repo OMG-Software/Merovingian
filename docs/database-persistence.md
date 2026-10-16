@@ -1197,4 +1197,10 @@ PostgreSQL connections assume the runtime role once when opened; a pooled one is
 (`PQTRANS_IDLE`) with nothing to read on its socket, so one the server has closed is replaced. SQLite
 connections keep their pragmas and `foreign_keys=ON`. Reads, migrations and the worker's read-only store
 still open their own connections. `write_connections_opened` reports how many the pool has opened
-(ADR-0154).
+(ADR-0154). A slot is given back on every way out of an acquisition, a throwing open or liveness check
+included: waiting for a slot has no timeout, so a slot that leaked would be lost for good.
+
+An SQLite database file is created `0600` and must not be a symlink. Directories that already exist are
+followed as the kernel resolves them, symlinks included (an operator's `/var/lib/merovingian` pointing at a
+data volume); any directory the server creates is made `0700`, and everything below it is opened without
+following links (DB-10).

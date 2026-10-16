@@ -54,7 +54,7 @@ using merovingian::media::ThumbnailWorkerStatus;
 // open files) live in media/decoder_hardening.cpp alongside the platform
 // sandbox they precede.
 constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U; // 64 MiB source
-constexpr std::uint32_t absolute_max_dimension = 4096U;
+constexpr std::uint32_t absolute_max_dimension = merovingian::media::max_thumbnail_dimension;
 // Worker-imposed pixel ceiling for the decoded frame, crop fill, and resampled
 // output (#449). The per-axis cap alone still admits a 4096x4096 RGBA buffer
 // (64 MiB); a crafted IHDR could stack such allocations close to the

@@ -7,7 +7,6 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
-#include "merovingian/database/bounded_text.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
@@ -17,6 +16,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <catch2/catch_test_macros.hpp>

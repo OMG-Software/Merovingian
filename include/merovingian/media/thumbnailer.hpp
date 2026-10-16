@@ -12,6 +12,10 @@
 namespace merovingian::media
 {
 
+// The largest thumbnail axis the sandboxed worker produces. A larger request
+// is clamped to it, so every size past it yields the same bytes.
+inline constexpr auto max_thumbnail_dimension = std::uint32_t{4096U};
+
 // Resampling method requested by the client (Matrix CS API §thumbnails).
 // `scale` fits the image within the box preserving aspect ratio; `crop`
 // fills the box and trims the overflow, also preserving aspect ratio.

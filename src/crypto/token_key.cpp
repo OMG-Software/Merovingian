@@ -3,7 +3,14 @@
 
 #include "merovingian/crypto/token_key.hpp"
 
+#include "merovingian/crypto/master_key.hpp"
+#include "merovingian/observability/logger.hpp"
+
+#include <memory>
+#include <mutex>
+#include <new>
 #include <string>
+#include <utility>
 
 #include <sodium.h>
 
@@ -64,6 +71,68 @@ auto derive_token_hmac_key(std::span<std::uint8_t const> master_key_material) no
 auto derive_token_hmac_key_v3(std::span<std::uint8_t const> master_key_material) noexcept -> std::optional<TokenHmacKey>
 {
     return derive_with_label(master_key_material, k_context_v3);
+}
+
+auto cached_token_hmac_keys(std::string_view path)
+    -> std::shared_ptr<TokenHmacKeys const> // SHARED_PTR: reviewed — locked keys shared by readers
+try
+{
+    if (path.empty())
+    {
+        return nullptr;
+    }
+
+    // Guards the cache below. Held only across the derivation itself, which
+    // blocks on nothing but this one file read.
+    static auto cache_mutex = std::mutex{};
+    static auto cached_identity = std::string{};
+    static auto cached_keys =
+        std::shared_ptr<TokenHmacKeys const>{}; // SHARED_PTR: reviewed — locked keys shared by readers
+    static auto unreadable_reported = false;
+
+    // ISO-7: identity and material from one open. Never fall back to a second
+    // open by path: the keys would then be cached under an identity they were
+    // not derived from (and, with no first open, under no identity at all).
+    auto const opened = open_master_key_file(path);
+    auto guard = std::lock_guard{cache_mutex};
+    if (!opened.has_value())
+    {
+        cached_identity.clear();
+        cached_keys.reset();
+        if (!unreadable_reported)
+        {
+            unreadable_reported = true;
+            observability::log_diagnostic(
+                "crypto", "master_key.token_keys_unavailable",
+                {
+                    {"reason", "master key requires a secure mode-0400 file containing 32 to 4096 bytes", false}
+            },
+                observability::LogEventSeverity::error);
+        }
+        return nullptr;
+    }
+    unreadable_reported = false;
+    if (cached_keys != nullptr && opened->identity == cached_identity)
+    {
+        return cached_keys;
+    }
+
+    auto const material = load_master_key_material(*opened);
+    auto v3 = material.has_value() ? derive_token_hmac_key_v3(material->bytes()) : std::nullopt;
+    auto v4 = material.has_value() ? derive_token_hmac_key(material->bytes()) : std::nullopt;
+    if (!v3.has_value() || !v4.has_value())
+    {
+        cached_identity.clear();
+        cached_keys.reset();
+        return nullptr;
+    }
+    cached_keys = std::make_shared<TokenHmacKeys const>(TokenHmacKeys{std::move(v3), std::move(v4)});
+    cached_identity = opened->identity;
+    return cached_keys;
+}
+catch (std::bad_alloc const&)
+{
+    return nullptr;
 }
 
 } // namespace merovingian::crypto

@@ -47,6 +47,7 @@ FAKE_SERVER = textwrap.dedent(
             log "Hardening self-check: FORTIFY_SOURCE=enabled"
             log "Hardening readiness: ready=true blockers=0"
             log "Listeners active; awaiting traffic"
+            log "Federation worker spawned: shard=0 pid=4242 binary=/usr/libexec/merovingian/merovingian-fed-worker"
             ;;
         refused)
             log "Startup hardening checks: 2"
@@ -62,9 +63,27 @@ FAKE_SERVER = textwrap.dedent(
             log "Hardening self-check: FORTIFY_SOURCE=unknown"
             log "Hardening readiness: ready=true blockers=0"
             log "Listeners active; awaiting traffic"
+            log "Federation worker spawned: shard=0 pid=4242 binary=/usr/libexec/merovingian/merovingian-fed-worker"
             ;;
         missing_check)
             log "Startup hardening checks: 3"
+            log "Hardening self-check: PIE=enabled"
+            log "Hardening self-check: FORTIFY_SOURCE=enabled"
+            log "Hardening readiness: ready=true blockers=0"
+            log "Listeners active; awaiting traffic"
+            log "Federation worker spawned: shard=0 pid=4242 binary=/usr/libexec/merovingian/merovingian-fed-worker"
+            ;;
+        worker_dies)
+            log "Startup hardening checks: 2"
+            log "Hardening self-check: PIE=enabled"
+            log "Hardening self-check: FORTIFY_SOURCE=enabled"
+            log "Hardening readiness: ready=true blockers=0"
+            log "Listeners active; awaiting traffic"
+            log "Federation worker spawned: shard=0 pid=4242 binary=/usr/libexec/merovingian/merovingian-fed-worker"
+            log "Federation worker exited: pid=4242 status=31"
+            ;;
+        no_worker)
+            log "Startup hardening checks: 2"
             log "Hardening self-check: PIE=enabled"
             log "Hardening self-check: FORTIFY_SOURCE=enabled"
             log "Hardening readiness: ready=true blockers=0"
@@ -96,7 +115,7 @@ class StartupHardeningGateTests(unittest.TestCase):
     def run_gate(self, mode: str, *extra: str) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ, FAKE_MODE=mode, FAKE_OUT=str(self.out))
         return subprocess.run(
-            ["sh", str(GATE_SCRIPT), "--timeout", "5", *extra, str(self.server)],
+            ["sh", str(GATE_SCRIPT), "--timeout", "5", "--worker-settle", "0", *extra, str(self.server)],
             env=env,
             capture_output=True,
             text=True,
@@ -201,6 +220,45 @@ class StartupHardeningGateTests(unittest.TestCase):
         # THEN the gate fails once the timeout passes instead of hanging.
         self.assertNotEqual(result.returncode, 0)
         self.assertLess(time.monotonic() - started, 30)
+
+
+    def test_fails_when_the_federation_worker_dies_after_the_server_is_ready(self) -> None:
+        # GIVEN a server whose own checks pass but whose worker is killed at
+        # start, for example by a seccomp or Landlock rule it trips.
+        # WHEN the gate runs it.
+        result = self.run_gate("worker_dies")
+
+        # THEN the gate fails: the supervisor would restart the worker forever
+        # and the server would never federate.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("federation worker", (result.stdout + result.stderr).lower())
+
+    def test_fails_when_the_federation_worker_never_starts(self) -> None:
+        # GIVEN a server that reports ready but never spawns its worker.
+        # WHEN the gate runs it with a 2 second timeout.
+        result = self.run_gate("no_worker", "--timeout", "2")
+
+        # THEN the gate fails.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("federation worker", (result.stdout + result.stderr).lower())
+
+    def test_refuses_a_timeout_that_is_not_a_number(self) -> None:
+        # GIVEN a non-numeric timeout, which `[ -ge ]` would otherwise turn into
+        # a test error inside the wait loops, so the timeout never fires.
+        env = dict(os.environ, FAKE_MODE="hang", FAKE_OUT=str(self.out))
+
+        # WHEN the gate is run with it.
+        result = subprocess.run(
+            ["sh", str(GATE_SCRIPT), "--timeout", "soon", str(self.server)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        # THEN it refuses at once with its usage status.
+        self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":

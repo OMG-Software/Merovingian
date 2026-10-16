@@ -1,5 +1,6 @@
 observability_sources = files(
   'audit_rate_gate.cpp',
+  'bounded_text.cpp',
   'observability.cpp',
 )
 
