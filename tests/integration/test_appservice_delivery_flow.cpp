@@ -22,6 +22,7 @@
 
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
@@ -542,6 +543,112 @@ SCENARIO("an event queued while the appservice is down survives a restart and is
                 auto const& store = restarted.runtime.homeserver.database.persistent_store;
                 REQUIRE(store.appservice_outbox.empty());
                 REQUIRE(merovingian::database::find_appservice_txn_cursor(store, "bridge").pending_txn_id == 0U);
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("an acknowledged transaction whose completion cannot be committed is resent unchanged",
+         "[appservice][r01][integration][sqlite]")
+{
+    GIVEN("a SQLite-backed runtime whose cursor-completion write will fail once the appservice acknowledges")
+    {
+        auto mock = MockAppservice{};
+        auto const registration =
+            write_registration("bridge", "http://127.0.0.1:" + std::to_string(mock.port()), every_room_namespaces);
+        auto const sqlite_path = unique_path("merovingian-as-delivery-ack-commit", ".sqlite3");
+        {
+            auto started = merovingian::homeserver::start_client_server(config_for({registration}, sqlite_path));
+            REQUIRE(started.started);
+            auto& runtime = started.runtime;
+            auto clock = SteppedClock{};
+            auto const token = register_alice(runtime);
+            auto const room_id = create_room(runtime, token);
+            drain_until_idle(runtime, clock);
+            auto const baseline = mock.requests().size();
+            send_message(runtime, token, room_id, "msg-A");
+            // The pre-send cursor write sets pending_txn_id; only the completion
+            // write clears it to 0, so this fails the completion alone.
+            auto fault = merovingian::tests::SqliteInsertFault{sqlite_path, "appservice_txn_cursor",
+                                                               "r01_fail_completion", "NEW.pending_txn_id = '0'"};
+
+            WHEN("the appservice acknowledges, the completion fails, and the queue drains again after the fault clears")
+            {
+                std::ignore = drain_once(runtime, clock.advance());
+                auto const pending_after_ack = merovingian::database::find_appservice_txn_cursor(
+                                                   runtime.homeserver.database.persistent_store, "bridge")
+                                                   .pending_txn_id;
+                fault.clear();
+                drain_until_idle(runtime, clock);
+                auto const carrying_a = [&]() {
+                    auto out = std::vector<CapturedRequest>{};
+                    for (auto const& request : requests_after(mock, baseline, true))
+                    {
+                        if (!messages_in(request, {"msg-A"}).empty())
+                        {
+                            out.push_back(request);
+                        }
+                    }
+                    return out;
+                }();
+
+                THEN("the transaction stayed pending and was resent under the same ID with the same body")
+                {
+                    REQUIRE(pending_after_ack != 0U);
+                    REQUIRE(carrying_a.size() == 2U);
+                    REQUIRE(carrying_a.front().target == carrying_a.back().target);
+                    REQUIRE(carrying_a.front().body == carrying_a.back().body);
+                    REQUIRE(txn_id_of(carrying_a.front()) == pending_after_ack);
+                }
+            }
+        }
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("a transaction whose cursor cannot be written before sending is not sent",
+         "[appservice][r01][integration][sqlite]")
+{
+    GIVEN("a SQLite-backed runtime whose pre-send cursor write will fail")
+    {
+        auto mock = MockAppservice{};
+        auto const registration =
+            write_registration("bridge", "http://127.0.0.1:" + std::to_string(mock.port()), every_room_namespaces);
+        auto const sqlite_path = unique_path("merovingian-as-delivery-presend", ".sqlite3");
+        {
+            auto started = merovingian::homeserver::start_client_server(config_for({registration}, sqlite_path));
+            REQUIRE(started.started);
+            auto& runtime = started.runtime;
+            auto clock = SteppedClock{};
+            auto const token = register_alice(runtime);
+            auto const room_id = create_room(runtime, token);
+            drain_until_idle(runtime, clock);
+            auto const baseline = mock.requests().size();
+            send_message(runtime, token, room_id, "msg-A");
+            auto fault = merovingian::tests::SqliteInsertFault{sqlite_path, "appservice_txn_cursor", "r01_fail_presend",
+                                                               "NEW.pending_txn_id <> '0'"};
+
+            WHEN("the queue is drained while the write fails, then again after it clears")
+            {
+                auto const delay = drain_once(runtime, clock.advance());
+                auto const requests_during_fault = mock.requests().size();
+                auto const still_queued = !runtime.homeserver.database.persistent_store.appservice_outbox.empty();
+                fault.clear();
+                drain_until_idle(runtime, clock);
+                auto delivered = std::size_t{0U};
+                for (auto const& request : requests_after(mock, baseline, true))
+                {
+                    delivered += messages_in(request, {"msg-A"}).size();
+                }
+
+                THEN("nothing was sent during the fault, the drain backed off, and the event was delivered once after")
+                {
+                    REQUIRE(requests_during_fault == baseline);
+                    REQUIRE(still_queued);
+                    REQUIRE(delay > 0ms);
+                    REQUIRE(delivered == 1U);
+                }
             }
         }
         std::filesystem::remove(sqlite_path);

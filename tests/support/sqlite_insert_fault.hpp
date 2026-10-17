@@ -28,12 +28,16 @@ struct SqliteCloser final
 
 // R02: makes every INSERT into one table of the server's database file fail
 // from a second connection, so the server's own transaction aborts and rolls
-// back exactly as a failed commit would. clear() lifts the fault so a client
-// retry can succeed; the destructor lifts it too.
+// back exactly as a failed commit would. A non-empty `when` limits the fault to
+// rows matching that SQL condition over NEW (for example
+// "NEW.pending_txn_id = '0'"), so one of several writes to the same table can
+// be failed on its own. clear() lifts the fault so a client retry can succeed;
+// the destructor lifts it too.
 class SqliteInsertFault final
 {
 public:
-    SqliteInsertFault(std::filesystem::path const& path, std::string_view table, std::string_view name)
+    SqliteInsertFault(std::filesystem::path const& path, std::string_view table, std::string_view name,
+                      std::string_view when = {})
         : drop_sql_{"DROP TRIGGER IF EXISTS " + std::string{name}}
     {
         auto* raw_connection = static_cast<sqlite3*>(nullptr);
@@ -41,8 +45,9 @@ public:
         connection_.reset(raw_connection);
         REQUIRE(status == SQLITE_OK);
         REQUIRE(connection_ != nullptr);
-        REQUIRE(execute("CREATE TRIGGER " + std::string{name} + " BEFORE INSERT ON " + std::string{table} +
-                        " BEGIN SELECT RAISE(ABORT, 'injected r02 write failure'); END"));
+        auto const condition = when.empty() ? std::string{} : " WHEN " + std::string{when};
+        REQUIRE(execute("CREATE TRIGGER " + std::string{name} + " BEFORE INSERT ON " + std::string{table} + condition +
+                        " BEGIN SELECT RAISE(ABORT, 'injected write failure'); END"));
         active_ = true;
     }
 
