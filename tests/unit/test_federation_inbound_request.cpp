@@ -16,6 +16,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
@@ -3802,8 +3803,9 @@ SCENARIO("A /send response reports a retained PDU as handled and a dropped one a
         auto const retained = GENERATE(true, false);
         CAPTURE(retained);
         auto event_id = std::string{};
-        runtime.pdu_sink = [&event_id, retained](merovingian::federation::InboundPduEnvelope const& env)
-            -> merovingian::federation::PduIngestionResult {
+        runtime.pdu_sink =
+            [&event_id, retained](
+                merovingian::federation::InboundPduEnvelope const& env) -> merovingian::federation::PduIngestionResult {
             event_id = env.event_id;
             return {retained ? merovingian::federation::PduIngestionStatus::deferred
                              : merovingian::federation::PduIngestionStatus::missing_prev_state,
@@ -3826,7 +3828,7 @@ SCENARIO("A /send response reports a retained PDU as handled and a dropped one a
                     return member.key == "pdus";
                 });
                 REQUIRE(pdus_member != root->end());
-                auto const* pdus = std::get_if<merovingian::canonicaljson::Object>(&pdus_member->value.storage());
+                auto const* pdus = std::get_if<merovingian::canonicaljson::Object>(&pdus_member->value->storage());
                 REQUIRE(pdus != nullptr);
                 auto const entry = std::ranges::find_if(*pdus, [&](auto const& member) {
                     return member.key == event_id;
@@ -3836,7 +3838,7 @@ SCENARIO("A /send response reports a retained PDU as handled and a dropped one a
                     {
                         return std::nullopt;
                     }
-                    auto const* fields = std::get_if<merovingian::canonicaljson::Object>(&entry->value.storage());
+                    auto const* fields = std::get_if<merovingian::canonicaljson::Object>(&entry->value->storage());
                     if (fields == nullptr)
                     {
                         return std::nullopt;
@@ -3848,7 +3850,7 @@ SCENARIO("A /send response reports a retained PDU as handled and a dropped one a
                     {
                         return std::nullopt;
                     }
-                    auto const* text = std::get_if<std::string>(&error->value.storage());
+                    auto const* text = std::get_if<std::string>(&error->value->storage());
                     return text == nullptr ? std::nullopt : std::optional<std::string>{*text};
                 }();
                 if (retained)

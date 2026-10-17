@@ -159,8 +159,8 @@ SCENARIO("A retained PDU is rebuilt into the envelope it would have been ingeste
 
         WHEN("the room version is not one this server knows")
         {
-            auto const rebuilt =
-                merovingian::federation::rebuild_inbound_pdu_envelope(pdu_json, "no-such-version", "remote.example.org");
+            auto const rebuilt = merovingian::federation::rebuild_inbound_pdu_envelope(pdu_json, "no-such-version",
+                                                                                       "remote.example.org");
 
             THEN("there is no envelope")
             {

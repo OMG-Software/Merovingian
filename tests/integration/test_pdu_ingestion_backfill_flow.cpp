@@ -1730,7 +1730,7 @@ SCENARIO("ingest_pdu_event rejects a /state_ids response just above the configur
 
                 THEN("the PDU remains unresolved instead of materialising an oversized snapshot")
                 {
-                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                    REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
                 THEN("the /state_ids response is checked against the configured cap")
                 {
@@ -1839,9 +1839,9 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a forged eve
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
-                THEN("the PDU is rejected with missing_prev_state")
+                THEN("the PDU is retained for a retry (deferred), not stored")
                 {
-                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                    REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
 
                 THEN("the forged snapshot event is not stored")
@@ -1957,9 +1957,9 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing an event fro
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
-                THEN("the PDU is rejected with missing_prev_state because the snapshot is malformed")
+                THEN("the PDU is retained for a retry (deferred), not stored because the snapshot is malformed")
                 {
-                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                    REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
 
                 THEN("the foreign-room event was not used as state in room A")
@@ -2087,9 +2087,9 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a previously
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
-                THEN("the PDU is rejected with missing_prev_state because the snapshot is malformed")
+                THEN("the PDU is retained for a retry (deferred), not stored because the snapshot is malformed")
                 {
-                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                    REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
 
                 THEN("the rejected event was not used as state for the backfilled event")
@@ -2221,9 +2221,9 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot with duplicate (type, s
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
-                THEN("the PDU is rejected with missing_prev_state because the snapshot is malformed")
+                THEN("the PDU is retained for a retry (deferred), not stored because the snapshot is malformed")
                 {
-                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                    REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
 
                 THEN("the backfilled event was not stored from the malformed snapshot")
@@ -2344,9 +2344,9 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a non-state 
             {
                 auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
 
-                THEN("the PDU is rejected with missing_prev_state because the snapshot is malformed")
+                THEN("the PDU is retained for a retry (deferred), not stored because the snapshot is malformed")
                 {
-                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                    REQUIRE(result.status == PduIngestionStatus::deferred);
                 }
 
                 THEN("the backfilled event was not stored from the malformed snapshot")
@@ -2837,9 +2837,9 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
             },
                                                    requests);
 
-            THEN("the PDU is held for missing state rather than accepted on the outlier's auth_events")
+            THEN("the PDU is retained for a retry rather than accepted on the outlier's auth_events")
             {
-                REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                REQUIRE(result.status == PduIngestionStatus::deferred);
             }
 
             THEN("the server asked the origin for the state at the outlier")

@@ -11,6 +11,7 @@
 // fail the whole transaction).
 
 #include "../support/master_key.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
@@ -29,9 +30,11 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -396,8 +399,7 @@ SCENARIO("A PDU whose history cannot be fetched is retained and not stored", "[p
     }
 }
 
-SCENARIO("A retained PDU is accepted once the event it was waiting for has arrived",
-         "[pdu_ingestion][federation][r03]")
+SCENARIO("A retained PDU is accepted once the event it was waiting for has arrived", "[pdu_ingestion][federation][r03]")
 {
     GIVEN("a runtime holding a retained PDU whose parent has not arrived")
     {
@@ -425,9 +427,10 @@ SCENARIO("A retained PDU is accepted once the event it was waiting for has arriv
 
             THEN("the retained PDU is in the events table as accepted")
             {
-                auto const it = std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& e) {
-                    return e.event_id == child.event_id;
-                });
+                auto const it =
+                    std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& e) {
+                        return e.event_id == child.event_id;
+                    });
                 REQUIRE(it != store.events.end());
                 REQUIRE(it->status == "accepted");
             }
@@ -723,7 +726,8 @@ SCENARIO("A PDU is not retained once the retained set is full", "[pdu_ingestion]
         {
             for (auto i = std::size_t{0U}; i < merovingian::database::max_deferred_pdus_per_room; ++i)
             {
-                rows.push_back({"$fill" + std::to_string(i), room_id, deferred_pdu_origin, "{}", 1000, 0U});
+                rows.push_back(
+                    {"$fill" + std::to_string(i), room_id, std::string{deferred_pdu_origin}, "{}", 1000, 0U});
             }
         }
         else if (limit == "in total")
@@ -731,12 +735,12 @@ SCENARIO("A PDU is not retained once the retained set is full", "[pdu_ingestion]
             for (auto i = std::size_t{0U}; i < merovingian::database::max_deferred_pdus_total; ++i)
             {
                 rows.push_back({"$fill" + std::to_string(i), "!other" + std::to_string(i % 50U) + ":local.example.org",
-                                deferred_pdu_origin, "{}", 1000, 0U});
+                                std::string{deferred_pdu_origin}, "{}", 1000, 0U});
             }
         }
         else
         {
-            rows.push_back({"$fill", "!other:local.example.org", deferred_pdu_origin,
+            rows.push_back({"$fill", "!other:local.example.org", std::string{deferred_pdu_origin},
                             std::string(merovingian::database::max_deferred_pdu_json_bytes, 'x'), 1000, 0U});
         }
         auto const rows_before = rows.size();
@@ -758,6 +762,69 @@ SCENARIO("A PDU is not retained once the retained set is full", "[pdu_ingestion]
             }
         }
 
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("The retry job places a retained PDU as soon as its parent arrives, and detaches from the runtime on stop",
+         "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime with a started retry job and a retained PDU whose parent has not arrived")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!job:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+        auto const parent = make_sendable_pdu(room_id, "parent", room_id + ":member", 100);
+        auto const child = make_sendable_pdu(room_id, "child", parent.event_id, 200);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, child).status ==
+                PduIngestionStatus::deferred);
+
+        auto job = merovingian::homeserver::DeferredPduRetryJob{started.runtime};
+        REQUIRE(job.start());
+
+        WHEN("the parent is ingested and the job is left to run")
+        {
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, parent).status ==
+                    PduIngestionStatus::accepted);
+            auto placed = false;
+            for (auto i = 0; i < 200 && !placed; ++i)
+            {
+                {
+                    auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{started.runtime.mutex};
+                    placed = stores_event(started.runtime.database.persistent_store, child.event_id) &&
+                             started.runtime.database.persistent_store.deferred_pdus.empty();
+                }
+                if (!placed)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+            }
+
+            THEN("the retained PDU is stored and its deferral removed without any explicit retry call")
+            {
+                REQUIRE(placed);
+            }
+        }
+
+        WHEN("the job is stopped")
+        {
+            job.stop();
+
+            THEN("the runtime no longer holds a wake hook that points at it")
+            {
+                auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{started.runtime.mutex};
+                REQUIRE_FALSE(static_cast<bool>(started.runtime.deferred_pdu_retry_wake));
+            }
+        }
+
+        job.stop();
         std::filesystem::remove(path);
     }
 }

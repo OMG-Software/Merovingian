@@ -770,7 +770,7 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
                         "initial_schema");
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "appservice_outbox");
+                        "deferred_pdus");
             }
         }
     }

@@ -4063,8 +4063,8 @@ SCENARIO("The store retains deferred PDUs, one row per event, inside fixed bound
     {
         auto store = merovingian::database::PersistentStore{};
         auto const make_row = [](std::string event_id, std::string room_id, std::size_t json_bytes = 2U) {
-            return PersistentDeferredPdu{std::move(event_id), std::move(room_id), "remote.example.org",
-                                         std::string(json_bytes, 'x'), 1000, 0U};
+            return PersistentDeferredPdu{
+                std::move(event_id), std::move(room_id), "remote.example.org", std::string(json_bytes, 'x'), 1000, 0U};
         };
 
         WHEN("a PDU is retained, then retained again with a higher attempt count and a later receive time")
@@ -4133,8 +4133,8 @@ SCENARIO("The store retains deferred PDUs, one row per event, inside fixed bound
             for (auto i = std::size_t{0U}; i < merovingian::database::max_deferred_pdus_total; ++i)
             {
                 REQUIRE(merovingian::database::upsert_deferred_pdu(
-                            store, make_row("$fill" + std::to_string(i), "!room" + std::to_string(i % 50U) + ":x.org")) ==
-                        DeferredPduUpsert::inserted);
+                            store, make_row("$fill" + std::to_string(i), "!room" + std::to_string(i % 50U) +
+                                                                             ":x.org")) == DeferredPduUpsert::inserted);
             }
             auto const refused =
                 merovingian::database::upsert_deferred_pdu(store, make_row("$extra", "!brand-new:example.org"));
@@ -4148,10 +4148,12 @@ SCENARIO("The store retains deferred PDUs, one row per event, inside fixed bound
 
         WHEN("the retained PDUs already hold the most JSON they may")
         {
-            REQUIRE(merovingian::database::upsert_deferred_pdu(
-                        store, make_row("$big", "!big:example.org", merovingian::database::max_deferred_pdu_json_bytes)) ==
-                    DeferredPduUpsert::inserted);
-            auto const refused = merovingian::database::upsert_deferred_pdu(store, make_row("$one", "!big:example.org"));
+            REQUIRE(
+                merovingian::database::upsert_deferred_pdu(
+                    store, make_row("$big", "!big:example.org", merovingian::database::max_deferred_pdu_json_bytes)) ==
+                DeferredPduUpsert::inserted);
+            auto const refused =
+                merovingian::database::upsert_deferred_pdu(store, make_row("$one", "!big:example.org"));
 
             THEN("a further PDU is refused however small it is")
             {
