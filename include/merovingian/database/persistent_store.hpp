@@ -1555,6 +1555,18 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
+// R02: queues every message (with the per-recipient age and count evictions of
+// `enqueue_to_device_message`) and records `record` as the client's
+// send-to-device transaction in ONE backend transaction. Either all of it is
+// durable and mirrored in memory, or none of it is and the store is unchanged
+// (stream ids are consumed, never reused), so a failed request leaves the
+// client free to retry the same transaction ID. An empty `messages` records the
+// transaction alone. Returns true without writing when the transaction is
+// already recorded: the request that recorded it committed its messages with
+// it. Returns false for an invalid message or record, or a failed commit.
+[[nodiscard]] auto enqueue_to_device_messages_with_client_txn(PersistentStore& store,
+                                                              std::vector<PersistentToDeviceMessage> messages,
+                                                              PersistentClientTxnRecord record) -> bool;
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;
