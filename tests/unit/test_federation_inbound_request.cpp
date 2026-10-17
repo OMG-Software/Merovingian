@@ -17,6 +17,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -3775,6 +3776,90 @@ SCENARIO("verify_inbound_federation_signature always performs the crypto check "
             THEN("the worker fast path still accepts it without re-verifying")
             {
                 REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md, "Transactions": the 200 response maps each PDU to
+// its processing result, and "if no error is present, the PDU can be considered
+// successfully handled". A PDU this server holds for a retry is handled; one it
+// could neither process nor keep must say so, because the sender will not send
+// it again.
+SCENARIO("A /send response reports a retained PDU as handled and a dropped one as an error",
+         "[federation][inbound][pdu][deferred][r03]")
+{
+    GIVEN("a transaction carrying one validly signed PDU whose history this server lacks")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"sender.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"sender-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+
+        auto const retained = GENERATE(true, false);
+        CAPTURE(retained);
+        auto event_id = std::string{};
+        runtime.pdu_sink = [&event_id, retained](merovingian::federation::InboundPduEnvelope const& env)
+            -> merovingian::federation::PduIngestionResult {
+            event_id = env.event_id;
+            return {retained ? merovingian::federation::PduIngestionStatus::deferred
+                             : merovingian::federation::PduIngestionStatus::missing_prev_state,
+                    "prev_event not yet known"};
+        };
+
+        WHEN("the sink reports the PDU as retained or as unresolvable and not retained")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the transaction is answered 200 and the PDU's entry has an error only when it was not retained")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE_FALSE(event_id.empty());
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const pdus_member = std::ranges::find_if(*root, [](auto const& member) {
+                    return member.key == "pdus";
+                });
+                REQUIRE(pdus_member != root->end());
+                auto const* pdus = std::get_if<merovingian::canonicaljson::Object>(&pdus_member->value.storage());
+                REQUIRE(pdus != nullptr);
+                auto const entry = std::ranges::find_if(*pdus, [&](auto const& member) {
+                    return member.key == event_id;
+                });
+                auto const error_text = [&]() -> std::optional<std::string> {
+                    if (entry == pdus->end())
+                    {
+                        return std::nullopt;
+                    }
+                    auto const* fields = std::get_if<merovingian::canonicaljson::Object>(&entry->value.storage());
+                    if (fields == nullptr)
+                    {
+                        return std::nullopt;
+                    }
+                    auto const error = std::ranges::find_if(*fields, [](auto const& field) {
+                        return field.key == "error";
+                    });
+                    if (error == fields->end())
+                    {
+                        return std::nullopt;
+                    }
+                    auto const* text = std::get_if<std::string>(&error->value.storage());
+                    return text == nullptr ? std::nullopt : std::optional<std::string>{*text};
+                }();
+                if (retained)
+                {
+                    REQUIRE_FALSE(error_text.has_value());
+                }
+                else
+                {
+                    REQUIRE(error_text.has_value());
+                    REQUIRE_FALSE(error_text->empty());
+                }
             }
         }
     }

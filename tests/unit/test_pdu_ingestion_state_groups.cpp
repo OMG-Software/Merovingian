@@ -17,16 +17,22 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <stop_token>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -199,6 +205,36 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     return env;
 }
 
+constexpr auto deferred_pdu_origin = std::string_view{"remote.example.org"};
+
+// A PDU as a remote server would send it: its event_id is the reference hash
+// of its JSON (retries rebuild the envelope from the JSON, so the two must
+// agree) and it names the server that sent it.
+[[nodiscard]] auto make_sendable_pdu(std::string const& room_id, std::string const& label,
+                                     std::string const& prev_event_id, std::int64_t ts) -> InboundPduEnvelope
+{
+    using namespace merovingian;
+
+    auto envelope = make_topic_pdu(room_id, label, prev_event_id, ts);
+    auto const parsed = canonicaljson::parse_lossless(envelope.json);
+    REQUIRE(parsed.error == canonicaljson::ParseError::none);
+    auto const* policy = rooms::find_room_version_policy(envelope.room_version);
+    REQUIRE(policy != nullptr);
+    auto const id = events::make_reference_hash_event_id(parsed.value, *policy);
+    REQUIRE_FALSE(id.event_id.empty());
+    envelope.event_id = id.event_id;
+    envelope.origin = std::string{deferred_pdu_origin};
+    return envelope;
+}
+
+[[nodiscard]] auto stores_event(merovingian::database::PersistentStore const& store, std::string const& event_id)
+    -> bool
+{
+    return std::ranges::any_of(store.events, [&](merovingian::database::PersistentEvent const& event) {
+        return event.event_id == event_id;
+    });
+}
+
 } // namespace
 
 SCENARIO("ingest_pdu_event resolves two concurrent state forks identically regardless of arrival order",
@@ -265,8 +301,8 @@ SCENARIO("ingest_pdu_event resolves two concurrent state forks identically regar
     }
 }
 
-SCENARIO("ingest_pdu_event rejects a PDU whose prev_event has no state group without storing it",
-         "[pdu_ingestion][state_groups]")
+SCENARIO("ingest_pdu_event does not store a PDU whose prev_event has no state group, and keeps nothing it cannot retry",
+         "[pdu_ingestion][state_groups][federation][r03]")
 {
     GIVEN("a fresh runtime seeded with room genesis")
     {
@@ -279,7 +315,7 @@ SCENARIO("ingest_pdu_event rejects a PDU whose prev_event has no state group wit
         auto const room_id = std::string{"!gap:local.example.org"};
         seed_room_with_genesis_state_group(started.runtime, room_id);
 
-        WHEN("a PDU whose prev_event was never recorded is ingested")
+        WHEN("a PDU whose prev_event was never recorded is ingested with no origin to backfill from")
         {
             auto const envelope =
                 make_topic_pdu(room_id, "$orphan:local.example.org", room_id + ":never-recorded", 100);
@@ -296,6 +332,429 @@ SCENARIO("ingest_pdu_event rejects a PDU whose prev_event has no state group wit
                 REQUIRE(std::ranges::none_of(events, [](merovingian::database::PersistentEvent const& e) {
                     return e.event_id == "$orphan:local.example.org";
                 }));
+            }
+
+            THEN("nothing is retained for a retry, because there is no server to retry against")
+            {
+                REQUIRE(started.runtime.database.persistent_store.deferred_pdus.empty());
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: server-server-api.md, "Transactions" -- the sender is told a PDU was
+// handled and does not send it again; "Gap filling" -- a server that lacks a
+// PDU's prev_events fetches them. A PDU this server cannot yet place must
+// therefore be kept and placed later, not dropped with a 200.
+SCENARIO("A PDU whose history cannot be fetched is retained and not stored", "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime seeded with room genesis that cannot reach any remote server")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!defer:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+
+        WHEN("a PDU naming a prev_event this server has never seen arrives from a remote server")
+        {
+            auto const envelope = make_sendable_pdu(room_id, "orphan", room_id + ":never-recorded", 100);
+            auto const result = merovingian::homeserver::ingest_pdu_event(started.runtime, envelope);
+            auto const& store = started.runtime.database.persistent_store;
+
+            THEN("it is reported as deferred, meaning retained and to be retried")
+            {
+                REQUIRE(result.status == PduIngestionStatus::deferred);
+            }
+
+            THEN("the event is not in the events table")
+            {
+                REQUIRE_FALSE(stores_event(store, envelope.event_id));
+            }
+
+            THEN("exactly one deferral names it, with the room, the origin and the PDU as received")
+            {
+                REQUIRE(store.deferred_pdus.size() == 1U);
+                auto const& row = store.deferred_pdus.front();
+                REQUIRE(row.event_id == envelope.event_id);
+                REQUIRE(row.room_id == room_id);
+                REQUIRE(row.origin == deferred_pdu_origin);
+                REQUIRE(row.pdu_json == envelope.json);
+                REQUIRE(row.received_at_ms > 0);
+                REQUIRE(row.attempts == 0U);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A retained PDU is accepted once the event it was waiting for has arrived",
+         "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime holding a retained PDU whose parent has not arrived")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!arrive:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+        auto const parent = make_sendable_pdu(room_id, "parent", room_id + ":member", 100);
+        auto const child = make_sendable_pdu(room_id, "child", parent.event_id, 200);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, child).status ==
+                PduIngestionStatus::deferred);
+
+        WHEN("the parent is accepted and the retry job then runs")
+        {
+            auto const parent_result = merovingian::homeserver::ingest_pdu_event(started.runtime, parent);
+            REQUIRE(parent_result.status == PduIngestionStatus::accepted);
+            std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            auto const& store = started.runtime.database.persistent_store;
+
+            THEN("the retained PDU is in the events table as accepted")
+            {
+                auto const it = std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& e) {
+                    return e.event_id == child.event_id;
+                });
+                REQUIRE(it != store.events.end());
+                REQUIRE(it->status == "accepted");
+            }
+
+            THEN("the deferral is gone")
+            {
+                REQUIRE(store.deferred_pdus.empty());
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A retained PDU survives a restart", "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a database file holding a retained PDU written by a runtime that has since stopped")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto const room_id = std::string{"!restart:local.example.org"};
+        auto event_id = std::string{};
+        {
+            auto first = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+            REQUIRE(first.started);
+            merovingian::homeserver::wire_federation_callbacks(first.runtime);
+            first.runtime.discovery_network.reset();
+            first.runtime.cached_discovery.reset();
+            seed_room_with_genesis_state_group(first.runtime, room_id);
+            auto const envelope = make_sendable_pdu(room_id, "orphan", room_id + ":never-recorded", 100);
+            event_id = envelope.event_id;
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(first.runtime, envelope).status ==
+                    PduIngestionStatus::deferred);
+        }
+
+        WHEN("the runtime is started again on the same database file")
+        {
+            auto second = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+            REQUIRE(second.started);
+
+            THEN("the retained PDU is loaded with its room, origin and attempt count")
+            {
+                auto const& rows = second.runtime.database.persistent_store.deferred_pdus;
+                REQUIRE(rows.size() == 1U);
+                REQUIRE(rows.front().event_id == event_id);
+                REQUIRE(rows.front().room_id == room_id);
+                REQUIRE(rows.front().origin == deferred_pdu_origin);
+                REQUIRE(rows.front().attempts == 0U);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A retained PDU that has waited too long or been tried too often is dropped and audited",
+         "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime holding a retained PDU")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!expire:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+        auto const envelope = make_sendable_pdu(room_id, "orphan", room_id + ":never-recorded", 100);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, envelope).status ==
+                PduIngestionStatus::deferred);
+        auto& row = started.runtime.database.persistent_store.deferred_pdus.front();
+
+        auto const limit = GENERATE(as<std::string>{}, "attempts", "age");
+        CAPTURE(limit);
+        if (limit == "attempts")
+        {
+            row.attempts = merovingian::database::max_deferred_pdu_attempts;
+        }
+        else
+        {
+            row.received_at_ms = 1;
+        }
+
+        WHEN("the retry job runs")
+        {
+            std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+
+            THEN("the deferral is gone and the event was never stored")
+            {
+                REQUIRE(started.runtime.database.persistent_store.deferred_pdus.empty());
+                REQUIRE_FALSE(stores_event(started.runtime.database.persistent_store, envelope.event_id));
+            }
+
+            THEN("the loss is audited")
+            {
+                REQUIRE(std::ranges::any_of(started.runtime.database.audit_events, [](auto const& event) {
+                    return event.event_type == "federation.pdu_deferral_expired";
+                }));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A retained PDU that still cannot be placed waits out a back-off before it is tried again",
+         "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime holding a retained PDU and no other work for the retry job")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!backoff:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+
+        WHEN("there is nothing retained")
+        {
+            auto const delay = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+
+            THEN("the job is told to look again in five minutes")
+            {
+                REQUIRE(delay == std::chrono::minutes{5});
+            }
+        }
+
+        WHEN("the retry job runs twice in a row and the PDU is still unplaceable")
+        {
+            auto const envelope = make_sendable_pdu(room_id, "orphan", room_id + ":never-recorded", 100);
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, envelope).status ==
+                    PduIngestionStatus::deferred);
+            auto const first = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            auto const attempts_after_first = started.runtime.database.persistent_store.deferred_pdus.front().attempts;
+            auto const second = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            auto const& rows = started.runtime.database.persistent_store.deferred_pdus;
+
+            THEN("the first run counts one attempt and the second finds it not yet due")
+            {
+                REQUIRE(attempts_after_first == 1U);
+                REQUIRE(rows.size() == 1U);
+                REQUIRE(rows.front().attempts == 1U);
+            }
+
+            THEN("the job is asked back no sooner than 25 seconds and no later than the back-off cap")
+            {
+                REQUIRE(first >= std::chrono::seconds{25});
+                REQUIRE(first <= std::chrono::hours{1});
+                REQUIRE(second >= std::chrono::seconds{25});
+                REQUIRE(second <= std::chrono::hours{1});
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("Accepting the event a retained PDU waits for wakes the retry job and makes it due at once",
+         "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime whose retry job has already failed once on a retained PDU")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!wake:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+        auto const parent = make_sendable_pdu(room_id, "parent", room_id + ":member", 100);
+        auto const child = make_sendable_pdu(room_id, "child", parent.event_id, 200);
+        auto const unrelated = make_sendable_pdu(room_id, "unrelated", room_id + ":member", 300);
+        auto wakes = 0;
+        started.runtime.deferred_pdu_retry_wake = [&wakes]() {
+            ++wakes;
+        };
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, child).status ==
+                PduIngestionStatus::deferred);
+        std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+        REQUIRE(started.runtime.database.persistent_store.deferred_pdus.size() == 1U);
+        REQUIRE(wakes == 0);
+
+        WHEN("an unrelated PDU is accepted for the room")
+        {
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, unrelated).status ==
+                    PduIngestionStatus::accepted);
+            std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+
+            THEN("the job is not woken and the retained PDU keeps waiting out its back-off")
+            {
+                REQUIRE(wakes == 0);
+                REQUIRE(started.runtime.database.persistent_store.deferred_pdus.size() == 1U);
+                REQUIRE(started.runtime.database.persistent_store.deferred_pdus.front().attempts == 1U);
+            }
+        }
+
+        WHEN("the parent it names is accepted")
+        {
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, parent).status ==
+                    PduIngestionStatus::accepted);
+
+            THEN("the job is woken")
+            {
+                REQUIRE(wakes == 1);
+            }
+
+            AND_WHEN("the retry job runs straight away")
+            {
+                std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+
+                THEN("the retained PDU is placed without waiting for its back-off")
+                {
+                    REQUIRE(stores_event(started.runtime.database.persistent_store, child.event_id));
+                    REQUIRE(started.runtime.database.persistent_store.deferred_pdus.empty());
+                }
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("Ingesting the same unplaceable PDU again keeps a single retained copy", "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime that has already retained a PDU")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!again:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+        auto const envelope = make_sendable_pdu(room_id, "orphan", room_id + ":never-recorded", 100);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, envelope).status ==
+                PduIngestionStatus::deferred);
+        auto& first_row = started.runtime.database.persistent_store.deferred_pdus.front();
+        first_row.received_at_ms = 12345;
+
+        WHEN("the same PDU arrives again")
+        {
+            auto const result = merovingian::homeserver::ingest_pdu_event(started.runtime, envelope);
+            auto const& rows = started.runtime.database.persistent_store.deferred_pdus;
+
+            THEN("it is still reported as retained")
+            {
+                REQUIRE(result.status == PduIngestionStatus::deferred);
+            }
+
+            THEN("there is one row, and it keeps the time the PDU was first received")
+            {
+                REQUIRE(rows.size() == 1U);
+                REQUIRE(rows.front().received_at_ms == 12345);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A PDU is not retained once the retained set is full", "[pdu_ingestion][federation][r03]")
+{
+    GIVEN("a runtime whose retained set is at one of its limits")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        started.runtime.discovery_network.reset();
+        started.runtime.cached_discovery.reset();
+
+        auto const room_id = std::string{"!full:local.example.org"};
+        seed_room_with_genesis_state_group(started.runtime, room_id);
+        auto& rows = started.runtime.database.persistent_store.deferred_pdus;
+
+        auto const limit = GENERATE(as<std::string>{}, "per room", "in total", "bytes");
+        CAPTURE(limit);
+        if (limit == "per room")
+        {
+            for (auto i = std::size_t{0U}; i < merovingian::database::max_deferred_pdus_per_room; ++i)
+            {
+                rows.push_back({"$fill" + std::to_string(i), room_id, deferred_pdu_origin, "{}", 1000, 0U});
+            }
+        }
+        else if (limit == "in total")
+        {
+            for (auto i = std::size_t{0U}; i < merovingian::database::max_deferred_pdus_total; ++i)
+            {
+                rows.push_back({"$fill" + std::to_string(i), "!other" + std::to_string(i % 50U) + ":local.example.org",
+                                deferred_pdu_origin, "{}", 1000, 0U});
+            }
+        }
+        else
+        {
+            rows.push_back({"$fill", "!other:local.example.org", deferred_pdu_origin,
+                            std::string(merovingian::database::max_deferred_pdu_json_bytes, 'x'), 1000, 0U});
+        }
+        auto const rows_before = rows.size();
+
+        WHEN("another unplaceable PDU arrives")
+        {
+            auto const envelope = make_sendable_pdu(room_id, "orphan", room_id + ":never-recorded", 100);
+            auto const result = merovingian::homeserver::ingest_pdu_event(started.runtime, envelope);
+
+            THEN("it is reported as missing_prev_state, not retained")
+            {
+                REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                REQUIRE(rows.size() == rows_before);
+            }
+
+            THEN("it is not stored either")
+            {
+                REQUIRE_FALSE(stores_event(started.runtime.database.persistent_store, envelope.event_id));
             }
         }
 
