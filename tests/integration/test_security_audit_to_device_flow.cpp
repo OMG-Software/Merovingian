@@ -625,7 +625,7 @@ SCENARIO("sendToDevice to local and remote recipients is not recorded when the l
 SCENARIO("sendToDevice commits nothing locally when a remote EDU cannot be queued",
          "[security_audit_to_device][to_device][r02][integration][sqlite]")
 {
-    GIVEN("a local recipient, a remote recipient and no dispatch worker")
+    GIVEN("a local recipient, a remote recipient and an outbound queue that cannot persist a transaction")
     {
         auto client = merovingian::http::OutboundClient{};
         auto const sqlite = ToDeviceSqliteFixture{};
@@ -634,7 +634,9 @@ SCENARIO("sendToDevice commits nothing locally when a remote EDU cannot be queue
         auto& runtime = started.runtime;
         auto const alice = register_device(runtime, "alice", "CorrectHorse7!");
         auto const bob = register_device(runtime, "bob", "CorrectHorse8!");
-        REQUIRE(runtime.homeserver.dispatch_worker == nullptr);
+        runtime.homeserver.dispatch_worker =
+            make_idle_dispatch_worker(client, runtime.homeserver.database.persistent_store);
+        auto fault = SqliteInsertFault{sqlite.database_path(), "federation_transactions", "r02_remote_queue"};
         auto const body = std::string{R"({"messages":{"@bob:example.org":{")"} + bob.device_id +
                           R"(":{"value":"local"}},"@carol:remote.example.org":{"CAROL1":{"value":"remote"}}}})";
 
@@ -650,10 +652,9 @@ SCENARIO("sendToDevice commits nothing locally when a remote EDU cannot be queue
                 REQUIRE_FALSE(txn_recorded(runtime, alice.user_id, "r02-remote"));
             }
 
-            AND_WHEN("a dispatch worker is available and Alice retries with the same transaction ID")
+            AND_WHEN("the fault clears and Alice retries with the same transaction ID")
             {
-                runtime.homeserver.dispatch_worker =
-                    make_idle_dispatch_worker(client, runtime.homeserver.database.persistent_store);
+                fault.clear();
                 auto const retried = send_to_device(runtime, alice.access_token, "r02-remote", body);
 
                 THEN("the retry is processed and delivers both the local message and the remote EDU")
