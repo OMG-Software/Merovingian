@@ -6883,9 +6883,13 @@ namespace
     }
 
     // Deliver a to-device message to every named target user/device pair.
-    // Local targets are enqueued directly for /sync delivery. Remote targets
-    // are grouped by destination server and sent as m.direct_to_device EDUs
-    // via the federation dispatch worker.
+    // Remote targets are grouped by destination server and sent as
+    // m.direct_to_device EDUs via the federation dispatch worker, first. Local
+    // targets are then enqueued for /sync delivery in one transaction with the
+    // client transaction record. The request answers 200 only when both
+    // succeeded; otherwise it answers 500 M_UNKNOWN and records nothing local,
+    // so a retry with the same transaction ID is processed, not replayed (R02,
+    // ADR-0164).
     [[nodiscard]] auto handle_send_to_device(ClientServerRuntime& rt, std::string_view event_type,
                                              std::string_view txn_id, std::string_view sender, std::string_view body)
         -> LocalHttpResponse
@@ -6912,6 +6916,9 @@ namespace
 
         // remote_messages: server → { user_id → { device_id → content_json } }
         auto remote_messages = std::map<std::string, std::map<std::string, std::map<std::string, std::string>>>{};
+        // Local deliveries, collected first and committed together with the
+        // transaction record once every remote EDU is queued (R02).
+        auto local_messages = std::vector<database::PersistentToDeviceMessage>{};
 
         for (auto const& user_entry : *messages)
         {
@@ -6954,9 +6961,8 @@ namespace
                         {
                             if (dev.user_id == user_entry.key)
                             {
-                                std::ignore =
-                                    push_to_device_message(rt, {0U, std::string{sender}, user_entry.key, dev.device_id,
-                                                                std::string{event_type}, *content});
+                                local_messages.push_back({0U, std::string{sender}, user_entry.key, dev.device_id,
+                                                          std::string{event_type}, *content});
                             }
                         }
                     }
@@ -6973,8 +6979,8 @@ namespace
                         {
                             continue;
                         }
-                        std::ignore = push_to_device_message(rt, {0U, std::string{sender}, user_entry.key,
-                                                                  device_entry.key, std::string{event_type}, *content});
+                        local_messages.push_back({0U, std::string{sender}, user_entry.key, device_entry.key,
+                                                  std::string{event_type}, *content});
                     }
                 }
                 else
@@ -6984,7 +6990,13 @@ namespace
             }
         }
 
-        // Send m.direct_to_device EDUs to remote servers.
+        // R02: remote first, then local. The EDUs go out before anything local is
+        // committed, and a destination that cannot be queued fails the request
+        // with nothing committed and the transaction unrecorded. A retry sends the
+        // EDUs again under the same `message_id` (the client transaction ID), which
+        // the receiving server uses for idempotence, so a repeat is harmless; a
+        // lost remote message would not be, which is why a queueing failure is
+        // reported rather than swallowed.
         if (!remote_messages.empty())
         {
             for (auto& [server, user_map] : remote_messages)
@@ -7005,17 +7017,31 @@ namespace
                 edu_content.push_back(json_member("type", json_str(std::string{event_type})));
                 edu_content.push_back(json_member("messages", json_obj(std::move(messages_obj))));
                 auto const edu_body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(edu_content)});
-                if (edu_body.error == canonicaljson::CanonicalJsonError::none)
+                if (edu_body.error != canonicaljson::CanonicalJsonError::none ||
+                    !dispatch_edu_to_server(rt.homeserver, server, "m.direct_to_device", edu_body.output))
                 {
-                    std::ignore = dispatch_edu_to_server(rt.homeserver, server, "m.direct_to_device", edu_body.output);
+                    return err(500U, "M_UNKNOWN", "The to-device message could not be queued for a remote server");
                 }
             }
         }
 
-        // Record this txn_id so retries receive the same empty response.
-        std::ignore =
-            database::store_client_txn(rt.homeserver.database.persistent_store,
-                                       {std::string{sender}, "", std::string{event_type}, std::string{txn_id}, ""});
+        // Commit every local delivery and this txn_id in one transaction, so a
+        // retry never finds the transaction recorded without its messages (or the
+        // messages queued twice). room_id is "" and event_id is empty for
+        // to-device entries. Nothing is recorded if the commit fails.
+        auto const queued_locally = !local_messages.empty();
+        if (!database::enqueue_to_device_messages_with_client_txn(
+                rt.homeserver.database.persistent_store, std::move(local_messages),
+                {std::string{sender}, "", std::string{event_type}, std::string{txn_id}, ""}))
+        {
+            return err(500U, "M_UNKNOWN", "The to-device message could not be stored");
+        }
+        // Wake parked /sync requests only after the commit, and only when a
+        // message was queued (ADR-0105: a discarded delivery changes nothing).
+        if (queued_locally)
+        {
+            std::ignore = ensure_sync_notifier(rt);
+        }
         return resp(200U, "{}");
     }
 

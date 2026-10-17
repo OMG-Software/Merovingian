@@ -752,6 +752,19 @@ value. Test fixtures that do not exercise persistence select it through
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
   and `PUT /sendToDevice` requests.
+- `PUT /sendToDevice` writes its local `to_device_messages` rows and its
+  `client_txn_ids` row in ONE backend transaction
+  (`database::enqueue_to_device_messages_with_client_txn`, R02, ADR-0164). The
+  per-recipient age and count evictions (CSAZ-10, ADR-0117) are part of that
+  transaction: `enqueue_to_device_message` and the batched function share one
+  prepare step that builds the DELETE/INSERT statements without touching
+  memory, and the in-memory mirror is updated only after the commit succeeds.
+  A failed commit leaves the store unchanged and the transaction unrecorded, so
+  the handler answers `500 M_UNKNOWN` and a retry with the same transaction ID
+  is processed rather than replayed. Stream ids are allocated before the commit
+  (`allocate_sync_stream_id` persists the watermark itself); a failed commit
+  skips them, it never reuses them. A request with no local recipient records
+  the transaction alone through the same function.
 - `database::reload_room(store, room_id)` re-reads a single room's rows (room,
   membership, invites, events, state, and the event-relation tables scoped to
   that room's events) from the backing database and replaces this store's
