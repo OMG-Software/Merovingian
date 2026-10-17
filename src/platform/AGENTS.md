@@ -34,6 +34,11 @@ This module is security-critical. Changes here affect the server's attack surfac
    the listeners bind. The federation worker has its own path (`apply_worker_hardening`);
    see `docs/platform-support.md` and ADR-0041.
 
+   OpenBSD `unveil(2)` calls are planned in full by `openbsd_unveil_rules()` before the first
+   is made, and none is made if one would fail (ADR-0162): the first call hides the rest of the
+   filesystem and none can be undone. Apply any new sequence of irreversible restrictions the
+   same way.
+
 4. **File paths from config must be validated** before use in `file_metadata.cpp`.
    Never pass user-supplied paths to `open()` or `stat()` without validation.
 

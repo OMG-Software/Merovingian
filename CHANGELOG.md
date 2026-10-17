@@ -57,7 +57,21 @@ The federation worker's room reloads now also read one consistent snapshot.
   file aside, then retries the same signed bytes both ways round (worker first, then main;
   main first, then the recovered worker). RED on Linux: `edu_deliveries 2 == 1`, the CI
   failure reproduced off OpenBSD.
-- **FIXED (OpenBSD CI, SQLite):** the worker's read-only room reload failed when one of
+- **FIXED (OpenBSD, unveil):** a failed `unveil(2)` left the process half-sandboxed. The
+  OpenBSD runtime profile called `unveil` path by path and stopped at the first failure, but
+  the first call had already hidden the rest of the filesystem, and no call can be undone.
+  OpenBSD has no `/var/lib`, so unveiling `/var/lib/merovingian` failed with `ENOENT` after
+  `/usr` and `/etc/merovingian` were unveiled. The federation worker applies this profile
+  after loading its store when `federation.worker.apply_hardening=false`, so every later room
+  reload failed at open (`room_snapshot.read_failed stage=open`, 6 of 6 on PR #510's OpenBSD
+  run). This, not the SQLite race below, is why the room fell back to main on OpenBSD.
+  `openbsd_unveil_rules()` now plans every call first, and none is made unless every path, or
+  the directory it would be created in, exists (ADR-0162). Main still refuses to start when
+  the control fails. Tests: `[unveil]` in `test_runtime_hardening.cpp` checks the planned
+  calls and that a missing `/var/lib` plans none. The OpenBSD-only apply code was
+  syntax-checked off OpenBSD with stub `unveil`/`pledge` declarations; it has not run on
+  OpenBSD.
+- **FIXED (SQLite, read-only connections):** a read-only read could fail when one of
   main's commits landed between SQLite's two hot-journal checks. SQLite checks that the
   journal exists and then that no process holds RESERVED; a writer that deletes its journal
   and unlocks in between makes its own commit look like a crash (ticket #3883). A read-write
@@ -68,10 +82,8 @@ The federation worker's room reloads now also read one consistent snapshot.
   connection to roll back. This covers the room reload, the worker's startup load, and
   media blob and audit reads. A failed room snapshot logs `room_snapshot.read_failed` with
   its stage and extended SQLite code, and a connection whose pragmas fail logs
-  `connection.rejected` with its code, so the next failure names its cause. The CI log
-  (`room.reload_failed`, then `federation_proxy.room_sync_failed_fallback`) carries no SQLite
-  code, so it does not prove this race was the one that fired there. It is the one SQLite
-  documents for this exact situation, and ADR-0157's fix had removed the other known cause.
+  `connection.rejected` with its code. That log line is what showed the OpenBSD reloads
+  failing at open, which turned out to be the `unveil` bug above rather than this race.
   Tests: `[sqlite-false-hot-journal]` in `test_sqlite_security_policy.cpp` puts a journal
   that looks hot beside the database and removes it 200 ms later, as the committing writer
   does; the room snapshot and the worker's store load now succeed, and a journal that stays

@@ -162,6 +162,7 @@
 * [0159 - Retry a journal that only looks hot on read-only SQLite reads, for a bounded time](0159-retry-a-false-hot-journal-on-read-only-sqlite-reads.md)
 * [0160 - Main records every completed federation transaction, whichever process ran it](0160-main-records-every-completed-federation-transaction.md)
 * [0161 - A room reload reads one snapshot; the worker's whole-store load does not](0161-room-reloads-read-one-snapshot-the-whole-store-load-does-not.md)
+* [0162 - Plan every unveil(2) call before making the first, and make none if one would fail](0162-plan-every-unveil-call-before-making-the-first.md)
 
 ## Proposed Records
 

@@ -688,3 +688,51 @@ SCENARIO("apply_worker_hardening refuses to run the federation worker on platfor
     }
 }
 #endif
+
+// unveil(2): the first call hides the rest of the filesystem and no call can
+// be undone, so a call that fails halfway leaves the process able to see only
+// the paths before it. On OpenBSD CI the federation worker kept running with
+// /usr and /etc/merovingian visible and could no longer reopen its database.
+SCENARIO("OpenBSD unveil rules are planned in full before the first call, or not at all",
+         "[platform][hardening][unveil]")
+{
+    GIVEN("the default BSD hardening profile")
+    {
+        auto const profile = merovingian::platform::default_bsd_hardening_profile();
+
+        WHEN("every listed path, or the directory it would be created in, exists")
+        {
+            auto const rules = merovingian::platform::openbsd_unveil_rules(profile, [](std::string const& directory) {
+                return directory != "/var/lib/merovingian" && directory != "/var/run/merovingian";
+            });
+
+            THEN("every path is unveiled with its permissions, then the CA store, in order")
+            {
+                REQUIRE(rules.has_value());
+                auto expected = std::vector<merovingian::platform::UnveilRule>{};
+                for (auto const& path : profile.filesystem.read_only_paths)
+                {
+                    expected.push_back({path, "rx"});
+                }
+                for (auto const& path : profile.filesystem.writable_paths)
+                {
+                    expected.push_back({path, "rwc"});
+                }
+                expected.push_back({"/etc/ssl", "r"});
+                CHECK(*rules == expected);
+            }
+        }
+
+        WHEN("a writable path's parent directory is missing, as /var/lib is on OpenBSD")
+        {
+            auto const rules = merovingian::platform::openbsd_unveil_rules(profile, [](std::string const& directory) {
+                return !directory.starts_with("/var/lib");
+            });
+
+            THEN("no rule is planned, so nothing is unveiled")
+            {
+                CHECK_FALSE(rules.has_value());
+            }
+        }
+    }
+}

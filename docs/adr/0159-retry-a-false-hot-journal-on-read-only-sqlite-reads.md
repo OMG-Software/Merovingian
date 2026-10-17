@@ -6,9 +6,11 @@
 Technical Story: OpenBSD CI (runs 38952773715, 38968539347, both on PR #510) kept failing "main
 key-admission overload survives real worker socket HTTP and unchanged transaction retry" after
 ADR-0157: the federation worker's read-only room reload still failed (`room.reload_failed`), and
-the proxy fell back to main for the retried transaction. The CI log names no SQLite error code,
-so it does not prove which one fired. The race below can be reproduced deterministically, and it
-fails exactly that reload.
+the proxy fell back to main for the retried transaction. The CI log named no SQLite error code.
+The race below can be reproduced deterministically and fails exactly that kind of reload, so it
+was taken for the cause. It was not: once the reload logged its stage, CI showed every OpenBSD
+reload failing at open because a partially applied `unveil(2)` had hidden the database
+(ADR-0162). The race is still real on any platform, and this retry still addresses it.
 
 ## Context and Problem Statement
 

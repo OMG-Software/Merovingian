@@ -862,6 +862,14 @@ media-fetch-pool task.
 
 ## Platform hardening
 
+- **Check a sequence of irreversible restrictions in full before its first step.**
+  OpenBSD `unveil(2)` calls are planned by `openbsd_unveil_rules()`, and none is made unless
+  every path, or the directory it would be created in, exists.
+  Why: the first `unveil` hides the rest of the filesystem and cannot be undone, so a call
+  that failed partway left the federation worker running unable to see its own database
+  (PR #510 OpenBSD CI, ADR-0162).
+  Source: `src/platform/AGENTS.md`.
+
 - **Hardening is applied at startup, before any network socket is opened.**
   Why: this ordering closes the window during which the server would otherwise be reachable
   without seccomp/ASLR/other OS-level protections active — hardening that gets applied after

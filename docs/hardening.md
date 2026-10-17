@@ -633,7 +633,12 @@ profile.
 
 #### OpenBSD — `pledge(2)` + `unveil(2)`
 
-`apply_runtime_hardening_controls()` (called from `start_client_server()`) calls:
+`apply_runtime_hardening_controls()` (called from `start_client_server()`) first plans
+every `unveil(2)` call with `openbsd_unveil_rules()`. If any listed path is missing
+and so is the directory it would be created in, `unveil` would fail with `ENOENT`.
+In that case no call is made and the control reports failure. The first `unveil`
+hides the rest of the filesystem and cannot be undone, so a failure partway used to
+leave the process seeing only the paths before it (ADR-0162). The calls are:
 
 1. `unveil(path, "rx")` for every path in `filesystem.read_only_paths` (e.g.
    `/usr`, `/etc/merovingian`).

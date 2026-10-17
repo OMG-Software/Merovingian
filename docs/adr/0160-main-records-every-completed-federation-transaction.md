@@ -79,5 +79,6 @@ records its completions in main's ring**, and checks main's ring before running 
 
 ## Links
 
-* [ADR-0159](0159-retry-a-false-hot-journal-on-read-only-sqlite-reads.md) removes the most likely
-  reason a room's worker reload failed in CI; this ADR makes any reload failure harmless to dedupe.
+* [ADR-0162](0162-plan-every-unveil-call-before-making-the-first.md) removes the reason a room's
+  worker reload failed on OpenBSD CI, and [ADR-0159](0159-retry-a-false-hot-journal-on-read-only-sqlite-reads.md)
+  a SQLite race that can fail one anywhere. This ADR makes any reload failure harmless to dedupe.
