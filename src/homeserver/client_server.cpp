@@ -6983,10 +6983,13 @@ namespace
                                                   std::string{event_type}, *content});
                     }
                 }
-                else
+                else if (rt.homeserver.federation.config.enabled)
                 {
                     remote_messages[user_server][user_entry.key][device_entry.key] = *content;
                 }
+                // With federation disabled a remote recipient can never be
+                // reached: discard it like an unknown local recipient rather
+                // than fail the request, which the client would retry forever.
             }
         }
 

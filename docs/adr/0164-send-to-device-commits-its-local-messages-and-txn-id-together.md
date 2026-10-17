@@ -64,8 +64,11 @@ duplicate EDU the receiver discards.
 
 ### Negative Consequences
 
-* A request to a remote server while no dispatch worker exists (federation not
-  running) now fails with 500 instead of silently dropping the remote part.
+* A remote recipient whose EDU cannot be queued while federation is enabled now
+  fails the request with 500 instead of being silently dropped. With
+  `security.federation.enabled = false` a remote recipient can never be reached,
+  so it is discarded like an unknown local recipient and the request still
+  succeeds; failing it would only make the client retry forever.
 * One transaction can carry many statements for a wide `"*"` fan-out.
 * Stream ids allocated for a failed commit are skipped (never reused).
 

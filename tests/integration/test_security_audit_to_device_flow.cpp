@@ -710,6 +710,37 @@ SCENARIO("sendToDevice replays a recorded transaction without delivering again",
     }
 }
 
+SCENARIO("sendToDevice discards remote recipients when federation is disabled",
+         "[security_audit_to_device][to_device][r02][integration][sqlite]")
+{
+    GIVEN("a server with federation disabled and two local devices")
+    {
+        auto const sqlite = ToDeviceSqliteFixture{};
+        auto config = to_device_config(sqlite.database_path());
+        config.security().federation.enabled = false;
+        auto started = merovingian::homeserver::start_client_server(std::move(config));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_device(runtime, "alice", "CorrectHorse7!");
+        auto const bob = register_device(runtime, "bob", "CorrectHorse8!");
+
+        WHEN("Alice sends to Bob and to a user on another server")
+        {
+            auto const response =
+                send_to_device(runtime, alice.access_token, "r02-no-federation",
+                               R"({"messages":{"@bob:example.org":{")" + bob.device_id +
+                                   R"(":{"value":"x"}},"@carol:remote.example":{"CAROL":{"value":"y"}}}})");
+
+            THEN("the local message is delivered and the unreachable remote one is discarded, not retried forever")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 1);
+                REQUIRE(txn_recorded(runtime, alice.user_id, "r02-no-federation"));
+            }
+        }
+    }
+}
+
 SCENARIO("sendToDevice with no local recipient still records its transaction",
          "[security_audit_to_device][to_device][r02][integration][sqlite]")
 {
