@@ -432,6 +432,7 @@ shell = find_program('sh')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
+      'integration/test_appservice_delivery_flow.cpp',
       'integration/test_appservice_thirdparty_flow.cpp',
       'integration/test_appservice_query_hooks_flow.cpp',
       'integration/test_client_outbound_proxy_flow.cpp',
