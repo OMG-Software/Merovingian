@@ -159,6 +159,7 @@
 * [0157 - Never open a SQLite database file outside SQLite while connections may be open](0157-never-open-a-sqlite-database-file-outside-sqlite.md)
 * [0159 - Retry a journal that only looks hot on read-only SQLite reads, for a bounded time](0159-retry-a-false-hot-journal-on-read-only-sqlite-reads.md)
 * [0160 - Main records every completed federation transaction, whichever process ran it](0160-main-records-every-completed-federation-transaction.md)
+* [0161 - A room reload reads one snapshot; the worker's whole-store load does not](0161-room-reloads-read-one-snapshot-the-whole-store-load-does-not.md)
 
 ## Proposed Records
 

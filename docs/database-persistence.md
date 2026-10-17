@@ -1219,3 +1219,9 @@ result every 10 ms for up to 2 s; a journal that is really hot still fails the r
 read-write connection rolls it back (ADR-0159). A failed room snapshot logs `room_snapshot.read_failed`
 with its stage and extended SQLite code, and a connection whose open-time pragmas fail logs
 `connection.rejected` with the code.
+
+A room reload (`reload_room`) reads the room's eight tables in one read transaction, so its rows
+come from one committed state: `BEGIN DEFERRED` on SQLite, whose first read takes SHARED until the
+end (main's commits wait for it), and `REPEATABLE READ READ ONLY` on PostgreSQL. The worker's
+whole-store startup load stays one statement per table, so it never holds SQLite's SHARED lock for
+the whole load (ADR-0161).

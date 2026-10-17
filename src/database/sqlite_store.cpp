@@ -132,6 +132,42 @@ namespace
         bool active_{false};
     };
 
+    // A deferred read transaction. Its first read takes SHARED and holds it to
+    // the end, so every statement in between reads one committed state of the
+    // database, and a writer's commit waits for it (ADR-0161). Ending it
+    // releases the lock; a read has nothing to commit.
+    class SqliteReadTransaction final
+    {
+    public:
+        explicit SqliteReadTransaction(sqlite3& connection)
+            : connection_{connection}
+        {
+            active_ = execute_sql(connection_, "BEGIN DEFERRED");
+        }
+
+        SqliteReadTransaction(SqliteReadTransaction const& other) = delete;
+        auto operator=(SqliteReadTransaction const& other) -> SqliteReadTransaction& = delete;
+        SqliteReadTransaction(SqliteReadTransaction&& other) noexcept = delete;
+        auto operator=(SqliteReadTransaction&& other) noexcept -> SqliteReadTransaction& = delete;
+
+        ~SqliteReadTransaction()
+        {
+            if (active_)
+            {
+                std::ignore = execute_sql(connection_, "ROLLBACK");
+            }
+        }
+
+        [[nodiscard]] auto active() const noexcept -> bool
+        {
+            return active_;
+        }
+
+    private:
+        sqlite3& connection_;
+        bool active_{false};
+    };
+
     [[nodiscard]] auto sqlite_transient_destructor() noexcept -> sqlite3_destructor_type
     {
         // SQLite documents -1 as the special destructor value that copies the bound data immediately.
@@ -1109,56 +1145,78 @@ namespace
         return step == SQLITE_DONE;
     }
 
-    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection, std::string_view room_id)
+    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection, std::string_view room_id,
+                                               detail::RoomSnapshotReadHook const& after_table)
         -> std::optional<RoomReloadSnapshot>
     {
+        auto const read_done = [&after_table](std::string_view table) {
+            if (after_table)
+            {
+                after_table(table);
+            }
+            return true;
+        };
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
         auto ok = true;
 
-        ok = ok && load_rows_bound(connection,
-                                   "SELECT room_id, creator_user_id, directory_public FROM rooms WHERE room_id = ?1",
-                                   {room_id_str}, [&](sqlite3_stmt& row) {
-                                       snapshot.room = PersistentRoom{column_text(row, 0), column_text(row, 1),
-                                                                      text_is_true(column_text(row, 2))};
-                                   });
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT room_id, creator_user_id, directory_public FROM rooms WHERE room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 snapshot.room = PersistentRoom{column_text(row, 0), column_text(row, 1),
+                                                                text_is_true(column_text(row, 2))};
+                             }) &&
+             read_done("rooms");
         ok = ok &&
              load_rows_bound(connection,
                              "SELECT room_id, user_id, membership, stream_ordering FROM membership WHERE room_id = ?1",
-                             {room_id_str}, [&](sqlite3_stmt& row) {
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
                                  snapshot.memberships.push_back({column_text(row, 0), column_text(row, 1),
                                                                  column_text(row, 2), parse_u64(column_text(row, 3))});
-                             });
-        ok = ok && load_rows_bound(connection,
-                                   "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
-                                   "invite_state_json, stream_ordering FROM invites WHERE room_id = ?1",
-                                   {room_id_str}, [&](sqlite3_stmt& row) {
-                                       snapshot.invites.push_back({column_text(row, 0), column_text(row, 1),
-                                                                   column_text(row, 2), column_text(row, 3),
-                                                                   column_text(row, 4),
-                                                                   parse_invite_state_events_json(column_text(row, 5)),
-                                                                   parse_u64(column_text(row, 6))});
-                                   });
-        ok = ok && load_rows_bound(connection,
-                                   "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status "
-                                   "FROM events WHERE room_id = ?1",
-                                   {room_id_str}, [&](sqlite3_stmt& row) {
-                                       auto event = PersistentEvent{column_text(row, 0),
-                                                                    column_text(row, 1),
-                                                                    column_text(row, 2),
-                                                                    column_text(row, 3),
-                                                                    parse_u64(column_text(row, 4)),
-                                                                    parse_u64(column_text(row, 5))};
-                                       event.status = column_text(row, 6);
-                                       snapshot.events.push_back(std::move(event));
-                                   });
-        ok = ok && load_rows_bound(connection,
-                                   "SELECT room_id, event_type, state_key, event_id FROM current_state WHERE "
-                                   "room_id = ?1",
-                                   {room_id_str}, [&](sqlite3_stmt& row) {
-                                       snapshot.state.push_back({column_text(row, 0), column_text(row, 1),
-                                                                 column_text(row, 2), column_text(row, 3)});
-                                   });
+                             }) &&
+             read_done("membership");
+        ok =
+            ok &&
+            load_rows_bound(connection,
+                            "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
+                            "invite_state_json, stream_ordering FROM invites WHERE room_id = ?1",
+                            {room_id_str},
+                            [&](sqlite3_stmt& row) {
+                                snapshot.invites.push_back(
+                                    {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3),
+                                     column_text(row, 4), parse_invite_state_events_json(column_text(row, 5)),
+                                     parse_u64(column_text(row, 6))});
+                            }) &&
+            read_done("invites");
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status "
+                             "FROM events WHERE room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 auto event = PersistentEvent{column_text(row, 0),
+                                                              column_text(row, 1),
+                                                              column_text(row, 2),
+                                                              column_text(row, 3),
+                                                              parse_u64(column_text(row, 4)),
+                                                              parse_u64(column_text(row, 5))};
+                                 event.status = column_text(row, 6);
+                                 snapshot.events.push_back(std::move(event));
+                             }) &&
+             read_done("events");
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT room_id, event_type, state_key, event_id FROM current_state WHERE "
+                             "room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 snapshot.state.push_back({column_text(row, 0), column_text(row, 1),
+                                                           column_text(row, 2), column_text(row, 3)});
+                             }) &&
+             read_done("current_state");
         if (!ok)
         {
             return std::nullopt;
@@ -1172,25 +1230,34 @@ namespace
         // events.room_id, not by binding one placeholder per loaded event.
         auto relations = PersistentStore{};
         relations.events = snapshot.events;
-        ok = ok && load_rows_bound(connection,
-                                   "SELECT e.event_id, e.prev_event_id FROM event_edges e "
-                                   "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
-                                   {room_id_str}, [&](sqlite3_stmt& row) {
-                                       relations.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
-                                   });
-        ok = ok && load_rows_bound(connection,
-                                   "SELECT e.event_id, e.auth_event_id FROM event_auth e "
-                                   "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
-                                   {room_id_str}, [&](sqlite3_stmt& row) {
-                                       relations.event_auth.push_back({column_text(row, 0), column_text(row, 1)});
-                                   });
-        ok = ok && load_rows_bound(connection,
-                                   "SELECT e.event_id, e.server_name, e.key_id, e.signature FROM event_signatures e "
-                                   "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
-                                   {room_id_str}, [&](sqlite3_stmt& row) {
-                                       relations.event_signatures.push_back({column_text(row, 0), column_text(row, 1),
-                                                                             column_text(row, 2), column_text(row, 3)});
-                                   });
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT e.event_id, e.prev_event_id FROM event_edges e "
+                             "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 relations.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
+                             }) &&
+             read_done("event_edges");
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT e.event_id, e.auth_event_id FROM event_auth e "
+                             "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 relations.event_auth.push_back({column_text(row, 0), column_text(row, 1)});
+                             }) &&
+             read_done("event_auth");
+        ok = ok &&
+             load_rows_bound(connection,
+                             "SELECT e.event_id, e.server_name, e.key_id, e.signature FROM event_signatures e "
+                             "INNER JOIN events ev ON ev.event_id = e.event_id WHERE ev.room_id = ?1",
+                             {room_id_str},
+                             [&](sqlite3_stmt& row) {
+                                 relations.event_signatures.push_back({column_text(row, 0), column_text(row, 1),
+                                                                       column_text(row, 2), column_text(row, 3)});
+                             }) &&
+             read_done("event_signatures");
         if (!ok)
         {
             return std::nullopt;
@@ -1477,8 +1544,8 @@ namespace detail
         return load_room_snapshot_from_sqlite(store.sqlite_path, room_id);
     }
 
-    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id,
+                                        RoomSnapshotReadHook const& after_table) -> std::optional<RoomReloadSnapshot>
     {
         if (path.empty())
         {
@@ -1494,7 +1561,19 @@ namespace detail
                            observability::LogEventSeverity::warning);
             return std::nullopt;
         }
-        auto snapshot = load_room_snapshot_impl(**connection, room_id);
+        // One room's rows, read as one committed state: separate autocommit
+        // reads could mix rows from before and after one of main's commits.
+        auto const read = SqliteReadTransaction{**connection};
+        if (!read.active())
+        {
+            log_diagnostic("room_snapshot.read_failed",
+                           {
+                               {"stage", "begin", false}
+            },
+                           observability::LogEventSeverity::warning);
+            return std::nullopt;
+        }
+        auto snapshot = load_room_snapshot_impl(**connection, room_id, after_table);
         if (!snapshot.has_value())
         {
             // The extended code names the cause (busy, I/O, a journal that

@@ -2173,9 +2173,16 @@ auto current_postgresql_user(PostgresqlConnection& connection) -> std::string
 namespace
 {
 
-    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id)
+    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id,
+                                               detail::RoomSnapshotReadHook const& after_table)
         -> std::optional<RoomReloadSnapshot>
     {
+        auto const notify_read = [&after_table](std::string_view table) {
+            if (after_table)
+            {
+                after_table(table);
+            }
+        };
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
 
@@ -2187,6 +2194,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("rooms");
         if (!room.rows.empty() && room.rows.front().size() >= 3U)
         {
             snapshot.room =
@@ -2201,6 +2209,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("membership");
         for (auto const& row : memberships.rows)
         {
             if (row.size() >= 4U)
@@ -2217,6 +2226,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("invites");
         for (auto const& row : invites.rows)
         {
             if (row.size() >= 7U)
@@ -2235,6 +2245,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("events");
         for (auto const& row : events.rows)
         {
             if (row.size() >= 7U)
@@ -2253,6 +2264,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("current_state");
         for (auto const& row : state.rows)
         {
             if (row.size() >= 4U)
@@ -2280,6 +2292,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("event_edges");
         for (auto const& row : edges.rows)
         {
             if (row.size() >= 2U)
@@ -2296,6 +2309,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("event_auth");
         for (auto const& row : auth.rows)
         {
             if (row.size() >= 2U)
@@ -2313,6 +2327,7 @@ namespace
         {
             return std::nullopt;
         }
+        notify_read("event_signatures");
         for (auto const& row : signatures.rows)
         {
             if (row.size() >= 4U)
@@ -2374,7 +2389,8 @@ namespace detail
     }
 
     auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
-                                            std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+                                            std::string_view room_id, RoomSnapshotReadHook const& after_table)
+        -> std::optional<RoomReloadSnapshot>
     {
         if (conninfo.empty())
         {
@@ -2389,7 +2405,19 @@ namespace detail
         {
             return std::nullopt;
         }
-        return load_room_snapshot_impl(opened.connection, room_id);
+        // One room's rows from one snapshot (ADR-0161): under READ COMMITTED
+        // each statement would see every commit made before it started.
+        if (!opened.connection
+                 .execute({"postgresql_reload_room_begin", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", {}})
+                 .ok)
+        {
+            return std::nullopt;
+        }
+        auto snapshot = load_room_snapshot_impl(opened.connection, room_id, after_table);
+        // A read-only transaction has nothing to commit; ending it either way
+        // releases its snapshot before the connection closes.
+        std::ignore = opened.connection.execute({"postgresql_reload_room_end", "ROLLBACK", {}});
+        return snapshot;
     }
 
     auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,

@@ -1109,7 +1109,7 @@ struct PersistentStore final
     // when the store is opened; copies share it.
     std::uint32_t write_connection_limit{16U};
     std::shared_ptr<detail::SqliteWritePool> sqlite_write_pool{}; // SHARED_PTR: reviewed - shared by store copies.
-    std::shared_ptr<detail::PostgresqlWritePool> // SHARED_PTR: reviewed - shared by store copies.
+    std::shared_ptr<detail::PostgresqlWritePool>                  // SHARED_PTR: reviewed - shared by store copies.
         postgresql_write_pool{};
     // Guards server_signing_keys. The remote-key resolver stores and reads
     // keys from federation relay threads and from backfill, both with the
@@ -1746,7 +1746,12 @@ namespace detail
     [[nodiscard]] auto load_audit_events_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                          std::string_view prefix, std::size_t limit)
         -> std::optional<std::vector<PersistentAuditEvent>>;
-    [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
+    // Test seam: called with each table's name once that table's rows of a
+    // room snapshot have been read, so a test can commit between two reads.
+    // Production callers pass none.
+    using RoomSnapshotReadHook = std::function<void(std::string_view table)>;
+    [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id,
+                                                      RoomSnapshotReadHook const& after_table = {})
         -> std::optional<RoomReloadSnapshot>;
     // ADR-0119: one referenced media blob's bytes. nullopt on a missing or
     // unreferenced blob and on a connection or query failure.
@@ -1755,7 +1760,8 @@ namespace detail
     [[nodiscard]] auto read_media_blob_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
                                                        std::string_view storage_id) -> std::optional<std::string>;
     [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
-                                                          std::string_view room_id)
+                                                          std::string_view room_id,
+                                                          RoomSnapshotReadHook const& after_table = {})
         -> std::optional<RoomReloadSnapshot>;
 
 } // namespace detail

@@ -51,6 +51,10 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    at once, skipping the busy handler. Those helpers, and the open-time pragmas, retry that result for up to 2 s. Do
    not hold one read transaction across a whole-store load to avoid it: main's writers wait at most 5 s for it.
 
+10. **A read that combines several tables into one picture of a room runs in one read transaction** (ADR-0161):
+    `SqliteReadTransaction` on SQLite, `REPEATABLE READ READ ONLY` on PostgreSQL. `reload_room` does; separate
+    autocommit reads let a commit between them give the worker state naming an event its snapshot lacks.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).

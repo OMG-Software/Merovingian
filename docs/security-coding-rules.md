@@ -783,6 +783,13 @@ media-fetch-pool task.
   and the room fell back to main (ADR-0159).
   Source: `src/database/AGENTS.md`.
 
+- **A read that combines several tables into one picture of a room runs in one read
+  transaction** (`SqliteReadTransaction`; `REPEATABLE READ READ ONLY` on PostgreSQL).
+  Why: the worker's room reload read each table separately, so a commit between two reads
+  gave it state (an ACL, a membership) naming an event its snapshot did not hold, a room
+  main never committed (ADR-0161).
+  Source: `src/database/AGENTS.md`.
+
 - **Higher-level modules receive a `PersistentStore&` and must not downcast to a
   backend-specific type.**
   Why: downcasting to a specific backend (SQLite vs. PostgreSQL) breaks the abstraction that

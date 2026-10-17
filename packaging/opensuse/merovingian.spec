@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.28
+Version:        0.12.29
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Oct 17 2026 James Chapman <claude@ping.me.uk> - 0.12.29-1
+- Read each worker room reload as one consistent snapshot.
+
 * Sat Oct 17 2026 James Chapman <claude@ping.me.uk> - 0.12.28-1
 - Stop OpenBSD CI hangs and duplicate federation transaction processing.
 

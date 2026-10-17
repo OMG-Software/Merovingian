@@ -1,3 +1,27 @@
+## 0.12.29
+
+Follows 0.12.28 (fix/openbsd-txn-dedupe-and-nul-transport).
+
+- **FIXED (worker room snapshot):** the federation worker's room reload could serve a room in a
+  state main never committed. `load_room_snapshot_impl` read rooms, membership, invites, events,
+  current_state, event_edges, event_auth and event_signatures as eight separate statements, each
+  its own read (SQLite autocommit; PostgreSQL READ COMMITTED). A commit by main between two of
+  them mixed rows from before and after it: for example, current state naming an event the
+  snapshot did not hold. The worker answers `/state`, `/state_ids`, `make_join` and `/event` from
+  this snapshot. Each room reload now reads in one transaction: a deferred `BEGIN` on SQLite
+  (`SqliteReadTransaction`, whose first read holds SHARED to the end, so main's commit waits) and
+  `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` on PostgreSQL (ADR-0161). ADR-0159's retry
+  of a journal that only looks hot still runs on the first read inside the transaction. The
+  worker's whole-store startup load stays per statement, so on a large store it never holds
+  SHARED for longer than main's 5 s busy timeout. `detail::load_room_snapshot_from_sqlite` and
+  `detail::load_room_snapshot_from_postgresql` gain an optional `RoomSnapshotReadHook`, a test
+  seam called after each table's read; production passes none. Tests:
+  `[room-snapshot-consistency]` in `test_sqlite_security_policy.cpp` and
+  `test_security_audit_postgresql_reload_flow.cpp` commit a new event and make it current state
+  between the events and current_state reads, then check the snapshot's state names only events
+  it holds. RED on both backends (PostgreSQL run against a local server through
+  `MEROVINGIAN_TEST_POSTGRESQL_URI`).
+
 ## 0.12.28
 
 Fixes the two failures behind the OpenBSD CI job's red runs (7 of the last 9 before this

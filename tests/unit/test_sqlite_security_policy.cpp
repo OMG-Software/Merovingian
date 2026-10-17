@@ -9,6 +9,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 
@@ -444,6 +446,90 @@ SCENARIO("A read-only SQLite read outlasts a journal that only looks hot while a
                 CHECK(elapsed < 10s);
                 CHECK(std::filesystem::exists(journal));
                 CHECK(std::filesystem::file_size(journal) == 512U);
+            }
+        }
+    }
+}
+
+namespace
+{
+[[nodiscard]] auto topic_event_json(std::string_view event_id) -> std::string
+{
+    return R"({"event_id":")" + std::string{event_id} +
+           R"(","room_id":"!torn:example.org","sender":"@a:example.org","type":"m.room.topic","state_key":"",)"
+           R"("content":{"topic":"t"}})";
+}
+
+// Whether every current-state row of a snapshot names an event in that same
+// snapshot: true only for rows read from one committed state of the room.
+[[nodiscard]] auto state_names_only_snapshot_events(merovingian::database::RoomReloadSnapshot const& snapshot) -> bool
+{
+    return std::ranges::all_of(snapshot.state, [&snapshot](auto const& entry) {
+        return std::ranges::any_of(snapshot.events, [&entry](auto const& event) {
+            return event.event_id == entry.event_id;
+        });
+    });
+}
+} // namespace
+SCENARIO("A room snapshot reads one committed state of the room even while main commits between its reads",
+         "[database][sqlite-locks][room-snapshot-consistency]")
+{
+    // The worker's room reload read each table in its own statement, so a
+    // commit landing between the events read and the current_state read gave
+    // it state naming an event its snapshot did not hold.
+    GIVEN("main's SQLite database holding a room with one event that is current state")
+    {
+        auto scratch = DatabaseScratch{};
+        auto const path = scratch.path / "store.db";
+        auto const room_id = std::string{"!torn:example.org"};
+        auto const first_id = std::string{"$first:example.org"};
+        {
+            auto main = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(main.ok);
+            REQUIRE(merovingian::database::store_room(main.store, {room_id, "@a:example.org"}));
+            REQUIRE(merovingian::database::store_event_with_state(
+                main.store,
+                merovingian::database::PersistentEvent{first_id, room_id, "@a:example.org", topic_event_json(first_id),
+                                                       1U, 1U},
+                merovingian::database::PersistentStateEvent{room_id, "m.room.topic", "", first_id}));
+        }
+        auto writer = RawSqlite{path};
+        REQUIRE(writer.handle != nullptr);
+
+        WHEN("another connection commits a new event and makes it current state after the snapshot reads events")
+        {
+            auto inserted = false;
+            auto const commit_between_reads = [&](std::string_view table) {
+                if (table != "events")
+                {
+                    return;
+                }
+                auto* const db = writer.handle.get();
+                auto const insert_event =
+                    std::string{"INSERT INTO events (event_id, room_id, sender_user_id, json, depth, stream_ordering) "
+                                "VALUES ('$second:example.org', '!torn:example.org', '@a:example.org', '"} +
+                    topic_event_json("$second:example.org") + "', '2', '2')";
+                REQUIRE(sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) == SQLITE_OK);
+                inserted = sqlite3_exec(db, insert_event.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK &&
+                           sqlite3_exec(db,
+                                        "UPDATE current_state SET event_id = '$second:example.org' WHERE room_id = "
+                                        "'!torn:example.org' AND event_type = 'm.room.topic' AND state_key = ''",
+                                        nullptr, nullptr, nullptr) == SQLITE_OK;
+                // The commit may wait for the snapshot; that is the point.
+                if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+                {
+                    std::ignore = sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+                }
+            };
+            auto const snapshot = merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), room_id,
+                                                                                                commit_between_reads);
+
+            THEN("its current state names only events the snapshot holds")
+            {
+                REQUIRE(inserted);
+                REQUIRE(snapshot.has_value());
+                REQUIRE(snapshot->state.size() == 1U);
+                CHECK(state_names_only_snapshot_events(*snapshot));
             }
         }
     }

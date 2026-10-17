@@ -207,3 +207,77 @@ SCENARIO("PostgreSQL reload_room hydrates room event relations beyond the prepar
         }
     }
 }
+
+SCENARIO("A PostgreSQL room snapshot reads one committed state of the room even while another handle commits "
+         "between its reads",
+         "[security_audit_postgresql_reload][database][postgresql][integration][room-snapshot-consistency]")
+{
+    // The worker's room reload read each table in its own statement, so a
+    // commit landing between the events read and the current_state read gave
+    // it state naming an event its snapshot did not hold.
+    GIVEN("a room with one event that is current state, and a second store handle")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened_b = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened_b.ok);
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@torn-" + suffix + ":example.org";
+        auto const room_id = "!torn-" + suffix + ":example.org";
+        auto const first_id = "$torn-first-" + suffix + ":example.org";
+        auto const second_id = "$torn-second-" + suffix + ":example.org";
+        REQUIRE(merovingian::database::store_room(opened_b.store, {room_id, user_id}));
+        REQUIRE(merovingian::database::store_event_with_state(
+            opened_b.store,
+            {first_id,
+             room_id,
+             user_id,
+             acl_event_json(first_id, room_id, user_id, {}),
+             1U,
+             1U,
+             {},
+             {},
+             event_signature("torn-first")},
+            merovingian::database::PersistentStateEvent{room_id, "m.room.server_acl", "", first_id}));
+
+        WHEN("the second handle commits a new event and makes it current state after the snapshot reads events")
+        {
+            auto committed = false;
+            auto const commit_between_reads = [&](std::string_view table) {
+                if (table != "events")
+                {
+                    return;
+                }
+                committed = merovingian::database::store_event_with_state(
+                    opened_b.store,
+                    {second_id,
+                     room_id,
+                     user_id,
+                     acl_event_json(second_id, room_id, user_id, {}),
+                     2U,
+                     2U,
+                     {first_id},
+                     {first_id},
+                     event_signature("torn-second")},
+                    merovingian::database::PersistentStateEvent{room_id, "m.room.server_acl", "", second_id});
+            };
+            auto const snapshot = merovingian::database::detail::load_room_snapshot_from_postgresql(
+                uri, {}, room_id, commit_between_reads);
+
+            THEN("its current state names only events the snapshot holds")
+            {
+                REQUIRE(committed);
+                REQUIRE(snapshot.has_value());
+                REQUIRE(snapshot->state.size() == 1U);
+                auto const state_in_snapshot = std::ranges::any_of(snapshot->events, [&snapshot](auto const& event) {
+                    return event.event_id == snapshot->state.front().event_id;
+                });
+                CHECK(state_in_snapshot);
+            }
+        }
+    }
+}
