@@ -57,6 +57,16 @@ The federation worker's room reloads now also read one consistent snapshot.
   file aside, then retries the same signed bytes both ways round (worker first, then main;
   main first, then the recovered worker). RED on Linux: `edu_deliveries 2 == 1`, the CI
   failure reproduced off OpenBSD.
+- **FIXED (test, postgres-integration):** "PostgreSQL migrations execute as the migration
+  role, never as the login role" failed whenever it was the first scenario to open a fresh
+  database (Catch2 seed 1273323633 on PR #510: `unable to migrate PostgreSQL schema`, then
+  `unable to assume PostgreSQL migration role`). Its first two cases assume the schema is
+  already current, but nothing made it so. The login role bootstrapped v1 and owned its
+  tables, and the pending migrations then ran as `merovingian_migration`, which cannot
+  `ALTER` them. The scenario's setup now brings the schema current as its owner and hands
+  ownership to the migration role, as `provision-roles.sql` leaves a deployment, and both
+  cases print the open's refusal reason. Reproduced locally by replaying the seed's first 30
+  integration scenarios against a fresh PostgreSQL 16 cluster with CI's roles; passes after.
 - **FIXED (OpenBSD, unveil):** a failed `unveil(2)` left the process half-sandboxed. The
   OpenBSD runtime profile called `unveil` path by path and stopped at the first failure, but
   the first call had already hidden the rest of the filesystem, and no call can be undone.
