@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -42,7 +43,7 @@ SCENARIO("A periodic job runs once at start and again whenever it is woken", "[h
     GIVEN("a started job that asks never to be re-run on a timer")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs]() {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{1h};
                                                         }};
@@ -75,7 +76,7 @@ SCENARIO("A periodic job re-runs after the delay its last run asked for", "[home
     GIVEN("a started job that asks to be re-run after 10 ms")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs]() {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{10};
                                                         }};
@@ -100,7 +101,7 @@ SCENARIO("A stopped periodic job runs no more", "[homeserver][periodic_job]")
     GIVEN("a started job")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs]() {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{1};
                                                         }};
@@ -132,7 +133,7 @@ SCENARIO("A periodic job survives a run that throws", "[homeserver][periodic_job
     GIVEN("a job whose first run throws")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs]() -> std::chrono::milliseconds {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) -> std::chrono::milliseconds {
                                                             if (runs.fetch_add(1) == 0)
                                                             {
                                                                 throw std::runtime_error{"first run fails"};
@@ -168,7 +169,7 @@ SCENARIO("A periodic job that was never started is inert", "[homeserver][periodi
     GIVEN("a job that is constructed but not started")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs]() {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{1};
                                                         }};

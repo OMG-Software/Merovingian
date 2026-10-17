@@ -34,7 +34,9 @@ class PeriodicJob final
 {
 public:
     // Returns how long to wait before the next run when nobody wakes the job.
-    using Job = std::function<std::chrono::milliseconds()>;
+    // The stop token is the thread's: a job that loops over a queue checks it
+    // between items so shutdown never waits for a whole backlog to drain.
+    using Job = std::function<std::chrono::milliseconds(std::stop_token const&)>;
 
     PeriodicJob(std::string name, Job job);
     ~PeriodicJob();

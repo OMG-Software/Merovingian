@@ -83,7 +83,7 @@ auto PeriodicJob::run(std::stop_token const& stop) -> void
         auto delay = delay_after_failure;
         try
         {
-            delay = job_();
+            delay = job_(stop);
         }
         catch (std::exception const& error)
         {
