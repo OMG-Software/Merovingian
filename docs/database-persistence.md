@@ -1209,3 +1209,19 @@ Those checks never open an existing database file: closing any descriptor of it 
 lock the process holds on it, including another connection's write lock (ADR-0157). An existing file is
 checked by name (`fstatat` with `AT_SYMLINK_NOFOLLOW`), and a read-only connection reads the header, to
 refuse WAL, through SQLite's own handle before any statement runs.
+
+A read-only connection (the worker's store and room reloads, media blob and audit reads) can be told a
+journal is hot when it is not: SQLite checks that the journal exists and then that no process holds
+RESERVED, and a writer that commits between the two checks has already deleted its journal and unlocked.
+A read-write connection settles that under EXCLUSIVE; a read-only one fails at once with
+`SQLITE_READONLY_ROLLBACK`. The open-time pragmas, `prepare` and every read's first step retry that one
+result every 10 ms for up to 2 s; a journal that is really hot still fails the read, and main's next
+read-write connection rolls it back (ADR-0159). A failed room snapshot logs `room_snapshot.read_failed`
+with its stage and extended SQLite code, and a connection whose open-time pragmas fail logs
+`connection.rejected` with the code.
+
+A room reload (`reload_room`) reads the room's eight tables in one read transaction, so its rows
+come from one committed state: `BEGIN DEFERRED` on SQLite, whose first read takes SHARED until the
+end (main's commits wait for it), and `REPEATABLE READ READ ONLY` on PostgreSQL. The worker's
+whole-store startup load stays one statement per table, so it never holds SQLite's SHARED lock for
+the whole load (ADR-0161).

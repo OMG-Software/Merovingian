@@ -152,6 +152,24 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     verified_request.verified_key_id = verification.identity.key_id;
     verified_request.sig_verified = true;
 
+    // ADR-0160: main's dedupe ring records every completed transaction,
+    // whichever process ran it. A retry of one goes to main, whose /send
+    // handler answers it as a duplicate (after its usual rate limit), rather
+    // than to a worker that never saw it: a room that fell back to main while
+    // its reload failed, or a worker that restarted, would run it again.
+    auto const send_transaction_id =
+        request.method == "PUT" ? federation::federation_send_transaction_id(request.target) : std::string{};
+    auto const& origin = verification.identity.origin;
+    if (!send_transaction_id.empty() &&
+        federation::federation_transaction_completed(runtime_.federation, origin, send_transaction_id))
+    {
+        observability::log_diagnostic("federation_proxy", "federation_proxy.completed_transaction_main",
+                                      {
+                                          {"target", observability::sanitized_http_target(request.target), false},
+        });
+        return handle_federation_http_request(runtime_, verified_request);
+    }
+
     if (federation_request_should_bypass_worker(verified_request))
     {
         observability::log_diagnostic("federation_proxy", "federation_proxy.bypass_worker",
@@ -178,7 +196,13 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
             return handle_federation_http_request(runtime_, verified_request);
         }
     }
-    return pool_->handle(verified_request, room_id);
+    auto response = pool_->handle(verified_request, room_id);
+    if (!send_transaction_id.empty() && response.status == 200U)
+    {
+        // Only the worker knows the PDU and EDU counts, which nothing reads.
+        federation::record_completed_federation_transaction(runtime_.federation, {origin, send_transaction_id, 0U, 0U});
+    }
+    return response;
 }
 
 auto FederationProxy::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id,

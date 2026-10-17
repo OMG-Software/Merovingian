@@ -28,6 +28,7 @@
 
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -427,7 +428,7 @@ struct ServerGuard final
     {
         return std::nullopt;
     }
-    if (::connect(guard.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    if (!merovingian::tests::connect_within(guard.get(), *reinterpret_cast<sockaddr*>(&addr), sizeof(addr)))
     {
         return std::nullopt;
     }
