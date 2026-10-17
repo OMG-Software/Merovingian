@@ -20,21 +20,21 @@ using namespace std::chrono_literals;
 namespace
 {
 
-    // Polls `predicate` for up to `limit`; true as soon as it holds.
-    template <typename Predicate> [[nodiscard]] auto eventually(Predicate predicate, std::chrono::milliseconds limit)
-        -> bool
+// Polls `predicate` for up to `limit`; true as soon as it holds.
+template <typename Predicate>
+[[nodiscard]] auto eventually(Predicate predicate, std::chrono::milliseconds limit) -> bool
+{
+    auto const deadline = std::chrono::steady_clock::now() + limit;
+    while (std::chrono::steady_clock::now() < deadline)
     {
-        auto const deadline = std::chrono::steady_clock::now() + limit;
-        while (std::chrono::steady_clock::now() < deadline)
+        if (predicate())
         {
-            if (predicate())
-            {
-                return true;
-            }
-            std::this_thread::sleep_for(5ms);
+            return true;
         }
-        return predicate();
+        std::this_thread::sleep_for(5ms);
     }
+    return predicate();
+}
 
 } // namespace
 
@@ -133,13 +133,14 @@ SCENARIO("A periodic job survives a run that throws", "[homeserver][periodic_job
     GIVEN("a job whose first run throws")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) -> std::chrono::milliseconds {
-                                                            if (runs.fetch_add(1) == 0)
-                                                            {
-                                                                throw std::runtime_error{"first run fails"};
-                                                            }
-                                                            return std::chrono::milliseconds{1h};
-                                                        }};
+        auto job =
+            merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) -> std::chrono::milliseconds {
+                                                     if (runs.fetch_add(1) == 0)
+                                                     {
+                                                         throw std::runtime_error{"first run fails"};
+                                                     }
+                                                     return std::chrono::milliseconds{1h};
+                                                 }};
 
         WHEN("it is started and woken after the failure")
         {
