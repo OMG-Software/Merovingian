@@ -303,6 +303,7 @@ namespace
                             R"(","type":"m.room_key_request","message_id":")" + std::string{message_id} +
                             R"(","messages":{"@bob:example.org":{")" + std::string{device_key} +
                             R"(":{"action":"request_cancellation"}}}})";
+    merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
     REQUIRE(runtime.homeserver.federation.edu_sink != nullptr);
     return runtime.homeserver.federation.edu_sink(envelope);
 }
