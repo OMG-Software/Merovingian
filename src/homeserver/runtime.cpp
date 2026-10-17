@@ -413,6 +413,8 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , cached_discovery(std::move(other.cached_discovery))
     , test_frozen_event_clock_ms(other.test_frozen_event_clock_ms)
     , appservices(std::move(other.appservices))
+    , appservice_delivery_wake(std::move(other.appservice_delivery_wake))
+    , appservice_delivery_backoff(std::move(other.appservice_delivery_backoff))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
@@ -461,6 +463,8 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     cached_discovery = std::move(other.cached_discovery);
     test_frozen_event_clock_ms = other.test_frozen_event_clock_ms;
     appservices = std::move(other.appservices);
+    appservice_delivery_wake = std::move(other.appservice_delivery_wake);
+    appservice_delivery_backoff = std::move(other.appservice_delivery_backoff);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);

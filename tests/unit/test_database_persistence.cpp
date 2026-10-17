@@ -1372,8 +1372,7 @@ SCENARIO("migration 022_appservice_outbox adds the outbox table on top of v21 an
                 REQUIRE(applied.ok);
                 REQUIRE(applied.state.version == 22U);
                 REQUIRE(std::ranges::find(applied.state.tables, "appservice_outbox") != applied.state.tables.end());
-                REQUIRE(std::ranges::find(applied.state.tables, "appservice_txn_cursor") !=
-                        applied.state.tables.end());
+                REQUIRE(std::ranges::find(applied.state.tables, "appservice_txn_cursor") != applied.state.tables.end());
                 REQUIRE(downgrade_plan.steps.size() == 1U);
                 REQUIRE(downgrade_plan.steps[0].name == "drop_appservice_outbox");
                 REQUIRE(reverted.ok);

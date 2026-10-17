@@ -324,8 +324,8 @@ SCENARIO("a room creation that fails on the server leaves no room behind",
         auto started = merovingian::homeserver::start_runtime(options);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const registered = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const registered = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                             merovingian::tests::registration_token);
         REQUIRE(registered.ok);
         auto const logged = merovingian::homeserver::login_local_user_by_id(runtime, registered.value, "ALICE");
         REQUIRE(logged.ok);
@@ -770,7 +770,7 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
                         "initial_schema");
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "room_alias_creator");
+                        "appservice_outbox");
             }
         }
     }

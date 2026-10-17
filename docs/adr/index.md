@@ -163,6 +163,7 @@
 * [0160 - Main records every completed federation transaction, whichever process ran it](0160-main-records-every-completed-federation-transaction.md)
 * [0161 - A room reload reads one snapshot; the worker's whole-store load does not](0161-room-reloads-read-one-snapshot-the-whole-store-load-does-not.md)
 * [0162 - Plan every unveil(2) call before making the first, and make none if one would fail](0162-plan-every-unveil-call-before-making-the-first.md)
+* [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md)
 
 ## Proposed Records
 

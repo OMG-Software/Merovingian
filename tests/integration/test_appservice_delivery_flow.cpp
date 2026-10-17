@@ -191,8 +191,8 @@ private:
             auto const lock = std::lock_guard{mutex_};
             requests_.push_back(std::move(captured));
         }
-        auto const response = merovingian::tests::tls_mock::json_http_response(up ? "200 OK" : "503 Service Unavailable",
-                                                                               up ? "{}" : R"({"error":"down"})");
+        auto const response = merovingian::tests::tls_mock::json_http_response(
+            up ? "200 OK" : "503 Service Unavailable", up ? "{}" : R"({"error":"down"})");
         std::ignore = ::write(client_fd, response.data(), response.size());
     }
 
@@ -209,9 +209,8 @@ private:
 {
     static auto counter = std::atomic<std::uint64_t>{0U};
     auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return merovingian::tests::temporary_directory() /
-           (std::string{stem} + "-" + std::to_string(now) + "-" + std::to_string(counter.fetch_add(1U)) +
-            std::string{extension});
+    return merovingian::tests::temporary_directory() / (std::string{stem} + "-" + std::to_string(now) + "-" +
+                                                        std::to_string(counter.fetch_add(1U)) + std::string{extension});
 }
 
 // An appservice that claims every room, so every event in every room is
@@ -230,16 +229,15 @@ private:
     {
         out << '"' << url << '"';
     }
-    out << R"(, "as_token": "as-token-)" << id << R"(", "hs_token": "hs-token-)" << id
-        << R"(", "sender_localpart": "_)" << id << R"(_bot", "namespaces": )" << namespaces_json
-        << R"(, "protocols": []})";
+    out << R"(, "as_token": "as-token-)" << id << R"(", "hs_token": "hs-token-)" << id << R"(", "sender_localpart": "_)"
+        << id << R"(_bot", "namespaces": )" << namespaces_json << R"(, "protocols": []})";
     return path;
 }
 
-constexpr auto every_room_namespaces = std::string_view{
-    R"({"users": [], "aliases": [], "rooms": [{"exclusive": false, "regex": ".*"}]})"};
-constexpr auto no_room_namespaces = std::string_view{
-    R"({"users": [{"exclusive": true, "regex": "@_never_.*"}], "aliases": [], "rooms": []})"};
+constexpr auto every_room_namespaces =
+    std::string_view{R"({"users": [], "aliases": [], "rooms": [{"exclusive": false, "regex": ".*"}]})"};
+constexpr auto no_room_namespaces =
+    std::string_view{R"({"users": [{"exclusive": true, "regex": "@_never_.*"}], "aliases": [], "rooms": []})"};
 
 [[nodiscard]] auto config_for(std::vector<std::filesystem::path> const& registrations,
                               std::optional<std::filesystem::path> const& sqlite_path = std::nullopt)
@@ -256,12 +254,8 @@ constexpr auto no_room_namespaces = std::string_view{
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     auto config = merovingian::config::Config{
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        database,
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},  database, security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
     for (auto const& registration : registrations)
     {
@@ -284,8 +278,8 @@ constexpr auto no_room_namespaces = std::string_view{
 [[nodiscard]] auto register_alice(ClientServerRuntime& runtime) -> std::string
 {
     auto const reg = merovingian::homeserver::handle_client_server_request(
-        runtime, {"POST", "/_matrix/client/v3/register", {},
-                  merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        runtime,
+        {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
     REQUIRE(reg.response.status == 200U);
     return json_string_member(reg.response.body, "access_token");
 }
@@ -330,8 +324,7 @@ struct SteppedClock final
 [[nodiscard]] auto queues_are_idle(ClientServerRuntime& runtime) -> bool
 {
     auto const& store = runtime.homeserver.database.persistent_store;
-    return store.appservice_outbox.empty() &&
-           std::ranges::all_of(store.appservice_txn_cursors, [](auto const& cursor) {
+    return store.appservice_outbox.empty() && std::ranges::all_of(store.appservice_txn_cursors, [](auto const& cursor) {
                return cursor.pending_txn_id == 0U;
            });
 }
@@ -615,8 +608,8 @@ SCENARIO("only appservices interested in an event are queued for it, and a disab
         auto uninterested = MockAppservice{};
         auto const interested_registration = write_registration(
             "bridge", "http://127.0.0.1:" + std::to_string(interested.port()), every_room_namespaces);
-        auto const uninterested_registration = write_registration(
-            "other", "http://127.0.0.1:" + std::to_string(uninterested.port()), no_room_namespaces);
+        auto const uninterested_registration =
+            write_registration("other", "http://127.0.0.1:" + std::to_string(uninterested.port()), no_room_namespaces);
         auto const disabled_registration = write_registration("quiet", "", every_room_namespaces);
         auto started = merovingian::homeserver::start_client_server(
             config_for({interested_registration, uninterested_registration, disabled_registration}));
@@ -664,8 +657,7 @@ SCENARIO("only appservices interested in an event are queued for it, and a disab
     }
 }
 
-SCENARIO("an outbox row whose event is missing is dropped so the queue cannot wedge",
-         "[appservice][r01][integration]")
+SCENARIO("an outbox row whose event is missing is dropped so the queue cannot wedge", "[appservice][r01][integration]")
 {
     GIVEN("an outbox row naming an event the store does not hold, ahead of a real event")
     {
@@ -754,7 +746,8 @@ SCENARIO("a drain asked to stop makes no call", "[appservice][r01][integration]"
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const token = register_alice(runtime);
-        std::ignore = create_room(runtime, token);
+        auto const room_id = create_room(runtime, token);
+        send_message(runtime, token, room_id, "msg-A");
         auto stop = std::stop_source{};
         stop.request_stop();
 

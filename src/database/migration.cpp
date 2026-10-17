@@ -656,6 +656,24 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {20U, "drop_room_alias_creator", std::move(statements), MigrationDirection::downgrade};
 }
 
+// Audit R01: the Application Service API transaction queue. One row per event
+// queued for an appservice, written when the event is dispatched and deleted
+// in the same transaction that advances the appservice cursor on delivery. See
+// database::enqueue_appservice_event.
+[[nodiscard]] auto upgrade_appservice_outbox_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("appservice_outbox").value()).value());
+    return {22U, "appservice_outbox", std::move(statements), MigrationDirection::upgrade};
+}
+
+[[nodiscard]] auto downgrade_appservice_outbox_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("appservice_outbox").value());
+    return {21U, "drop_appservice_outbox", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -678,7 +696,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_room_directory_visibility_migration(),
             upgrade_to_device_queue_age_bound_migration(),
             upgrade_remote_media_cache_mapping_migration(),
-            upgrade_room_alias_creator_migration()};
+            upgrade_room_alias_creator_migration(),
+            upgrade_appservice_outbox_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -829,7 +848,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_room_alias_creator_migration(),
+    return {downgrade_appservice_outbox_migration(),
+            downgrade_room_alias_creator_migration(),
             downgrade_remote_media_cache_mapping_migration(),
             downgrade_to_device_queue_age_bound_migration(),
             downgrade_room_directory_visibility_migration(),

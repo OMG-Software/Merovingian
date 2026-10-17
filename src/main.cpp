@@ -8,6 +8,7 @@
 #include "merovingian/config/reload_policy.hpp"
 #include "merovingian/database/runtime_database.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -15,6 +16,7 @@
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/periodic_job.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/net/listener.hpp"
@@ -36,6 +38,7 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -764,6 +767,32 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // The one thread that sends queued Application Service transactions (audit R01, ADR-0163): a
+    // request only queues an event, so a slow or dead bridge never holds a request thread or the
+    // runtime lock. Declared after the pools and the dispatcher so it is destroyed (stopped and
+    // joined) before them, and it only ever touches `runtime`, which outlives this function. Its
+    // thread starts here, after process hardening (ADR-0082), and only when an appservice is
+    // registered.
+    auto appservice_delivery_job = merovingian::homeserver::PeriodicJob{
+        "appservice-delivery", [&runtime](std::stop_token const& stop) {
+            return merovingian::homeserver::drain_appservice_queues(runtime.homeserver, stop);
+        }};
+    if (!runtime.homeserver.appservices.empty())
+    {
+        if (!appservice_delivery_job.start())
+        {
+            LOG_CRITICAL("Appservice delivery thread failed to start; refusing to serve");
+            dispatcher.request_stop();
+            pool.request_stop();
+            media_fetch_pool.request_stop();
+            sync_pool.request_stop();
+            return std::nullopt;
+        }
+        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        runtime.homeserver.appservice_delivery_wake = [&appservice_delivery_job]() {
+            appservice_delivery_job.wake();
+        };
+    }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 
@@ -817,6 +846,14 @@ struct ListenerBinding final
     }
     dispatcher.request_stop();
     pool.request_stop();
+    // Take the wake hook away under the runtime lock (the only place it is called from), then
+    // stop the delivery thread. A transaction it is sending ends within the outbound call's own
+    // timeout; the rest stay queued in the database for the next start.
+    {
+        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        runtime.homeserver.appservice_delivery_wake = nullptr;
+    }
+    appservice_delivery_job.stop();
     // Queued media fetches answer 503 without fetching once the pool stops;
     // fetches already running end within their deadline.
     media_fetch_pool.request_stop();

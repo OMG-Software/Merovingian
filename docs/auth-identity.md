@@ -174,16 +174,17 @@ production-gated.
   delivery to appservices is wired: `appservice::AppserviceClient`
   (`src/appservice/appservice_client.cpp`) implements `send_transaction`
   (`PUT /_matrix/app/v1/transactions/{txnId}`), `query_user`, `query_room_alias`,
-  and the `/thirdparty/*` queries. `dispatch_appservice_delivery` /
-  `attempt_appservice_batch` (`src/homeserver/room_service.cpp`) push one event
-  per transaction to every namespace-interested appservice, synchronously on
-  the triggering request, tracked by a per-appservice persisted cursor that
-  retries an unacknowledged batch — same `txn_id`, same event — before
-  advancing to a newer one. `query_user`/`query_room_alias` are invoked from
-  `src/homeserver/client_server.cpp` when a lookup misses local state. A
-  background, concurrent, retrying dispatcher (mirroring the push-notification
-  dispatcher) is a reasonable future optimisation, not yet implemented — see
-  `docs/todos/capability-gaps.md`.
+  and the `/thirdparty/*` queries. Delivery is a durable queue (ADR-0163):
+  `enqueue_appservice_delivery` (`src/homeserver/appservice_delivery.cpp`)
+  writes one `appservice_outbox` row per namespace-interested appservice at
+  event time and makes no network call; one dedicated thread
+  (`drain_appservice_queues`, run by a `PeriodicJob` started in `main.cpp`)
+  sends them oldest first, one event per transaction, tracked by the
+  per-appservice persisted cursor. A transaction that fails is retried under
+  the same `txn_id` with the same event, with exponential back-off (1 s
+  doubling to 5 min), before anything newer is sent, even when no further room
+  traffic arrives. `query_user`/`query_room_alias` are invoked from
+  `src/homeserver/client_server.cpp` when a lookup misses local state.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
 - Registration token verification using Argon2id (`crypto_pwhash_str` / `crypto_pwhash_str_verify`);
   only the password hash is retained, and the plaintext token is zeroised after hashing. The

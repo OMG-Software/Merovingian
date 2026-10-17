@@ -760,6 +760,26 @@ struct PersistentAppserviceTxnCursor final
     std::uint64_t pending_stream_ordering{0U};
 };
 
+// One event queued for delivery to one appservice (audit R01). The
+// transaction queue the Application Service API requires: a row is written
+// when the event is dispatched (under the runtime lock, interest decided at
+// that moment) and deleted in the same backend transaction that records its
+// delivery on the cursor above.
+//
+// The primary key is (appservice_id, stream_ordering) and is the ONLY dedupe.
+// There is deliberately no "already delivered" threshold: stream orderings are
+// allocated before an event commits and events in different rooms commit out
+// of order, so a lower ordering can legitimately arrive after a higher one was
+// delivered. The in-memory vector is kept sorted by (appservice_id,
+// stream_ordering) numerically; the column is TEXT like every other numeric
+// column, so the backend's own ordering is not relied on.
+struct PersistentAppserviceOutboxEntry final
+{
+    std::string appservice_id{};
+    std::uint64_t stream_ordering{0U};
+    std::string event_id{};
+};
+
 // A state group (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-
 // delta-state-groups.md): the room state after some event, stored either as
 // a full snapshot (`parent_state_group_id == nullopt`, `delta_depth == 0`)
@@ -895,6 +915,7 @@ struct PersistentStore final
         , openid_tokens{other.openid_tokens}
         , login_tokens{other.login_tokens}
         , appservice_txn_cursors{other.appservice_txn_cursors}
+        , appservice_outbox{other.appservice_outbox}
         , state_groups{other.state_groups}
         , state_group_state{other.state_group_state}
         , event_state_groups{other.event_state_groups}
@@ -975,6 +996,7 @@ struct PersistentStore final
         openid_tokens = other.openid_tokens;
         login_tokens = other.login_tokens;
         appservice_txn_cursors = other.appservice_txn_cursors;
+        appservice_outbox = other.appservice_outbox;
         state_groups = other.state_groups;
         state_group_state = other.state_group_state;
         event_state_groups = other.event_state_groups;
@@ -1076,6 +1098,9 @@ struct PersistentStore final
     std::vector<PersistentOpenidToken> openid_tokens{};
     std::vector<PersistentLoginToken> login_tokens{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
+    // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
+    // PersistentAppserviceOutboxEntry.
+    std::vector<PersistentAppserviceOutboxEntry> appservice_outbox{};
     std::vector<PersistentStateGroup> state_groups{};
     std::vector<PersistentStateGroupStateEntry> state_group_state{};
     std::vector<PersistentEventStateGroup> event_state_groups{};
@@ -1664,6 +1689,31 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 // Callers pass the complete desired state; this is not an incremental
 // update.
 [[nodiscard]] auto store_appservice_txn_cursor(PersistentStore& store, PersistentAppserviceTxnCursor cursor) -> bool;
+// Queues one event for one appservice. Idempotent on (appservice_id,
+// stream_ordering): queueing a row that is already queued succeeds and changes
+// nothing. False for an empty appservice_id or event_id, or a backend write
+// failure (nothing is queued in memory then).
+[[nodiscard]] auto enqueue_appservice_event(PersistentStore& store, PersistentAppserviceOutboxEntry entry) -> bool;
+// The queued row with the lowest stream_ordering for `appservice_id`, or
+// nullopt when its queue is empty.
+[[nodiscard]] auto find_first_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id)
+    -> std::optional<PersistentAppserviceOutboxEntry>;
+// Puts the in-memory outbox back in (appservice_id, stream_ordering) order, the
+// order every outbox function relies on. The backend loaders call it after
+// hydrating the rows: ORDER BY on the TEXT columns is neither numeric nor,
+// on PostgreSQL, byte-wise.
+auto sort_appservice_outbox(PersistentStore& store) -> void;
+// Records that the transaction carrying stream_ordering `delivered_stream_
+// ordering` has been dealt with (acknowledged, vacuously acknowledged by a
+// url:null appservice, or dropped as unreadable). In ONE backend transaction:
+// clears the cursor's pending transaction, raises its delivered high-water mark
+// to max(current, delivered_stream_ordering), and deletes the outbox row for
+// that ordering if there is one. The in-memory mirrors change only after the
+// commit succeeds, so a crash or a failure can never leave the cursor
+// advanced with the row still queued (a duplicate) or the row gone with the
+// cursor still pending (a stuck transaction).
+[[nodiscard]] auto complete_appservice_delivery(PersistentStore& store, std::string_view appservice_id,
+                                                std::uint64_t delivered_stream_ordering) -> bool;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.
