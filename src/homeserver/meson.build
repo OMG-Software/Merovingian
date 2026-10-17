@@ -10,6 +10,7 @@ homeserver_sources = files(
   'local_http_router.cpp',
   'local_services.cpp',
   'media_service.cpp',
+  'periodic_job.cpp',
   'remote_media_fetch_coalescer.cpp',
   'redaction_service.cpp',
   'room_power.cpp',
