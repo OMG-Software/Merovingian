@@ -165,6 +165,7 @@
 * [0162 - Plan every unveil(2) call before making the first, and make none if one would fail](0162-plan-every-unveil-call-before-making-the-first.md)
 * [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md)
 * [0164 - Send-to-device commits its local messages and its transaction ID together](0164-send-to-device-commits-its-local-messages-and-txn-id-together.md)
+* [0166 - Derive to-device message IDs per sender and record them only after the messages commit](0166-derive-to-device-message-ids-per-sender.md)
 
 ## Proposed Records
 

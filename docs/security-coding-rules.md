@@ -519,7 +519,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **An inbound EDU's identity claims belong to the sending server: bind the `sender` /
   `user_id` to the origin, deliver only to local users, de-duplicate by `message_id`, and
   cap what one EDU can write.** `m.direct_to_device` requires `sender` on the origin, targets
-  only local active users, keeps a bounded `(origin, message_id)` replay window and queues at
+  only local active users, keeps a bounded `(origin, sender, message_id)` replay window (recorded only after the
+  EDU's messages commit together) and queues at
   most 1 000 messages per EDU; `m.device_list_update` / `m.signing_key_update` record a
   change only for local users who share a joined room with the subject, as one batched write
   with one row per (observer, subject).
