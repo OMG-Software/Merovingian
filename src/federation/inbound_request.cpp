@@ -258,27 +258,6 @@ namespace
         return auth::user_id_server_name(sender);
     }
 
-    [[nodiscard]] auto transaction_id_from_send_target(std::string_view target) -> std::string
-    {
-        auto constexpr prefix = std::string_view{"/_matrix/federation/v1/send/"};
-        if (target.size() <= prefix.size() || target.substr(0U, prefix.size()) != prefix)
-        {
-            return {};
-        }
-        auto const transaction_id = target.substr(prefix.size());
-        return transaction_id.find('/') == std::string_view::npos ? std::string{transaction_id} : std::string{};
-    }
-
-    [[nodiscard]] auto transaction_already_accepted(FederationRuntimeState const& runtime, std::string_view origin,
-                                                    std::string_view transaction_id) -> bool
-    {
-        auto guard = federation_guard(runtime);
-        return std::ranges::any_of(runtime.accepted_transactions,
-                                   [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
-                                       return accepted.origin == origin && accepted.transaction_id == transaction_id;
-                                   });
-    }
-
     struct FederationRateLimitDecision final
     {
         bool allowed{true};
@@ -3024,7 +3003,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     }
 
     auto const parsed_body = parse_transaction_body(request.body);
-    auto const transaction_id = transaction_id_from_send_target(request.target);
+    auto const transaction_id = federation_send_transaction_id(request.target);
     if (!parsed_body.valid)
     {
         record_remote_trust_failure(remote.trust);
@@ -3100,7 +3079,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         audit_federation(runtime, "federation.rate_limited", request.origin, request.target, rate_limit.reason);
         return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", rate_limit.reason)};
     }
-    if (transaction_already_accepted(runtime, request.origin, transaction.transaction_id))
+    if (federation_transaction_completed(runtime, request.origin, transaction.transaction_id))
     {
         remote.trust.consecutive_failures = 0U;
         persist_remote_trust(runtime, remote);
@@ -3503,20 +3482,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         remote.trust.consecutive_failures = 0U;
     }
     persist_remote_trust(runtime, remote);
-    {
-        auto guard = federation_guard(runtime);
-        // #416: cap the replay-dedup ring so a sustained stream of distinct
-        // transaction ids (from a single origin with valid keys, or a Sybil
-        // of many) cannot grow the main process's memory without bound.
-        // Entries are appended in acceptance order, so the front is always
-        // the oldest.
-        if (runtime.accepted_transactions.size() >= runtime.config.accepted_transaction_cache_entries)
-        {
-            runtime.accepted_transactions.pop_front();
-        }
-        runtime.accepted_transactions.push_back(
-            {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
-    }
+    record_completed_federation_transaction(
+        runtime, {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
     log_diagnostic("transaction.accepted", {
                                                {"origin",           request.origin,                          false},
                                                {"transaction_id",   transaction.transaction_id,              false},
@@ -3556,6 +3523,46 @@ auto federation_audit_is_safe(FederationRuntimeState const& runtime) -> bool
     // Maintained incrementally by audit_federation — O(1) instead of a full
     // scan per safety check (#423).
     return runtime.unsafe_audit_events == 0U;
+}
+
+auto federation_send_transaction_id(std::string_view target) -> std::string
+{
+    auto constexpr prefix = std::string_view{"/_matrix/federation/v1/send/"};
+    if (target.size() <= prefix.size() || target.substr(0U, prefix.size()) != prefix)
+    {
+        return {};
+    }
+    auto const transaction_id = target.substr(prefix.size());
+    return transaction_id.find('/') == std::string_view::npos ? std::string{transaction_id} : std::string{};
+}
+
+auto federation_transaction_completed(FederationRuntimeState const& runtime, std::string_view origin,
+                                      std::string_view transaction_id) -> bool
+{
+    auto guard = federation_guard(runtime);
+    return std::ranges::any_of(runtime.accepted_transactions,
+                               [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
+                                   return accepted.origin == origin && accepted.transaction_id == transaction_id;
+                               });
+}
+
+auto record_completed_federation_transaction(FederationRuntimeState& runtime, FederationAcceptedTransaction transaction)
+    -> void
+{
+    auto guard = federation_guard(runtime);
+    if (federation_transaction_completed(runtime, transaction.origin, transaction.transaction_id))
+    {
+        return;
+    }
+    // #416: cap the replay-dedup ring so a sustained stream of distinct
+    // transaction ids (from a single origin with valid keys, or a Sybil of
+    // many) cannot grow the main process's memory without bound. Entries are
+    // appended in completion order, so the front is always the oldest.
+    if (runtime.accepted_transactions.size() >= runtime.config.accepted_transaction_cache_entries)
+    {
+        runtime.accepted_transactions.pop_front();
+    }
+    runtime.accepted_transactions.push_back(std::move(transaction));
 }
 
 } // namespace merovingian::federation

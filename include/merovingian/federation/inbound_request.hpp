@@ -528,4 +528,20 @@ struct InboundSignatureVerification final
 [[nodiscard]] auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string;
 [[nodiscard]] auto federation_audit_is_safe(FederationRuntimeState const& runtime) -> bool;
 
+// Completed-transaction dedupe (Matrix v1.19 server-server API, PUT
+// /send/{txnId}: the sender retries one txnId until it gets 200). Main's
+// accepted_transactions ring is the record for every transaction that reached
+// main, whichever process ran it: the federation proxy records the ones the
+// worker completes, so a retry that later reaches main, or the worker after a
+// restart, is not processed again (ADR-0160).
+
+// The txnId of a /_matrix/federation/v1/send/{txnId} target, or empty.
+[[nodiscard]] auto federation_send_transaction_id(std::string_view target) -> std::string;
+[[nodiscard]] auto federation_transaction_completed(FederationRuntimeState const& runtime, std::string_view origin,
+                                                    std::string_view transaction_id) -> bool;
+// Appends to the bounded ring, evicting the oldest entry at the configured
+// cap. Records nothing if the transaction is already there.
+auto record_completed_federation_transaction(FederationRuntimeState& runtime, FederationAcceptedTransaction transaction)
+    -> void;
+
 } // namespace merovingian::federation

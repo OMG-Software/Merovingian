@@ -44,6 +44,15 @@ production stalls turned on.
 - Prove a new scenario fails against the unfixed code before trusting it. A
   regression test that passes either way documents nothing.
 
+## Socket calls in integration tests
+
+Every socket call in an integration test has a deadline, so a server that never
+answers fails one scenario instead of holding the whole binary until meson's
+timeout kills it. Connect with `merovingian::tests::connect_within`
+(`tests/integration/bounded_connect.hpp`), never a blocking `::connect()`: on
+OpenBSD 7.9 a blocking connect to the test's own in-process listener never
+returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
+
 ## Live client-server probes
 
 Tests that exercise an authenticated endpoint on a deployed Merovingian server

@@ -1,3 +1,61 @@
+## 0.12.28
+
+Fixes the two failures behind the OpenBSD CI job's red runs (7 of the last 9 before this
+branch). Follows 0.12.27 (PR #510).
+
+- **FIXED (OpenBSD CI, federation transactions):** a retried `PUT /send/{txnId}` was
+  processed a second time when its room moved between the federation worker and main. Matrix
+  v1.19 has the sender retry one txnId until it receives 200, so a completed transaction must
+  not run again; its PDUs were caught by event-ID dedupe, but its EDUs (typing, receipts,
+  to-device messages) were delivered twice. Each process kept its own dedupe ring, and the
+  proxy sends a room's transactions to main while that room's worker reload has failed, so a
+  transaction the worker completed was new to main, and one main completed during a fallback
+  was new to the worker once the room recovered. Main's ring is now the record: the proxy
+  records each `/send` the worker answers with 200 there, and hands any `/send` already in it
+  to main's handler, which answers it as a duplicate after its usual rate limit (ADR-0160).
+  New public helpers `federation_send_transaction_id`, `federation_transaction_completed`
+  and `record_completed_federation_transaction` (`federation/inbound_request.hpp`); main's
+  own handler appends through the last one. This was the failure in "main key-admission
+  overload survives real worker socket HTTP and unchanged transaction retry" (3/3 on PR #510,
+  `cache_misses 3 == 2`, `raw_calls 2 == 1`, `edu_deliveries 2 == 1`). Tests: `[txn-dedupe]`
+  in `test_federation_worker_flow.cpp` forces the room's reload to fail by moving the SQLite
+  file aside, then retries the same signed bytes both ways round (worker first, then main;
+  main first, then the recovered worker). RED on Linux: `edu_deliveries 2 == 1`, the CI
+  failure reproduced off OpenBSD.
+- **FIXED (OpenBSD CI, SQLite):** the worker's read-only room reload failed when one of
+  main's commits landed between SQLite's two hot-journal checks. SQLite checks that the
+  journal exists and then that no process holds RESERVED; a writer that deletes its journal
+  and unlocks in between makes its own commit look like a crash (ticket #3883). A read-write
+  connection settles that under EXCLUSIVE; a read-only one fails at once with
+  `SQLITE_READONLY_ROLLBACK`, skipping the busy handler. The open-time pragmas, `prepare` and
+  every read's first step now retry that one result every 10 ms for up to 2 s (ADR-0159). A
+  journal that is really hot still fails the read and is left for main's read-write
+  connection to roll back. This covers the room reload, the worker's startup load, and
+  media blob and audit reads. A failed room snapshot logs `room_snapshot.read_failed` with
+  its stage and extended SQLite code, and a connection whose pragmas fail logs
+  `connection.rejected` with its code, so the next failure names its cause. The CI log
+  (`room.reload_failed`, then `federation_proxy.room_sync_failed_fallback`) carries no SQLite
+  code, so it does not prove this race was the one that fired there. It is the one SQLite
+  documents for this exact situation, and ADR-0157's fix had removed the other known cause.
+  Tests: `[sqlite-false-hot-journal]` in `test_sqlite_security_policy.cpp` puts a journal
+  that looks hot beside the database and removes it 200 ms later, as the committing writer
+  does; the room snapshot and the worker's store load now succeed, and a journal that stays
+  still fails within the budget and is left untouched. RED 2 failures.
+- **FIXED (OpenBSD CI, test harness):** "Federation socket HTTP refuses NUL path components
+  without disconnecting or changing room data" and its proxy twin hung until meson killed the
+  integration binary at 1800 s (main at b200c912; PR #510 run 38965086645). The reported
+  "fatal error condition" was that SIGTERM, not a crash. The last passed assertion was the
+  `setsockopt` just before a blocking `connect()` to the test's own listener (backlog 128,
+  6 to 9 connections in), so the test thread slept in `connect()` for about 29 minutes,
+  far past TCP's 75 s connection-establishment timer. Production code makes no raw
+  `connect()` call. Every integration-test loopback connect (12 call sites in 10 files) now
+  goes through `merovingian::tests::connect_within` (`tests/integration/bounded_connect.hpp`):
+  a non-blocking connect polled in 100 ms slices against a 5 s deadline, which restores the
+  descriptor's blocking mode. A missed wakeup now costs one slice, and a connect that cannot
+  complete fails one scenario. Not reproduced off OpenBSD. Tests: `[bounded-connect]` in
+  the new `test_bounded_connect_flow.cpp`. `docs/testing-standards.md` gains "Socket calls in
+  integration tests".
+
 ## 0.12.26
 
 Completes the 29 September 2026 security audit: every remaining low-severity finding is

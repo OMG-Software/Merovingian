@@ -157,6 +157,8 @@
 * [0154 - Pool database write connections up to database.pool_size](0154-pool-database-write-connections.md)
 * [0155 - Bound send_join key fetches by the shared in-flight cap, waiting for a slot](0155-bound-send-join-key-fetches-by-the-shared-in-flight-cap.md)
 * [0157 - Never open a SQLite database file outside SQLite while connections may be open](0157-never-open-a-sqlite-database-file-outside-sqlite.md)
+* [0159 - Retry a journal that only looks hot on read-only SQLite reads, for a bounded time](0159-retry-a-false-hot-journal-on-read-only-sqlite-reads.md)
+* [0160 - Main records every completed federation transaction, whichever process ran it](0160-main-records-every-completed-federation-transaction.md)
 
 ## Proposed Records
 

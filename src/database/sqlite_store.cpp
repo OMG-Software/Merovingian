@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -20,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -271,6 +273,40 @@ namespace
                header[18] == 1U && header[19] == 1U;
     }
 
+    // SQLite looks for a hot journal whenever a connection takes its SHARED
+    // lock: it checks that the journal exists, then that no process holds
+    // RESERVED. A writer that deletes its journal and unlocks between those
+    // two checks makes a live commit look like a crashed one (SQLite ticket
+    // #3883). A read-write connection settles that under EXCLUSIVE; a read-only
+    // one, which the federation worker uses for every room reload, fails at
+    // once with SQLITE_READONLY_ROLLBACK and never reaches the busy handler.
+    // Retry that one result for a bounded time (ADR-0159). A journal that is
+    // really hot outlasts the budget, fails as before, and is rolled back by
+    // main's next read-write connection.
+    constexpr auto false_hot_journal_retry_budget = std::chrono::seconds{2};
+    constexpr auto false_hot_journal_retry_pause = std::chrono::milliseconds{10};
+
+    [[nodiscard]] auto is_false_hot_journal(sqlite3& connection, int result) -> bool
+    {
+        return result != SQLITE_OK && result != SQLITE_ROW && result != SQLITE_DONE &&
+               sqlite3_extended_errcode(&connection) == SQLITE_READONLY_ROLLBACK;
+    }
+
+    // Runs `operation`, which returns an SQLite result code, again while it
+    // fails only because a journal looked hot to a read-only connection.
+    template <typename Operation>
+    [[nodiscard]] auto retry_false_hot_journal(sqlite3& connection, Operation operation) -> int
+    {
+        auto const deadline = std::chrono::steady_clock::now() + false_hot_journal_retry_budget;
+        auto result = operation();
+        while (is_false_hot_journal(connection, result) && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(false_hot_journal_retry_pause);
+            result = operation();
+        }
+        return result;
+    }
+
     [[nodiscard]] auto open_sqlite_connection(std::string const& path, bool read_only = false)
         -> std::optional<SqliteConnection>
     {
@@ -317,12 +353,27 @@ namespace
         // (synchronous=FULL, journal_mode=DELETE) are safe, but a deployment
         // environment that loads global default pragmas could silently
         // weaken them. Every connection this process opens states its
-        // requirements instead of trusting the environment.
-        if (sqlite3_exec(raw, "PRAGMA secure_delete = ON", nullptr, nullptr, nullptr) != SQLITE_OK ||
-            sqlite3_exec(raw, "PRAGMA trusted_schema = OFF", nullptr, nullptr, nullptr) != SQLITE_OK ||
-            sqlite3_exec(raw, "PRAGMA synchronous = FULL", nullptr, nullptr, nullptr) != SQLITE_OK ||
-            (!read_only && sqlite3_exec(raw, "PRAGMA journal_mode = DELETE", nullptr, nullptr, nullptr) != SQLITE_OK))
+        // requirements instead of trusting the environment. `synchronous`
+        // reads the schema, so it takes this connection's first SHARED lock.
+        auto const pin_pragmas = [raw, read_only]() -> int {
+            for (auto const* pragma :
+                 {"PRAGMA secure_delete = ON", "PRAGMA trusted_schema = OFF", "PRAGMA synchronous = FULL"})
+            {
+                if (auto const result = sqlite3_exec(raw, pragma, nullptr, nullptr, nullptr); result != SQLITE_OK)
+                {
+                    return result;
+                }
+            }
+            return read_only ? SQLITE_OK : sqlite3_exec(raw, "PRAGMA journal_mode = DELETE", nullptr, nullptr, nullptr);
+        };
+        if (retry_false_hot_journal(*raw, pin_pragmas) != SQLITE_OK)
         {
+            log_diagnostic("connection.rejected",
+                           {
+                               {"read_only",   read_only ? "true" : "false",                  false},
+                               {"sqlite_code", std::to_string(sqlite3_extended_errcode(raw)), false}
+            },
+                           observability::LogEventSeverity::warning);
             sqlite3_close(raw);
             return std::nullopt;
         }
@@ -359,11 +410,25 @@ namespace
     [[nodiscard]] auto prepare(sqlite3& connection, std::string const& sql) -> std::optional<SqliteStatement>
     {
         auto* raw = static_cast<sqlite3_stmt*>(nullptr);
-        if (sqlite3_prepare_v2(&connection, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+        // Preparing can read the schema, and so take a SHARED lock.
+        if (retry_false_hot_journal(connection, [&connection, &sql, &raw] {
+                return sqlite3_prepare_v2(&connection, sql.c_str(), -1, &raw, nullptr);
+            }) != SQLITE_OK)
         {
             return std::nullopt;
         }
         return SqliteStatement{raw};
+    }
+
+    // The first step of a read takes its SHARED lock, so only it can see a
+    // journal that looks hot; no row has been delivered yet, so rerunning it
+    // is the same read.
+    [[nodiscard]] auto first_step(sqlite3& connection, sqlite3_stmt& statement) -> int
+    {
+        return retry_false_hot_journal(connection, [&statement] {
+            std::ignore = sqlite3_reset(&statement);
+            return sqlite3_step(&statement);
+        });
     }
 
     [[nodiscard]] auto column_text(sqlite3_stmt& statement, int column) -> std::string
@@ -408,7 +473,8 @@ namespace
         {
             return tables;
         }
-        while (sqlite3_step(statement->get()) == SQLITE_ROW)
+        for (auto step = first_step(connection, *statement->get()); step == SQLITE_ROW;
+             step = sqlite3_step(statement->get()))
         {
             tables.push_back(column_text(*statement->get(), 0));
         }
@@ -429,7 +495,8 @@ namespace
         {
             return state;
         }
-        while (sqlite3_step(statement->get()) == SQLITE_ROW)
+        for (auto step = first_step(connection, *statement->get()); step == SQLITE_ROW;
+             step = sqlite3_step(statement->get()))
         {
             auto const version = static_cast<std::uint32_t>(parse_u64(column_text(*statement->get(), 0)));
             state.applied_migrations.push_back(
@@ -601,8 +668,8 @@ namespace
         {
             return false;
         }
-        auto step = int{SQLITE_ROW};
-        while ((step = sqlite3_step(statement->get())) == SQLITE_ROW)
+        auto step = first_step(connection, *statement->get());
+        for (; step == SQLITE_ROW; step = sqlite3_step(statement->get()))
         {
             load_row(*statement->get());
         }
@@ -1034,8 +1101,8 @@ namespace
         {
             return false;
         }
-        auto step = int{SQLITE_ROW};
-        while ((step = sqlite3_step(statement->get())) == SQLITE_ROW)
+        auto step = first_step(connection, *statement->get());
+        for (; step == SQLITE_ROW; step = sqlite3_step(statement->get()))
         {
             load_row(*statement->get());
         }
@@ -1420,9 +1487,26 @@ namespace detail
         auto connection = open_sqlite_connection(path, true);
         if (!connection.has_value() || !execute_sql(**connection, "PRAGMA foreign_keys = ON"))
         {
+            log_diagnostic("room_snapshot.read_failed",
+                           {
+                               {"stage", "open", false}
+            },
+                           observability::LogEventSeverity::warning);
             return std::nullopt;
         }
-        return load_room_snapshot_impl(**connection, room_id);
+        auto snapshot = load_room_snapshot_impl(**connection, room_id);
+        if (!snapshot.has_value())
+        {
+            // The extended code names the cause (busy, I/O, a journal that
+            // looked hot for longer than the retry budget) in the worker log.
+            log_diagnostic("room_snapshot.read_failed",
+                           {
+                               {"stage",       "read",                                                      false},
+                               {"sqlite_code", std::to_string(sqlite3_extended_errcode(connection->get())), false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        return snapshot;
     }
 
     auto read_media_blob_from_sqlite(std::string const& path, std::string_view storage_id) -> std::optional<std::string>

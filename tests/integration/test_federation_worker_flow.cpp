@@ -15,6 +15,7 @@
 #include "../support/membership_fixture_support.hpp"
 #include "../support/remote_room_fixture.hpp"
 #include "../support/temp_directory.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -477,7 +478,8 @@ namespace
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1);
-    REQUIRE(::connect(socket.get(), reinterpret_cast<sockaddr const*>(&address), sizeof(address)) == 0);
+    REQUIRE(merovingian::tests::connect_within(socket.get(), *reinterpret_cast<sockaddr const*>(&address),
+                                               sizeof(address)));
     auto sent = std::size_t{};
     while (sent < request.size())
     {
@@ -642,6 +644,64 @@ auto fed10_persist_remote_room(merovingian::homeserver::HomeserverRuntime& runti
     return static_cast<std::size_t>(std::ranges::count_if(store.events, [&](auto const& event) {
         return event.event_id == event_id;
     }));
+}
+
+// Test-only fault injection: move the SQLite file aside so the worker's next
+// room reload finds no database and fails, as a reload that hits any SQLite
+// error does. Renaming opens no descriptor of the file (ADR-0157). Restored
+// on scope exit even if an assertion unwinds.
+class Fed10HiddenDatabase final
+{
+public:
+    explicit Fed10HiddenDatabase(std::filesystem::path path)
+        : path_{std::move(path)}
+        , aside_{path_.string() + ".hidden"}
+    {
+        auto error = std::error_code{};
+        std::filesystem::rename(path_, aside_, error);
+        hidden_ = !error;
+    }
+    Fed10HiddenDatabase(Fed10HiddenDatabase const&) = delete;
+    auto operator=(Fed10HiddenDatabase const&) -> Fed10HiddenDatabase& = delete;
+    ~Fed10HiddenDatabase() noexcept
+    {
+        std::ignore = restore();
+    }
+    [[nodiscard]] auto hidden() const noexcept -> bool
+    {
+        return hidden_;
+    }
+    [[nodiscard]] auto restore() noexcept -> bool
+    {
+        if (!hidden_)
+            return true;
+        auto error = std::error_code{};
+        std::filesystem::rename(aside_, path_, error);
+        hidden_ = static_cast<bool>(error);
+        return !error;
+    }
+
+private:
+    std::filesystem::path path_;
+    std::filesystem::path aside_;
+    bool hidden_{false};
+};
+
+// Polls the proxy's room-sync status, never the worker's log, until `state`
+// is reported for a generation newer than `after`. Returns that generation,
+// or 0 if the deadline passes.
+[[nodiscard]] auto fed10_wait_for_room_sync(FederationProxy const& proxy, std::string const& room_id,
+                                            std::string_view state, std::uint64_t after) -> std::uint64_t
+{
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        auto const status = proxy.room_sync_status(room_id);
+        if (status.state == state && status.generation > after)
+            return status.generation;
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    return 0U;
 }
 
 } // namespace
@@ -1169,6 +1229,157 @@ SCENARIO("main key-admission overload survives real worker socket HTTP and uncha
                         CHECK(fed10_target_count(durable.store, event_id) == 1U);
                     }
                 }
+            }
+        }
+    }
+}
+
+// Matrix v1.19, server-server API, PUT /send/{txnId}: the sender retries the
+// same txnId until it receives 200, so a retry of a completed transaction must
+// not be processed again. Main and the worker each keep a dedupe ring; the
+// proxy sends a room's transactions to main while that room's worker reload
+// has failed, so both processes must agree on which transactions completed.
+SCENARIO("A retried transaction is not processed again when its room moves between the worker and main",
+         "[integration][federation][worker][send][txn-dedupe]")
+{
+    using namespace merovingian;
+    using namespace merovingian::tests::remote_room;
+    GIVEN("a resident room served by one actual worker shard and a signed transaction carrying a PDU and an EDU")
+    {
+        auto const tmp = unique_temp_dir("merovingian-txn-dedupe-");
+        auto cleanup = Fed10TempDirectory{tmp};
+        auto config = make_federation_worker_config(tmp);
+        config.server().server_name = local_server;
+        config.federation_worker().shards = 1U;
+        auto const config_path = tmp / "worker.conf";
+        write_worker_config(config_path, config);
+        auto started = homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& client = started.runtime;
+        auto& runtime = client.homeserver;
+        homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(static_cast<bool>(runtime.federation.edu_sink));
+        auto const room_id = std::string{"!txn-dedupe:"} + local_server;
+        fed10_persist_remote_room(runtime, room_id);
+        auto const relay_server = std::string{"203.0.113.21"};
+        auto const relay_member = std::string{"@relay:"} + relay_server;
+        REQUIRE(database::store_membership(runtime.database.persistent_store, {room_id, relay_member, "join"}) ==
+                database::MembershipStoreResult::stored);
+        auto relay = remote_runtime();
+        relay.server_name = relay_server;
+        relay.signing_key.server_name = relay_server;
+        relay.discovery.server_name = relay_server;
+        relay.discovery.resolved_host = relay_server;
+        relay.discovery.resolved_addresses = {relay_server};
+        REQUIRE(database::store_server_signing_key(
+            runtime.database.persistent_store,
+            {relay_server, relay.signing_key.key_id,
+             events::matrix_base64_from_bytes(relay.signing_key.public_key_bytes), relay.signing_key.valid_until_ts}));
+        auto const signed_pdu = make_remote_message_json(
+            room_id, {room_id + ":member"}, {room_id + ":create", room_id + ":pl", room_id + ":member:bob"}, 4, 50);
+        auto const envelope = federation::parse_inbound_pdu_envelope(signed_pdu, room_version);
+        REQUIRE(envelope.has_value());
+        auto const event_id = envelope->event_id;
+        auto const body = std::string{"{\"origin\":\""} + relay_server + "\",\"origin_server_ts\":50,\"pdus\":[" +
+                          signed_pdu + "],\"edus\":[{\"edu_type\":\"m.typing\",\"content\":{\"room_id\":\"" + room_id +
+                          "\",\"user_id\":\"" + relay_member + "\",\"typing\":true}}]}";
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-dedupe-retry"};
+        auto call = federation::OutboundCall{};
+        call.transaction = federation::make_outbound_transaction(local_server, "PUT", target, relay_server, body);
+        call.key_id = remote_key_id;
+        call.secret_key = federation::test::secret_key_buffer(federation::test::keypair_from_seed(remote_key_seed));
+        auto const outbound = federation::build_outbound_request(call);
+        auto const authorization = std::ranges::find_if(outbound.headers, [](auto const& header) {
+            return header.name == "Authorization";
+        });
+        REQUIRE(authorization != outbound.headers.end());
+        // The same bytes, txnId and signature for every send of this transaction.
+        auto const wire = "PUT " + target + " HTTP/1.1\r\nHost: localhost\r\nAuthorization: " + authorization->value +
+                          "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+                          "\r\nConnection: close\r\n\r\n" + body;
+
+        auto edu_deliveries = std::atomic<std::size_t>{};
+        runtime.federation.remotes = {relay};
+        runtime.federation.remote_key_resolver = genuine_key_resolver();
+        // Observe, but always execute, the genuine production typing sink.
+        auto real_edu_sink = runtime.federation.edu_sink;
+        runtime.federation.edu_sink = [&edu_deliveries, real_edu_sink](auto const& edu) {
+            ++edu_deliveries;
+            return real_edu_sink(edu);
+        };
+        runtime.federation_proxy = std::make_unique<FederationProxy>(
+            config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string());
+        auto const proxy_lifetime = Fed10ProxyLifetime{runtime};
+        std::ignore = proxy_lifetime;
+        REQUIRE(wait_for_healthy(*runtime.federation_proxy, std::chrono::seconds{15}));
+        auto listener = Fed10SocketListener{client};
+        auto& proxy = *runtime.federation_proxy;
+        auto const database_path = std::filesystem::path{config.database().sqlite_path};
+
+        WHEN("the worker accepts the transaction, then fails to reload the room, and the sender retries it")
+        {
+            auto const accepted = fed10_socket_request(listener.port(), wire);
+            REQUIRE(accepted.status == 200U);
+            REQUIRE(edu_deliveries.load() == 1U);
+            // Main's commit of the relayed PDU notifies the worker; let that
+            // reload settle so it cannot overwrite the failure below.
+            auto const settled = fed10_wait_for_room_sync(proxy, room_id, "ok", 0U);
+            REQUIRE(settled > 0U);
+            {
+                auto hidden = Fed10HiddenDatabase{database_path};
+                REQUIRE(hidden.hidden());
+                proxy.notify_room_changed(room_id);
+                REQUIRE(fed10_wait_for_room_sync(proxy, room_id, "failed", settled) > 0U);
+                REQUIRE(hidden.restore());
+            }
+            auto const retried = fed10_socket_request(listener.port(), wire);
+
+            THEN("main answers the retry as a completed transaction without delivering it again")
+            {
+                CHECK(retried.status == 200U);
+                CHECK(bool{retried.body == accepted.body});
+                CHECK(proxy.room_sync_status(room_id).state == "failed");
+                CHECK(edu_deliveries.load() == 1U);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 1U);
+                CHECK(homeserver::current_typing_users_in_room(runtime, room_id) ==
+                      std::vector<std::string>{relay_member});
+            }
+        }
+
+        WHEN("main accepts the transaction while the room's reload has failed, then the worker recovers and the "
+             "sender retries it")
+        {
+            // A healthy channel does not mean the worker has loaded its store:
+            // one successful reload proves it is serving before the file moves.
+            proxy.notify_room_changed(room_id);
+            auto const settled = fed10_wait_for_room_sync(proxy, room_id, "ok", 0U);
+            REQUIRE(settled > 0U);
+            auto failed = std::uint64_t{0U};
+            {
+                auto hidden = Fed10HiddenDatabase{database_path};
+                REQUIRE(hidden.hidden());
+                proxy.notify_room_changed(room_id);
+                failed = fed10_wait_for_room_sync(proxy, room_id, "failed", settled);
+                REQUIRE(failed > 0U);
+                REQUIRE(hidden.restore());
+            }
+            auto const accepted = fed10_socket_request(listener.port(), wire);
+            REQUIRE(accepted.status == 200U);
+            REQUIRE(edu_deliveries.load() == 1U);
+            proxy.notify_room_changed(room_id);
+            REQUIRE(fed10_wait_for_room_sync(proxy, room_id, "ok", failed) > 0U);
+            auto const retried = fed10_socket_request(listener.port(), wire);
+
+            THEN("the retry is answered as a completed transaction without delivering it again")
+            {
+                CHECK(retried.status == 200U);
+                CHECK(bool{retried.body == accepted.body});
+                CHECK(edu_deliveries.load() == 1U);
+                auto guard = std::lock_guard{runtime.mutex};
+                CHECK(fed10_target_count(runtime.database.persistent_store, event_id) == 1U);
+                CHECK(homeserver::current_typing_users_in_room(runtime, room_id) ==
+                      std::vector<std::string>{relay_member});
             }
         }
     }

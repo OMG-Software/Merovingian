@@ -3,6 +3,7 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/socket_handle.hpp"
@@ -82,7 +83,7 @@ namespace
     address.sin_port = htons(port);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (::connect(fd, reinterpret_cast<sockaddr const*>(&address), sizeof(address)) != 0)
+    if (!merovingian::tests::connect_within(fd, *reinterpret_cast<sockaddr const*>(&address), sizeof(address)))
     {
         ::close(fd);
         return -1;
@@ -686,8 +687,8 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
             REQUIRE(lookalike.valid());
             REQUIRE(lookalike.get() < accepted_fd);
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-            REQUIRE(::connect(lookalike.get(), reinterpret_cast<sockaddr const*>(&lookalike_address),
-                              sizeof(lookalike_address)) == 0);
+            REQUIRE(merovingian::tests::connect_within(
+                lookalike.get(), *reinterpret_cast<sockaddr const*>(&lookalike_address), sizeof(lookalike_address)));
 
             accepted_fd = find_accepted_socket_fd(client_fd);
             REQUIRE(accepted_fd >= 0);
@@ -2390,7 +2391,7 @@ enum class SourceConnect : std::uint8_t
     remote.sin_port = htons(port);
     remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (::connect(fd, reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)) != 0)
+    if (!merovingian::tests::connect_within(fd, *reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)))
     {
         ::close(fd);
         return {SourceConnect::failed, -1};

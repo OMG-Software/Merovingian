@@ -14,6 +14,7 @@
 
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -149,7 +150,7 @@ enum class SourceConnect : std::uint8_t
     remote.sin_port = htons(port);
     remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (::connect(socket.fd(), reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)) != 0)
+    if (!merovingian::tests::connect_within(socket.fd(), *reinterpret_cast<sockaddr const*>(&remote), sizeof(remote)))
     {
         return {SourceConnect::failed, ClientSocket{}};
     }
@@ -358,8 +359,8 @@ private:
     return ::bind(socket.fd(), reinterpret_cast<sockaddr const*>(&local), sizeof(local)) == 0;
 }
 
-[[nodiscard]] auto access_token_for(merovingian::homeserver::ClientServerRuntime& runtime,
-                                    std::string_view localpart) -> std::string
+[[nodiscard]] auto access_token_for(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view localpart)
+    -> std::string
 {
     auto const registration = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST",

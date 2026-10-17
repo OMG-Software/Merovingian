@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/joining_threads.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -8,11 +9,15 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 
 #include <fcntl.h>
@@ -308,7 +313,8 @@ SCENARIO("Opening a SQLite connection never releases another connection's write 
         WHEN("the same process reads it through a read-only connection")
         {
             std::ignore = merovingian::database::detail::read_media_blob_from_sqlite(path.string(), "absent");
-            std::ignore = merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), "!r:example.org");
+            std::ignore =
+                merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), "!r:example.org");
 
             THEN("the write transaction still holds its lock")
             {
@@ -342,6 +348,102 @@ SCENARIO("A read-only SQLite connection refuses a WAL database before reading it
             {
                 CHECK_FALSE(opened.ok);
                 CHECK_FALSE(std::filesystem::exists(scratch.path / "store.db-shm"));
+            }
+        }
+    }
+}
+
+namespace
+{
+// A rollback journal that a reader takes for a hot one: present, first byte
+// non-zero, and no process holding the RESERVED lock. A reader sees exactly
+// this when it checks between a writer deleting its journal and dropping its
+// lock (SQLite ticket #3883).
+auto write_hot_looking_journal(std::filesystem::path const& journal) -> void
+{
+    auto stream = std::ofstream{journal, std::ios::binary};
+    REQUIRE(stream.is_open());
+    stream << std::string(512U, '\xd9');
+    stream.close();
+    auto const written = !stream.fail();
+    REQUIRE(written);
+}
+} // namespace
+SCENARIO("A read-only SQLite read outlasts a journal that only looks hot while a writer commits",
+         "[database][sqlite-locks][sqlite-false-hot-journal]")
+{
+    // A read-write connection resolves a hot-looking journal under EXCLUSIVE;
+    // a read-only one fails at once with SQLITE_READONLY_ROLLBACK, skipping the
+    // busy handler. The federation worker's room reload then failed on
+    // OpenBSD and the proxy fell back to main for that room.
+    GIVEN("main's SQLite database holding a room, beside a journal that looks hot")
+    {
+        using namespace std::chrono_literals;
+        auto scratch = DatabaseScratch{};
+        auto const path = scratch.path / "store.db";
+        auto const journal = scratch.path / "store.db-journal";
+        auto const room_id = std::string{"!reload:example.org"};
+        {
+            auto main = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(main.ok);
+            REQUIRE(merovingian::database::store_room(main.store, {room_id, "@a:example.org"}));
+        }
+        write_hot_looking_journal(journal);
+
+        WHEN("the journal disappears, as the committing writer's does, while a read-only room snapshot is starting")
+        {
+            auto snapshot = std::optional<merovingian::database::RoomReloadSnapshot>{};
+            {
+                auto remover = merovingian::tests::JoiningThreads{};
+                remover.emplace_back([&journal] {
+                    std::this_thread::sleep_for(200ms);
+                    auto ignored = std::error_code{};
+                    std::ignore = std::filesystem::remove(journal, ignored);
+                });
+                snapshot = merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), room_id);
+            }
+
+            THEN("the snapshot is read once the journal is gone")
+            {
+                REQUIRE(snapshot.has_value());
+                REQUIRE(snapshot->room.has_value());
+                CHECK(snapshot->room->room_id == room_id);
+            }
+        }
+
+        WHEN("the journal disappears while the federation worker's read-only store load is starting")
+        {
+            auto opened = merovingian::database::PersistentStoreOpenResult{};
+            {
+                auto remover = merovingian::tests::JoiningThreads{};
+                remover.emplace_back([&journal] {
+                    std::this_thread::sleep_for(200ms);
+                    auto ignored = std::error_code{};
+                    std::ignore = std::filesystem::remove(journal, ignored);
+                });
+                opened = merovingian::database::open_sqlite_persistent_store(
+                    path.string(), merovingian::database::TableLoadProfile::federation_worker);
+            }
+
+            THEN("the store loads with the room")
+            {
+                REQUIRE(opened.ok);
+                CHECK(opened.store.rooms.size() == 1U);
+            }
+        }
+
+        WHEN("the journal stays, as a crashed writer's really hot journal does")
+        {
+            auto const started = std::chrono::steady_clock::now();
+            auto const snapshot = merovingian::database::detail::load_room_snapshot_from_sqlite(path.string(), room_id);
+            auto const elapsed = std::chrono::steady_clock::now() - started;
+
+            THEN("the read fails within a bounded time and leaves the journal for a read-write connection")
+            {
+                CHECK_FALSE(snapshot.has_value());
+                CHECK(elapsed < 10s);
+                CHECK(std::filesystem::exists(journal));
+                CHECK(std::filesystem::file_size(journal) == 512U);
             }
         }
     }
