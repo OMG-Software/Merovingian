@@ -5,8 +5,11 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -280,6 +283,144 @@ SCENARIO("a verified federation to-device EDU addressed to device '*' reaches ev
                 std::ranges::sort(queued_devices);
                 REQUIRE(queued_devices == bob_devices);
                 REQUIRE(store.next_sync_stream_id == sync_stream_before + bob_devices.size());
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto deliver_to_device_edu(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view origin,
+                                         std::string_view sender, std::string_view message_id,
+                                         std::string_view device_key) -> merovingian::federation::EduDispositionResult
+{
+    auto envelope = merovingian::federation::InboundEduEnvelope{};
+    envelope.type = merovingian::federation::EduType::direct_to_device;
+    envelope.edu_type = "m.direct_to_device";
+    envelope.origin = std::string{origin};
+    envelope.content_json = std::string{R"({"sender":")"} + std::string{sender} +
+                            R"(","type":"m.room_key_request","message_id":")" + std::string{message_id} +
+                            R"(","messages":{"@bob:example.org":{")" + std::string{device_key} +
+                            R"(":{"action":"request_cancellation"}}}})";
+    REQUIRE(runtime.homeserver.federation.edu_sink != nullptr);
+    return runtime.homeserver.federation.edu_sink(envelope);
+}
+
+[[nodiscard]] auto queued_to_device_count(merovingian::homeserver::ClientServerRuntime const& runtime) -> std::size_t
+{
+    return runtime.homeserver.database.persistent_store.to_device_messages.size();
+}
+
+[[nodiscard]] auto durable_to_device_rows(std::filesystem::path const& path) -> std::size_t
+{
+    auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+    REQUIRE(opened.ok);
+    return opened.store.to_device_messages.size();
+}
+
+} // namespace
+
+// Matrix Server-Server API v1.19, "Send-to-device messaging": `message_id` is "Unique ID for the
+// message, used for idempotence." The replay window is keyed on (origin, sender, message_id), so a
+// sending server whose IDs are only unique per sender cannot have one user's message dropped as a
+// replay of another's.
+SCENARIO("Inbound to-device EDUs from different senders may share a message_id",
+         "[integration][sqlite][to-device][message-id][security_audit_federated_to_device_flow]")
+{
+    GIVEN("Bob has a device and a remote server has two users")
+    {
+        auto const sqlite = TemporarySqliteDirectory{};
+        auto started = merovingian::homeserver::start_client_server(to_device_config(sqlite.database_path()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const bob = register_bob(runtime);
+
+        WHEN("each of the two users sends an EDU with the same message_id")
+        {
+            auto const first =
+                deliver_to_device_edu(runtime, "remote.example", "@anna:remote.example", "1", bob.device_id);
+            auto const second =
+                deliver_to_device_edu(runtime, "remote.example", "@carl:remote.example", "1", bob.device_id);
+
+            THEN("both are accepted and both messages are queued")
+            {
+                REQUIRE(first.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(second.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(queued_to_device_count(runtime) == 2U);
+            }
+        }
+
+        WHEN("one user sends the same (origin, sender, message_id) twice")
+        {
+            auto const first =
+                deliver_to_device_edu(runtime, "remote.example", "@anna:remote.example", "1", bob.device_id);
+            auto const second =
+                deliver_to_device_edu(runtime, "remote.example", "@anna:remote.example", "1", bob.device_id);
+
+            THEN("it is delivered once and the repeat is acknowledged as a replay")
+            {
+                REQUIRE(first.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(second.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(queued_to_device_count(runtime) == 1U);
+            }
+        }
+    }
+}
+
+// A message that did not persist is a lost E2EE room-key share. The EDU's messages are committed
+// in one backend transaction and its message_id is remembered only afterwards, so a resend of an
+// EDU that failed is delivered in full instead of being dropped as a replay.
+SCENARIO("Inbound to-device EDUs are stored all-or-nothing and can be resent after a failure",
+         "[integration][sqlite][to-device][message-id][security_audit_federated_to_device_flow]")
+{
+    GIVEN("Bob with three devices and a to-device table that refuses inserts")
+    {
+        auto const sqlite = TemporarySqliteDirectory{};
+        auto started = merovingian::homeserver::start_client_server(to_device_config(sqlite.database_path()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        std::ignore = register_bob(runtime);
+        std::ignore = login_bob_device(runtime, "BOB_PHONE");
+        std::ignore = login_bob_device(runtime, "BOB_LAPTOP");
+        auto fault = merovingian::tests::SqliteInsertFault{sqlite.database_path(), "to_device_messages",
+                                                           "inbound_to_device_fault"};
+
+        WHEN("a remote EDU addressed to all of Bob's devices fails to commit")
+        {
+            auto const failed = deliver_to_device_edu(runtime, "remote.example", "@anna:remote.example", "wild-1", "*");
+
+            THEN("it is not accepted and no device has a message, in memory or on disk")
+            {
+                REQUIRE(failed.status != merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(queued_to_device_count(runtime) == 0U);
+                REQUIRE(durable_to_device_rows(sqlite.database_path()) == 0U);
+            }
+
+            AND_WHEN("the fault clears and the origin resends the identical EDU")
+            {
+                fault.clear();
+                auto const resent =
+                    deliver_to_device_edu(runtime, "remote.example", "@anna:remote.example", "wild-1", "*");
+
+                THEN("it is accepted and every device gets exactly one message")
+                {
+                    REQUIRE(resent.status == merovingian::federation::EduDispositionStatus::accepted);
+                    REQUIRE(queued_to_device_count(runtime) == 3U);
+                    REQUIRE(durable_to_device_rows(sqlite.database_path()) == 3U);
+                }
+
+                AND_WHEN("the origin sends it a third time")
+                {
+                    auto const replayed =
+                        deliver_to_device_edu(runtime, "remote.example", "@anna:remote.example", "wild-1", "*");
+
+                    THEN("it is a replay and nothing further is stored")
+                    {
+                        REQUIRE(replayed.status == merovingian::federation::EduDispositionStatus::accepted);
+                        REQUIRE(queued_to_device_count(runtime) == 3U);
+                    }
+                }
             }
         }
     }
