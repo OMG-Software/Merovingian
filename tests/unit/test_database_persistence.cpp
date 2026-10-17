@@ -2417,7 +2417,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // predecessor column onto refresh_tokens and access_tokens.
                 REQUIRE(tables.size() == 45U);
                 REQUIRE(merovingian::database::current_schema_version() == 23U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 58U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 59U);
                 // data_extra_json column onto pushers (no new table),
                 // migration v12 adds the login_tokens table (a sibling
                 // branch's SSO login work, registered here only for
@@ -2429,7 +2429,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // v14 adds only the users.deactivated column.
                 REQUIRE(tables.size() == 45U);
                 REQUIRE(merovingian::database::current_schema_version() == 23U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 58U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 59U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

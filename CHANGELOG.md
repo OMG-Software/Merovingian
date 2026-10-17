@@ -48,6 +48,9 @@ while reporting success (R01–R03), plus two to-device defects found while fixi
   (`enqueue_to_device_messages`) and its ID recorded only after the commit, so a failed store no
   longer turns the origin's resend into a dropped replay. ADR-0166; scenarios tagged
   `[message-id]`.
+- **FIXED (`line-endings-tooling` timeout):** the test ran `git ls-files --eol` before each of
+  its four cases, about 6.5 s each on a WSL `/mnt/c` checkout, so under a parallel `meson test`
+  it exceeded Meson's 30 s default timeout. It now scans once per class (`setUpClass`).
 - **DOCS:** the audit report and its remediation status are recorded in
   `docs/conformance-audit-report-2026-10-17.md`.
 

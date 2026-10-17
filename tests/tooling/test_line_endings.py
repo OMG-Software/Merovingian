@@ -59,8 +59,16 @@ def attributes_of(path: str) -> dict[str, str]:
 
 
 class LineEndingAttributesTest(unittest.TestCase):
+    rows: list[tuple[str, str, str, str]] | None = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # One scan for the whole class: `git ls-files --eol` reads every tracked
+        # file, which takes several seconds on a WSL /mnt/c checkout, and running
+        # it before each test pushed the suite past Meson's 30 s default timeout.
+        cls.rows = tracked_eol_report()
+
     def setUp(self) -> None:
-        self.rows = tracked_eol_report()
         if self.rows is None:
             self.skipTest("git cannot read this checkout; line-ending attributes are checked where it can")
 
