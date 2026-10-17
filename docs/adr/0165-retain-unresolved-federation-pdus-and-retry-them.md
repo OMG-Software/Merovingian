@@ -53,7 +53,7 @@ Chosen option: "retain the PDU durably, bounded, and retry it".
   retained) gets an `error` entry for its event ID, because nothing will retry it and the sender should know. The
   worker-to-main IPC status string carries `deferred` both ways.
 * **Retry.** `homeserver::retry_deferred_pdus`, run by a `PeriodicJob` started in `main.cpp` after the dispatcher
-  (ADR-0082), re-ingests due PDUs: 30 s back-off doubling to 1 h, at most 32 per call, stop token checked between
+  (ADR-0082), re-ingests due PDUs: 30 s back-off doubling to 1 h, at most 32 per call, stop flag checked between
   PDUs, no lock held across the call. The next-attempt time is in memory only, so after a restart every retained PDU is
   due at once. Accepting a PDU wakes the job and makes due the retained PDUs of that room whose JSON names it.
   Expiry is audited as `federation.pdu_deferral_expired`.

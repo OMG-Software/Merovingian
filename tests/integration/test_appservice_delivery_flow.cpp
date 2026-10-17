@@ -43,7 +43,6 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -317,8 +316,8 @@ struct SteppedClock final
 [[nodiscard]] auto drain_once(ClientServerRuntime& runtime, std::chrono::steady_clock::time_point now)
     -> std::chrono::milliseconds
 {
-    auto const stop = std::stop_source{};
-    return merovingian::homeserver::drain_appservice_queues(runtime.homeserver, stop.get_token(), now);
+    auto const stop = merovingian::homeserver::StopFlag{};
+    return merovingian::homeserver::drain_appservice_queues(runtime.homeserver, stop, now);
 }
 
 [[nodiscard]] auto queues_are_idle(ClientServerRuntime& runtime) -> bool
@@ -748,12 +747,12 @@ SCENARIO("a drain asked to stop makes no call", "[appservice][r01][integration]"
         auto const token = register_alice(runtime);
         auto const room_id = create_room(runtime, token);
         send_message(runtime, token, room_id, "msg-A");
-        auto stop = std::stop_source{};
+        auto stop = merovingian::homeserver::StopFlag{};
         stop.request_stop();
 
         WHEN("the queue is drained")
         {
-            std::ignore = merovingian::homeserver::drain_appservice_queues(runtime.homeserver, stop.get_token(),
+            std::ignore = merovingian::homeserver::drain_appservice_queues(runtime.homeserver, stop,
                                                                            std::chrono::steady_clock::now());
 
             THEN("the appservice is not called and the events stay queued")

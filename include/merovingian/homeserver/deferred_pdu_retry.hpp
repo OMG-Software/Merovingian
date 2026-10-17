@@ -5,11 +5,11 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/periodic_job.hpp"
+#include "merovingian/homeserver/stop_flag.hpp"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -70,8 +70,7 @@ auto wake_deferred_pdus_waiting_for(HomeserverRuntime& runtime, std::string_view
 // written by ingest_pdu_event, after that verification (the same-process
 // /send path in federation::authorize_federation_pdu, or the worker relay's
 // re-verification in homeserver::handle_pdu_ingest_request, ADR-0071).
-[[nodiscard]] auto retry_deferred_pdus(HomeserverRuntime& runtime, std::stop_token const& stop)
-    -> std::chrono::milliseconds;
+[[nodiscard]] auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> std::chrono::milliseconds;
 
 // Runs retry_deferred_pdus on its own thread and keeps the runtime's wake hook
 // pointing at it. The thread starts only in start(), after process hardening

@@ -154,7 +154,7 @@ auto wake_deferred_pdus_waiting_for(HomeserverRuntime& runtime, std::string_view
     }
 }
 
-auto retry_deferred_pdus(HomeserverRuntime& runtime, std::stop_token const& stop) -> std::chrono::milliseconds
+auto retry_deferred_pdus(HomeserverRuntime& runtime, StopFlag const& stop) -> std::chrono::milliseconds
 {
     struct DueRow final
     {
@@ -261,7 +261,7 @@ auto retry_deferred_pdus(HomeserverRuntime& runtime, std::stop_token const& stop
 
 DeferredPduRetryJob::DeferredPduRetryJob(HomeserverRuntime& runtime)
     : runtime_{runtime}
-    , job_{"deferred-pdu-retry", [&runtime](std::stop_token const& stop) {
+    , job_{"deferred-pdu-retry", [&runtime](StopFlag const& stop) {
                return retry_deferred_pdus(runtime, stop);
            }}
 {

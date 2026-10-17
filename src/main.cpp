@@ -39,7 +39,6 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -789,7 +788,7 @@ struct ListenerBinding final
     // thread starts here, after process hardening (ADR-0082), and only when an appservice is
     // registered.
     auto appservice_delivery_job = merovingian::homeserver::PeriodicJob{
-        "appservice-delivery", [&runtime](std::stop_token const& stop) {
+        "appservice-delivery", [&runtime](merovingian::homeserver::StopFlag const& stop) {
             return merovingian::homeserver::drain_appservice_queues(runtime.homeserver, stop);
         }};
     if (!runtime.homeserver.appservices.empty())

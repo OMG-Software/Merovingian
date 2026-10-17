@@ -3,10 +3,10 @@
 #pragma once
 
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/stop_flag.hpp"
 
 #include <chrono>
 #include <cstdint>
-#include <stop_token>
 #include <string_view>
 
 namespace merovingian::homeserver
@@ -68,7 +68,7 @@ auto enqueue_appservice_delivery(HomeserverRuntime& runtime, LocalRoom const& ro
 // Returns how long until the next call is worthwhile: 0 when an appservice
 // still has queued work this call did not get to, otherwise the time to the
 // earliest back-off deadline, otherwise 60 s.
-[[nodiscard]] auto drain_appservice_queues(HomeserverRuntime& runtime, std::stop_token const& stop,
+[[nodiscard]] auto drain_appservice_queues(HomeserverRuntime& runtime, StopFlag const& stop,
                                            std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now())
     -> std::chrono::milliseconds;
 

@@ -5,9 +5,11 @@ First wave of fixes for the 17 October 2026 Matrix v1.19 conformance audit
 while reporting success (R01–R03), plus two to-device defects found while fixing R02.
 
 - **NEW (`PeriodicJob`):** `homeserver::PeriodicJob` runs one job on a dedicated thread, once at
-  start, again on `wake()`, and otherwise after the delay its last run returned; the job gets the
-  thread's stop token. One thread per job, so a queue drained by a job has one consumer. The thread
-  starts only in `start()` (ADR-0082). Scenarios tagged `[periodic_job]`.
+  start, again on `wake()`, and otherwise after the delay its last run returned; the job gets a
+  `homeserver::StopFlag` it polls between units of work. One thread per job, so a queue drained by
+  a job has one consumer. The thread starts only in `start()` (ADR-0082). It is built on
+  `std::thread`, not `std::jthread`/`std::stop_token`, which the libc++ of FreeBSD and OpenBSD
+  lacks; `docs/coding-rules.md` now forbids both (ADR-0167). Scenarios tagged `[periodic_job]`.
 - **FIXED (R01, appservice events skipped after an outage):** the appservice cursor held one
   pending event; when its retry failed the triggering event was not queued, and when the
   appservice recovered every event in between was skipped. Nothing retried once room traffic

@@ -31,7 +31,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -422,7 +421,8 @@ SCENARIO("A retained PDU is accepted once the event it was waiting for has arriv
         {
             auto const parent_result = merovingian::homeserver::ingest_pdu_event(started.runtime, parent);
             REQUIRE(parent_result.status == PduIngestionStatus::accepted);
-            std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            std::ignore =
+                merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
             auto const& store = started.runtime.database.persistent_store;
 
             THEN("the retained PDU is in the events table as accepted")
@@ -519,7 +519,8 @@ SCENARIO("A retained PDU that has waited too long or been tried too often is dro
 
         WHEN("the retry job runs")
         {
-            std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            std::ignore =
+                merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
 
             THEN("the deferral is gone and the event was never stored")
             {
@@ -557,7 +558,8 @@ SCENARIO("A retained PDU that still cannot be placed waits out a back-off before
 
         WHEN("there is nothing retained")
         {
-            auto const delay = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            auto const delay =
+                merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
 
             THEN("the job is told to look again in five minutes")
             {
@@ -570,9 +572,11 @@ SCENARIO("A retained PDU that still cannot be placed waits out a back-off before
             auto const envelope = make_sendable_pdu(room_id, "orphan", room_id + ":never-recorded", 100);
             REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, envelope).status ==
                     PduIngestionStatus::deferred);
-            auto const first = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            auto const first =
+                merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
             auto const attempts_after_first = started.runtime.database.persistent_store.deferred_pdus.front().attempts;
-            auto const second = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            auto const second =
+                merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
             auto const& rows = started.runtime.database.persistent_store.deferred_pdus;
 
             THEN("the first run counts one attempt and the second finds it not yet due")
@@ -619,7 +623,8 @@ SCENARIO("Accepting the event a retained PDU waits for wakes the retry job and m
         };
         REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, child).status ==
                 PduIngestionStatus::deferred);
-        std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+        std::ignore =
+            merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
         REQUIRE(started.runtime.database.persistent_store.deferred_pdus.size() == 1U);
         REQUIRE(wakes == 0);
 
@@ -627,7 +632,8 @@ SCENARIO("Accepting the event a retained PDU waits for wakes the retry job and m
         {
             REQUIRE(merovingian::homeserver::ingest_pdu_event(started.runtime, unrelated).status ==
                     PduIngestionStatus::accepted);
-            std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+            std::ignore =
+                merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
 
             THEN("the job is not woken and the retained PDU keeps waiting out its back-off")
             {
@@ -649,7 +655,8 @@ SCENARIO("Accepting the event a retained PDU waits for wakes the retry job and m
 
             AND_WHEN("the retry job runs straight away")
             {
-                std::ignore = merovingian::homeserver::retry_deferred_pdus(started.runtime, std::stop_token{});
+                std::ignore =
+                    merovingian::homeserver::retry_deferred_pdus(started.runtime, merovingian::homeserver::StopFlag{});
 
                 THEN("the retained PDU is placed without waiting for its back-off")
                 {

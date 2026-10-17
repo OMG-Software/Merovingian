@@ -6,13 +6,13 @@
 // test thread only; the job body touches nothing but atomics.
 
 #include "merovingian/homeserver/periodic_job.hpp"
+#include "merovingian/homeserver/stop_flag.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
-#include <stop_token>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -43,7 +43,7 @@ SCENARIO("A periodic job runs once at start and again whenever it is woken", "[h
     GIVEN("a started job that asks never to be re-run on a timer")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](merovingian::homeserver::StopFlag const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{1h};
                                                         }};
@@ -76,7 +76,7 @@ SCENARIO("A periodic job re-runs after the delay its last run asked for", "[home
     GIVEN("a started job that asks to be re-run after 10 ms")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](merovingian::homeserver::StopFlag const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{10};
                                                         }};
@@ -101,7 +101,7 @@ SCENARIO("A stopped periodic job runs no more", "[homeserver][periodic_job]")
     GIVEN("a started job")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](merovingian::homeserver::StopFlag const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{1};
                                                         }};
@@ -133,14 +133,14 @@ SCENARIO("A periodic job survives a run that throws", "[homeserver][periodic_job
     GIVEN("a job whose first run throws")
     {
         auto runs = std::atomic<int>{0};
-        auto job =
-            merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) -> std::chrono::milliseconds {
-                                                     if (runs.fetch_add(1) == 0)
-                                                     {
-                                                         throw std::runtime_error{"first run fails"};
-                                                     }
-                                                     return std::chrono::milliseconds{1h};
-                                                 }};
+        auto job = merovingian::homeserver::PeriodicJob{
+            "test", [&runs](merovingian::homeserver::StopFlag const&) -> std::chrono::milliseconds {
+                if (runs.fetch_add(1) == 0)
+                {
+                    throw std::runtime_error{"first run fails"};
+                }
+                return std::chrono::milliseconds{1h};
+            }};
 
         WHEN("it is started and woken after the failure")
         {
@@ -170,7 +170,7 @@ SCENARIO("A periodic job that was never started is inert", "[homeserver][periodi
     GIVEN("a job that is constructed but not started")
     {
         auto runs = std::atomic<int>{0};
-        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](std::stop_token const&) {
+        auto job = merovingian::homeserver::PeriodicJob{"test", [&runs](merovingian::homeserver::StopFlag const&) {
                                                             runs.fetch_add(1);
                                                             return std::chrono::milliseconds{1};
                                                         }};
@@ -183,6 +183,42 @@ SCENARIO("A periodic job that was never started is inert", "[homeserver][periodi
             THEN("the job never ran and nothing is running")
             {
                 CHECK(runs.load() == 0);
+                CHECK_FALSE(job.running());
+            }
+        }
+    }
+}
+
+SCENARIO("Stopping a periodic job ends a run that is polling its stop flag", "[homeserver][periodic_job]")
+{
+    GIVEN("a started job whose run loops until it sees a stop request")
+    {
+        auto entered = std::atomic<bool>{false};
+        auto saw_stop = std::atomic<bool>{false};
+        auto job = merovingian::homeserver::PeriodicJob{
+            "test", [&entered, &saw_stop](merovingian::homeserver::StopFlag const& stop) {
+                entered.store(true);
+                while (!stop.stop_requested())
+                {
+                    std::this_thread::sleep_for(1ms);
+                }
+                saw_stop.store(true);
+                return std::chrono::milliseconds{1h};
+            }};
+        REQUIRE(job.start());
+        REQUIRE(eventually(
+            [&entered]() {
+                return entered.load();
+            },
+            2s));
+
+        WHEN("it is stopped mid-run")
+        {
+            job.stop();
+
+            THEN("the run saw the stop request and the thread has ended")
+            {
+                CHECK(saw_stop.load());
                 CHECK_FALSE(job.running());
             }
         }

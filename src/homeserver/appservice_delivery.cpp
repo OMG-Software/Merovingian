@@ -149,7 +149,7 @@ namespace
     // Sends the transactions queued for one appservice. Called with `lock` held; releases it
     // around every network call and holds it again on return.
     auto drain_one_appservice(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& lock,
-                              appservice::AppserviceRegistration const& registration, std::stop_token const& stop,
+                              appservice::AppserviceRegistration const& registration, StopFlag const& stop,
                               std::chrono::steady_clock::time_point& clock_now) -> AppserviceDrainOutcome
     {
         auto& store = runtime.database.persistent_store;
@@ -355,7 +355,7 @@ auto enqueue_appservice_delivery(HomeserverRuntime& runtime, LocalRoom const& ro
     }
 }
 
-auto drain_appservice_queues(HomeserverRuntime& runtime, std::stop_token const& stop,
+auto drain_appservice_queues(HomeserverRuntime& runtime, StopFlag const& stop,
                              std::chrono::steady_clock::time_point now) -> std::chrono::milliseconds
 {
     if (runtime.appservices.empty() || runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr)

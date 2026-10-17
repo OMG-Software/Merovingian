@@ -35,14 +35,14 @@ PeriodicJob::~PeriodicJob()
 
 auto PeriodicJob::start() -> bool
 {
-    if (thread_.joinable() || !job_)
+    if (thread_.joinable() || !job_ || stop_.stop_requested())
     {
         return false;
     }
     try
     {
-        thread_ = std::jthread{[this](std::stop_token const& stop) {
-            run(stop);
+        thread_ = std::thread{[this]() {
+            run();
         }};
     }
     catch (std::system_error const&)
@@ -63,12 +63,17 @@ auto PeriodicJob::wake() noexcept -> void
 
 auto PeriodicJob::stop() noexcept -> void
 {
-    if (!thread_.joinable())
     {
-        return;
+        // Set under the mutex so the run loop cannot test the flag, miss the
+        // notification below, and then sleep for its whole delay.
+        auto const guard = std::lock_guard{mutex_};
+        stop_.request_stop();
     }
-    thread_.request_stop();
-    thread_.join();
+    wake_condition_.notify_all();
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
 }
 
 auto PeriodicJob::running() const noexcept -> bool
@@ -76,14 +81,14 @@ auto PeriodicJob::running() const noexcept -> bool
     return thread_.joinable();
 }
 
-auto PeriodicJob::run(std::stop_token const& stop) -> void
+auto PeriodicJob::run() -> void
 {
-    while (!stop.stop_requested())
+    while (!stop_.stop_requested())
     {
         auto delay = delay_after_failure;
         try
         {
-            delay = job_(stop);
+            delay = job_(stop_);
         }
         catch (std::exception const& error)
         {
@@ -95,10 +100,10 @@ auto PeriodicJob::run(std::stop_token const& stop) -> void
         }
 
         auto lock = std::unique_lock{mutex_};
-        // Returns early on wake() or stop; a wake that arrived during the run
+        // Returns early on wake() or stop(); a wake that arrived during the run
         // above is already recorded in woken_ and skips the wait entirely.
-        std::ignore = wake_condition_.wait_for(lock, stop, delay, [this]() {
-            return woken_;
+        std::ignore = wake_condition_.wait_for(lock, delay, [this]() {
+            return woken_ || stop_.stop_requested();
         });
         woken_ = false;
     }
