@@ -4276,7 +4276,7 @@ namespace
                     return pdu.event_id == envelope.event_id;
                 }))
             {
-                return {federation::PduIngestionStatus::missing_prev_state, "PDU already deferred until join commits"};
+                return {federation::PduIngestionStatus::deferred, "PDU already deferred until join commits"};
             }
             auto const max_pdus = static_cast<std::size_t>(runtime.federation.config.pending_join_max_pdus);
             auto const max_bytes = runtime.federation.config.pending_join_max_bytes;
@@ -4290,7 +4290,7 @@ namespace
             auto const bytes = deferred.json.size();
             queue.pdus.push_back(std::move(deferred));
             queue.json_bytes += bytes;
-            return {federation::PduIngestionStatus::missing_prev_state, "PDU deferred until outbound join commits"};
+            return {federation::PduIngestionStatus::deferred, "PDU deferred until outbound join commits"};
         }
         stream_ordering = allocate_stream_ordering(runtime.database);
         sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
