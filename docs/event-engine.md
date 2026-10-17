@@ -799,7 +799,7 @@ auth_events/state-before/current-state three-way check — see
 
 Phase C closes the gap left by phases A and B: an inbound PDU whose
 `prev_events` or `auth_events` are unknown to this server is no longer
-returned as `missing_prev_state` and forgotten. Instead, `ingest_pdu_event`
+returned as `missing_prev_state` and forgotten (and, until R03, lost for good). Instead, `ingest_pdu_event`
 checks for missing references and, when the PDU envelope carries an origin,
 fetches them from that origin before retrying the PDU.
 
@@ -850,9 +850,47 @@ fetches them from that origin before retrying the PDU.
   state derived from the event's `auth_events`. Once a verified state before a
   stored group-less event is known and the event passes auth against it, it
   gains a state group and keeps its status.
-* If references remain missing after the capped attempt, the original PDU still
-  returns `missing_prev_state` and is not applied or durably retained for retry. Fail-closed is preserved;
-  backfill only turns a *resolvable* gap into accepted history.
+* If references remain missing after the capped attempt, the original PDU is not applied (and
+  not stored in `events`), but it is no longer forgotten: see "Retention of unresolved PDUs"
+  below. Fail-closed is preserved; backfill only turns a *resolvable* gap into accepted
+  history.
+
+### Retention of unresolved PDUs (R03, ADR-0165)
+
+Spec: server-server-api.md "Transactions" (the `200` maps each PDU to its processing
+result; a PDU with no error "can be considered successfully handled", so the sender does
+not resend it) and "Backfilling and retrieving missing events".
+
+Before R03 a PDU that stayed unresolved after the capped backfill was counted and
+forgotten while its transaction was answered `200` and deduplicated, so the event was lost.
+Now, at each of the three places `ingest_pdu_event` used to return `missing_prev_state`
+after admitting the PDU (references still missing after backfill, an `auth_event` with no
+recorded event, a `prev_event` with no state group), `defer_unresolved_pdu` writes the
+envelope exactly as it would have been stored to `deferred_pdus` with its origin and the
+status is `PduIngestionStatus::deferred`. The pending-federated-join queue
+(`pending_federated_joins`) is a separate, in-memory deferral and is unchanged.
+
+* **`/send` result.** `deferred` has no entry in the response's `pdus` map: the PDU is held,
+  so it is handled. `missing_prev_state` (not retained: no origin to fetch from, or a bound
+  was hit) gets an `error` entry for its event ID, because nothing will retry it. Both are
+  counted separately in the `transaction.accepted` diagnostic (`pdu_deferred`,
+  `pdu_missing_prev`) and audited (`federation.pdu_deferred`,
+  `federation.pdu_missing_prev_state`). The worker relay carries `deferred` as a string
+  over IPC both ways.
+* **Bounds.** 100 retained PDUs per room, 1000 in total, 16 MiB of JSON in total; a PDU is
+  dropped after 24 hours or 10 retries that did not place it
+  (`federation.pdu_deferral_expired`). See `docs/database-persistence.md`.
+* **Retry.** `homeserver::retry_deferred_pdus` (`src/homeserver/deferred_pdu_retry.cpp`),
+  run by `DeferredPduRetryJob` (a `PeriodicJob`, started in `main.cpp` after the dispatcher),
+  rebuilds each due PDU's envelope (`federation::rebuild_inbound_pdu_envelope`, with the
+  room version the room resolves to now) and sends it through the production PDU sink.
+  Accepted, soft-failed, rejected and invalid outcomes remove the row (the first three
+  store the event); anything else counts an attempt and schedules the next from 30 s,
+  doubling to 1 h. No lock is held across the call. Accepting a PDU makes due the retained
+  PDUs of that room whose JSON names it and wakes the job
+  (`HomeserverRuntime::deferred_pdu_retry_wake`).
+* **Signatures.** The sender's signature was verified before the row was written, and a
+  retry re-enters after that step. The table is written only by `ingest_pdu_event`.
 
 The membership-acceptor path does not yet run this backfill step — see the
 `src/federation/AGENTS.md` residual note and the threat-model entry for phase C.

@@ -1996,6 +1996,19 @@ until the refresh).
   every returned event passes its own checks, but a malicious origin can still
   omit events it is entitled to omit; state resolution against other forks is
   the same residual risk every conformant server accepts.
+- **Retained unresolved PDUs (R03, ADR-0165):** a PDU still unresolved after
+  phase C is kept in `deferred_pdus` and retried instead of being lost. A row is
+  written only by `ingest_pdu_event`, after the sender's signature was verified
+  and for a room this server has current interest in, so a hostile peer cannot
+  plant an unsigned or uninvited event; a retry re-enters ingestion and gets
+  every check again (hash, `auth_events`, state before, current state), so
+  retention confers nothing. The new surface is the table itself: a peer with a
+  valid key can fill a room's 100 slots (1000 overall, 16 MiB of JSON) with PDUs
+  it never lets resolve. The bounds cap the memory, expiry (24 hours or 10
+  retries) frees it, a full set falls back to telling the sender the PDU was not
+  kept, and each retry is itself bounded by the backfill budgets. Residual: until
+  those rows expire the room cannot retain further unresolved PDUs, and a legitimate
+  sender then sees a per-PDU error for them.
 
 ### Worker EDU origin substitution (audit FED-12; review/combined pending)
 

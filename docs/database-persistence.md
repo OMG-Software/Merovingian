@@ -429,6 +429,31 @@ value. Test fixtures that do not exercise persistence select it through
   other rooms commit out of order. Main process only: the table is not in
   `federation_worker_table_allowlist`. The queue of an appservice that never
   comes back grows without bound (no row is dropped for age).
+- `deferred_pdus` table (schema version `23`, migration
+  `migrations/023_deferred_pdus.sql`, R03, ADR-0165) holds the federation PDUs
+  `ingest_pdu_event` could not yet place because a `prev_event` or `auth_event`
+  is unknown or a `prev_event` has no state group. Columns: `event_id`
+  (primary key), `room_id` (indexed), `origin` (the server it arrived from, to
+  backfill from), `pdu_json` (the envelope exactly as ingestion would have
+  stored it, which is the redacted copy after a content-hash mismatch),
+  `received_at_ms` (kept across attempts) and `attempts` (retries that did not
+  place it). Every number is `TEXT`, like the neighbouring tables, and is parsed
+  back at hydration. `PersistentDeferredPdu` and
+  `upsert_deferred_pdu`/`remove_deferred_pdu`/`list_deferred_pdus`/
+  `deferred_pdus_for_room`
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  are implemented for both SQLite and PostgreSQL, hydrated on backend open. The
+  store is bounded: 100 rows per room, 1000 in total, 16 MiB of `pdu_json` in
+  total (`max_deferred_pdus_per_room`, `max_deferred_pdus_total`,
+  `max_deferred_pdu_json_bytes`); a new row that would exceed one is refused
+  (`DeferredPduUpsert::refused_full`) while an update of a held row never is.
+  Rows older than 24 hours (`max_deferred_pdu_age`) or retried 10 times
+  (`max_deferred_pdu_attempts`) are dropped by
+  `homeserver::retry_deferred_pdus` and audited. The next-attempt time is not
+  stored (`HomeserverRuntime::deferred_pdu_next_attempt`, in memory): after a
+  restart every retained PDU is due at once. Main only: the table is not in
+  `federation_worker_table_allowlist`, because the worker relays every PDU to
+  main and never reads or writes it.
 - `users.deactivated` column (schema version `14`, migration
   `migrations/014_user_deactivation.sql`) is a `TEXT NOT NULL DEFAULT
   'false'` column added to the existing `users` table (no new table), set by
@@ -587,7 +612,9 @@ value. Test fixtures that do not exercise persistence select it through
   `federation::PduIngestionStatus::missing_prev_state` — not a rejection;
   the transaction it arrived in still returns 200 per spec, since a
   delayed-but-legitimate PDU is indistinguishable from one whose history we
-  have not fetched yet); the after-state group, forward-extremity update,
+  have not fetched yet. Since R03 (ADR-0165) the PDU is also retained in
+  `deferred_pdus` and the status is `deferred`; `missing_prev_state` is what
+  is left when nothing could be retained); the after-state group, forward-extremity update,
   and current-state recomputation happen after the event is durably stored,
   logged-but-non-fatal on failure (the same trade-off the pre-existing
   membership-persistence step in the same function already makes for the
@@ -1142,7 +1169,7 @@ migration's table cannot go unclassified:
   `room_account_data`, `to_device_messages`, `device_list_changes`,
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
-  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, plus six tables `schema.cpp`
+  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from

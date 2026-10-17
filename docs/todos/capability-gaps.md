@@ -330,7 +330,7 @@ group. If references remain missing after the capped attempt, the PDU still
 returns `missing_prev_state` and is not applied. See `docs/event-engine.md`
 "Phase C" and `docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md`.
 
-**Unresolved ordinary-PDU retention:** if missing history/state cannot be recovered, ingestion returns `missing_prev_state` before storing the original PDU. The `/send` transaction can still be acknowledged and deduplicated, so there is no durable retry queue for this event. Raising the recovery caps in 0.12.18 reduces avoidable rejection but does not close this gap or prove missing-message recovery. Track durable retention, retry and client visibility as separate data-integrity work.
+**Unresolved ordinary-PDU retention:** closed by R03 (ADR-0165). An ordinary PDU whose missing history/state cannot be recovered is retained in `deferred_pdus` (bounded, durable) and retried by `homeserver::retry_deferred_pdus`; one that cannot be retained is reported to the sender as a per-PDU error in the `/send` response. Still open: client visibility of the late event (it arrives in the timeline when it is placed, as any backfilled event does) and a retention cap that a hostile peer cannot fill for a room (the per-room limit of 100 can be consumed until those rows expire).
 
 **Residual scope:** the membership-acceptor path
 (`send_join`/`send_leave`/`send_knock`) does not yet backfill missing
