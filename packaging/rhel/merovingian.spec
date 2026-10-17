@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.27
+Version:        0.12.28
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Oct 17 2026 James Chapman <claude@ping.me.uk> - 0.12.28-1
+- Queue appservice transactions durably; commit to-device sends atomically with per-sender message IDs.
+- Retain and retry federation PDUs whose history is missing instead of dropping them.
+
 * Fri Oct 16 2026 James Chapman <claude@ping.me.uk> - 0.12.27-1
 - Give every createRoom its own room ID; check out packaging files with LF endings.
 - Stop duplicate federation transaction processing and OpenBSD CI hangs; read worker room reloads as one snapshot.
