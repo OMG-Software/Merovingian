@@ -2040,8 +2040,10 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   bound. Mitigation: the sink requires `server_name(sender) == origin` (otherwise the whole
   EDU is dropped and logged; the transaction still succeeds), queues only for existing local
   active users, drops an EDU whose `message_id` is missing or over 32 codepoints, de-duplicates
-  on `(origin, message_id)` in `federation::EduIdempotenceWindow` (65 536 entries, 24 hours,
-  oldest evicted first), and stops at 1 000 (user, device) deliveries per EDU. **Residual
+  on `(origin, sender, message_id)` in `federation::EduIdempotenceWindow` (65 536 entries, 24 hours,
+  oldest evicted first; an ID is recorded only after the EDU's messages have committed in one
+  transaction, so a failed store can be resent), and stops at 1 000 (user, device) deliveries
+  per EDU. **Residual
   risk:** the window is in memory only, so a replay that straddles a restart is delivered
   again, and a replay older than 24 hours or evicted by 65 536 newer messages from any origin
   is too; persisting it would need a migration and buys little for a best-effort EDU. The

@@ -10,6 +10,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
+#include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
@@ -561,7 +562,8 @@ SCENARIO("Remote sendToDevice federation dispatch keeps durable unique transacti
             REQUIRE(first_transactions.size() == 1U);
             auto const first_txn_id = first_transactions.front()->transaction_id;
             REQUIRE_FALSE(first_txn_id.empty());
-            REQUIRE(direct_to_device_message_id(first_transactions.front()->body) == "client-txn-1");
+            REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(
+                direct_to_device_message_id(first_transactions.front()->body)));
 
             homeserver.database.next_session_id = first_counter;
 
@@ -571,7 +573,7 @@ SCENARIO("Remote sendToDevice federation dispatch keeps durable unique transacti
                  R"({"messages":{"@bob:remote.example.org":{"REMOTE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{"curve25519:REMOTE1":{"body":"cipher-2","type":0}}}}}})"});
             REQUIRE(second_send.response.status == 200U);
 
-            THEN("both outbound federation transactions remain durable and preserve the client transaction IDs")
+            THEN("both outbound federation transactions remain durable and carry distinct, valid message IDs")
             {
                 auto direct_to_device = direct_to_device_transactions(homeserver.database.persistent_store);
                 REQUIRE(direct_to_device.size() == 2U);
@@ -587,8 +589,95 @@ SCENARIO("Remote sendToDevice federation dispatch keeps durable unique transacti
                 std::ranges::sort(transaction_ids);
                 auto const unique_transaction_ids = std::ranges::unique(transaction_ids);
                 REQUIRE(unique_transaction_ids.begin() == transaction_ids.end());
-                REQUIRE(std::ranges::find(message_ids, "client-txn-1") != message_ids.end());
-                REQUIRE(std::ranges::find(message_ids, "client-txn-2") != message_ids.end());
+                std::ranges::sort(message_ids);
+                auto const unique_message_ids = std::ranges::unique(message_ids);
+                REQUIRE(unique_message_ids.begin() == message_ids.end());
+                REQUIRE(std::ranges::all_of(message_ids, [](std::string const& message_id) {
+                    return merovingian::federation::direct_to_device_message_id_is_valid(message_id);
+                }));
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("Remote sendToDevice EDUs carry a message_id that is unique per sender and valid for any transaction ID",
+         "[homeserver][outbound-dispatch][send-to-device][message-id][to-device]")
+{
+    // Spec: SS API v1.19, "Send-to-device messaging": message_id is "Unique ID for the message, used for
+    // idempotence. Arbitrary utf8 string, of maximum length 32 codepoints." Client transaction IDs are only
+    // unique per user, so two local users may well send the same one.
+    GIVEN("two logged-in local senders and a persistent dispatch worker")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        auto tokens = std::vector<std::string>{};
+        for (auto const* localpart : {"alice", "bob"})
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  merovingian::tests::registration_json(localpart, "CorrectHorse7!")})
+                        .response.status == 200U);
+            auto const login = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/login",
+                          {},
+                          std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} +
+                              localpart + R"(:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+            REQUIRE(login.response.status == 200U);
+            tokens.push_back(login_token(login.response.body));
+        }
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const body = std::string{
+            R"({"messages":{"@carol:remote.example.org":{"REMOTE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{"curve25519:REMOTE1":{"body":"cipher","type":0}}}}}})"};
+
+        WHEN("both senders use the same client transaction ID towards the same remote user")
+        {
+            for (auto const& token : tokens)
+            {
+                REQUIRE(merovingian::homeserver::handle_client_server_request(
+                            runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/1", token, body})
+                            .response.status == 200U);
+            }
+
+            THEN("the two EDUs carry different, valid message IDs, so the receiver cannot mistake one for a replay")
+            {
+                auto const transactions = direct_to_device_transactions(homeserver.database.persistent_store);
+                REQUIRE(transactions.size() == 2U);
+                auto const first = direct_to_device_message_id(transactions[0]->body);
+                auto const second = direct_to_device_message_id(transactions[1]->body);
+                REQUIRE(first != second);
+                REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(first));
+                REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(second));
+            }
+        }
+
+        WHEN("a sender uses a 200 character client transaction ID")
+        {
+            auto const long_txn = std::string(200U, 'x');
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime,
+                        {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/" + long_txn, tokens.front(), body})
+                        .response.status == 200U);
+
+            THEN("the EDU still carries a valid message_id of at most 32 codepoints")
+            {
+                auto const transactions = direct_to_device_transactions(homeserver.database.persistent_store);
+                REQUIRE(transactions.size() == 1U);
+                REQUIRE(merovingian::federation::direct_to_device_message_id_is_valid(
+                    direct_to_device_message_id(transactions.front()->body)));
             }
         }
 

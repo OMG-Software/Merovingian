@@ -1616,6 +1616,15 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
+// Queues every message, with the per-recipient age and count evictions of
+// `enqueue_to_device_message`, in ONE backend transaction: either all of them
+// are durable and mirrored in memory, or none are and the store is unchanged
+// (stream ids are consumed, never reused). An inbound `m.direct_to_device` EDU
+// uses it so a failed commit never leaves the EDU partly stored. An empty
+// `messages` writes nothing and returns true; an invalid message returns false
+// with nothing written.
+[[nodiscard]] auto enqueue_to_device_messages(PersistentStore& store, std::vector<PersistentToDeviceMessage> messages)
+    -> bool;
 // R02: queues every message (with the per-recipient age and count evictions of
 // `enqueue_to_device_message`) and records `record` as the client's
 // send-to-device transaction in ONE backend transaction. Either all of it is

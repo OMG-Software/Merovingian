@@ -1274,7 +1274,7 @@ namespace
         // The per-message "type" field is empty: the EDU cannot be stored with a
         // valid message_type, so it must not be reported as accepted.
         bool invalid_message_type{false};
-        // (origin, message_id) was already seen inside the replay window: whole EDU dropped.
+        // (origin, sender, message_id) was already recorded in the replay window: whole EDU dropped.
         bool replay{false};
         // Target entries skipped because the user is not a local, active account.
         std::size_t skipped_non_local{0U};
@@ -1362,6 +1362,14 @@ namespace
     // "used for idempotence"; the target user IDs are named by the sender and
     // only ours may be delivered to (audit FED-3).
     //
+    // The EDU is stored all-or-nothing: every message is built first, then
+    // committed in one backend transaction (database::enqueue_to_device_messages),
+    // and its (origin, sender, message_id) is recorded in the replay window only
+    // after that commit. A failed commit therefore stores nothing and leaves the
+    // ID unrecorded, so the origin's resend is delivered in full rather than
+    // dropped as a replay (ADR-0166). The whole check, store and record sequence
+    // runs under runtime.mutex.
+    //
     // The replay window lives in memory only (federation::EduIdempotenceWindow):
     // a restart forgets it, so a replay straddling a restart is delivered again.
     // Persisting it would need a migration and is not required for a
@@ -1403,13 +1411,21 @@ namespace
             result.invalid_message_id = true;
             return result;
         }
-        if (!runtime.inbound_to_device_window.first_sighting(origin, *message_id,
-                                                             federation::EduIdempotenceWindow::Clock::now()))
+        // The check, the store and the record are one step against the replay
+        // window: another thread's copy of the same EDU must not slip between
+        // them. The mutex is recursive, so this is harmless when the caller
+        // already holds it.
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const now = federation::EduIdempotenceWindow::Clock::now();
+        if (runtime.inbound_to_device_window.seen(origin, *sender, *message_id, now))
         {
             result.replay = true;
             return result;
         }
 
+        // Build every message first. Nothing is stored (and so nothing can be
+        // left half stored) until the whole EDU has been validated and capped.
+        auto pending = std::vector<database::PersistentToDeviceMessage>{};
         for (auto const& user_entry : *messages)
         {
             auto const* device_map = std::get_if<canonicaljson::Object>(&user_entry.value->storage());
@@ -1445,7 +1461,7 @@ namespace
                     if (result.targeted >= max_inbound_direct_to_device_deliveries)
                     {
                         result.truncated = true;
-                        return result;
+                        break;
                     }
                     ++result.targeted;
                     auto message = database::PersistentToDeviceMessage{};
@@ -1454,12 +1470,27 @@ namespace
                     message.target_device_id = device_id;
                     message.message_type = *message_type;
                     message.content_json = serialized.output;
-                    if (database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message)))
-                    {
-                        ++result.stored;
-                    }
+                    pending.push_back(std::move(message));
+                }
+                if (result.truncated)
+                {
+                    break;
                 }
             }
+            if (result.truncated)
+            {
+                break;
+            }
+        }
+
+        // One backend transaction for the whole EDU: all of it is stored or none
+        // of it is. The ID is remembered only after the commit, so when the commit
+        // fails the origin's resend is processed in full instead of being dropped
+        // as a replay (an EDU with nothing targeted has nothing to fail).
+        if (database::enqueue_to_device_messages(runtime.database.persistent_store, std::move(pending)))
+        {
+            result.stored = result.targeted;
+            runtime.inbound_to_device_window.record(origin, *sender, *message_id, now);
         }
         return result;
     }

@@ -805,6 +805,11 @@ value. Test fixtures that do not exercise persistence select it through
   (`allocate_sync_stream_id` persists the watermark itself); a failed commit
   skips them, it never reuses them. A request with no local recipient records
   the transaction alone through the same function.
+- An inbound `m.direct_to_device` EDU writes all of its `to_device_messages` rows in ONE backend
+  transaction (`database::enqueue_to_device_messages`, ADR-0166), through the same prepare/apply
+  steps and evictions as the single-message and `/sendToDevice` writers. A failed commit stores
+  none of the EDU, and the sink records its `(origin, sender, message_id)` in the in-memory
+  replay window only after the commit, so the origin's resend is delivered in full.
 - `database::reload_room(store, room_id)` re-reads a single room's rows (room,
   membership, invites, events, state, and the event-relation tables scoped to
   that room's events) from the backing database and replaces this store's

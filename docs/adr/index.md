@@ -166,6 +166,7 @@
 * [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md)
 * [0164 - Send-to-device commits its local messages and its transaction ID together](0164-send-to-device-commits-its-local-messages-and-txn-id-together.md)
 * [0165 - Retain unresolved federation PDUs and retry them](0165-retain-unresolved-federation-pdus-and-retry-them.md)
+* [0166 - Derive to-device message IDs per sender and record them only after the messages commit](0166-derive-to-device-message-ids-per-sender.md)
 
 ## Proposed Records
 

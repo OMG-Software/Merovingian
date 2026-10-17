@@ -5,10 +5,12 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
+#include "merovingian/federation/edu_idempotence.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -29,8 +31,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <sqlite3.h>
 
 namespace
 {
@@ -149,67 +149,6 @@ struct DeviceSession final
     return events->size();
 }
 
-struct SqliteCloser final
-{
-    auto operator()(sqlite3* connection) const noexcept -> void
-    {
-        if (connection != nullptr)
-        {
-            std::ignore = sqlite3_close(connection);
-        }
-    }
-};
-
-// R02: makes every INSERT into one table of the server's database file fail
-// from a second connection, so the server's own transaction aborts and rolls
-// back exactly as a failed commit would. clear() lifts the fault so a client
-// retry can succeed; the destructor lifts it too.
-class SqliteInsertFault final
-{
-public:
-    SqliteInsertFault(std::filesystem::path const& path, std::string_view table, std::string_view name)
-        : drop_sql_{"DROP TRIGGER IF EXISTS " + std::string{name}}
-    {
-        auto* raw_connection = static_cast<sqlite3*>(nullptr);
-        auto const status = sqlite3_open(path.string().c_str(), &raw_connection);
-        connection_.reset(raw_connection);
-        REQUIRE(status == SQLITE_OK);
-        REQUIRE(connection_ != nullptr);
-        REQUIRE(execute("CREATE TRIGGER " + std::string{name} + " BEFORE INSERT ON " + std::string{table} +
-                        " BEGIN SELECT RAISE(ABORT, 'injected r02 write failure'); END"));
-        active_ = true;
-    }
-
-    SqliteInsertFault(SqliteInsertFault const&) = delete;
-    auto operator=(SqliteInsertFault const&) -> SqliteInsertFault& = delete;
-    SqliteInsertFault(SqliteInsertFault&&) = delete;
-    auto operator=(SqliteInsertFault&&) -> SqliteInsertFault& = delete;
-
-    ~SqliteInsertFault()
-    {
-        if (active_)
-        {
-            std::ignore = execute(drop_sql_);
-        }
-    }
-
-    auto clear() -> void
-    {
-        REQUIRE(execute(drop_sql_));
-        active_ = false;
-    }
-
-private:
-    [[nodiscard]] auto execute(std::string const& sql) const -> bool
-    {
-        return sqlite3_exec(connection_.get(), sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
-    }
-
-    std::unique_ptr<sqlite3, SqliteCloser> connection_{};
-    std::string drop_sql_{};
-    bool active_{false};
-};
-
 [[nodiscard]] auto queued_for(merovingian::homeserver::ClientServerRuntime const& runtime, std::string_view user_id,
                               std::string_view device_id) -> std::ptrdiff_t
 {
@@ -281,6 +220,16 @@ struct DurableToDeviceState final
     };
     return std::make_unique<merovingian::federation::DispatchWorker>(std::move(config), client, std::move(resolver),
                                                                      std::move(clock), std::move(sleep_fn), &store);
+}
+
+// The message_id the server must put on the EDU for `sender`'s request with `txn_id`: derived per sender, so
+// the same request always gets the same one and two senders never share one.
+[[nodiscard]] auto expected_message_id(std::string_view sender_user_id, std::string_view txn_id) -> std::string
+{
+    auto const derived =
+        merovingian::federation::derive_direct_to_device_message_id(sender_user_id, "m.test.message", txn_id);
+    REQUIRE(derived.has_value());
+    return *derived;
 }
 
 [[nodiscard]] auto direct_to_device_edus_carrying(merovingian::database::PersistentStore const& store,
@@ -446,7 +395,8 @@ SCENARIO("sendToDevice reports a failed enqueue and delivers once on retry",
         auto& runtime = started.runtime;
         auto const alice = register_device(runtime, "alice", "CorrectHorse7!");
         auto const bob = register_device(runtime, "bob", "CorrectHorse8!");
-        auto fault = SqliteInsertFault{sqlite.database_path(), "to_device_messages", "r02_named_device"};
+        auto fault =
+            merovingian::tests::SqliteInsertFault{sqlite.database_path(), "to_device_messages", "r02_named_device"};
         auto const body =
             std::string{R"({"messages":{"@bob:example.org":{")"} + bob.device_id + R"(":{"value":"keep me"}}}})";
 
@@ -495,7 +445,8 @@ SCENARIO("sendToDevice wildcard delivers to every device or to none when the enq
         auto const alice = register_device(runtime, "alice", "CorrectHorse7!");
         auto const bob_first = register_device(runtime, "bob", "CorrectHorse8!");
         auto const bob_second = login_device(runtime, "bob", "CorrectHorse8!", "BOB_SECOND_DEVICE");
-        auto fault = SqliteInsertFault{sqlite.database_path(), "to_device_messages", "r02_wildcard"};
+        auto fault =
+            merovingian::tests::SqliteInsertFault{sqlite.database_path(), "to_device_messages", "r02_wildcard"};
         auto const body = std::string{R"({"messages":{"@bob:example.org":{"*":{"value":"to all"}}}})"};
 
         WHEN("Alice sends a wildcard message to Bob")
@@ -542,7 +493,7 @@ SCENARIO("sendToDevice commits its messages and its transaction record together"
         auto const alice = register_device(runtime, "alice", "CorrectHorse7!");
         auto const bob_first = register_device(runtime, "bob", "CorrectHorse8!");
         auto const bob_second = login_device(runtime, "bob", "CorrectHorse8!", "BOB_SECOND_DEVICE");
-        auto fault = SqliteInsertFault{sqlite.database_path(), "client_txn_ids", "r02_txn_record"};
+        auto fault = merovingian::tests::SqliteInsertFault{sqlite.database_path(), "client_txn_ids", "r02_txn_record"};
         auto const body = std::string{R"({"messages":{"@bob:example.org":{"*":{"value":"to all"}}}})"};
 
         WHEN("Alice sends a wildcard message and only the transaction record cannot be written")
@@ -589,7 +540,7 @@ SCENARIO("sendToDevice to local and remote recipients is not recorded when the l
         auto const bob = register_device(runtime, "bob", "CorrectHorse8!");
         runtime.homeserver.dispatch_worker =
             make_idle_dispatch_worker(client, runtime.homeserver.database.persistent_store);
-        auto fault = SqliteInsertFault{sqlite.database_path(), "to_device_messages", "r02_mixed"};
+        auto fault = merovingian::tests::SqliteInsertFault{sqlite.database_path(), "to_device_messages", "r02_mixed"};
         auto const body = std::string{R"({"messages":{"@bob:example.org":{")"} + bob.device_id +
                           R"(":{"value":"local"}},"@carol:remote.example.org":{"CAROL1":{"value":"remote"}}}})";
 
@@ -609,13 +560,14 @@ SCENARIO("sendToDevice to local and remote recipients is not recorded when the l
                 fault.clear();
                 auto const retried = send_to_device(runtime, alice.access_token, "r02-mixed", body);
 
-                THEN("the retry is processed: Bob has one message and the remote EDU carries the same message_id")
+                THEN("the retry is processed: Bob has one message and the resent remote EDU carries the same "
+                     "message_id as the first")
                 {
                     REQUIRE(retried.status == 200U);
                     REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 1);
                     REQUIRE(txn_recorded(runtime, alice.user_id, "r02-mixed"));
-                    REQUIRE(direct_to_device_edus_carrying(runtime.homeserver.database.persistent_store, "r02-mixed") >=
-                            1);
+                    REQUIRE(direct_to_device_edus_carrying(runtime.homeserver.database.persistent_store,
+                                                           expected_message_id(alice.user_id, "r02-mixed")) == 2);
                 }
             }
         }
@@ -636,7 +588,8 @@ SCENARIO("sendToDevice commits nothing locally when a remote EDU cannot be queue
         auto const bob = register_device(runtime, "bob", "CorrectHorse8!");
         runtime.homeserver.dispatch_worker =
             make_idle_dispatch_worker(client, runtime.homeserver.database.persistent_store);
-        auto fault = SqliteInsertFault{sqlite.database_path(), "federation_transactions", "r02_remote_queue"};
+        auto fault = merovingian::tests::SqliteInsertFault{sqlite.database_path(), "federation_transactions",
+                                                           "r02_remote_queue"};
         auto const body = std::string{R"({"messages":{"@bob:example.org":{")"} + bob.device_id +
                           R"(":{"value":"local"}},"@carol:remote.example.org":{"CAROL1":{"value":"remote"}}}})";
 
@@ -662,7 +615,7 @@ SCENARIO("sendToDevice commits nothing locally when a remote EDU cannot be queue
                     REQUIRE(retried.status == 200U);
                     REQUIRE(queued_for(runtime, bob.user_id, bob.device_id) == 1);
                     REQUIRE(direct_to_device_edus_carrying(runtime.homeserver.database.persistent_store,
-                                                           "r02-remote") == 1);
+                                                           expected_message_id(alice.user_id, "r02-remote")) == 1);
                 }
             }
         }
