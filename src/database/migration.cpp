@@ -674,6 +674,29 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {21U, "drop_appservice_outbox", std::move(statements), MigrationDirection::downgrade};
 }
 
+// R03 (ADR-0165): federation PDUs main could not yet place are kept in a table
+// so a restart does not lose them. Main-process only.
+[[nodiscard]] auto upgrade_deferred_pdus_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "create_deferred_pdus",
+        "CREATE TABLE deferred_pdus (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, origin TEXT NOT NULL, "
+        "pdu_json TEXT NOT NULL, received_at_ms TEXT NOT NULL DEFAULT '0', attempts TEXT NOT NULL DEFAULT '0')",
+        {}});
+    statements.push_back(PreparedStatement{
+        "create_deferred_pdus_room_index", "CREATE INDEX idx_deferred_pdus_room_id ON deferred_pdus (room_id)", {}});
+    return {23U, "deferred_pdus", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v23 -> v22: drop the deferred_pdus table (and with it its index).
+[[nodiscard]] auto downgrade_deferred_pdus_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("deferred_pdus").value());
+    return {22U, "drop_deferred_pdus", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -697,7 +720,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_to_device_queue_age_bound_migration(),
             upgrade_remote_media_cache_mapping_migration(),
             upgrade_room_alias_creator_migration(),
-            upgrade_appservice_outbox_migration()};
+            upgrade_appservice_outbox_migration(),
+            upgrade_deferred_pdus_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -848,7 +872,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_appservice_outbox_migration(),
+    return {downgrade_deferred_pdus_migration(),
+            downgrade_appservice_outbox_migration(),
             downgrade_room_alias_creator_migration(),
             downgrade_remote_media_cache_mapping_migration(),
             downgrade_to_device_queue_age_bound_migration(),

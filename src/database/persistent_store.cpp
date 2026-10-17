@@ -4975,6 +4975,95 @@ auto sort_appservice_outbox(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto upsert_deferred_pdu(PersistentStore& store, PersistentDeferredPdu pdu) -> DeferredPduUpsert
+{
+    if (pdu.event_id.empty() || pdu.room_id.empty())
+    {
+        return DeferredPduUpsert::persistence_failed;
+    }
+    auto const existing = std::ranges::find_if(store.deferred_pdus, [&pdu](PersistentDeferredPdu const& row) {
+        return row.event_id == pdu.event_id;
+    });
+    if (existing == store.deferred_pdus.end())
+    {
+        auto in_room = std::size_t{0U};
+        auto json_bytes = std::size_t{0U};
+        for (auto const& row : store.deferred_pdus)
+        {
+            if (row.room_id == pdu.room_id)
+            {
+                ++in_room;
+            }
+            json_bytes += row.pdu_json.size();
+        }
+        if (in_room >= max_deferred_pdus_per_room || store.deferred_pdus.size() >= max_deferred_pdus_total ||
+            pdu.pdu_json.size() > max_deferred_pdu_json_bytes ||
+            json_bytes > max_deferred_pdu_json_bytes - pdu.pdu_json.size())
+        {
+            return DeferredPduUpsert::refused_full;
+        }
+    }
+    // An update keeps the first receive time and the PDU as first retained:
+    // only the origin and the attempt count change.
+    auto const statement = record_statement(
+        "upsert_deferred_pdu",
+        "INSERT INTO deferred_pdus (event_id, room_id, origin, pdu_json, received_at_ms, attempts) "
+        "VALUES ($1, $2, $3, $4, $5, $6) "
+        "ON CONFLICT (event_id) DO UPDATE SET origin = $3, attempts = $6",
+        {public_value(pdu.event_id), public_value(pdu.room_id), public_value(pdu.origin), public_value(pdu.pdu_json),
+         public_value(std::to_string(pdu.received_at_ms)), public_value(std::to_string(pdu.attempts))});
+    if (!record_and_persist(store, statement))
+    {
+        return DeferredPduUpsert::persistence_failed;
+    }
+    if (existing != store.deferred_pdus.end())
+    {
+        existing->origin = std::move(pdu.origin);
+        existing->attempts = pdu.attempts;
+        return DeferredPduUpsert::updated;
+    }
+    store.deferred_pdus.push_back(std::move(pdu));
+    return DeferredPduUpsert::inserted;
+}
+
+[[nodiscard]] auto remove_deferred_pdu(PersistentStore& store, std::string_view event_id) -> bool
+{
+    auto const existing = std::ranges::find_if(store.deferred_pdus, [event_id](PersistentDeferredPdu const& row) {
+        return row.event_id == event_id;
+    });
+    if (existing == store.deferred_pdus.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("delete_deferred_pdu", "DELETE FROM deferred_pdus WHERE event_id = $1",
+                                             {public_value(event_id)})))
+    {
+        return false;
+    }
+    store.deferred_pdus.erase(existing);
+    return true;
+}
+
+[[nodiscard]] auto list_deferred_pdus(PersistentStore const& store) -> std::vector<PersistentDeferredPdu>
+{
+    return store.deferred_pdus;
+}
+
+[[nodiscard]] auto deferred_pdus_for_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentDeferredPdu>
+{
+    auto rows = std::vector<PersistentDeferredPdu>{};
+    for (auto const& row : store.deferred_pdus)
+    {
+        if (row.room_id == room_id)
+        {
+            rows.push_back(row);
+        }
+    }
+    return rows;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {

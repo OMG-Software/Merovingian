@@ -443,6 +443,16 @@ struct HomeserverRuntime final
     // Established only by the outbound join RAII lease, before releasing mutex.
     // Same-room overlapping joins are refused; startup moves have no leases.
     std::map<std::string, PendingFederatedJoin, std::less<>> pending_federated_joins{};
+    // R03 (ADR-0165): when each retained federation PDU (store.deferred_pdus,
+    // by event_id) may next be retried. In memory only: a row with no entry is
+    // due at once, which is what every retained PDU is after a restart.
+    // Guarded by `mutex`. Maintained by homeserver::retry_deferred_pdus.
+    std::map<std::string, std::chrono::steady_clock::time_point, std::less<>> deferred_pdu_next_attempt{};
+    // Asks the deferred-PDU retry job to run now. Set by main after the job
+    // starts and cleared, under `mutex`, before it is stopped; null-safe to
+    // leave unset (tests, the federation worker). Called with `mutex` held, so
+    // it must only wake a thread: PeriodicJob::wake is safe there.
+    std::function<void()> deferred_pdu_retry_wake{};
     // Per-room striped mutexes used by inbound PDU ingestion. Each room's events
     // are serialized on their own stripe so per-room ordering is preserved, while
     // events in different rooms can prepare/commit/apply in parallel. The global

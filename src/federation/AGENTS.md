@@ -87,6 +87,16 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    transaction already there to main, which answers it as a duplicate. A new path that runs
    an inbound transaction outside main's handler does the same (ADR-0160).
 
+11. **A PDU that cannot yet be placed is retained, not dropped (R03, ADR-0165).** When
+   `ingest_pdu_event` cannot resolve a `prev_event`, `auth_event` or state before an
+   admitted PDU, it writes the PDU to `deferred_pdus` and returns `deferred`; the `/send`
+   response then has no error for it. Only a PDU that could not be retained
+   (`missing_prev_state`) gets an `error` entry, because nothing will retry it. A row is
+   written only by `ingest_pdu_event`, after the sender's signature was verified; the retry
+   job re-enters there, so never add a path that writes `deferred_pdus` before
+   verification. The set is bounded (100 per room, 1000, 16 MiB; 24 hours, 10 retries):
+   keep every new write behind `upsert_deferred_pdu`.
+
 ## Key files
 
 | File | Responsibility |

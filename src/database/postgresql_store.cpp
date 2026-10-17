@@ -1543,6 +1543,32 @@ namespace
             }
         }
 
+        if (table_load_profile_includes("deferred_pdus", profile))
+        {
+            auto deferred_pdus_result =
+                query_rows(connection, "postgresql_load_deferred_pdus",
+                           "SELECT event_id, room_id, origin, pdu_json, received_at_ms, attempts FROM deferred_pdus "
+                           "ORDER BY received_at_ms, event_id");
+            if (!deferred_pdus_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : deferred_pdus_result.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    PersistentDeferredPdu entry{};
+                    entry.event_id = row[0];
+                    entry.room_id = row[1];
+                    entry.origin = row[2];
+                    entry.pdu_json = row[3];
+                    entry.received_at_ms = static_cast<std::int64_t>(parse_u64(row[4]));
+                    entry.attempts = static_cast<std::uint32_t>(parse_u64(row[5]));
+                    store.deferred_pdus.push_back(std::move(entry));
+                }
+            }
+        }
+
         if (table_load_profile_includes("sync_stream_watermark", profile))
         {
             auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",

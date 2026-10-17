@@ -1088,6 +1088,19 @@ namespace
                                  {column_text(row, 0), parse_u64(column_text(row, 1)), column_text(row, 2)});
                          }) &&
                load_rows(connection,
+                         "SELECT event_id, room_id, origin, pdu_json, received_at_ms, attempts FROM deferred_pdus "
+                         "ORDER BY received_at_ms, event_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentDeferredPdu entry{};
+                             entry.event_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             entry.origin = column_text(row, 2);
+                             entry.pdu_json = column_text(row, 3);
+                             entry.received_at_ms = static_cast<std::int64_t>(parse_u64(column_text(row, 4)));
+                             entry.attempts = static_cast<std::uint32_t>(parse_u64(column_text(row, 5)));
+                             store.deferred_pdus.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
                          "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups",
                          [&store](sqlite3_stmt& row) {
                              PersistentStateGroup entry{};

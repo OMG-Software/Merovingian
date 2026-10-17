@@ -428,6 +428,8 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , client_outbound_budget(std::move(other.client_outbound_budget))
     , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
     , argon2id_admission(std::move(other.argon2id_admission))
+    , deferred_pdu_next_attempt(std::move(other.deferred_pdu_next_attempt))
+    , deferred_pdu_retry_wake(std::move(other.deferred_pdu_retry_wake))
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
     , push_delivery_in_flight_by_user_(std::move(other.push_delivery_in_flight_by_user_))
@@ -479,6 +481,8 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     client_outbound_budget = std::move(other.client_outbound_budget);
     client_outbound_proxy_policy = other.client_outbound_proxy_policy;
     argon2id_admission = std::move(other.argon2id_admission);
+    deferred_pdu_next_attempt = std::move(other.deferred_pdu_next_attempt);
+    deferred_pdu_retry_wake = std::move(other.deferred_pdu_retry_wake);
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
     push_delivery_in_flight_by_user_ = std::move(other.push_delivery_in_flight_by_user_);

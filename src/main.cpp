@@ -12,6 +12,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -767,6 +768,20 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Retries the federation PDUs this server could not yet place (R03,
+    // ADR-0165). Its thread starts here, after process hardening (ADR-0082).
+    // Declared after the pools and dispatcher so it stops, and clears the wake
+    // hook request threads call, before they are torn down.
+    auto deferred_pdu_retry = merovingian::homeserver::DeferredPduRetryJob{runtime.homeserver};
+    if (!deferred_pdu_retry.start())
+    {
+        LOG_CRITICAL("Deferred federation PDU retry job failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     // The one thread that sends queued Application Service transactions (audit R01, ADR-0163): a
     // request only queues an event, so a slow or dead bridge never holds a request thread or the
     // runtime lock. Declared after the pools and the dispatcher so it is destroyed (stopped and
@@ -854,6 +869,10 @@ struct ListenerBinding final
         runtime.homeserver.appservice_delivery_wake = nullptr;
     }
     appservice_delivery_job.stop();
+    // Clears its wake hook under the runtime lock, then stops; a retry in
+    // progress ends within its own outbound deadlines and the PDU stays
+    // retained in the database for the next start.
+    deferred_pdu_retry.stop();
     // Queued media fetches answer 503 without fetching once the pool stops;
     // fetches already running end within their deadline.
     media_fetch_pool.request_stop();

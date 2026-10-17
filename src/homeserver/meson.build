@@ -4,6 +4,7 @@ homeserver_sources = files(
   'client_outbound_proxy.cpp',
   'client_server.cpp',
   'default_push_ruleset.cpp',
+  'deferred_pdu_retry.cpp',
   'federation_proxy.cpp',
   'federation_request_routing.cpp',
   'http_server.cpp',

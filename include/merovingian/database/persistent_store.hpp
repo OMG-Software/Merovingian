@@ -780,6 +780,36 @@ struct PersistentAppserviceOutboxEntry final
     std::string event_id{};
 };
 
+// A federation PDU this server could not yet place in the room's event graph
+// (a prev_event, auth_event or the state before it is unknown) and has kept,
+// as received, to try again (R03, ADR-0165). `pdu_json` is the exact envelope
+// ingestion would have stored, which may be the redacted form after a
+// content-hash mismatch. Signatures were verified before the row was written;
+// a retry re-enters ingestion after that step. `received_at_ms` is wall-clock
+// milliseconds and is kept across attempts; `attempts` counts the retries that
+// have not placed the PDU. Written and read by the main process only: the
+// federation worker relays every PDU to main and never holds this table.
+struct PersistentDeferredPdu final
+{
+    std::string event_id{};
+    std::string room_id{};
+    std::string origin{};
+    std::string pdu_json{};
+    std::int64_t received_at_ms{0};
+    std::uint32_t attempts{0U};
+};
+
+// Bounds on the retained set (R03, ADR-0165). A remote server chooses what
+// reaches this table, so each limit is fixed rather than configurable and a
+// PDU that would exceed one is not retained.
+inline constexpr std::size_t max_deferred_pdus_per_room = 100U;
+inline constexpr std::size_t max_deferred_pdus_total = 1000U;
+inline constexpr std::size_t max_deferred_pdu_json_bytes = std::size_t{16U} * 1024U * 1024U;
+// A retained PDU is dropped once it is this old, or after this many retries
+// that did not place it, whichever comes first.
+inline constexpr std::chrono::hours max_deferred_pdu_age{24};
+inline constexpr std::uint32_t max_deferred_pdu_attempts = 10U;
+
 // A state group (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-
 // delta-state-groups.md): the room state after some event, stored either as
 // a full snapshot (`parent_state_group_id == nullopt`, `delta_depth == 0`)
@@ -916,6 +946,7 @@ struct PersistentStore final
         , login_tokens{other.login_tokens}
         , appservice_txn_cursors{other.appservice_txn_cursors}
         , appservice_outbox{other.appservice_outbox}
+        , deferred_pdus{other.deferred_pdus}
         , state_groups{other.state_groups}
         , state_group_state{other.state_group_state}
         , event_state_groups{other.event_state_groups}
@@ -997,6 +1028,7 @@ struct PersistentStore final
         login_tokens = other.login_tokens;
         appservice_txn_cursors = other.appservice_txn_cursors;
         appservice_outbox = other.appservice_outbox;
+        deferred_pdus = other.deferred_pdus;
         state_groups = other.state_groups;
         state_group_state = other.state_group_state;
         event_state_groups = other.event_state_groups;
@@ -1101,6 +1133,10 @@ struct PersistentStore final
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.
     std::vector<PersistentAppserviceOutboxEntry> appservice_outbox{};
+    // Federation PDUs retained for a retry (R03, ADR-0165). Bounded by the
+    // max_deferred_pdu* constants; write through upsert_deferred_pdu and
+    // remove_deferred_pdu so the bounds and the database row stay in step.
+    std::vector<PersistentDeferredPdu> deferred_pdus{};
     std::vector<PersistentStateGroup> state_groups{};
     std::vector<PersistentStateGroupStateEntry> state_group_state{};
     std::vector<PersistentEventStateGroup> event_state_groups{};
@@ -1726,6 +1762,30 @@ auto sort_appservice_outbox(PersistentStore& store) -> void;
 // cursor still pending (a stuck transaction).
 [[nodiscard]] auto complete_appservice_delivery(PersistentStore& store, std::string_view appservice_id,
                                                 std::uint64_t delivered_stream_ordering) -> bool;
+// What upsert_deferred_pdu did.
+enum class DeferredPduUpsert : std::uint8_t
+{
+    inserted,
+    // The event was already retained: its attempts (and origin) were replaced,
+    // its received_at_ms and PDU JSON were kept.
+    updated,
+    // A new row would exceed a bound (max_deferred_pdus_per_room,
+    // max_deferred_pdus_total or max_deferred_pdu_json_bytes). Nothing was
+    // written. An update of a row already held never hits a bound.
+    refused_full,
+    persistence_failed,
+};
+
+// Retains `pdu`, or updates the row for its event_id. The row is committed to
+// the backend before the in-memory mirror changes.
+[[nodiscard]] auto upsert_deferred_pdu(PersistentStore& store, PersistentDeferredPdu pdu) -> DeferredPduUpsert;
+// Removes the row for `event_id`. False if there was none or the delete could
+// not be committed.
+[[nodiscard]] auto remove_deferred_pdu(PersistentStore& store, std::string_view event_id) -> bool;
+// Copies of the retained PDUs: every one, or one room's.
+[[nodiscard]] auto list_deferred_pdus(PersistentStore const& store) -> std::vector<PersistentDeferredPdu>;
+[[nodiscard]] auto deferred_pdus_for_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentDeferredPdu>;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

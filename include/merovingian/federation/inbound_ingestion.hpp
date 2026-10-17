@@ -74,6 +74,14 @@ enum class PduIngestionStatus : std::uint8_t
     // in-flight cap and explicitly rejected the pdu_ingest request. The
     // transaction handler must answer the remote with a retryable 5xx.
     main_overloaded,
+    // R03 (ADR-0165): like missing_prev_state, but this server has kept the
+    // PDU (durably, as received) and will try to place it again once the gap
+    // is filled. Spec: server-server-api.md "Transactions" -- a PDU with no
+    // error in the response "can be considered successfully handled", which a
+    // retained PDU is. missing_prev_state now means the PDU was NOT kept (no
+    // origin to fetch from, or the retained set is full): the sender is told
+    // so in the transaction response because nothing will retry it.
+    deferred,
 };
 
 struct PduIngestionResult final
@@ -144,6 +152,13 @@ using EduSink = std::function<EduDispositionResult(InboundEduEnvelope const&)>;
 // (e.g. from a prior parse_federation_pdu call with a room_version_resolver).
 [[nodiscard]] auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room_version)
     -> std::optional<InboundPduEnvelope>;
+// Rebuilds the envelope of a PDU that was retained for a retry (R03): the JSON
+// as stored, the room version its room resolves to now, and the server it was
+// received from (to backfill from). nullopt if the text is no longer a valid
+// PDU. Signatures were verified before the PDU was retained and are not
+// re-verified here, as for parse_inbound_pdu_envelope.
+[[nodiscard]] auto rebuild_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room_version,
+                                                std::string_view origin) -> std::optional<InboundPduEnvelope>;
 
 // Classifies an EDU type name against the set the inbound flow handles.
 // Unknown types are dropped at the handler boundary rather than rejected

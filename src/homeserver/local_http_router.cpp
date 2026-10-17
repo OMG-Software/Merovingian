@@ -26,6 +26,7 @@
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -4190,6 +4191,10 @@ namespace
 
 } // namespace
 
+// The body of ingest_pdu_event; the public function below adds what must happen
+// after this one has released its locks. File-local, but deliberately `static`
+// rather than inside the anonymous namespace above: that would re-indent the
+// whole function and bury the real change.
 // Signature verification (receipt step 2) is the caller's job, done before
 // this function takes any lock because resolving a key may go to the network:
 // federation::authorize_federation_pdu() in inbound_request.cpp on the
@@ -4197,7 +4202,8 @@ namespace
 // main's own admitted key-only helper, for a PDU relayed by a federation worker
 // (ADR-0071). This function re-checks authorization and content-hash
 // integrity.
-auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+[[nodiscard]] static auto ingest_pdu_event_locked(HomeserverRuntime& runtime,
+                                                  federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
 {
     auto const room_id = envelope.room_id;
@@ -4300,6 +4306,21 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // for the backend commit so independent rooms can commit in parallel.
     auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
 
+    // R03 (ADR-0165): a PDU this server cannot yet place is kept, as it would
+    // have been stored (`stored_json`, which is the redacted copy after a
+    // content-hash mismatch), and retried by homeserver::retry_deferred_pdus
+    // when the history it needs arrives. Called with runtime.mutex held, as at
+    // every return below that uses it. If nothing can be kept (no origin to
+    // fetch from, or the retained set is full) the status stays
+    // missing_prev_state, which /send reports to the sender as an error.
+    auto const defer_unresolved = [&](std::string reason) -> federation::PduIngestionResult {
+        if (defer_unresolved_pdu(runtime, envelope, stored_json))
+        {
+            return {federation::PduIngestionStatus::deferred, reason + "; retained for retry"};
+        }
+        return {federation::PduIngestionStatus::missing_prev_state, std::move(reason)};
+    };
+
     // ADR-0064 phase C: if this PDU names prev_events or auth_events we do not
     // have, release both locks and fetch the gap from the sending server. A
     // single backfill attempt is made; if references remain unresolvable the PDU
@@ -4347,7 +4368,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         auto [missing_auth, missing_prev] = collect_missing_pdu_references(runtime.database.persistent_store, envelope);
         if (!missing_auth.empty() || !missing_prev.empty())
         {
-            return {federation::PduIngestionStatus::missing_prev_state, "missing PDU references remain after backfill"};
+            return defer_unresolved("missing PDU references remain after backfill");
         }
     }
 
@@ -4389,8 +4410,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         envelope.state_key, third_party_invite_token, envelope.auth_event_ids);
     if (selection_check == AuthEventsSelectionCheck::unresolvable)
     {
-        return {federation::PduIngestionStatus::missing_prev_state,
-                "an auth_event this PDU names has no recorded event; awaiting backfill"};
+        return defer_unresolved("an auth_event this PDU names has no recorded event; awaiting backfill");
     }
     if (selection_check == AuthEventsSelectionCheck::disallowed)
     {
@@ -4440,8 +4460,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
                              state_resolution_limits(runtime.config.security().federation.state_resolution));
     if (!state_before.ok)
     {
-        return {federation::PduIngestionStatus::missing_prev_state,
-                "no recorded state group for a prev_event; awaiting backfill"};
+        return defer_unresolved("no recorded state group for a prev_event; awaiting backfill");
     }
 
     // Step 5: auth against the state immediately before the event.
@@ -4625,6 +4644,23 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         }
     }
 
+    return result;
+}
+
+auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+    -> federation::PduIngestionResult
+{
+    auto result = ingest_pdu_event_locked(runtime, envelope);
+    // R03: every status below stored the event, so a retained PDU that names it
+    // may now be placeable. ingest_pdu_event_locked has returned, so its room
+    // stripe and runtime lock are released: waking the retry job here holds no
+    // lock the job needs.
+    if (result.status == federation::PduIngestionStatus::accepted ||
+        result.status == federation::PduIngestionStatus::soft_failed ||
+        result.status == federation::PduIngestionStatus::rejected_auth)
+    {
+        wake_deferred_pdus_waiting_for(runtime, envelope.room_id, envelope.event_id);
+    }
     return result;
 }
 
