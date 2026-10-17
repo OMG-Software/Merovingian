@@ -3946,20 +3946,37 @@ namespace
 
 } // namespace
 
-[[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool
+[[nodiscard]] auto enqueue_to_device_messages(PersistentStore& store, std::vector<PersistentToDeviceMessage> messages)
+    -> bool
 {
-    if (!to_device_message_is_valid(message))
+    if (!std::ranges::all_of(messages, [](PersistentToDeviceMessage const& message) {
+            return to_device_message_is_valid(message);
+        }))
     {
         return false;
     }
+    if (messages.empty())
+    {
+        return true;
+    }
     auto batch = ToDeviceBatch{};
-    prepare_to_device_enqueue(store, std::move(message), batch);
+    for (auto& message : messages)
+    {
+        prepare_to_device_enqueue(store, std::move(message), batch);
+    }
     if (!commit_persistent_transaction(store, batch.statements))
     {
         return false;
     }
     apply_to_device_batch(store, std::move(batch));
     return true;
+}
+
+[[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool
+{
+    auto messages = std::vector<PersistentToDeviceMessage>{};
+    messages.push_back(std::move(message));
+    return enqueue_to_device_messages(store, std::move(messages));
 }
 
 [[nodiscard]] auto enqueue_to_device_messages_with_client_txn(PersistentStore& store,
