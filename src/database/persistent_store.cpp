@@ -4845,6 +4845,136 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+namespace
+{
+
+    // The outbox vector is sorted by (appservice_id, stream_ordering), compared
+    // numerically: the columns are TEXT, so the backends' own ORDER BY would put
+    // "10" before "9".
+    [[nodiscard]] auto outbox_entry_precedes(PersistentAppserviceOutboxEntry const& entry,
+                                             std::string_view appservice_id, std::uint64_t stream_ordering) noexcept
+        -> bool
+    {
+        if (entry.appservice_id != appservice_id)
+        {
+            return entry.appservice_id < appservice_id;
+        }
+        return entry.stream_ordering < stream_ordering;
+    }
+
+    [[nodiscard]] auto outbox_lower_bound(std::vector<PersistentAppserviceOutboxEntry> const& outbox,
+                                          std::string_view appservice_id, std::uint64_t stream_ordering)
+    {
+        // std::lower_bound, not the ranges one: the key is not an entry, and the ranges version
+        // also demands the comparator accept two keys.
+        return std::lower_bound(
+            outbox.begin(), outbox.end(), std::pair{appservice_id, stream_ordering},
+            [](PersistentAppserviceOutboxEntry const& entry, std::pair<std::string_view, std::uint64_t> const& key) {
+                return outbox_entry_precedes(entry, key.first, key.second);
+            });
+    }
+
+} // namespace
+
+[[nodiscard]] auto enqueue_appservice_event(PersistentStore& store, PersistentAppserviceOutboxEntry entry) -> bool
+{
+    if (entry.appservice_id.empty() || entry.event_id.empty())
+    {
+        return false;
+    }
+    auto const position = outbox_lower_bound(store.appservice_outbox, entry.appservice_id, entry.stream_ordering);
+    if (position != store.appservice_outbox.end() && position->appservice_id == entry.appservice_id &&
+        position->stream_ordering == entry.stream_ordering)
+    {
+        return true; // already queued: the primary key is the only dedupe
+    }
+    auto const statement =
+        record_statement("enqueue_appservice_event",
+                         "INSERT INTO appservice_outbox (appservice_id, stream_ordering, event_id) VALUES ($1, $2, $3) "
+                         "ON CONFLICT (appservice_id, stream_ordering) DO NOTHING",
+                         {public_value(entry.appservice_id), public_value(std::to_string(entry.stream_ordering)),
+                          public_value(entry.event_id)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    store.appservice_outbox.insert(position, std::move(entry));
+    return true;
+}
+
+[[nodiscard]] auto find_first_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id)
+    -> std::optional<PersistentAppserviceOutboxEntry>
+{
+    auto const position = outbox_lower_bound(store.appservice_outbox, appservice_id, 0U);
+    if (position == store.appservice_outbox.end() || position->appservice_id != appservice_id)
+    {
+        return std::nullopt;
+    }
+    return *position;
+}
+
+auto sort_appservice_outbox(PersistentStore& store) -> void
+{
+    std::ranges::sort(store.appservice_outbox,
+                      [](PersistentAppserviceOutboxEntry const& left, PersistentAppserviceOutboxEntry const& right) {
+                          return outbox_entry_precedes(left, right.appservice_id, right.stream_ordering);
+                      });
+}
+
+[[nodiscard]] auto complete_appservice_delivery(PersistentStore& store, std::string_view appservice_id,
+                                                std::uint64_t delivered_stream_ordering) -> bool
+{
+    if (appservice_id.empty())
+    {
+        return false;
+    }
+    auto cursor = find_appservice_txn_cursor(store, appservice_id);
+    cursor.pending_txn_id = 0U;
+    cursor.pending_stream_ordering = 0U;
+    cursor.delivered_stream_ordering = std::max(cursor.delivered_stream_ordering, delivered_stream_ordering);
+
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("upsert_appservice_txn_cursor",
+                         "INSERT INTO appservice_txn_cursor (appservice_id, next_txn_id, delivered_stream_ordering, "
+                         "pending_txn_id, pending_stream_ordering) VALUES ($1, $2, $3, $4, $5) "
+                         "ON CONFLICT (appservice_id) DO UPDATE SET next_txn_id = $2, delivered_stream_ordering = $3, "
+                         "pending_txn_id = $4, pending_stream_ordering = $5",
+                         {public_value(cursor.appservice_id), public_value(std::to_string(cursor.next_txn_id)),
+                          public_value(std::to_string(cursor.delivered_stream_ordering)),
+                          public_value(std::to_string(cursor.pending_txn_id)),
+                          public_value(std::to_string(cursor.pending_stream_ordering))}),
+        record_statement(
+            "complete_appservice_outbox_entry",
+            "DELETE FROM appservice_outbox WHERE appservice_id = $1 AND stream_ordering = $2",
+            {public_value(std::string{appservice_id}), public_value(std::to_string(delivered_stream_ordering))}),
+    };
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+
+    // Memory follows the commit, never precedes it.
+    auto const cursor_row =
+        std::ranges::find_if(store.appservice_txn_cursors, [&cursor](PersistentAppserviceTxnCursor const& current) {
+            return current.appservice_id == cursor.appservice_id;
+        });
+    if (cursor_row != store.appservice_txn_cursors.end())
+    {
+        *cursor_row = cursor;
+    }
+    else
+    {
+        store.appservice_txn_cursors.push_back(cursor);
+    }
+    auto const position = outbox_lower_bound(store.appservice_outbox, appservice_id, delivered_stream_ordering);
+    if (position != store.appservice_outbox.end() && position->appservice_id == appservice_id &&
+        position->stream_ordering == delivered_stream_ordering)
+    {
+        store.appservice_outbox.erase(position);
+    }
+    return true;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {

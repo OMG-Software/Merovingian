@@ -254,6 +254,7 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
         "openid_tokens",
         "login_tokens",
         "appservice_txn_cursor",
+        "appservice_outbox",
         // Vestigial: declared in src/database/schema.cpp's DDL but never
         // populated or queried by any runtime code path, main's or the
         // worker's (confirmed by grep finding no reference outside

@@ -1525,6 +1525,24 @@ namespace
             }
         }
 
+        if (table_load_profile_includes("appservice_outbox", profile))
+        {
+            auto appservice_outbox_result = query_rows(connection, "postgresql_load_appservice_outbox",
+                                                       "SELECT appservice_id, stream_ordering, event_id FROM "
+                                                       "appservice_outbox ORDER BY appservice_id");
+            if (!appservice_outbox_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : appservice_outbox_result.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.appservice_outbox.push_back({row[0], parse_u64(row[1]), row[2]});
+                }
+            }
+        }
+
         if (table_load_profile_includes("sync_stream_watermark", profile))
         {
             auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
@@ -2076,6 +2094,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
         });
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};
     }
+    sort_appservice_outbox(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
     rebuild_redaction_state(store);

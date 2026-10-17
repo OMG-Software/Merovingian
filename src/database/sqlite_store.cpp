@@ -1082,6 +1082,11 @@ namespace
                              entry.pending_stream_ordering = parse_u64(column_text(row, 4));
                              store.appservice_txn_cursors.push_back(std::move(entry));
                          }) &&
+               load_rows(connection, "SELECT appservice_id, stream_ordering, event_id FROM appservice_outbox",
+                         [&store](sqlite3_stmt& row) {
+                             store.appservice_outbox.push_back(
+                                 {column_text(row, 0), parse_u64(column_text(row, 1)), column_text(row, 2)});
+                         }) &&
                load_rows(connection,
                          "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups",
                          [&store](sqlite3_stmt& row) {
@@ -1445,6 +1450,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
         });
         return {false, "unable to hydrate SQLite rows", {}};
     }
+    sort_appservice_outbox(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);
     rebuild_redaction_state(store);

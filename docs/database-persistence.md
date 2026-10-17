@@ -403,19 +403,32 @@ value. Test fixtures that do not exercise persistence select it through
   `find_appservice_txn_cursor`/`store_appservice_txn_cursor` store functions
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
   are implemented for both SQLite and PostgreSQL, hydrated on backend open.
-  Delivery itself (`room_service.cpp`'s `dispatch_appservice_delivery`,
-  called from `send_event()`, `dispatch_membership_push_notification()`, and
-  the federation `deliver_federation_push_notifications()` path) replays
-  forward through the existing `events` table by `stream_ordering` rather
-  than maintaining a separate durable outbox — this row is the *entire*
-  persisted delivery state. A retry of an in-flight batch reuses the exact
-  same `pending_txn_id` and re-derives the identical single event from
-  `events`, never growing it, per the spec's "Homeservers MUST NOT alter
-  ... events they were going to send within that transaction ID on
-  retries." Delivery is synchronous (on the request path that produced the
-  triggering event), not a background/async dispatch like push notification
-  delivery — see `dispatch_appservice_delivery`'s doc comment for why, and
-  `docs/todos/capability-gaps.md` for the documented follow-up.
+  Since schema version `22` the cursor is the *state of the one transaction
+  in flight* (`pending_txn_id` / `pending_stream_ordering`) plus the
+  transaction-ID allocator; the queue behind it is `appservice_outbox`
+  below. A retry of the in-flight transaction reuses the exact same
+  `pending_txn_id` and re-derives the identical single event from `events`,
+  never growing it, per the spec's "Homeservers MUST NOT alter ... events
+  they were going to send within that transaction ID on retries."
+- `appservice_outbox` table (schema version `22`, migration
+  `migrations/022_appservice_outbox.sql`, audit R01, ADR-0163) is the
+  Application Service API transaction queue the spec requires: one row
+  `(appservice_id, stream_ordering, event_id)` per event queued for one
+  appservice, primary key `(appservice_id, stream_ordering)`. A row is
+  written when the event is dispatched (`enqueue_appservice_event`,
+  idempotent on the key, interest decided at that moment) and deleted in the
+  same backend transaction that clears the cursor's pending transaction and
+  raises `delivered_stream_ordering` (`complete_appservice_delivery`), so a
+  crash can never leave a delivered event queued or a queued event
+  forgotten. `stream_ordering` is `TEXT` like every numeric column in this
+  schema; the in-memory mirror `PersistentStore::appservice_outbox` is kept
+  sorted numerically by `(appservice_id, stream_ordering)`
+  (`sort_appservice_outbox` after hydration). `delivered_stream_ordering` is
+  now informational: it is **not** a threshold new events are compared
+  against, because stream orderings are allocated before commit and events in
+  other rooms commit out of order. Main process only: the table is not in
+  `federation_worker_table_allowlist`. The queue of an appservice that never
+  comes back grows without bound (no row is dropped for age).
 - `users.deactivated` column (schema version `14`, migration
   `migrations/014_user_deactivation.sql`) is a `TEXT NOT NULL DEFAULT
   'false'` column added to the existing `users` table (no new table), set by
@@ -1119,7 +1132,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (43 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (44 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1129,7 +1142,7 @@ migration's table cannot go unclassified:
   `room_account_data`, `to_device_messages`, `device_list_changes`,
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
-  `login_tokens`, `appservice_txn_cursor`, plus six tables `schema.cpp`
+  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from

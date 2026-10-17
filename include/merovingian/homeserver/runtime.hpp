@@ -128,6 +128,14 @@ struct LocalSession final
     std::string predecessor_refresh_hash{};
 };
 
+// When the appservice drainer may next try an appservice that has just failed, and the delay it
+// will apply if that attempt fails too (doubling from 1 s up to a 5 minute cap).
+struct AppserviceDeliveryBackoff final
+{
+    std::chrono::steady_clock::time_point retry_at{};
+    std::chrono::milliseconds delay{0};
+};
+
 struct LocalRoom final
 {
     std::string room_id{};
@@ -322,6 +330,16 @@ struct HomeserverRuntime final
     // registration files are configured, which leaves the entire AS surface
     // inert (see docs/todos/capability-gaps.md, "Application service API").
     appservice::AppserviceRegistry appservices{};
+    // Wakes the thread that drains the appservice transaction queues (audit R01). Set by the
+    // process entry point once that thread exists; null in tests, which call
+    // drain_appservice_queues directly, and in a process with no appservices. Called by
+    // enqueue_appservice_delivery with runtime.mutex held, so it must not block or wait for
+    // runtime.mutex on another thread (PeriodicJob::wake does neither). Cleared under
+    // runtime.mutex at shutdown before the thread is stopped.
+    std::function<void()> appservice_delivery_wake{};
+    // The drainer's retry state per appservice, keyed by registration id. In memory only: after
+    // a restart the first attempt is immediate. Guarded by `mutex`.
+    std::map<std::string, AppserviceDeliveryBackoff, std::less<>> appservice_delivery_backoff{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.

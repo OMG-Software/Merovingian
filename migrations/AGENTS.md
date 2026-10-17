@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `021`.
+Current highest: `022`.
 
 - Schema version `16` (`016_media_legacy_endpoint_visibility.sql`) ALTERs
   `legacy_endpoint_visible` onto `media` (ADR-0068).
@@ -33,8 +33,15 @@ Current highest: `021`.
   onto `room_aliases`, so an alias's creator may delete it (CSAZ-12, ADR-0127).
   Aliases created before it have an empty creator.
 
-None of these adds a table, so the federation worker allowlist
-classification is unchanged.
+Versions `16` to `21` add no table, so the federation worker allowlist
+classification is unchanged by them.
+
+- Schema version `22` (`022_appservice_outbox.sql`) adds the
+  `appservice_outbox` table, the Application Service API transaction queue
+  (audit R01, ADR-0163): one row per event queued for one appservice, primary
+  key `(appservice_id, stream_ordering)`. It is a new table, classified main
+  process only (not in `federation_worker_table_allowlist`), like
+  `appservice_txn_cursor`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
