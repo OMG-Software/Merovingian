@@ -259,9 +259,25 @@ namespace
         ComposeFailure failure{ComposeFailure::none};
     };
 
+    // `origin_server_ts`, when given, is stamped on the event instead of the
+    // event clock's reading (create_room uses it to keep v12 room IDs unique).
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                            std::string_view sender, std::string_view client_event_json)
+                                            std::string_view sender, std::string_view client_event_json,
+                                            std::optional<std::int64_t> origin_server_ts = std::nullopt)
         -> ComposeResult;
+
+    // The origin_server_ts this server stamps on an event it composes: the
+    // system clock, or the frozen test clock when a test has set one.
+    [[nodiscard]] auto event_clock_now_ms(HomeserverRuntime const& runtime) -> std::int64_t
+    {
+        if (runtime.test_frozen_event_clock_ms.has_value())
+        {
+            return *runtime.test_frozen_event_clock_ms;
+        }
+        return static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    }
 
     // Spec v1.19 "Size limits": the refusal for an event over 65536 bytes, or
     // whose type or state_key is over 255 bytes.
@@ -1360,8 +1376,8 @@ namespace
     }
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                            std::string_view sender, std::string_view client_event_json)
-        -> ComposeResult
+                                            std::string_view sender, std::string_view client_event_json,
+                                            std::optional<std::int64_t> origin_server_ts) -> ComposeResult
     {
         auto const parsed = canonicaljson::parse_lossless(client_event_json);
         auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
@@ -1460,9 +1476,7 @@ namespace
             }
         }
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
-        auto const now_ms = static_cast<std::int64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count());
+        auto const now_ms = origin_server_ts.value_or(event_clock_now_ms(runtime));
         auto event = canonicaljson::Object{};
         event.push_back(canonicaljson::make_member("type", canonicaljson::Value{event_type}));
         if (!omit_room_id)
@@ -2853,6 +2867,20 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         }
     }
     auto room_id = std::string{};
+    // Every server-side failure below answers 500 through this, so the reason
+    // reaches an operator's log at error level; refusals the client caused stay
+    // debug-level room.create.rejected diagnostics.
+    auto const server_failure = [&user_id, &room_id](std::string reason) {
+        log_diagnostic("room.create.failed",
+                       {
+                           {"actor",   *user_id, false},
+                           {"room_id", room_id,  false},
+                           {"status",  "500",    false},
+                           {"reason",  reason,   false}
+        },
+                       observability::LogEventSeverity::error);
+        return make_operation_result(false, {}, std::move(reason), 500U);
+    };
     auto precomposed_create = std::optional<ComposedEvent>{};
     if (create_defines_room_id)
     {
@@ -2867,19 +2895,57 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         auto const create_event_json = serialize_canonical_string(canonicaljson::Value{std::move(create_event_object)});
         if (!create_event_json.has_value())
         {
-            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+            return server_failure("initial room state event generation failed");
         }
-        auto create_composition = compose_signed_event(runtime, std::string_view{}, *user_id, *create_event_json);
-        if (create_composition.failure == ComposeFailure::too_large)
+        // A v12 create event has no room_id and no prev_events, so its sender,
+        // content and origin_server_ts alone decide the room ID, and Ed25519
+        // signing is deterministic. Two requests from one user with the same
+        // creation content in one millisecond would derive the same room ID, and
+        // the second would fail on the duplicate room row. Stamp each create event
+        // strictly after the last one this runtime composed, and step past a
+        // timestamp whose room ID is already taken: after a restart the runtime has
+        // no memory of earlier timestamps and the clock may have stepped back.
+        // Each existing room blocks at most one timestamp, so rooms.size() + 1
+        // attempts always find a free room ID (ADR-0156).
+        auto const room_id_taken = [&runtime](std::string_view candidate) {
+            return find_room(runtime.database, candidate) != nullptr ||
+                   std::ranges::any_of(runtime.database.persistent_store.rooms,
+                                       [candidate](database::PersistentRoom const& existing) {
+                                           return existing.room_id == candidate;
+                                       });
+        };
+        auto create_ts = std::max(event_clock_now_ms(runtime), runtime.last_create_event_ts_ms + 1);
+        auto const max_attempts = runtime.database.persistent_store.rooms.size() + runtime.database.rooms.size() + 1U;
+        for (auto attempt = std::size_t{0U}; attempt < max_attempts; ++attempt, ++create_ts)
         {
-            return event_too_large_result();
+            auto create_composition =
+                compose_signed_event(runtime, std::string_view{}, *user_id, *create_event_json, create_ts);
+            if (create_composition.failure == ComposeFailure::too_large)
+            {
+                return event_too_large_result();
+            }
+            if (!create_composition.event.has_value())
+            {
+                return server_failure("initial room state event generation failed");
+            }
+            auto candidate = "!" + create_composition.event->event_id.substr(1U);
+            if (!room_id_taken(candidate))
+            {
+                runtime.last_create_event_ts_ms = create_ts;
+                precomposed_create = std::move(create_composition.event);
+                room_id = std::move(candidate);
+                break;
+            }
+            log_diagnostic("room.create.room_id_taken", {
+                                                            {"actor",            *user_id,                  false},
+                                                            {"room_id",          candidate,                 false},
+                                                            {"origin_server_ts", std::to_string(create_ts), false}
+            });
         }
-        precomposed_create = std::move(create_composition.event);
         if (!precomposed_create.has_value())
         {
-            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+            return server_failure("no free room ID for the create event timestamps");
         }
-        room_id = "!" + precomposed_create->event_id.substr(1U);
     }
     else
     {
@@ -2922,13 +2988,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     if (!database::store_room_with_membership(runtime.database.persistent_store,
                                               {room_id, *user_id, options.directory_public}, {room_id, *user_id}))
     {
-        log_diagnostic("room.create.rejected", {
-                                                   {"actor",   *user_id,                  false},
-                                                   {"room_id", room_id,                   false},
-                                                   {"status",  "500",                     false},
-                                                   {"reason",  "room persistence failed", false}
-        });
-        return make_operation_result(false, {}, "room persistence failed", 500U);
+        return server_failure("room persistence failed");
     }
     runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}, options.directory_public});
 
@@ -2950,10 +3010,10 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         initial_state_too_large = initial_state_too_large || failure == ComposeFailure::too_large;
         return failure == ComposeFailure::none;
     };
-    auto const initial_state_failure = [&initial_state_too_large] {
+    auto const initial_state_failure = [&initial_state_too_large, &server_failure] {
         return initial_state_too_large
                    ? event_too_large_result()
-                   : make_operation_result(false, {}, "initial room state event generation failed", 500U);
+                   : server_failure("initial room state event generation failed");
     };
 
     auto power_levels = canonicaljson::Object{};
@@ -3084,7 +3144,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                                        {"status",     "500",                           false},
                                                        {"reason",     "room alias persistence failed", false}
             });
-            return make_operation_result(false, {}, "room alias persistence failed", 500U);
+            return server_failure("room alias persistence failed");
         }
     }
 
@@ -3132,7 +3192,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                                    {"status",  "500",                                       false},
                                                    {"reason",  "preset room state event generation failed", false}
         });
-        return make_operation_result(false, {}, "preset room state event generation failed", 500U);
+        return server_failure("preset room state event generation failed");
     }
     if (!client_provided_history_visibility && !emit_state("m.room.history_visibility", std::move(history_visibility)))
     {
@@ -3142,7 +3202,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                                    {"status",  "500",                                       false},
                                                    {"reason",  "preset room state event generation failed", false}
         });
-        return make_operation_result(false, {}, "preset room state event generation failed", 500U);
+        return server_failure("preset room state event generation failed");
     }
     if (!client_provided_guest_access && !emit_state("m.room.guest_access", std::move(guest_access)))
     {
@@ -3152,7 +3212,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                                    {"status",  "500",                                       false},
                                                    {"reason",  "preset room state event generation failed", false}
         });
-        return make_operation_result(false, {}, "preset room state event generation failed", 500U);
+        return server_failure("preset room state event generation failed");
     }
 
     // Emit m.room.encryption for private room presets. Per the Matrix spec,
@@ -3174,7 +3234,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                {"status",  "500",                                           false},
                                {"reason",  "encryption room state event generation failed", false}
             });
-            return make_operation_result(false, {}, "encryption room state event generation failed", 500U);
+            return server_failure("encryption room state event generation failed");
         }
     }
 
@@ -3243,7 +3303,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     {
         if (!upsert_m_direct(runtime, *user_id, room_id, options.invitees))
         {
-            return make_operation_result(false, {}, "m.direct account data update failed", 500U);
+            return server_failure("m.direct account data update failed");
         }
     }
 

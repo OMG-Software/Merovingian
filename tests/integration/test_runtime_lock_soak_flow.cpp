@@ -51,6 +51,7 @@
 #include "../federation_signing_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -115,7 +116,7 @@ namespace
     address.sin_port = htons(port);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    if (::connect(fd, reinterpret_cast<sockaddr const*>(&address), sizeof(address)) != 0)
+    if (!merovingian::tests::connect_within(fd, *reinterpret_cast<sockaddr const*>(&address), sizeof(address)))
     {
         ::close(fd);
         return -1;
@@ -374,8 +375,8 @@ struct SimulatedRemote final
     merovingian::federation::test::SigningKeypair keys{};
 };
 
-[[nodiscard]] auto register_remote(merovingian::homeserver::ClientServerRuntime& runtime,
-                                   std::string_view server_name) -> SimulatedRemote
+[[nodiscard]] auto register_remote(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view server_name)
+    -> SimulatedRemote
 {
     auto keys = merovingian::federation::test::keypair_from_seed(server_name);
     auto remote = merovingian::federation::FederationRemoteRuntime{};

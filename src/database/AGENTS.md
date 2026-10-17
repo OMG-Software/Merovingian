@@ -46,6 +46,15 @@ Manages schema migrations and provides a dual-backend (SQLite / PostgreSQL) pers
    then rolls back a live transaction's journal as hot. Check by name (`fstatat` with `AT_SYMLINK_NOFOLLOW`) or read
    through SQLite's own handle (`SQLITE_FCNTL_FILE_POINTER`).
 
+9. **Read-only SQLite reads prepare through `prepare` and step through `first_step`** (ADR-0159). A writer that
+   commits between SQLite's two hot-journal checks makes a read-only connection fail with `SQLITE_READONLY_ROLLBACK`
+   at once, skipping the busy handler. Those helpers, and the open-time pragmas, retry that result for up to 2 s. Do
+   not hold one read transaction across a whole-store load to avoid it: main's writers wait at most 5 s for it.
+
+10. **A read that combines several tables into one picture of a room runs in one read transaction** (ADR-0161):
+    `SqliteReadTransaction` on SQLite, `REPEATABLE READ READ ONLY` on PostgreSQL. `reload_room` does; separate
+    autocommit reads let a commit between them give the worker state naming an event its snapshot lacks.
+
 ## Backend selection
 
 The backend is chosen at startup from config (`database.engine = sqlite | postgresql`).

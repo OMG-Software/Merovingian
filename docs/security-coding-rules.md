@@ -535,6 +535,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   forged event as their state, so the ban could be undone by any remote server (audit FED-5).
   Source: `src/federation/AGENTS.md`.
 
+- **Main's `accepted_transactions` ring is the record of completed `/send` transactions,
+  whichever process ran them.** A path that runs an inbound transaction outside main's handler
+  records its completions there (`record_completed_federation_transaction`) and sends a
+  transaction already there to main.
+  Why: each process kept its own ring, so a retry that reached main after the worker completed
+  it (a room whose reload failed) was processed again and its EDUs delivered twice (OpenBSD CI,
+  ADR-0160).
+  Source: `src/federation/AGENTS.md`.
+
 ## Application Service API
 
 - **`as_token`/`hs_token` live in `core::SecretBuffer` and are never logged;
@@ -766,6 +775,21 @@ media-fetch-pool task.
   (PR #509 CI, ADR-0157).
   Source: `src/database/AGENTS.md`.
 
+- **A read on a read-only SQLite connection prepares through `prepare` and steps through
+  `first_step`, never a bare `sqlite3_prepare_v2` or first `sqlite3_step`.**
+  Why: a writer committing between SQLite's two hot-journal checks makes a read-only
+  connection fail with `SQLITE_READONLY_ROLLBACK`, skipping the busy handler. Those helpers
+  retry it for up to 2 s; without them the federation worker's room reload failed on OpenBSD
+  and the room fell back to main (ADR-0159).
+  Source: `src/database/AGENTS.md`.
+
+- **A read that combines several tables into one picture of a room runs in one read
+  transaction** (`SqliteReadTransaction`; `REPEATABLE READ READ ONLY` on PostgreSQL).
+  Why: the worker's room reload read each table separately, so a commit between two reads
+  gave it state (an ACL, a membership) naming an event its snapshot did not hold, a room
+  main never committed (ADR-0161).
+  Source: `src/database/AGENTS.md`.
+
 - **Higher-level modules receive a `PersistentStore&` and must not downcast to a
   backend-specific type.**
   Why: downcasting to a specific backend (SQLite vs. PostgreSQL) breaks the abstraction that
@@ -837,6 +861,14 @@ media-fetch-pool task.
   Source: `src/media/AGENTS.md`, `docs/threat-model.md`.
 
 ## Platform hardening
+
+- **Check a sequence of irreversible restrictions in full before its first step.**
+  OpenBSD `unveil(2)` calls are planned by `openbsd_unveil_rules()`, and none is made unless
+  every path, or the directory it would be created in, exists.
+  Why: the first `unveil` hides the rest of the filesystem and cannot be undone, so a call
+  that failed partway left the federation worker running unable to see its own database
+  (PR #510 OpenBSD CI, ADR-0162).
+  Source: `src/platform/AGENTS.md`.
 
 - **Hardening is applied at startup, before any network socket is opened.**
   Why: this ordering closes the window during which the server would otherwise be reachable

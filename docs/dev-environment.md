@@ -47,6 +47,29 @@ libraries for those boundaries.
 Dependency reviews live under `docs/dependencies/`; new direct dependencies
 should add or update a review there before they are wired into Meson.
 
+## Line Endings
+
+`.gitattributes` checks out every text file with LF on every platform
+(`* text=auto eol=lf`), whatever `core.autocrlf` is set to; only the
+Windows-only `*.ps1` and `*.cmd` scripts check out with CRLF (ADR-0158). The
+tree is built and tested under Linux, WSL or a BSD, tests read unit files,
+scripts and sources as text, and packages ship files straight from the
+checkout, so a CRLF working copy fails tests and would ship broken files.
+
+A checkout made before 0.12.27 keeps whatever endings it was written with,
+since Git rewrites a file only when it changes. Re-check it out once (commit or
+set aside your work first):
+
+```bash
+git ls-files -z | xargs -0 rm -f && git checkout -- .
+```
+
+`git ls-files --eol` then shows `w/lf` for everything but those two script
+types. `tests/tooling/test_line_endings.py` (Meson test `line-endings-tooling`)
+checks the attributes; it skips itself where Git cannot read the checkout, such
+as a worktree created by Windows Git and opened from WSL, whose `.git` file
+names a `C:/` path.
+
 ## Git Hooks
 
 Install the repository Git hooks from the project root:

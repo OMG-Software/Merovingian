@@ -1,3 +1,137 @@
+## 0.12.27
+
+Fixes the intermittent `createRoom` 500 behind the flaky sync conformance scenario, makes
+Unix-consumed files check out with LF line endings on every platform, and fixes the two
+failures behind the OpenBSD CI job's red runs (7 of the last 9 before this release): a
+retried federation transaction processed twice, and an integration test hung in `connect()`.
+The federation worker's room reloads now also read one consistent snapshot.
+
+- **FIXED (createRoom 500 on a room ID collision):** in room version 12 the room ID is the
+  create event's reference hash, and a v12 create event has no `room_id` and no
+  `prev_events`, so two `createRoom` requests from one user with the same creation content
+  in the same millisecond composed byte-identical create events, derived the same room ID,
+  and the second failed on the duplicate room row with a 500 logged only at debug. This is
+  what made the conformance scenario "GET /sync returns spec-shaped room category objects"
+  fail intermittently (5 of 40 runs in a release build). `create_room` now stamps each
+  create event strictly after the previous one this runtime composed
+  (`HomeserverRuntime::last_create_event_ts_ms`), reserved before the policy-server hook
+  releases the runtime lock, and steps past any timestamp whose room ID already exists, as
+  after a restart with the clock stepped back (ADR-0156). Every 5xx from `create_room`
+  (`createRoom`, `/upgrade`, the local router) is now logged once at error as
+  `room.create.failed` with its reason. New test seam
+  `HomeserverRuntime::test_frozen_event_clock_ms` freezes the event clock; the new
+  `[create-room-collision]` conformance and integration scenarios use it to reproduce the
+  collision on every run. The runtime's move constructor and assignment now carry both new
+  fields. A further integration scenario, "a room creation that fails on the server leaves no
+  room behind" (`[create-room-failure]`), starts a runtime that cannot sign and checks the 500
+  leaves no room row, member or timestamp reservation. The size-limit conformance scenario
+  now also sends `creation_content` that passes the request pre-check but makes the signed
+  v12 create event exceed 65536 bytes, and gets 400 `M_TOO_LARGE` with no room created.
+- **FIXED (CRLF working trees):** a checkout made by Windows Git with `core.autocrlf=true`
+  wrote CRLF into every text file, because `.gitattributes` covered only `*.sh`, `*.ps1` and
+  `*.cmd`. A full WSL run from such a checkout failed the `[platform][iso8]` systemd unit
+  scenario (it matches `"\nRestrictAddressFamilies=…\n"`), and a package built from it would
+  have shipped CRLF unit files and maintainer scripts. `.gitattributes` now sets
+  `* text=auto eol=lf` for the whole tree; Windows-only `.ps1` and `.cmd` keep CRLF. The index
+  was already LF, so no stored file changes (ADR-0158). New tooling test
+  `tests/tooling/test_line_endings.py` (`line-endings-tooling`): every tracked text file
+  carries `eol=lf`, the Windows scripts `eol=crlf`, and nothing is stored with CRLF; RED with
+  2 failures before the change. `docs/dev-environment.md` gives the one-off re-checkout for
+  existing working trees.
+- **FIXED (OpenBSD CI, federation transactions):** a retried `PUT /send/{txnId}` was
+  processed a second time when its room moved between the federation worker and main. Matrix
+  v1.19 has the sender retry one txnId until it receives 200, so a completed transaction must
+  not run again; its PDUs were caught by event-ID dedupe, but its EDUs (typing, receipts,
+  to-device messages) were delivered twice. Each process kept its own dedupe ring, and the
+  proxy sends a room's transactions to main while that room's worker reload has failed, so a
+  transaction the worker completed was new to main, and one main completed during a fallback
+  was new to the worker once the room recovered. Main's ring is now the record: the proxy
+  records each `/send` the worker answers with 200 there, and hands any `/send` already in it
+  to main's handler, which answers it as a duplicate after its usual rate limit (ADR-0160).
+  New public helpers `federation_send_transaction_id`, `federation_transaction_completed`
+  and `record_completed_federation_transaction` (`federation/inbound_request.hpp`); main's
+  own handler appends through the last one. This was the failure in "main key-admission
+  overload survives real worker socket HTTP and unchanged transaction retry" (3/3 on PR #510,
+  `cache_misses 3 == 2`, `raw_calls 2 == 1`, `edu_deliveries 2 == 1`). Tests: `[txn-dedupe]`
+  in `test_federation_worker_flow.cpp` forces the room's reload to fail by moving the SQLite
+  file aside, then retries the same signed bytes both ways round (worker first, then main;
+  main first, then the recovered worker). RED on Linux: `edu_deliveries 2 == 1`, the CI
+  failure reproduced off OpenBSD.
+- **FIXED (test, postgres-integration):** "PostgreSQL migrations execute as the migration
+  role, never as the login role" failed whenever it was the first scenario to open a fresh
+  database (Catch2 seed 1273323633 on PR #510: `unable to migrate PostgreSQL schema`, then
+  `unable to assume PostgreSQL migration role`). Its first two cases assume the schema is
+  already current, but nothing made it so. The login role bootstrapped v1 and owned its
+  tables, and the pending migrations then ran as `merovingian_migration`, which cannot
+  `ALTER` them. The scenario's setup now brings the schema current as its owner and hands
+  ownership to the migration role, as `provision-roles.sql` leaves a deployment, and both
+  cases print the open's refusal reason. Reproduced locally by replaying the seed's first 30
+  integration scenarios against a fresh PostgreSQL 16 cluster with CI's roles; passes after.
+- **FIXED (OpenBSD, unveil):** a failed `unveil(2)` left the process half-sandboxed. The
+  OpenBSD runtime profile called `unveil` path by path and stopped at the first failure, but
+  the first call had already hidden the rest of the filesystem, and no call can be undone.
+  OpenBSD has no `/var/lib`, so unveiling `/var/lib/merovingian` failed with `ENOENT` after
+  `/usr` and `/etc/merovingian` were unveiled. The federation worker applies this profile
+  after loading its store when `federation.worker.apply_hardening=false`, so every later room
+  reload failed at open (`room_snapshot.read_failed stage=open`, 6 of 6 on PR #510's OpenBSD
+  run). This, not the SQLite race below, is why the room fell back to main on OpenBSD.
+  `openbsd_unveil_rules()` now plans every call first, and none is made unless every path, or
+  the directory it would be created in, exists (ADR-0162). Main still refuses to start when
+  the control fails. Tests: `[unveil]` in `test_runtime_hardening.cpp` checks the planned
+  calls and that a missing `/var/lib` plans none. The OpenBSD-only apply code was
+  syntax-checked off OpenBSD with stub `unveil`/`pledge` declarations; it has not run on
+  OpenBSD.
+- **FIXED (SQLite, read-only connections):** a read-only read could fail when one of
+  main's commits landed between SQLite's two hot-journal checks. SQLite checks that the
+  journal exists and then that no process holds RESERVED; a writer that deletes its journal
+  and unlocks in between makes its own commit look like a crash (ticket #3883). A read-write
+  connection settles that under EXCLUSIVE; a read-only one fails at once with
+  `SQLITE_READONLY_ROLLBACK`, skipping the busy handler. The open-time pragmas, `prepare` and
+  every read's first step now retry that one result every 10 ms for up to 2 s (ADR-0159). A
+  journal that is really hot still fails the read and is left for main's read-write
+  connection to roll back. This covers the room reload, the worker's startup load, and
+  media blob and audit reads. A failed room snapshot logs `room_snapshot.read_failed` with
+  its stage and extended SQLite code, and a connection whose pragmas fail logs
+  `connection.rejected` with its code. That log line is what showed the OpenBSD reloads
+  failing at open, which turned out to be the `unveil` bug above rather than this race.
+  Tests: `[sqlite-false-hot-journal]` in `test_sqlite_security_policy.cpp` puts a journal
+  that looks hot beside the database and removes it 200 ms later, as the committing writer
+  does; the room snapshot and the worker's store load now succeed, and a journal that stays
+  still fails within the budget and is left untouched. RED 2 failures.
+- **FIXED (OpenBSD CI, test harness):** "Federation socket HTTP refuses NUL path components
+  without disconnecting or changing room data" and its proxy twin hung until meson killed the
+  integration binary at 1800 s (main at b200c912; PR #510 run 38965086645). The reported
+  "fatal error condition" was that SIGTERM, not a crash. The last passed assertion was the
+  `setsockopt` just before a blocking `connect()` to the test's own listener (backlog 128,
+  6 to 9 connections in), so the test thread slept in `connect()` for about 29 minutes,
+  far past TCP's 75 s connection-establishment timer. Production code makes no raw
+  `connect()` call. Every integration-test loopback connect (12 call sites in 10 files) now
+  goes through `merovingian::tests::connect_within` (`tests/integration/bounded_connect.hpp`):
+  a non-blocking connect polled in 100 ms slices against a 5 s deadline, which restores the
+  descriptor's blocking mode. A missed wakeup now costs one slice, and a connect that cannot
+  complete fails one scenario. Not reproduced off OpenBSD. Tests: `[bounded-connect]` in
+  the new `test_bounded_connect_flow.cpp`. `docs/testing-standards.md` gains "Socket calls in
+  integration tests".
+- **FIXED (worker room snapshot):** the federation worker's room reload could serve a room in a
+  state main never committed. `load_room_snapshot_impl` read rooms, membership, invites, events,
+  current_state, event_edges, event_auth and event_signatures as eight separate statements, each
+  its own read (SQLite autocommit; PostgreSQL READ COMMITTED). A commit by main between two of
+  them mixed rows from before and after it: for example, current state naming an event the
+  snapshot did not hold. The worker answers `/state`, `/state_ids`, `make_join` and `/event` from
+  this snapshot. Each room reload now reads in one transaction: a deferred `BEGIN` on SQLite
+  (`SqliteReadTransaction`, whose first read holds SHARED to the end, so main's commit waits) and
+  `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` on PostgreSQL (ADR-0161). ADR-0159's retry
+  of a journal that only looks hot still runs on the first read inside the transaction. The
+  worker's whole-store startup load stays per statement, so on a large store it never holds
+  SHARED for longer than main's 5 s busy timeout. `detail::load_room_snapshot_from_sqlite` and
+  `detail::load_room_snapshot_from_postgresql` gain an optional `RoomSnapshotReadHook`, a test
+  seam called after each table's read; production passes none. Tests:
+  `[room-snapshot-consistency]` in `test_sqlite_security_policy.cpp` and
+  `test_security_audit_postgresql_reload_flow.cpp` commit a new event and make it current state
+  between the events and current_state reads, then check the snapshot's state names only events
+  it holds. RED on both backends (PostgreSQL run against a local server through
+  `MEROVINGIAN_TEST_POSTGRESQL_URI`).
+
 ## 0.12.26
 
 Completes the 29 September 2026 security audit: every remaining low-severity finding is

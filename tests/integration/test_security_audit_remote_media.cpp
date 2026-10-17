@@ -5,6 +5,7 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -60,7 +61,8 @@ auto release_waiting_acceptor(std::uint16_t port) -> void
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    std::ignore = ::connect(fd.native_handle(), reinterpret_cast<::sockaddr const*>(&address), sizeof(address));
+    std::ignore = merovingian::tests::connect_within(fd.native_handle(), *reinterpret_cast<::sockaddr const*>(&address),
+                                                     sizeof(address));
 }
 } // namespace
 

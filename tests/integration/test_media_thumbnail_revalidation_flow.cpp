@@ -13,6 +13,7 @@
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_mock_server.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -292,7 +293,8 @@ struct Response final
     remote.sin_family = AF_INET;
     remote.sin_port = htons(port);
     remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (::connect(socket.get(), reinterpret_cast<::sockaddr const*>(&remote), sizeof(remote)) != 0)
+    if (!merovingian::tests::connect_within(socket.get(), *reinterpret_cast<::sockaddr const*>(&remote),
+                                            sizeof(remote)))
     {
         return {};
     }

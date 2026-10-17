@@ -1326,6 +1326,17 @@ SCENARIO("PostgreSQL migrations execute as the migration role, never as the logi
             SUCCEED("skipped: live PG URI or role env vars are not set");
             return;
         }
+        // Establish "already current" whatever ran before: on a fresh database
+        // this scenario may be the first to open the store, and the login role
+        // would then own the v1 tables that the migration role cannot ALTER.
+        // Bring the schema current as its owner, then hand it to the migration
+        // role, as provision-roles.sql leaves a deployment.
+        {
+            auto const bootstrap = merovingian::database::open_postgresql_persistent_store(uri);
+            INFO("bootstrap refused: " << bootstrap.reason);
+            REQUIRE(bootstrap.ok);
+        }
+        REQUIRE(grant_schema_ownership_to(uri, migration_role));
 
         WHEN("the schema is already current and a migration role is configured")
         {
@@ -1334,6 +1345,7 @@ SCENARIO("PostgreSQL migrations execute as the migration role, never as the logi
 
             THEN("the open succeeds and the schema is at the current version")
             {
+                INFO("open refused: " << opened.reason);
                 REQUIRE(opened.ok);
                 REQUIRE(opened.store.schema.version == merovingian::database::current_schema_version());
             }
@@ -1348,6 +1360,7 @@ SCENARIO("PostgreSQL migrations execute as the migration role, never as the logi
             {
                 // A migration role that cannot be assumed must break an upgrade,
                 // not every routine restart.
+                INFO("open refused: " << opened.reason);
                 REQUIRE(opened.ok);
             }
         }

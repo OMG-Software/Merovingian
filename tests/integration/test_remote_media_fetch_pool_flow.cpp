@@ -12,6 +12,7 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -219,7 +220,8 @@ constexpr auto client_peer = std::string_view{"203.0.113.7"};
     remote.sin_port = htons(port);
     remote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    REQUIRE(::connect(socket.get(), reinterpret_cast<::sockaddr const*>(&remote), sizeof(remote)) == 0);
+    REQUIRE(merovingian::tests::connect_within(socket.get(), *reinterpret_cast<::sockaddr const*>(&remote),
+                                               sizeof(remote)));
     return socket;
 }
 

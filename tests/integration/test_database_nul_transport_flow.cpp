@@ -9,6 +9,7 @@
 #include "../federation_signing_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
+#include "bounded_connect.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/query_params.hpp"
@@ -249,8 +250,10 @@ private:
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     address.sin_port = htons(port);
+    // Bounded: a blocking connect() to this listener never returned on OpenBSD.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    REQUIRE(::connect(socket.get(), reinterpret_cast<sockaddr const*>(&address), sizeof(address)) == 0);
+    REQUIRE(merovingian::tests::connect_within(socket.get(), *reinterpret_cast<sockaddr const*>(&address),
+                                               sizeof(address)));
     return socket;
 }
 
@@ -360,8 +363,8 @@ struct WireReply final
     return std::nullopt;
 }
 
-[[nodiscard]] auto signed_get(int fd, std::string const& target,
-                              fed::test::SigningKeypair const& keypair) -> std::optional<WireReply>
+[[nodiscard]] auto signed_get(int fd, std::string const& target, fed::test::SigningKeypair const& keypair)
+    -> std::optional<WireReply>
 {
     auto constexpr origin = std::string_view{"db6-peer.example.org"};
     auto const signature =

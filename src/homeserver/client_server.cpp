@@ -13257,6 +13257,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 errcode = "M_ROOM_IN_USE";
             }
+            // create_room itself logs a server-side (5xx) failure at error.
             log_diagnostic("room.create.rejected", {
                                                        {"actor",  *user,                                false},
                                                        {"status", std::to_string(create_result.status), false},

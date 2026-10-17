@@ -3,6 +3,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -148,6 +150,25 @@ struct HardeningGate final
 [[nodiscard]] auto linux_hardening_plan_is_documented(LinuxHardeningPlan const& plan) noexcept -> bool;
 [[nodiscard]] auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> bool;
 [[nodiscard]] auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision;
+
+// One unveil(2) call: a path and its permissions ("rx", "rwc" or "r").
+struct UnveilRule final
+{
+    std::string path{};
+    std::string permissions{};
+
+    auto operator==(UnveilRule const&) const -> bool = default;
+};
+
+// The unveil(2) calls the OpenBSD runtime profile makes, in order, or nullopt
+// when one would fail because neither the path nor the directory it would be
+// created in exists (unveil's ENOENT). The first call hides the rest of the
+// filesystem and none can be undone, so every call must be known to succeed
+// before the first is made (ADR-0162). `directory_exists` is the only probe;
+// the function is otherwise pure, so it is tested on every platform.
+[[nodiscard]] auto openbsd_unveil_rules(RuntimeHardeningProfile const& profile,
+                                        std::function<bool(std::string const&)> const& directory_exists)
+    -> std::optional<std::vector<UnveilRule>>;
 [[nodiscard]] auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> HardeningPlanDecision;
 
 // Apply the platform-specific controls that are safe to invoke from inside the

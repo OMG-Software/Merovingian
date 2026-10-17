@@ -80,6 +80,13 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    transaction path is what updates state. The `{eventId}` in the URL must equal the event's
    own reference-hash ID (audit FED-5).
 
+10. **Main's `accepted_transactions` ring is the record of completed `/send` transactions.**
+   The proxy routes a room's transactions to the worker or, while its reload has failed, to
+   main, so a retry can reach the process that did not run the original. `FederationProxy`
+   records each transaction the worker answers with 200 in main's ring and sends any
+   transaction already there to main, which answers it as a duplicate. A new path that runs
+   an inbound transaction outside main's handler does the same (ADR-0160).
+
 ## Key files
 
 | File | Responsibility |

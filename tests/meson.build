@@ -67,6 +67,12 @@ shell = find_program('sh')
   )
 
   test(
+    'line-endings-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_line_endings.py'],
+  )
+
+  test(
     'startup-hardening-gate-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_startup_hardening_gate.py'],
@@ -454,6 +460,7 @@ shell = find_program('sh')
       'integration/test_database_nul_http_flow.cpp',
       'integration/test_database_nul_remaining_query_flow.cpp',
       'integration/test_database_nul_transport_flow.cpp',
+      'integration/test_bounded_connect_flow.cpp',
       'integration/test_security_audit_directory_flow.cpp',
       'integration/test_security_audit_presence_flow.cpp',
       'integration/test_security_audit_to_device_flow.cpp',

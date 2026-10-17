@@ -44,6 +44,15 @@ production stalls turned on.
 - Prove a new scenario fails against the unfixed code before trusting it. A
   regression test that passes either way documents nothing.
 
+## Socket calls in integration tests
+
+Every socket call in an integration test has a deadline, so a server that never
+answers fails one scenario instead of holding the whole binary until meson's
+timeout kills it. Connect with `merovingian::tests::connect_within`
+(`tests/integration/bounded_connect.hpp`), never a blocking `::connect()`: on
+OpenBSD 7.9 a blocking connect to the test's own in-process listener never
+returned. Bound reads and writes with `poll` or `SO_RCVTIMEO`/`SO_SNDTIMEO`.
+
 ## Live client-server probes
 
 Tests that exercise an authenticated endpoint on a deployed Merovingian server
@@ -179,6 +188,15 @@ absent, crashing the GIVEN block before any assertion runs.
   restrictions are permanent in-process and would break the Catch2 runner that
   executes many scenarios in one process. Direct invocations of a test binary
   (for example a focused PostgreSQL integration run) must set it manually.
+
+### Freezing the event clock
+
+Set `HomeserverRuntime::test_frozen_event_clock_ms` to make every event the
+runtime composes carry that `origin_server_ts`, as if the clock stood still or
+were stepped back. Use it to reproduce, every time, behaviour that otherwise
+needs two requests inside one millisecond, instead of looping a scenario and
+hoping for the timing: the `[create-room-collision]` scenarios are the example
+(ADR-0156). No production path sets it.
 
 ## Live join_room integration tests
 

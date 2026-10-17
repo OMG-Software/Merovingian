@@ -411,6 +411,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
     , discovery_network(std::move(other.discovery_network))
     , cached_discovery(std::move(other.cached_discovery))
+    , test_frozen_event_clock_ms(other.test_frozen_event_clock_ms)
     , appservices(std::move(other.appservices))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
@@ -421,6 +422,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
+    , last_create_event_ts_ms(other.last_create_event_ts_ms)
     , client_outbound_budget(std::move(other.client_outbound_budget))
     , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
     , argon2id_admission(std::move(other.argon2id_admission))
@@ -457,6 +459,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     trust_safety_policy_server = std::move(other.trust_safety_policy_server);
     discovery_network = std::move(other.discovery_network);
     cached_discovery = std::move(other.cached_discovery);
+    test_frozen_event_clock_ms = other.test_frozen_event_clock_ms;
     appservices = std::move(other.appservices);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
@@ -468,6 +471,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     typing_users = std::move(other.typing_users);
     receipts = std::move(other.receipts);
     room_typing_stream_id = std::move(other.room_typing_stream_id);
+    last_create_event_ts_ms = other.last_create_event_ts_ms;
     client_outbound_budget = std::move(other.client_outbound_budget);
     client_outbound_proxy_policy = other.client_outbound_proxy_policy;
     argon2id_admission = std::move(other.argon2id_admission);

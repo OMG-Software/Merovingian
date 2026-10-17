@@ -27,6 +27,17 @@ wait indefinitely for a severity bump or a large burst of traffic.
 budget counts. The record excludes recipient identities, gateway URLs and pusher
 credentials. Logging failure does not fail the already-persisted event.
 
+## Room creation failures
+
+`room.create.failed` (module `rooms`) is an error, not debug-only. It is
+written once whenever `create_room` answers a 5xx, for `createRoom`, `/upgrade`
+and the local router alike, with `actor`, `room_id` (empty if the failure came
+before the room ID was derived), `status` and `reason`. A refusal the client
+caused (401, 400, 403) stays a debug-level `room.create.rejected`. Before 0.12.27 a failed creation was logged
+only at debug, so a 500 left nothing in a default log. `room.create.room_id_taken`
+(debug) records each timestamp `create_room` stepped past because its room v12 ID
+already existed (ADR-0156).
+
 ## Sliding Sync response diagnostics (0.10.41)
 
 Starting the server with --debug additionally enables the

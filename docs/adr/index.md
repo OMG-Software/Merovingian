@@ -156,7 +156,13 @@
 * [0153 - Split the key-resolution budgets across federation worker shards](0153-split-key-resolution-budgets-across-worker-shards.md)
 * [0154 - Pool database write connections up to database.pool_size](0154-pool-database-write-connections.md)
 * [0155 - Bound send_join key fetches by the shared in-flight cap, waiting for a slot](0155-bound-send-join-key-fetches-by-the-shared-in-flight-cap.md)
+* [0156 - Stamp v12 create events with a strictly increasing timestamp, stepping past taken room IDs](0156-stamp-v12-create-events-with-a-strictly-increasing-timestamp.md)
 * [0157 - Never open a SQLite database file outside SQLite while connections may be open](0157-never-open-a-sqlite-database-file-outside-sqlite.md)
+* [0158 - Check out every text file with LF endings on every platform](0158-check-out-every-text-file-with-lf-endings.md)
+* [0159 - Retry a journal that only looks hot on read-only SQLite reads, for a bounded time](0159-retry-a-false-hot-journal-on-read-only-sqlite-reads.md)
+* [0160 - Main records every completed federation transaction, whichever process ran it](0160-main-records-every-completed-federation-transaction.md)
+* [0161 - A room reload reads one snapshot; the worker's whole-store load does not](0161-room-reloads-read-one-snapshot-the-whole-store-load-does-not.md)
+* [0162 - Plan every unveil(2) call before making the first, and make none if one would fail](0162-plan-every-unveil-call-before-making-the-first.md)
 
 ## Proposed Records
 

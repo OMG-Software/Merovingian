@@ -8,6 +8,9 @@
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,7 +26,9 @@
 
 #ifdef __OpenBSD__
 #include <atomic>
+#include <new>
 
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -203,6 +208,39 @@ auto default_bsd_hardening_profile() -> RuntimeHardeningProfile
     // included alongside the persistent and runtime state directories.
     profile.filesystem.writable_paths = {"/var/lib/merovingian", "/var/run/merovingian", "/tmp"};
     return profile;
+}
+
+auto openbsd_unveil_rules(RuntimeHardeningProfile const& profile,
+                          std::function<bool(std::string const&)> const& directory_exists)
+    -> std::optional<std::vector<UnveilRule>>
+{
+    auto rules = std::vector<UnveilRule>{};
+    // Read-only paths need read + execute, so shared libraries under /usr and
+    // the worker binaries can be loaded. Writable paths need read + write +
+    // create (journals, sockets). /etc/ssl is LibreSSL's CA store, read for
+    // outbound TLS and federation server verification.
+    for (auto const& path : profile.filesystem.read_only_paths)
+    {
+        rules.push_back({path, "rx"});
+    }
+    for (auto const& path : profile.filesystem.writable_paths)
+    {
+        rules.push_back({path, "rwc"});
+    }
+    rules.push_back({"/etc/ssl", "r"});
+    // unveil(2) accepts a path that does not exist yet (so it can be created)
+    // but fails with ENOENT when the directory it would be created in is missing.
+    auto const reachable = [&directory_exists](std::string const& path) {
+        auto const parent = std::filesystem::path{path}.parent_path().string();
+        return directory_exists(path) || (!parent.empty() && directory_exists(parent));
+    };
+    if (!std::ranges::all_of(rules, [&reachable](UnveilRule const& rule) {
+            return reachable(rule.path);
+        }))
+    {
+        return std::nullopt;
+    }
+    return rules;
 }
 
 auto default_portable_hardening_profile() -> RuntimeHardeningProfile
@@ -420,29 +458,26 @@ namespace
     // Apply filesystem access restrictions via unveil(2), then restrict
     // available syscalls via pledge(2). Returns false on any failure.
     [[nodiscard]] auto apply_openbsd_pledge_unveil(RuntimeHardeningProfile const& profile) noexcept -> bool
+    try
     {
-        // Paths in read_only_paths need read + execute permission so that shared
-        // libraries under /usr and worker binaries can be accessed and executed.
-        for (auto const& path : profile.filesystem.read_only_paths)
-        {
-            if (::unveil(path.c_str(), "rx") != 0)
-            {
-                return false;
-            }
-        }
-        // Paths in writable_paths need read + write + create (WAL files, sockets).
-        for (auto const& path : profile.filesystem.writable_paths)
-        {
-            if (::unveil(path.c_str(), "rwc") != 0)
-            {
-                return false;
-            }
-        }
-        // LibreSSL CA bundle — OpenBSD ships LibreSSL; /etc/ssl is the trust store
-        // for outbound TLS connections and federation server verification.
-        if (::unveil("/etc/ssl", "r") != 0)
+        // ADR-0162: plan every call first. The first unveil(2) hides the rest
+        // of the filesystem, so a call that failed halfway used to leave the
+        // process seeing only the paths before it (the federation worker on
+        // OpenBSD CI could no longer reopen its database).
+        auto const rules = openbsd_unveil_rules(profile, [](std::string const& directory) {
+            struct stat status{};
+            return ::stat(directory.c_str(), &status) == 0 && S_ISDIR(status.st_mode);
+        });
+        if (!rules.has_value())
         {
             return false;
+        }
+        for (auto const& rule : *rules)
+        {
+            if (::unveil(rule.path.c_str(), rule.permissions.c_str()) != 0)
+            {
+                return false;
+            }
         }
         // Lock the vnode allowlist — no further paths may be added after this point.
         if (::unveil(nullptr, nullptr) != 0)
@@ -455,6 +490,11 @@ namespace
         }
         g_pledge_applied.store(true, std::memory_order_release);
         return true;
+    }
+    catch (std::bad_alloc const&)
+    {
+        // Thrown only while planning, before the first unveil(2).
+        return false;
     }
 
 #endif // __OpenBSD__
