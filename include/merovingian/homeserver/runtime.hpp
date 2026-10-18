@@ -128,6 +128,14 @@ struct LocalSession final
     std::string predecessor_refresh_hash{};
 };
 
+// When the appservice drainer may next try an appservice that has just failed, and the delay it
+// will apply if that attempt fails too (doubling from 1 s up to a 5 minute cap).
+struct AppserviceDeliveryBackoff final
+{
+    std::chrono::steady_clock::time_point retry_at{};
+    std::chrono::milliseconds delay{0};
+};
+
 struct LocalRoom final
 {
     std::string room_id{};
@@ -322,6 +330,16 @@ struct HomeserverRuntime final
     // registration files are configured, which leaves the entire AS surface
     // inert (see docs/todos/capability-gaps.md, "Application service API").
     appservice::AppserviceRegistry appservices{};
+    // Wakes the thread that drains the appservice transaction queues (audit R01). Set by the
+    // process entry point once that thread exists; null in tests, which call
+    // drain_appservice_queues directly, and in a process with no appservices. Called by
+    // enqueue_appservice_delivery with runtime.mutex held, so it must not block or wait for
+    // runtime.mutex on another thread (PeriodicJob::wake does neither). Cleared under
+    // runtime.mutex at shutdown before the thread is stopped.
+    std::function<void()> appservice_delivery_wake{};
+    // The drainer's retry state per appservice, keyed by registration id. In memory only: after
+    // a restart the first attempt is immediate. Guarded by `mutex`.
+    std::map<std::string, AppserviceDeliveryBackoff, std::less<>> appservice_delivery_backoff{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.
@@ -425,6 +443,16 @@ struct HomeserverRuntime final
     // Established only by the outbound join RAII lease, before releasing mutex.
     // Same-room overlapping joins are refused; startup moves have no leases.
     std::map<std::string, PendingFederatedJoin, std::less<>> pending_federated_joins{};
+    // R03 (ADR-0165): when each retained federation PDU (store.deferred_pdus,
+    // by event_id) may next be retried. In memory only: a row with no entry is
+    // due at once, which is what every retained PDU is after a restart.
+    // Guarded by `mutex`. Maintained by homeserver::retry_deferred_pdus.
+    std::map<std::string, std::chrono::steady_clock::time_point, std::less<>> deferred_pdu_next_attempt{};
+    // Asks the deferred-PDU retry job to run now. Set by main after the job
+    // starts and cleared, under `mutex`, before it is stopped; null-safe to
+    // leave unset (tests, the federation worker). Called with `mutex` held, so
+    // it must only wake a thread: PeriodicJob::wake is safe there.
+    std::function<void()> deferred_pdu_retry_wake{};
     // Per-room striped mutexes used by inbound PDU ingestion. Each room's events
     // are serialized on their own stripe so per-room ordering is preserved, while
     // events in different rooms can prepare/commit/apply in parallel. The global

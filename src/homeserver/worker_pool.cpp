@@ -298,6 +298,9 @@ namespace
         case federation::PduIngestionStatus::main_overloaded:
             status_str = "main_overloaded";
             break;
+        case federation::PduIngestionStatus::deferred:
+            status_str = "deferred";
+            break;
         }
         auto body = std::string{R"({"type":"pdu_ingest_result","status":)"};
         body += json_str(status_str);

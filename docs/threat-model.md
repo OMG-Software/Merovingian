@@ -1996,6 +1996,19 @@ until the refresh).
   every returned event passes its own checks, but a malicious origin can still
   omit events it is entitled to omit; state resolution against other forks is
   the same residual risk every conformant server accepts.
+- **Retained unresolved PDUs (R03, ADR-0165):** a PDU still unresolved after
+  phase C is kept in `deferred_pdus` and retried instead of being lost. A row is
+  written only by `ingest_pdu_event`, after the sender's signature was verified
+  and for a room this server has current interest in, so a hostile peer cannot
+  plant an unsigned or uninvited event; a retry re-enters ingestion and gets
+  every check again (hash, `auth_events`, state before, current state), so
+  retention confers nothing. The new surface is the table itself: a peer with a
+  valid key can fill a room's 100 slots (1000 overall, 16 MiB of JSON) with PDUs
+  it never lets resolve. The bounds cap the memory, expiry (24 hours or 10
+  retries) frees it, a full set falls back to telling the sender the PDU was not
+  kept, and each retry is itself bounded by the backfill budgets. Residual: until
+  those rows expire the room cannot retain further unresolved PDUs, and a legitimate
+  sender then sees a per-PDU error for them.
 
 ### Worker EDU origin substitution (audit FED-12; review/combined pending)
 
@@ -2027,8 +2040,10 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   bound. Mitigation: the sink requires `server_name(sender) == origin` (otherwise the whole
   EDU is dropped and logged; the transaction still succeeds), queues only for existing local
   active users, drops an EDU whose `message_id` is missing or over 32 codepoints, de-duplicates
-  on `(origin, message_id)` in `federation::EduIdempotenceWindow` (65 536 entries, 24 hours,
-  oldest evicted first), and stops at 1 000 (user, device) deliveries per EDU. **Residual
+  on `(origin, sender, message_id)` in `federation::EduIdempotenceWindow` (65 536 entries, 24 hours,
+  oldest evicted first; an ID is recorded only after the EDU's messages have committed in one
+  transaction, so a failed store can be resent), and stops at 1 000 (user, device) deliveries
+  per EDU. **Residual
   risk:** the window is in memory only, so a replay that straddles a restart is delivered
   again, and a replay older than 24 hours or evicted by 65 536 newer messages from any origin
   is too; persisting it would need a migration and buys little for a best-effort EDU. The

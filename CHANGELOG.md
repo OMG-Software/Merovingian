@@ -1,3 +1,61 @@
+## 0.12.28
+
+First wave of fixes for the 17 October 2026 Matrix v1.19 conformance audit
+(`docs/conformance-audit-report-2026-10-17.md`): the three findings that lost delivery work
+while reporting success (R01–R03), plus two to-device defects found while fixing R02.
+
+- **NEW (`PeriodicJob`):** `homeserver::PeriodicJob` runs one job on a dedicated thread, once at
+  start, again on `wake()`, and otherwise after the delay its last run returned; the job gets a
+  `homeserver::StopFlag` it polls between units of work. One thread per job, so a queue drained by
+  a job has one consumer. The thread starts only in `start()` (ADR-0082). It is built on
+  `std::thread`, not `std::jthread`/`std::stop_token`, which the libc++ of FreeBSD and OpenBSD
+  lacks; `docs/coding-rules.md` now forbids both (ADR-0167). Scenarios tagged `[periodic_job]`.
+- **FIXED (R01, appservice events skipped after an outage):** the appservice cursor held one
+  pending event; when its retry failed the triggering event was not queued, and when the
+  appservice recovered every event in between was skipped. Nothing retried once room traffic
+  stopped, and delivery ran on the request thread with the runtime lock released, so two requests
+  could race on one cursor. A request now only queues: `enqueue_appservice_delivery` writes an
+  `appservice_outbox` row (migration `022`, interest decided at event time) and wakes the one
+  sender, `drain_appservice_queues`, run by a `PeriodicJob` from `main.cpp`. A transaction's ID
+  and event are written to the cursor before it is sent; on acknowledgement the cursor and the
+  outbox row commit together. Failures back off from 1 s to 5 min per appservice. The outbox
+  primary key is the only dedupe: there is no "already delivered" threshold, because events in
+  different rooms commit out of stream order. `deliver_federation_push_notifications` now takes the
+  runtime lock (its caller did not hold it). ADR-0163; scenarios tagged `[r01]`.
+- **FIXED (R02, a failed to-device enqueue answered 200):** `PUT /sendToDevice` discarded the
+  enqueue result, recorded the transaction and returned 200, so the client's retry was replayed
+  without delivery. Remote EDUs are now queued first and a queueing failure answers 500; then every
+  local message and the transaction record commit in one backend transaction
+  (`enqueue_to_device_messages_with_client_txn`), and a failed commit answers 500 with nothing
+  recorded, so a retry with the same transaction ID is delivered. With
+  `security.federation.enabled = false` a remote recipient is discarded like an unknown local one
+  rather than failing the request for ever. ADR-0164; scenarios tagged `[r02]`.
+- **FIXED (R03, federation PDUs lost after a 200):** a PDU whose `prev_events`/`auth_events`
+  could not be backfilled, or whose `prev_event` had no state group, was dropped while `/send`
+  answered 200 with no error for it, and the sender never resent it. It is now retained in
+  `deferred_pdus` (migration `023`; at most 100 per room, 1000 in total, 16 MiB, 24 h, 10 retries)
+  with the new status `PduIngestionStatus::deferred`, which `/send` reports as handled; a PDU
+  that cannot be retained gets an `error` in the `pdus` map. `DeferredPduRetryJob` retries due PDUs
+  through the federation PDU sink with back-off from 30 s to 1 h, and the arrival of an event a
+  retained PDU names makes it due at once. PDUs held until an outbound join commits are also
+  reported as `deferred`. New audit event `federation.pdu_deferral_expired`. ADR-0165; scenarios
+  tagged `[r03]`.
+- **FIXED (to-device message IDs collided across senders):** an outbound `m.direct_to_device`
+  EDU used the client transaction ID as its `message_id`, which is unique only per user, so two
+  local users with the same transaction ID had the second message dropped as a replay by the
+  receiver (and an ID over 32 codepoints was invalid). The ID is now derived from the sender,
+  event type and transaction ID (`derive_direct_to_device_message_id`): stable across a client
+  retry, distinct across senders, 24 characters. Inbound, the replay window is keyed on
+  `(origin, sender, message_id)`, the EDU is stored in one backend transaction
+  (`enqueue_to_device_messages`) and its ID recorded only after the commit, so a failed store no
+  longer turns the origin's resend into a dropped replay. ADR-0166; scenarios tagged
+  `[message-id]`.
+- **FIXED (`line-endings-tooling` timeout):** the test ran `git ls-files --eol` before each of
+  its four cases, about 6.5 s each on a WSL `/mnt/c` checkout, so under a parallel `meson test`
+  it exceeded Meson's 30 s default timeout. It now scans once per class (`setUpClass`).
+- **DOCS:** the audit report and its remediation status are recorded in
+  `docs/conformance-audit-report-2026-10-17.md`.
+
 ## 0.12.27
 
 Fixes the intermittent `createRoom` 500 behind the flaky sync conformance scenario, makes

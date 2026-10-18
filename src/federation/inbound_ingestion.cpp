@@ -228,6 +228,17 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
     return out;
 }
 
+auto rebuild_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room_version, std::string_view origin)
+    -> std::optional<InboundPduEnvelope>
+{
+    auto envelope = parse_inbound_pdu_envelope(pdu_json, room_version);
+    if (envelope.has_value())
+    {
+        envelope->origin = std::string{origin};
+    }
+    return envelope;
+}
+
 auto classify_edu_type(std::string_view edu_type) noexcept -> EduType
 {
     if (edu_type == "m.typing")

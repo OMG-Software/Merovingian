@@ -1,8 +1,10 @@
 homeserver_sources = files(
+  'appservice_delivery.cpp',
   'auth_service.cpp',
   'client_outbound_proxy.cpp',
   'client_server.cpp',
   'default_push_ruleset.cpp',
+  'deferred_pdu_retry.cpp',
   'federation_proxy.cpp',
   'federation_request_routing.cpp',
   'http_server.cpp',
@@ -10,6 +12,7 @@ homeserver_sources = files(
   'local_http_router.cpp',
   'local_services.cpp',
   'media_service.cpp',
+  'periodic_job.cpp',
   'remote_media_fetch_coalescer.cpp',
   'redaction_service.cpp',
   'room_power.cpp',

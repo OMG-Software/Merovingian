@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -3814,94 +3815,201 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     return true;
 }
 
+namespace
+{
+
+    // The rows one atomic to-device write adds and evicts, and the statements
+    // that do it. Building a batch changes nothing in `PersistentStore`; the
+    // caller commits `statements` in one transaction and only then applies the
+    // batch to the in-memory mirror.
+    struct ToDeviceBatch final
+    {
+        std::vector<PreparedStatement> statements{};
+        std::vector<PersistentToDeviceMessage> added{};
+        std::vector<PersistentToDeviceMessage> evicted{};
+    };
+
+    [[nodiscard]] auto same_to_device_row(PersistentToDeviceMessage const& left,
+                                          PersistentToDeviceMessage const& right) noexcept -> bool
+    {
+        return left.stream_id == right.stream_id && left.target_user_id == right.target_user_id &&
+               left.target_device_id == right.target_device_id;
+    }
+
+    [[nodiscard]] auto to_device_message_is_valid(PersistentToDeviceMessage const& message) noexcept -> bool
+    {
+        return !message.sender_user_id.empty() && !message.target_user_id.empty() && !message.message_type.empty() &&
+               !message.content_json.empty();
+    }
+
+    // Allocates the message's stream id, works out which rows the per-recipient
+    // bounds evict to make room (CSAZ-10), and appends the DELETE and INSERT
+    // statements to `batch`. Rows already added or evicted by `batch` count, so
+    // two messages for one recipient in a single batch are bounded together.
+    // The stream id is consumed even if the batch is never committed; ids are
+    // only ever skipped, never reused.
+    auto prepare_to_device_enqueue(PersistentStore& store, PersistentToDeviceMessage message, ToDeviceBatch& batch)
+        -> void
+    {
+        message.stream_id = allocate_sync_stream_id(store);
+        message.created_at_ms = current_epoch_ms();
+
+        auto const ttl_ms = static_cast<std::uint64_t>(store.to_device_message_ttl_seconds) * 1000ULL;
+        auto const now_ms = message.created_at_ms;
+
+        auto to_delete = std::vector<PersistentToDeviceMessage>{};
+        if (ttl_ms > 0U || store.max_to_device_messages_per_user_device > 0U)
+        {
+            auto matching = std::vector<std::reference_wrapper<PersistentToDeviceMessage const>>{};
+            auto const consider = [&](PersistentToDeviceMessage const& candidate) {
+                auto const evicted_earlier = std::ranges::any_of(batch.evicted, [&](auto const& victim) {
+                    return same_to_device_row(victim, candidate);
+                });
+                if (candidate.target_user_id == message.target_user_id &&
+                    candidate.target_device_id == message.target_device_id && !evicted_earlier)
+                {
+                    matching.emplace_back(candidate);
+                }
+            };
+            std::ranges::for_each(store.to_device_messages, consider);
+            std::ranges::for_each(batch.added, consider);
+            std::ranges::sort(matching, {}, [](PersistentToDeviceMessage const& candidate) {
+                return candidate.stream_id;
+            });
+
+            for (PersistentToDeviceMessage const& candidate : matching)
+            {
+                // created_at_ms == 0 is a row written before migration 019: its age
+                // is unknown, so it is not expired here, as in the drain. The count
+                // cap still bounds it.
+                auto const expired = ttl_ms > 0U && candidate.created_at_ms > 0U && now_ms > candidate.created_at_ms &&
+                                     now_ms - candidate.created_at_ms >= ttl_ms;
+                if (expired)
+                {
+                    to_delete.push_back(candidate);
+                    continue;
+                }
+                auto const kept_after_deletions = static_cast<std::uint64_t>(matching.size() - to_delete.size());
+                if (store.max_to_device_messages_per_user_device > 0U &&
+                    kept_after_deletions >= store.max_to_device_messages_per_user_device)
+                {
+                    to_delete.push_back(candidate);
+                }
+            }
+        }
+
+        for (auto const& victim : to_delete)
+        {
+            batch.statements.push_back(record_statement(
+                "delete_to_device_message",
+                "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND target_device_id = $3",
+                {public_value(std::to_string(victim.stream_id)), public_value(victim.target_user_id),
+                 public_value(victim.target_device_id)}));
+            batch.evicted.push_back(victim);
+        }
+        batch.statements.push_back(record_statement(
+            "insert_to_device_message",
+            "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, target_device_id, "
+            "message_type, content, created_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            {public_value(std::to_string(message.stream_id)), public_value(message.sender_user_id),
+             public_value(message.target_user_id), public_value(message.target_device_id),
+             public_value(message.message_type), sensitive_value(message.content_json),
+             public_value(std::to_string(message.created_at_ms))}));
+        batch.added.push_back(std::move(message));
+    }
+
+    // Mirrors a committed batch into memory. Call only after the commit succeeded.
+    auto apply_to_device_batch(PersistentStore& store, ToDeviceBatch&& batch) -> void
+    {
+        for (auto& message : batch.added)
+        {
+            store.to_device_messages.push_back(std::move(message));
+        }
+        auto const [first, last] =
+            std::ranges::remove_if(store.to_device_messages, [&batch](PersistentToDeviceMessage const& candidate) {
+                return std::ranges::any_of(batch.evicted, [&candidate](PersistentToDeviceMessage const& victim) {
+                    return same_to_device_row(victim, candidate);
+                });
+            });
+        store.to_device_messages.erase(first, last);
+    }
+
+    [[nodiscard]] auto insert_client_txn_statement(PersistentClientTxnRecord const& record) -> PreparedStatement
+    {
+        return record_statement("insert_client_txn_id",
+                                "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id) "
+                                "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                                {public_value(record.user_id), public_value(record.room_id),
+                                 public_value(record.event_type), public_value(record.txn_id),
+                                 public_value(record.event_id)});
+    }
+
+} // namespace
+
+[[nodiscard]] auto enqueue_to_device_messages(PersistentStore& store, std::vector<PersistentToDeviceMessage> messages)
+    -> bool
+{
+    if (!std::ranges::all_of(messages, [](PersistentToDeviceMessage const& message) {
+            return to_device_message_is_valid(message);
+        }))
+    {
+        return false;
+    }
+    if (messages.empty())
+    {
+        return true;
+    }
+    auto batch = ToDeviceBatch{};
+    for (auto& message : messages)
+    {
+        prepare_to_device_enqueue(store, std::move(message), batch);
+    }
+    if (!commit_persistent_transaction(store, batch.statements))
+    {
+        return false;
+    }
+    apply_to_device_batch(store, std::move(batch));
+    return true;
+}
+
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool
 {
-    if (message.sender_user_id.empty() || message.target_user_id.empty() || message.message_type.empty() ||
-        message.content_json.empty())
+    auto messages = std::vector<PersistentToDeviceMessage>{};
+    messages.push_back(std::move(message));
+    return enqueue_to_device_messages(store, std::move(messages));
+}
+
+[[nodiscard]] auto enqueue_to_device_messages_with_client_txn(PersistentStore& store,
+                                                              std::vector<PersistentToDeviceMessage> messages,
+                                                              PersistentClientTxnRecord record) -> bool
+{
+    if (record.user_id.empty() || record.event_type.empty() || record.txn_id.empty() ||
+        !std::ranges::all_of(messages, [](PersistentToDeviceMessage const& message) {
+            return to_device_message_is_valid(message);
+        }))
     {
         return false;
     }
-    message.stream_id = allocate_sync_stream_id(store);
-    message.created_at_ms = current_epoch_ms();
-
-    // CSAZ-10: keep the per-recipient queue bounded by age and count.  Evict
-    // expired rows first, then the oldest rows, until the new message fits.
-    auto const recipient_matches = [&message](PersistentToDeviceMessage const& candidate) {
-        return candidate.target_user_id == message.target_user_id &&
-               candidate.target_device_id == message.target_device_id;
-    };
-    auto const ttl_ms = static_cast<std::uint64_t>(store.to_device_message_ttl_seconds) * 1000ULL;
-    auto const now_ms = message.created_at_ms;
-
-    auto to_delete = std::vector<PersistentToDeviceMessage>{};
-    to_delete.reserve(store.to_device_messages.size());
-    if (ttl_ms > 0U || store.max_to_device_messages_per_user_device > 0U)
+    // Already recorded (a concurrent retry that got in first): the request that
+    // recorded it committed its messages in the same transaction, so there is
+    // nothing left to deliver.
+    if (find_client_txn_event_id(store, record.user_id, record.room_id, record.event_type, record.txn_id).has_value())
     {
-        auto matching = std::vector<PersistentToDeviceMessage const*>{};
-        for (auto const& candidate : store.to_device_messages)
-        {
-            if (recipient_matches(candidate))
-            {
-                matching.push_back(&candidate);
-            }
-        }
-        std::ranges::sort(matching, {}, [](PersistentToDeviceMessage const* p) {
-            return p->stream_id;
-        });
-
-        for (auto const* candidate : matching)
-        {
-            // created_at_ms == 0 is a row written before migration 019: its age
-            // is unknown, so it is not expired here, as in the drain below. The
-            // count cap still bounds it.
-            auto const expired = ttl_ms > 0U && candidate->created_at_ms > 0U && now_ms > candidate->created_at_ms &&
-                                 now_ms - candidate->created_at_ms >= ttl_ms;
-            if (expired)
-            {
-                to_delete.push_back(*candidate);
-                continue;
-            }
-            auto const kept_after_deletions = static_cast<std::uint64_t>(matching.size() - to_delete.size());
-            if (store.max_to_device_messages_per_user_device > 0U &&
-                kept_after_deletions >= store.max_to_device_messages_per_user_device)
-            {
-                to_delete.push_back(*candidate);
-            }
-        }
+        return true;
     }
 
-    auto statements = std::vector<PreparedStatement>{};
-    statements.reserve(to_delete.size() + 1U);
-    for (auto const& victim : to_delete)
+    auto batch = ToDeviceBatch{};
+    for (auto& message : messages)
     {
-        statements.push_back(record_statement(
-            "delete_to_device_message",
-            "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND target_device_id = $3",
-            {public_value(std::to_string(victim.stream_id)), public_value(victim.target_user_id),
-             public_value(victim.target_device_id)}));
+        prepare_to_device_enqueue(store, std::move(message), batch);
     }
-    statements.push_back(
-        record_statement("insert_to_device_message",
-                         "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, target_device_id, "
-                         "message_type, content, created_at_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                         {public_value(std::to_string(message.stream_id)), public_value(message.sender_user_id),
-                          public_value(message.target_user_id), public_value(message.target_device_id),
-                          public_value(message.message_type), sensitive_value(message.content_json),
-                          public_value(std::to_string(message.created_at_ms))}));
-
-    if (!commit_persistent_transaction(store, statements))
+    batch.statements.push_back(insert_client_txn_statement(record));
+    if (!commit_persistent_transaction(store, batch.statements))
     {
         return false;
     }
-    auto const [first, last] =
-        std::ranges::remove_if(store.to_device_messages, [&to_delete](PersistentToDeviceMessage const& candidate) {
-            return std::ranges::any_of(to_delete, [&candidate](PersistentToDeviceMessage const& victim) {
-                return victim.stream_id == candidate.stream_id && victim.target_user_id == candidate.target_user_id &&
-                       victim.target_device_id == candidate.target_device_id;
-            });
-        });
-    store.to_device_messages.erase(first, last);
-    store.to_device_messages.push_back(std::move(message));
+    apply_to_device_batch(store, std::move(batch));
+    store.client_txn_ids.push_back(std::move(record));
     return true;
 }
 
@@ -4754,6 +4862,225 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+namespace
+{
+
+    // The outbox vector is sorted by (appservice_id, stream_ordering), compared
+    // numerically: the columns are TEXT, so the backends' own ORDER BY would put
+    // "10" before "9".
+    [[nodiscard]] auto outbox_entry_precedes(PersistentAppserviceOutboxEntry const& entry,
+                                             std::string_view appservice_id, std::uint64_t stream_ordering) noexcept
+        -> bool
+    {
+        if (entry.appservice_id != appservice_id)
+        {
+            return entry.appservice_id < appservice_id;
+        }
+        return entry.stream_ordering < stream_ordering;
+    }
+
+    [[nodiscard]] auto outbox_lower_bound(std::vector<PersistentAppserviceOutboxEntry> const& outbox,
+                                          std::string_view appservice_id, std::uint64_t stream_ordering)
+    {
+        // std::lower_bound, not the ranges one: the key is not an entry, and the ranges version
+        // also demands the comparator accept two keys.
+        return std::lower_bound(
+            outbox.begin(), outbox.end(), std::pair{appservice_id, stream_ordering},
+            [](PersistentAppserviceOutboxEntry const& entry, std::pair<std::string_view, std::uint64_t> const& key) {
+                return outbox_entry_precedes(entry, key.first, key.second);
+            });
+    }
+
+} // namespace
+
+[[nodiscard]] auto enqueue_appservice_event(PersistentStore& store, PersistentAppserviceOutboxEntry entry) -> bool
+{
+    if (entry.appservice_id.empty() || entry.event_id.empty())
+    {
+        return false;
+    }
+    auto const position = outbox_lower_bound(store.appservice_outbox, entry.appservice_id, entry.stream_ordering);
+    if (position != store.appservice_outbox.end() && position->appservice_id == entry.appservice_id &&
+        position->stream_ordering == entry.stream_ordering)
+    {
+        return true; // already queued: the primary key is the only dedupe
+    }
+    auto const statement =
+        record_statement("enqueue_appservice_event",
+                         "INSERT INTO appservice_outbox (appservice_id, stream_ordering, event_id) VALUES ($1, $2, $3) "
+                         "ON CONFLICT (appservice_id, stream_ordering) DO NOTHING",
+                         {public_value(entry.appservice_id), public_value(std::to_string(entry.stream_ordering)),
+                          public_value(entry.event_id)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    store.appservice_outbox.insert(position, std::move(entry));
+    return true;
+}
+
+[[nodiscard]] auto find_first_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id)
+    -> std::optional<PersistentAppserviceOutboxEntry>
+{
+    auto const position = outbox_lower_bound(store.appservice_outbox, appservice_id, 0U);
+    if (position == store.appservice_outbox.end() || position->appservice_id != appservice_id)
+    {
+        return std::nullopt;
+    }
+    return *position;
+}
+
+auto sort_appservice_outbox(PersistentStore& store) -> void
+{
+    std::ranges::sort(store.appservice_outbox,
+                      [](PersistentAppserviceOutboxEntry const& left, PersistentAppserviceOutboxEntry const& right) {
+                          return outbox_entry_precedes(left, right.appservice_id, right.stream_ordering);
+                      });
+}
+
+[[nodiscard]] auto complete_appservice_delivery(PersistentStore& store, std::string_view appservice_id,
+                                                std::uint64_t delivered_stream_ordering) -> bool
+{
+    if (appservice_id.empty())
+    {
+        return false;
+    }
+    auto cursor = find_appservice_txn_cursor(store, appservice_id);
+    cursor.pending_txn_id = 0U;
+    cursor.pending_stream_ordering = 0U;
+    cursor.delivered_stream_ordering = std::max(cursor.delivered_stream_ordering, delivered_stream_ordering);
+
+    auto const statements = std::vector<PreparedStatement>{
+        record_statement("upsert_appservice_txn_cursor",
+                         "INSERT INTO appservice_txn_cursor (appservice_id, next_txn_id, delivered_stream_ordering, "
+                         "pending_txn_id, pending_stream_ordering) VALUES ($1, $2, $3, $4, $5) "
+                         "ON CONFLICT (appservice_id) DO UPDATE SET next_txn_id = $2, delivered_stream_ordering = $3, "
+                         "pending_txn_id = $4, pending_stream_ordering = $5",
+                         {public_value(cursor.appservice_id), public_value(std::to_string(cursor.next_txn_id)),
+                          public_value(std::to_string(cursor.delivered_stream_ordering)),
+                          public_value(std::to_string(cursor.pending_txn_id)),
+                          public_value(std::to_string(cursor.pending_stream_ordering))}),
+        record_statement(
+            "complete_appservice_outbox_entry",
+            "DELETE FROM appservice_outbox WHERE appservice_id = $1 AND stream_ordering = $2",
+            {public_value(std::string{appservice_id}), public_value(std::to_string(delivered_stream_ordering))}),
+    };
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+
+    // Memory follows the commit, never precedes it.
+    auto const cursor_row =
+        std::ranges::find_if(store.appservice_txn_cursors, [&cursor](PersistentAppserviceTxnCursor const& current) {
+            return current.appservice_id == cursor.appservice_id;
+        });
+    if (cursor_row != store.appservice_txn_cursors.end())
+    {
+        *cursor_row = cursor;
+    }
+    else
+    {
+        store.appservice_txn_cursors.push_back(cursor);
+    }
+    auto const position = outbox_lower_bound(store.appservice_outbox, appservice_id, delivered_stream_ordering);
+    if (position != store.appservice_outbox.end() && position->appservice_id == appservice_id &&
+        position->stream_ordering == delivered_stream_ordering)
+    {
+        store.appservice_outbox.erase(position);
+    }
+    return true;
+}
+
+[[nodiscard]] auto upsert_deferred_pdu(PersistentStore& store, PersistentDeferredPdu pdu) -> DeferredPduUpsert
+{
+    if (pdu.event_id.empty() || pdu.room_id.empty())
+    {
+        return DeferredPduUpsert::persistence_failed;
+    }
+    auto const existing = std::ranges::find_if(store.deferred_pdus, [&pdu](PersistentDeferredPdu const& row) {
+        return row.event_id == pdu.event_id;
+    });
+    if (existing == store.deferred_pdus.end())
+    {
+        auto in_room = std::size_t{0U};
+        auto json_bytes = std::size_t{0U};
+        for (auto const& row : store.deferred_pdus)
+        {
+            if (row.room_id == pdu.room_id)
+            {
+                ++in_room;
+            }
+            json_bytes += row.pdu_json.size();
+        }
+        if (in_room >= max_deferred_pdus_per_room || store.deferred_pdus.size() >= max_deferred_pdus_total ||
+            pdu.pdu_json.size() > max_deferred_pdu_json_bytes ||
+            json_bytes > max_deferred_pdu_json_bytes - pdu.pdu_json.size())
+        {
+            return DeferredPduUpsert::refused_full;
+        }
+    }
+    // An update keeps the first receive time and the PDU as first retained:
+    // only the origin and the attempt count change.
+    auto const statement = record_statement(
+        "upsert_deferred_pdu",
+        "INSERT INTO deferred_pdus (event_id, room_id, origin, pdu_json, received_at_ms, attempts) "
+        "VALUES ($1, $2, $3, $4, $5, $6) "
+        "ON CONFLICT (event_id) DO UPDATE SET origin = $3, attempts = $6",
+        {public_value(pdu.event_id), public_value(pdu.room_id), public_value(pdu.origin), public_value(pdu.pdu_json),
+         public_value(std::to_string(pdu.received_at_ms)), public_value(std::to_string(pdu.attempts))});
+    if (!record_and_persist(store, statement))
+    {
+        return DeferredPduUpsert::persistence_failed;
+    }
+    if (existing != store.deferred_pdus.end())
+    {
+        existing->origin = std::move(pdu.origin);
+        existing->attempts = pdu.attempts;
+        return DeferredPduUpsert::updated;
+    }
+    store.deferred_pdus.push_back(std::move(pdu));
+    return DeferredPduUpsert::inserted;
+}
+
+[[nodiscard]] auto remove_deferred_pdu(PersistentStore& store, std::string_view event_id) -> bool
+{
+    auto const existing = std::ranges::find_if(store.deferred_pdus, [event_id](PersistentDeferredPdu const& row) {
+        return row.event_id == event_id;
+    });
+    if (existing == store.deferred_pdus.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("delete_deferred_pdu", "DELETE FROM deferred_pdus WHERE event_id = $1",
+                                             {public_value(event_id)})))
+    {
+        return false;
+    }
+    store.deferred_pdus.erase(existing);
+    return true;
+}
+
+[[nodiscard]] auto list_deferred_pdus(PersistentStore const& store) -> std::vector<PersistentDeferredPdu>
+{
+    return store.deferred_pdus;
+}
+
+[[nodiscard]] auto deferred_pdus_for_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentDeferredPdu>
+{
+    auto rows = std::vector<PersistentDeferredPdu>{};
+    for (auto const& row : store.deferred_pdus)
+    {
+        if (row.room_id == room_id)
+        {
+            rows.push_back(row);
+        }
+    }
+    return rows;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {
@@ -4821,13 +5148,7 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     {
         return true;
     }
-    auto const statement =
-        record_statement("insert_client_txn_id",
-                         "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id) "
-                         "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                         {public_value(record.user_id), public_value(record.room_id), public_value(record.event_type),
-                          public_value(record.txn_id), public_value(record.event_id)});
-    if (!record_and_persist(store, statement))
+    if (!record_and_persist(store, insert_client_txn_statement(record)))
     {
         return false;
     }

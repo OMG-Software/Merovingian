@@ -324,8 +324,8 @@ SCENARIO("a room creation that fails on the server leaves no room behind",
         auto started = merovingian::homeserver::start_runtime(options);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const registered = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const registered = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                             merovingian::tests::registration_token);
         REQUIRE(registered.ok);
         auto const logged = merovingian::homeserver::login_local_user_by_id(runtime, registered.value, "ALICE");
         REQUIRE(logged.ok);
@@ -764,13 +764,13 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 21U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 23U);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
                         merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
                         "initial_schema");
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "room_alias_creator");
+                        "deferred_pdus");
             }
         }
     }
@@ -796,7 +796,7 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 21U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 23U);
             }
         }
     }

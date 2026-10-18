@@ -17,6 +17,8 @@ This is the largest and most complex module — read this file carefully before 
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
 | `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
+| `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
+| `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
@@ -243,3 +245,13 @@ When a client endpoint's action is, or advertises, a state event (`/upgrade` sen
 visibility and aliases stand for `m.room.canonical_alias`), refuse it up front with `may_send_state_event()` for that
 event type, before anything is created. Membership alone is not enough. Alias `PUT` validates with
 `auth::room_alias_is_valid` and requires this server's domain; `DELETE` allows the alias's recorded creator.
+
+## Appservice delivery (R01, ADR-0163)
+
+A request never sends to an appservice. `enqueue_appservice_delivery` writes `appservice_outbox` rows (interest decided
+at event time) and calls `HomeserverRuntime::appservice_delivery_wake`; `drain_appservice_queues` is the only sender,
+called from one `PeriodicJob` thread (or directly by a test), never with `runtime.mutex` held by the caller. Do not
+add an "already delivered" check to the enqueue: stream orderings commit out of order across rooms, and the outbox
+primary key is the only dedupe. A transaction's ID and event are written to the cursor before the send; do not
+rebuild a transaction from anything but its stored event. Clear the wake hook under `runtime.mutex` before stopping
+the job.

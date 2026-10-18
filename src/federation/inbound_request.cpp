@@ -3093,6 +3093,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto pdus_rejected = std::size_t{0U};
     auto pdus_soft_failed = std::size_t{0U};
     auto pdus_missing_prev_state = std::size_t{0U};
+    auto pdus_deferred = std::size_t{0U};
     // Per-spec (Matrix federation /send): individual PDU failures must be
     // reported in the response body as {"pdus": {"$id": {"error": "..."}}}
     // rather than as a non-200 HTTP status. Returning 4xx/5xx causes the
@@ -3401,6 +3402,22 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             ++pdus_missing_prev_state;
             audit_federation(runtime, "federation.pdu_missing_prev_state", request.origin, request.target,
                              ingestion.reason);
+            // R03: this PDU was NOT kept, so nothing will retry it and the
+            // sender must hear that. Spec: server-server-api.md "Transactions"
+            // -- the response maps each PDU to its processing result, and only
+            // a PDU with no error "can be considered successfully handled".
+            pdu_errors.push_back(canonicaljson::make_member(
+                envelope->event_id, canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                                        "error", canonicaljson::Value{"could not be placed in the room's history: " +
+                                                                      ingestion.reason})}}));
+            break;
+        case PduIngestionStatus::deferred:
+            // R03 (ADR-0165): the PDU is kept, durably, and will be placed when
+            // the history it depends on arrives. It is handled, so it has no
+            // error entry. Counted apart from missing_prev_state, which was
+            // dropped.
+            ++pdus_deferred;
+            audit_federation(runtime, "federation.pdu_deferred", request.origin, request.target, ingestion.reason);
             break;
         }
     }
@@ -3492,6 +3509,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                                {"pdu_rejected",     std::to_string(pdus_rejected),           false},
                                                {"pdu_soft_failed",  std::to_string(pdus_soft_failed),        false},
                                                {"pdu_missing_prev", std::to_string(pdus_missing_prev_state), false},
+                                               {"pdu_deferred",     std::to_string(pdus_deferred),           false},
                                                {"edu_count",        std::to_string(transaction.edus.size()), false},
                                                {"edu_dispatched",   std::to_string(edus_dispatched),         false},
                                                {"edu_dropped",      std::to_string(edus_dropped),            false}

@@ -403,19 +403,57 @@ value. Test fixtures that do not exercise persistence select it through
   `find_appservice_txn_cursor`/`store_appservice_txn_cursor` store functions
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
   are implemented for both SQLite and PostgreSQL, hydrated on backend open.
-  Delivery itself (`room_service.cpp`'s `dispatch_appservice_delivery`,
-  called from `send_event()`, `dispatch_membership_push_notification()`, and
-  the federation `deliver_federation_push_notifications()` path) replays
-  forward through the existing `events` table by `stream_ordering` rather
-  than maintaining a separate durable outbox — this row is the *entire*
-  persisted delivery state. A retry of an in-flight batch reuses the exact
-  same `pending_txn_id` and re-derives the identical single event from
-  `events`, never growing it, per the spec's "Homeservers MUST NOT alter
-  ... events they were going to send within that transaction ID on
-  retries." Delivery is synchronous (on the request path that produced the
-  triggering event), not a background/async dispatch like push notification
-  delivery — see `dispatch_appservice_delivery`'s doc comment for why, and
-  `docs/todos/capability-gaps.md` for the documented follow-up.
+  Since schema version `22` the cursor is the *state of the one transaction
+  in flight* (`pending_txn_id` / `pending_stream_ordering`) plus the
+  transaction-ID allocator; the queue behind it is `appservice_outbox`
+  below. A retry of the in-flight transaction reuses the exact same
+  `pending_txn_id` and re-derives the identical single event from `events`,
+  never growing it, per the spec's "Homeservers MUST NOT alter ... events
+  they were going to send within that transaction ID on retries."
+- `appservice_outbox` table (schema version `22`, migration
+  `migrations/022_appservice_outbox.sql`, audit R01, ADR-0163) is the
+  Application Service API transaction queue the spec requires: one row
+  `(appservice_id, stream_ordering, event_id)` per event queued for one
+  appservice, primary key `(appservice_id, stream_ordering)`. A row is
+  written when the event is dispatched (`enqueue_appservice_event`,
+  idempotent on the key, interest decided at that moment) and deleted in the
+  same backend transaction that clears the cursor's pending transaction and
+  raises `delivered_stream_ordering` (`complete_appservice_delivery`), so a
+  crash can never leave a delivered event queued or a queued event
+  forgotten. `stream_ordering` is `TEXT` like every numeric column in this
+  schema; the in-memory mirror `PersistentStore::appservice_outbox` is kept
+  sorted numerically by `(appservice_id, stream_ordering)`
+  (`sort_appservice_outbox` after hydration). `delivered_stream_ordering` is
+  now informational: it is **not** a threshold new events are compared
+  against, because stream orderings are allocated before commit and events in
+  other rooms commit out of order. Main process only: the table is not in
+  `federation_worker_table_allowlist`. The queue of an appservice that never
+  comes back grows without bound (no row is dropped for age).
+- `deferred_pdus` table (schema version `23`, migration
+  `migrations/023_deferred_pdus.sql`, R03, ADR-0165) holds the federation PDUs
+  `ingest_pdu_event` could not yet place because a `prev_event` or `auth_event`
+  is unknown or a `prev_event` has no state group. Columns: `event_id`
+  (primary key), `room_id` (indexed), `origin` (the server it arrived from, to
+  backfill from), `pdu_json` (the envelope exactly as ingestion would have
+  stored it, which is the redacted copy after a content-hash mismatch),
+  `received_at_ms` (kept across attempts) and `attempts` (retries that did not
+  place it). Every number is `TEXT`, like the neighbouring tables, and is parsed
+  back at hydration. `PersistentDeferredPdu` and
+  `upsert_deferred_pdu`/`remove_deferred_pdu`/`list_deferred_pdus`/
+  `deferred_pdus_for_room`
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  are implemented for both SQLite and PostgreSQL, hydrated on backend open. The
+  store is bounded: 100 rows per room, 1000 in total, 16 MiB of `pdu_json` in
+  total (`max_deferred_pdus_per_room`, `max_deferred_pdus_total`,
+  `max_deferred_pdu_json_bytes`); a new row that would exceed one is refused
+  (`DeferredPduUpsert::refused_full`) while an update of a held row never is.
+  Rows older than 24 hours (`max_deferred_pdu_age`) or retried 10 times
+  (`max_deferred_pdu_attempts`) are dropped by
+  `homeserver::retry_deferred_pdus` and audited. The next-attempt time is not
+  stored (`HomeserverRuntime::deferred_pdu_next_attempt`, in memory): after a
+  restart every retained PDU is due at once. Main only: the table is not in
+  `federation_worker_table_allowlist`, because the worker relays every PDU to
+  main and never reads or writes it.
 - `users.deactivated` column (schema version `14`, migration
   `migrations/014_user_deactivation.sql`) is a `TEXT NOT NULL DEFAULT
   'false'` column added to the existing `users` table (no new table), set by
@@ -574,7 +612,9 @@ value. Test fixtures that do not exercise persistence select it through
   `federation::PduIngestionStatus::missing_prev_state` — not a rejection;
   the transaction it arrived in still returns 200 per spec, since a
   delayed-but-legitimate PDU is indistinguishable from one whose history we
-  have not fetched yet); the after-state group, forward-extremity update,
+  have not fetched yet. Since R03 (ADR-0165) the PDU is also retained in
+  `deferred_pdus` and the status is `deferred`; `missing_prev_state` is what
+  is left when nothing could be retained); the after-state group, forward-extremity update,
   and current-state recomputation happen after the event is durably stored,
   logged-but-non-fatal on failure (the same trade-off the pre-existing
   membership-persistence step in the same function already makes for the
@@ -752,6 +792,24 @@ value. Test fixtures that do not exercise persistence select it through
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
   and `PUT /sendToDevice` requests.
+- `PUT /sendToDevice` writes its local `to_device_messages` rows and its
+  `client_txn_ids` row in ONE backend transaction
+  (`database::enqueue_to_device_messages_with_client_txn`, R02, ADR-0164). The
+  per-recipient age and count evictions (CSAZ-10, ADR-0117) are part of that
+  transaction: `enqueue_to_device_message` and the batched function share one
+  prepare step that builds the DELETE/INSERT statements without touching
+  memory, and the in-memory mirror is updated only after the commit succeeds.
+  A failed commit leaves the store unchanged and the transaction unrecorded, so
+  the handler answers `500 M_UNKNOWN` and a retry with the same transaction ID
+  is processed rather than replayed. Stream ids are allocated before the commit
+  (`allocate_sync_stream_id` persists the watermark itself); a failed commit
+  skips them, it never reuses them. A request with no local recipient records
+  the transaction alone through the same function.
+- An inbound `m.direct_to_device` EDU writes all of its `to_device_messages` rows in ONE backend
+  transaction (`database::enqueue_to_device_messages`, ADR-0166), through the same prepare/apply
+  steps and evictions as the single-message and `/sendToDevice` writers. A failed commit stores
+  none of the EDU, and the sink records its `(origin, sender, message_id)` in the in-memory
+  replay window only after the commit, so the origin's resend is delivered in full.
 - `database::reload_room(store, room_id)` re-reads a single room's rows (room,
   membership, invites, events, state, and the event-relation tables scoped to
   that room's events) from the backing database and replaces this store's
@@ -1106,7 +1164,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (43 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (44 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1116,7 +1174,7 @@ migration's table cannot go unclassified:
   `room_account_data`, `to_device_messages`, `device_list_changes`,
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
-  `login_tokens`, `appservice_txn_cursor`, plus six tables `schema.cpp`
+  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from

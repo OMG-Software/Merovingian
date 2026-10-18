@@ -54,7 +54,7 @@ header-only public boundary.
 
 | Module | Purpose |
 |--------|---------|
-| `appservice` | Application Service API (Matrix v1.19): registration-file parsing, namespace matching/exclusivity, `AppserviceRegistry`, the internal as_token-masquerade token |
+| `appservice` | Application Service API (Matrix v1.19): registration-file parsing, namespace matching/exclusivity, `AppserviceRegistry`, the internal as_token-masquerade token. Outbound transactions are queued in the `appservice_outbox` table by the request path and sent by one drainer thread owned by `homeserver` (ADR-0163) |
 | `auth` | Sessions, tokens, key API |
 | `bootstrap` | Public bootstrap boundary for startup integration |
 | `canonicaljson` | Matrix canonical JSON parser, serializer, signing |

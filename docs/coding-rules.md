@@ -32,6 +32,11 @@ Rules:
   every read and mutation of runtime state outside it. The scope releases every
   recursion level the calling thread holds, so it is correct whether or not a
   caller further up the stack also holds the mutex.
+- Do not use `std::jthread`, `std::stop_token` or `std::stop_source`, in production code or
+  tests. The libc++ of FreeBSD and OpenBSD does not provide them, so they break the BSD builds.
+  Use `std::thread` and join it from RAII: `homeserver::PeriodicJob` for a background job,
+  `homeserver::StopFlag` for a stop request a job polls, and `tests/support/joining_threads.hpp`
+  in tests (ADR-0167).
 
 
 ## Tests

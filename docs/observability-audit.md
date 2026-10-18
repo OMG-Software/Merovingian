@@ -126,6 +126,22 @@ retain their separate accounting. This event uses the same bounded in-memory
 ring, not durable audit storage. See
 [ADR-0133](adr/0133-preserve-local-key-admission-denial-separately-from-remote-failure.md).
 
+`federation.pdu_deferred` records an inbound PDU that `ingest_pdu_event` could not yet
+place and kept for a retry (R03, [ADR-0165](adr/0165-retain-unresolved-federation-pdus-and-retry-them.md));
+its actor is the origin, its target the request route and its reason the ingestion
+reason. It sits in the same bounded in-memory ring as the other `federation.*` events, as
+does `federation.pdu_missing_prev_state`, which now means the PDU was *not* kept and the
+sender was told so in the `/send` response. The `transaction.accepted` diagnostic carries
+`pdu_deferred` beside `pdu_missing_prev`.
+
+`federation.pdu_deferral_expired` records a retained PDU the retry job gave up on: 10
+retries did not place it, it was kept for over 24 hours, or its stored text no longer
+parsed as the event it was kept for. Unlike the other `federation.*` events it is written
+through `append_local_audit()` (policy category) by the retry job, so it reaches the
+persistent `audit_log` and `GET /_merovingian/admin/audit`. Its actor is the origin, its
+target the event ID and its reason which limit was hit. Expiry also logs a warning with
+the room ID and attempt count.
+
 `audit_federation()` (`src/federation/inbound_request.cpp`) appends every
 `federation.*` audit event — `federation.accepted`, `federation.rejected`,
 `federation.rate_limited` (also emitted when a source address exhausts its bad-X-Matrix-signature budget, ADR-0081), `federation.duplicate`,

@@ -26,6 +26,7 @@
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/deferred_pdu_retry.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -1273,7 +1274,7 @@ namespace
         // The per-message "type" field is empty: the EDU cannot be stored with a
         // valid message_type, so it must not be reported as accepted.
         bool invalid_message_type{false};
-        // (origin, message_id) was already seen inside the replay window: whole EDU dropped.
+        // (origin, sender, message_id) was already recorded in the replay window: whole EDU dropped.
         bool replay{false};
         // Target entries skipped because the user is not a local, active account.
         std::size_t skipped_non_local{0U};
@@ -1361,6 +1362,14 @@ namespace
     // "used for idempotence"; the target user IDs are named by the sender and
     // only ours may be delivered to (audit FED-3).
     //
+    // The EDU is stored all-or-nothing: every message is built first, then
+    // committed in one backend transaction (database::enqueue_to_device_messages),
+    // and its (origin, sender, message_id) is recorded in the replay window only
+    // after that commit. A failed commit therefore stores nothing and leaves the
+    // ID unrecorded, so the origin's resend is delivered in full rather than
+    // dropped as a replay (ADR-0166). The whole check, store and record sequence
+    // runs under runtime.mutex.
+    //
     // The replay window lives in memory only (federation::EduIdempotenceWindow):
     // a restart forgets it, so a replay straddling a restart is delivered again.
     // Persisting it would need a migration and is not required for a
@@ -1402,13 +1411,21 @@ namespace
             result.invalid_message_id = true;
             return result;
         }
-        if (!runtime.inbound_to_device_window.first_sighting(origin, *message_id,
-                                                             federation::EduIdempotenceWindow::Clock::now()))
+        // The check, the store and the record are one step against the replay
+        // window: another thread's copy of the same EDU must not slip between
+        // them. The mutex is recursive, so this is harmless when the caller
+        // already holds it.
+        auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+        auto const now = federation::EduIdempotenceWindow::Clock::now();
+        if (runtime.inbound_to_device_window.seen(origin, *sender, *message_id, now))
         {
             result.replay = true;
             return result;
         }
 
+        // Build every message first. Nothing is stored (and so nothing can be
+        // left half stored) until the whole EDU has been validated and capped.
+        auto pending = std::vector<database::PersistentToDeviceMessage>{};
         for (auto const& user_entry : *messages)
         {
             auto const* device_map = std::get_if<canonicaljson::Object>(&user_entry.value->storage());
@@ -1444,7 +1461,7 @@ namespace
                     if (result.targeted >= max_inbound_direct_to_device_deliveries)
                     {
                         result.truncated = true;
-                        return result;
+                        break;
                     }
                     ++result.targeted;
                     auto message = database::PersistentToDeviceMessage{};
@@ -1453,12 +1470,27 @@ namespace
                     message.target_device_id = device_id;
                     message.message_type = *message_type;
                     message.content_json = serialized.output;
-                    if (database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message)))
-                    {
-                        ++result.stored;
-                    }
+                    pending.push_back(std::move(message));
+                }
+                if (result.truncated)
+                {
+                    break;
                 }
             }
+            if (result.truncated)
+            {
+                break;
+            }
+        }
+
+        // One backend transaction for the whole EDU: all of it is stored or none
+        // of it is. The ID is remembered only after the commit, so when the commit
+        // fails the origin's resend is processed in full instead of being dropped
+        // as a replay (an EDU with nothing targeted has nothing to fail).
+        if (database::enqueue_to_device_messages(runtime.database.persistent_store, std::move(pending)))
+        {
+            result.stored = result.targeted;
+            runtime.inbound_to_device_window.record(origin, *sender, *message_id, now);
         }
         return result;
     }
@@ -4190,6 +4222,10 @@ namespace
 
 } // namespace
 
+// The body of ingest_pdu_event; the public function below adds what must happen
+// after this one has released its locks. File-local, but deliberately `static`
+// rather than inside the anonymous namespace above: that would re-indent the
+// whole function and bury the real change.
 // Signature verification (receipt step 2) is the caller's job, done before
 // this function takes any lock because resolving a key may go to the network:
 // federation::authorize_federation_pdu() in inbound_request.cpp on the
@@ -4197,7 +4233,8 @@ namespace
 // main's own admitted key-only helper, for a PDU relayed by a federation worker
 // (ADR-0071). This function re-checks authorization and content-hash
 // integrity.
-auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+[[nodiscard]] static auto ingest_pdu_event_locked(HomeserverRuntime& runtime,
+                                                  federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
 {
     auto const room_id = envelope.room_id;
@@ -4270,7 +4307,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
                     return pdu.event_id == envelope.event_id;
                 }))
             {
-                return {federation::PduIngestionStatus::missing_prev_state, "PDU already deferred until join commits"};
+                return {federation::PduIngestionStatus::deferred, "PDU already deferred until join commits"};
             }
             auto const max_pdus = static_cast<std::size_t>(runtime.federation.config.pending_join_max_pdus);
             auto const max_bytes = runtime.federation.config.pending_join_max_bytes;
@@ -4284,7 +4321,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
             auto const bytes = deferred.json.size();
             queue.pdus.push_back(std::move(deferred));
             queue.json_bytes += bytes;
-            return {federation::PduIngestionStatus::missing_prev_state, "PDU deferred until outbound join commits"};
+            return {federation::PduIngestionStatus::deferred, "PDU deferred until outbound join commits"};
         }
         stream_ordering = allocate_stream_ordering(runtime.database);
         sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -4299,6 +4336,21 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // in-memory PersistentStore / LocalDatabase vectors; it is released only
     // for the backend commit so independent rooms can commit in parallel.
     auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+
+    // R03 (ADR-0165): a PDU this server cannot yet place is kept, as it would
+    // have been stored (`stored_json`, which is the redacted copy after a
+    // content-hash mismatch), and retried by homeserver::retry_deferred_pdus
+    // when the history it needs arrives. Called with runtime.mutex held, as at
+    // every return below that uses it. If nothing can be kept (no origin to
+    // fetch from, or the retained set is full) the status stays
+    // missing_prev_state, which /send reports to the sender as an error.
+    auto const defer_unresolved = [&](std::string reason) -> federation::PduIngestionResult {
+        if (defer_unresolved_pdu(runtime, envelope, stored_json))
+        {
+            return {federation::PduIngestionStatus::deferred, reason + "; retained for retry"};
+        }
+        return {federation::PduIngestionStatus::missing_prev_state, std::move(reason)};
+    };
 
     // ADR-0064 phase C: if this PDU names prev_events or auth_events we do not
     // have, release both locks and fetch the gap from the sending server. A
@@ -4347,7 +4399,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         auto [missing_auth, missing_prev] = collect_missing_pdu_references(runtime.database.persistent_store, envelope);
         if (!missing_auth.empty() || !missing_prev.empty())
         {
-            return {federation::PduIngestionStatus::missing_prev_state, "missing PDU references remain after backfill"};
+            return defer_unresolved("missing PDU references remain after backfill");
         }
     }
 
@@ -4389,8 +4441,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         envelope.state_key, third_party_invite_token, envelope.auth_event_ids);
     if (selection_check == AuthEventsSelectionCheck::unresolvable)
     {
-        return {federation::PduIngestionStatus::missing_prev_state,
-                "an auth_event this PDU names has no recorded event; awaiting backfill"};
+        return defer_unresolved("an auth_event this PDU names has no recorded event; awaiting backfill");
     }
     if (selection_check == AuthEventsSelectionCheck::disallowed)
     {
@@ -4440,8 +4491,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
                              state_resolution_limits(runtime.config.security().federation.state_resolution));
     if (!state_before.ok)
     {
-        return {federation::PduIngestionStatus::missing_prev_state,
-                "no recorded state group for a prev_event; awaiting backfill"};
+        return defer_unresolved("no recorded state group for a prev_event; awaiting backfill");
     }
 
     // Step 5: auth against the state immediately before the event.
@@ -4625,6 +4675,23 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         }
     }
 
+    return result;
+}
+
+auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+    -> federation::PduIngestionResult
+{
+    auto result = ingest_pdu_event_locked(runtime, envelope);
+    // R03: every status below stored the event, so a retained PDU that names it
+    // may now be placeable. ingest_pdu_event_locked has returned, so its room
+    // stripe and runtime lock are released: waking the retry job here holds no
+    // lock the job needs.
+    if (result.status == federation::PduIngestionStatus::accepted ||
+        result.status == federation::PduIngestionStatus::soft_failed ||
+        result.status == federation::PduIngestionStatus::rejected_auth)
+    {
+        wake_deferred_pdus_waiting_for(runtime, envelope.room_id, envelope.event_id);
+    }
     return result;
 }
 

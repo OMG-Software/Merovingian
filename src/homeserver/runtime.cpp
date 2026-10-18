@@ -413,6 +413,8 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , cached_discovery(std::move(other.cached_discovery))
     , test_frozen_event_clock_ms(other.test_frozen_event_clock_ms)
     , appservices(std::move(other.appservices))
+    , appservice_delivery_wake(std::move(other.appservice_delivery_wake))
+    , appservice_delivery_backoff(std::move(other.appservice_delivery_backoff))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
@@ -426,6 +428,8 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , client_outbound_budget(std::move(other.client_outbound_budget))
     , client_outbound_proxy_policy(other.client_outbound_proxy_policy)
     , argon2id_admission(std::move(other.argon2id_admission))
+    , deferred_pdu_next_attempt(std::move(other.deferred_pdu_next_attempt))
+    , deferred_pdu_retry_wake(std::move(other.deferred_pdu_retry_wake))
     , orphan_futures_(std::move(other.orphan_futures_))
     , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
     , push_delivery_in_flight_by_user_(std::move(other.push_delivery_in_flight_by_user_))
@@ -461,6 +465,8 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     cached_discovery = std::move(other.cached_discovery);
     test_frozen_event_clock_ms = other.test_frozen_event_clock_ms;
     appservices = std::move(other.appservices);
+    appservice_delivery_wake = std::move(other.appservice_delivery_wake);
+    appservice_delivery_backoff = std::move(other.appservice_delivery_backoff);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);
@@ -475,6 +481,8 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     client_outbound_budget = std::move(other.client_outbound_budget);
     client_outbound_proxy_policy = other.client_outbound_proxy_policy;
     argon2id_admission = std::move(other.argon2id_admission);
+    deferred_pdu_next_attempt = std::move(other.deferred_pdu_next_attempt);
+    deferred_pdu_retry_wake = std::move(other.deferred_pdu_retry_wake);
     orphan_futures_ = std::move(other.orphan_futures_);
     push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
     push_delivery_in_flight_by_user_ = std::move(other.push_delivery_in_flight_by_user_);

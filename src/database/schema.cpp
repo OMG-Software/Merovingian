@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{21U};
+    constexpr auto schema_version = std::uint32_t{23U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -67,6 +67,18 @@ namespace
         std::string_view{"forward_extremities"},
     };
 
+    // v22 (022_appservice_outbox.sql, audit R01): the Application Service API
+    // transaction queue. Main process only (not in the federation worker allowlist).
+    constexpr auto v22_table_names = std::array{
+        std::string_view{"appservice_outbox"},
+    };
+
+    // v23 (023_deferred_pdus.sql, R03, ADR-0165): federation PDUs main retains
+    // for a retry. Main-process only; not in the federation worker allowlist.
+    constexpr auto v23_table_names = std::array{
+        std::string_view{"deferred_pdus"},
+    };
+
     [[nodiscard]] auto table_is_post_v1(std::string_view table_name) noexcept -> bool
     {
         return std::ranges::find(v2_table_names, table_name) != v2_table_names.end() ||
@@ -78,13 +90,16 @@ namespace
                std::ranges::find(v10_table_names, table_name) != v10_table_names.end() ||
                std::ranges::find(v12_table_names, table_name) != v12_table_names.end() ||
                std::ranges::find(v13_table_names, table_name) != v13_table_names.end() ||
-               std::ranges::find(v15_table_names, table_name) != v15_table_names.end();
+               std::ranges::find(v15_table_names, table_name) != v15_table_names.end() ||
+               std::ranges::find(v22_table_names, table_name) != v22_table_names.end() ||
+               std::ranges::find(v23_table_names, table_name) != v23_table_names.end();
     }
 
     constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size() + v4_table_names.size() +
                                          v6_table_names.size() + v8_table_names.size() + v9_table_names.size() +
                                          v10_table_names.size() + v12_table_names.size() + v13_table_names.size() +
-                                         v15_table_names.size();
+                                         v15_table_names.size() + v22_table_names.size() +
+                                         v23_table_names.size();
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -257,6 +272,17 @@ namespace
         // v15 (ADR-0064): a room's current forward extremities (DAG leaves).
         SchemaTableDefinition{"forward_extremities",
                               "room_id TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (room_id, event_id)"                                                          },
+        // v22 (audit R01): one row per event queued for an appservice. stream_ordering is TEXT like every
+        // other numeric column here (BoundValue is text); the store orders numerically in memory.
+        SchemaTableDefinition{"appservice_outbox",
+                              "appservice_id TEXT NOT NULL, stream_ordering TEXT NOT NULL, event_id TEXT NOT NULL, "
+                              "PRIMARY KEY (appservice_id, stream_ordering)"                                                                                            },
+        // v23 (R03, ADR-0165): a federation PDU main could not yet place and keeps
+        // for a retry. Numbers are TEXT like every other numeric column here.
+        SchemaTableDefinition{"deferred_pdus",
+                              "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, origin TEXT NOT NULL, "
+                              "pdu_json TEXT NOT NULL, received_at_ms TEXT NOT NULL DEFAULT '0', "
+                              "attempts TEXT NOT NULL DEFAULT '0'"                                                                                                      },
     };
 
 } // namespace

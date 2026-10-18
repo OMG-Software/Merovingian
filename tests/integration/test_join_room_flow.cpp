@@ -1132,7 +1132,7 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
                         auto const ordering = runtime.database.next_stream_ordering;
                         auto const sync = runtime.database.persistent_store.next_sync_stream_id;
                         deferred = runtime.federation.pdu_sink(pending);
-                        if (deferred.status == merovingian::federation::PduIngestionStatus::missing_prev_state &&
+                        if (deferred.status == merovingian::federation::PduIngestionStatus::deferred &&
                             runtime.pending_federated_joins.contains(room_id))
                         {
                             auto const initial_bytes = runtime.pending_federated_joins.at(room_id).json_bytes;
@@ -1221,7 +1221,7 @@ SCENARIO("Outbound joins defer concurrent PDUs until committed and discard them 
             server_thread.join();
             THEN("receipt is deferred without storage or stream allocation")
             {
-                CHECK(deferred.status == merovingian::federation::PduIngestionStatus::missing_prev_state);
+                CHECK(deferred.status == merovingian::federation::PduIngestionStatus::deferred);
                 CHECK(events_unchanged);
                 CHECK(ordering_unchanged);
                 CHECK(sync_unchanged);

@@ -221,6 +221,10 @@ namespace
         {
             result.status = federation::PduIngestionStatus::main_overloaded;
         }
+        else if (status_str == "deferred")
+        {
+            result.status = federation::PduIngestionStatus::deferred;
+        }
         else
         {
             result.status = federation::PduIngestionStatus::internal_error;

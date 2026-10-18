@@ -121,6 +121,55 @@ SCENARIO("Inbound ingestion parses a federation PDU into its envelope", "[federa
     }
 }
 
+SCENARIO("A retained PDU is rebuilt into the envelope it would have been ingested as",
+         "[federation][inbound-ingestion][pdu][r03]")
+{
+    GIVEN("the JSON of a PDU, the room version its room resolves to, and the server that sent it")
+    {
+        auto const pdu_json = build_minimal_pdu_json("!room1:example.org", "@alice:example.org", "m.room.message");
+        auto const original = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, "10");
+        REQUIRE(original.has_value());
+
+        WHEN("the envelope is rebuilt for a retry")
+        {
+            auto const rebuilt =
+                merovingian::federation::rebuild_inbound_pdu_envelope(pdu_json, "10", "remote.example.org");
+
+            THEN("it names the same event and room, and carries the origin to backfill from")
+            {
+                REQUIRE(rebuilt.has_value());
+                REQUIRE(rebuilt->event_id == original->event_id);
+                REQUIRE(rebuilt->room_id == original->room_id);
+                REQUIRE(rebuilt->room_version == "10");
+                REQUIRE(rebuilt->json == pdu_json);
+                REQUIRE(rebuilt->origin == "remote.example.org");
+            }
+        }
+
+        WHEN("the stored text is no longer a PDU")
+        {
+            auto const rebuilt =
+                merovingian::federation::rebuild_inbound_pdu_envelope("not json", "10", "remote.example.org");
+
+            THEN("there is no envelope")
+            {
+                REQUIRE_FALSE(rebuilt.has_value());
+            }
+        }
+
+        WHEN("the room version is not one this server knows")
+        {
+            auto const rebuilt = merovingian::federation::rebuild_inbound_pdu_envelope(pdu_json, "no-such-version",
+                                                                                       "remote.example.org");
+
+            THEN("there is no envelope")
+            {
+                REQUIRE_FALSE(rebuilt.has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound ingestion rejects non-JSON PDUs", "[federation][inbound-ingestion][pdu]")
 {
     GIVEN("a comma-delimited legacy PDU encoding")

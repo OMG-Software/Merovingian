@@ -760,6 +760,56 @@ struct PersistentAppserviceTxnCursor final
     std::uint64_t pending_stream_ordering{0U};
 };
 
+// One event queued for delivery to one appservice (audit R01). The
+// transaction queue the Application Service API requires: a row is written
+// when the event is dispatched (under the runtime lock, interest decided at
+// that moment) and deleted in the same backend transaction that records its
+// delivery on the cursor above.
+//
+// The primary key is (appservice_id, stream_ordering) and is the ONLY dedupe.
+// There is deliberately no "already delivered" threshold: stream orderings are
+// allocated before an event commits and events in different rooms commit out
+// of order, so a lower ordering can legitimately arrive after a higher one was
+// delivered. The in-memory vector is kept sorted by (appservice_id,
+// stream_ordering) numerically; the column is TEXT like every other numeric
+// column, so the backend's own ordering is not relied on.
+struct PersistentAppserviceOutboxEntry final
+{
+    std::string appservice_id{};
+    std::uint64_t stream_ordering{0U};
+    std::string event_id{};
+};
+
+// A federation PDU this server could not yet place in the room's event graph
+// (a prev_event, auth_event or the state before it is unknown) and has kept,
+// as received, to try again (R03, ADR-0165). `pdu_json` is the exact envelope
+// ingestion would have stored, which may be the redacted form after a
+// content-hash mismatch. Signatures were verified before the row was written;
+// a retry re-enters ingestion after that step. `received_at_ms` is wall-clock
+// milliseconds and is kept across attempts; `attempts` counts the retries that
+// have not placed the PDU. Written and read by the main process only: the
+// federation worker relays every PDU to main and never holds this table.
+struct PersistentDeferredPdu final
+{
+    std::string event_id{};
+    std::string room_id{};
+    std::string origin{};
+    std::string pdu_json{};
+    std::int64_t received_at_ms{0};
+    std::uint32_t attempts{0U};
+};
+
+// Bounds on the retained set (R03, ADR-0165). A remote server chooses what
+// reaches this table, so each limit is fixed rather than configurable and a
+// PDU that would exceed one is not retained.
+inline constexpr std::size_t max_deferred_pdus_per_room = 100U;
+inline constexpr std::size_t max_deferred_pdus_total = 1000U;
+inline constexpr std::size_t max_deferred_pdu_json_bytes = std::size_t{16U} * 1024U * 1024U;
+// A retained PDU is dropped once it is this old, or after this many retries
+// that did not place it, whichever comes first.
+inline constexpr std::chrono::hours max_deferred_pdu_age{24};
+inline constexpr std::uint32_t max_deferred_pdu_attempts = 10U;
+
 // A state group (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-
 // delta-state-groups.md): the room state after some event, stored either as
 // a full snapshot (`parent_state_group_id == nullopt`, `delta_depth == 0`)
@@ -895,6 +945,8 @@ struct PersistentStore final
         , openid_tokens{other.openid_tokens}
         , login_tokens{other.login_tokens}
         , appservice_txn_cursors{other.appservice_txn_cursors}
+        , appservice_outbox{other.appservice_outbox}
+        , deferred_pdus{other.deferred_pdus}
         , state_groups{other.state_groups}
         , state_group_state{other.state_group_state}
         , event_state_groups{other.event_state_groups}
@@ -975,6 +1027,8 @@ struct PersistentStore final
         openid_tokens = other.openid_tokens;
         login_tokens = other.login_tokens;
         appservice_txn_cursors = other.appservice_txn_cursors;
+        appservice_outbox = other.appservice_outbox;
+        deferred_pdus = other.deferred_pdus;
         state_groups = other.state_groups;
         state_group_state = other.state_group_state;
         event_state_groups = other.event_state_groups;
@@ -1076,6 +1130,13 @@ struct PersistentStore final
     std::vector<PersistentOpenidToken> openid_tokens{};
     std::vector<PersistentLoginToken> login_tokens{};
     std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
+    // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
+    // PersistentAppserviceOutboxEntry.
+    std::vector<PersistentAppserviceOutboxEntry> appservice_outbox{};
+    // Federation PDUs retained for a retry (R03, ADR-0165). Bounded by the
+    // max_deferred_pdu* constants; write through upsert_deferred_pdu and
+    // remove_deferred_pdu so the bounds and the database row stay in step.
+    std::vector<PersistentDeferredPdu> deferred_pdus{};
     std::vector<PersistentStateGroup> state_groups{};
     std::vector<PersistentStateGroupStateEntry> state_group_state{};
     std::vector<PersistentEventStateGroup> event_state_groups{};
@@ -1555,6 +1616,27 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
+// Queues every message, with the per-recipient age and count evictions of
+// `enqueue_to_device_message`, in ONE backend transaction: either all of them
+// are durable and mirrored in memory, or none are and the store is unchanged
+// (stream ids are consumed, never reused). An inbound `m.direct_to_device` EDU
+// uses it so a failed commit never leaves the EDU partly stored. An empty
+// `messages` writes nothing and returns true; an invalid message returns false
+// with nothing written.
+[[nodiscard]] auto enqueue_to_device_messages(PersistentStore& store, std::vector<PersistentToDeviceMessage> messages)
+    -> bool;
+// R02: queues every message (with the per-recipient age and count evictions of
+// `enqueue_to_device_message`) and records `record` as the client's
+// send-to-device transaction in ONE backend transaction. Either all of it is
+// durable and mirrored in memory, or none of it is and the store is unchanged
+// (stream ids are consumed, never reused), so a failed request leaves the
+// client free to retry the same transaction ID. An empty `messages` records the
+// transaction alone. Returns true without writing when the transaction is
+// already recorded: the request that recorded it committed its messages with
+// it. Returns false for an invalid message or record, or a failed commit.
+[[nodiscard]] auto enqueue_to_device_messages_with_client_txn(PersistentStore& store,
+                                                              std::vector<PersistentToDeviceMessage> messages,
+                                                              PersistentClientTxnRecord record) -> bool;
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
                                             std::string_view device_id, std::uint64_t since_stream_id,
                                             std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;
@@ -1664,6 +1746,55 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 // Callers pass the complete desired state; this is not an incremental
 // update.
 [[nodiscard]] auto store_appservice_txn_cursor(PersistentStore& store, PersistentAppserviceTxnCursor cursor) -> bool;
+// Queues one event for one appservice. Idempotent on (appservice_id,
+// stream_ordering): queueing a row that is already queued succeeds and changes
+// nothing. False for an empty appservice_id or event_id, or a backend write
+// failure (nothing is queued in memory then).
+[[nodiscard]] auto enqueue_appservice_event(PersistentStore& store, PersistentAppserviceOutboxEntry entry) -> bool;
+// The queued row with the lowest stream_ordering for `appservice_id`, or
+// nullopt when its queue is empty.
+[[nodiscard]] auto find_first_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id)
+    -> std::optional<PersistentAppserviceOutboxEntry>;
+// Puts the in-memory outbox back in (appservice_id, stream_ordering) order, the
+// order every outbox function relies on. The backend loaders call it after
+// hydrating the rows: ORDER BY on the TEXT columns is neither numeric nor,
+// on PostgreSQL, byte-wise.
+auto sort_appservice_outbox(PersistentStore& store) -> void;
+// Records that the transaction carrying stream_ordering `delivered_stream_
+// ordering` has been dealt with (acknowledged, vacuously acknowledged by a
+// url:null appservice, or dropped as unreadable). In ONE backend transaction:
+// clears the cursor's pending transaction, raises its delivered high-water mark
+// to max(current, delivered_stream_ordering), and deletes the outbox row for
+// that ordering if there is one. The in-memory mirrors change only after the
+// commit succeeds, so a crash or a failure can never leave the cursor
+// advanced with the row still queued (a duplicate) or the row gone with the
+// cursor still pending (a stuck transaction).
+[[nodiscard]] auto complete_appservice_delivery(PersistentStore& store, std::string_view appservice_id,
+                                                std::uint64_t delivered_stream_ordering) -> bool;
+// What upsert_deferred_pdu did.
+enum class DeferredPduUpsert : std::uint8_t
+{
+    inserted,
+    // The event was already retained: its attempts (and origin) were replaced,
+    // its received_at_ms and PDU JSON were kept.
+    updated,
+    // A new row would exceed a bound (max_deferred_pdus_per_room,
+    // max_deferred_pdus_total or max_deferred_pdu_json_bytes). Nothing was
+    // written. An update of a row already held never hits a bound.
+    refused_full,
+    persistence_failed,
+};
+
+// Retains `pdu`, or updates the row for its event_id. The row is committed to
+// the backend before the in-memory mirror changes.
+[[nodiscard]] auto upsert_deferred_pdu(PersistentStore& store, PersistentDeferredPdu pdu) -> DeferredPduUpsert;
+// Removes the row for `event_id`. False if there was none or the delete could
+// not be committed.
+[[nodiscard]] auto remove_deferred_pdu(PersistentStore& store, std::string_view event_id) -> bool;
+// Copies of the retained PDUs: every one, or one room's.
+[[nodiscard]] auto list_deferred_pdus(PersistentStore const& store) -> std::vector<PersistentDeferredPdu>;
+[[nodiscard]] auto deferred_pdus_for_room(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<PersistentDeferredPdu>;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

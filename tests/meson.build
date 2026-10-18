@@ -135,6 +135,7 @@ shell = find_program('sh')
       'unit/test_redaction_validity.cpp',
       'unit/test_room_power.cpp',
       'unit/test_appservice_client.cpp',
+      'unit/test_periodic_job.cpp',
       'unit/test_appservice_masquerade_token.cpp',
       'unit/test_appservice_registration.cpp',
       'unit/test_auth.cpp',
@@ -431,6 +432,7 @@ shell = find_program('sh')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
+      'integration/test_appservice_delivery_flow.cpp',
       'integration/test_appservice_thirdparty_flow.cpp',
       'integration/test_appservice_query_hooks_flow.cpp',
       'integration/test_client_outbound_proxy_flow.cpp',
