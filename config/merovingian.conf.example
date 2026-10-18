@@ -321,8 +321,8 @@ federation.worker.request_timeout_seconds=30
 federation.worker.ipc_max_in_flight_requests=256
 # Frames (and bytes) one worker may queue for main's dispatch thread before its
 # channel is closed and the worker restarted (CRY-2). 0 disables (not recommended).
-# federation.worker.ipc_max_dispatch_queue_count=1024
-# federation.worker.ipc_max_dispatch_queue_bytes=134217728
+federation.worker.ipc_max_dispatch_queue_count=1024
+federation.worker.ipc_max_dispatch_queue_bytes=134217728
 federation.worker.shards=2
 federation.worker.apply_hardening=true
 # federation.worker.binary=
@@ -386,18 +386,18 @@ security.media.max_upload_size=50MiB
 # also bounds memory (about 400 MB at 1,000,000). Sizes take B, KiB, MiB or
 # GiB; empty (or 0 for max_records) means no limit. Cached remote media is not
 # charged here; it has its own budget below.
-# security.media.max_total_size=250GiB
-# security.media.max_size_per_user=10GiB
-# security.media.max_records=1000000
+security.media.max_total_size=250GiB
+security.media.max_size_per_user=10GiB
+security.media.max_records=1000000
 # Remote media admitted within the TTL is served from the stored copy without
 # contacting the origin again, also after a restart. When max_entries is
 # reached the least recently used remote file is deleted. max_entries=0
 # disables the cache and keeps only the latest fetched remote file.
 # The remote cache has its own budget in files and bytes; the least recently
 # used remote files are deleted to stay within both.
-# security.media.remote_media_cache_ttl_seconds=86400
-# security.media.remote_media_cache_max_entries=50000
-# security.media.remote_media_cache_max_size=25GiB
+security.media.remote_media_cache_ttl_seconds=86400
+security.media.remote_media_cache_max_entries=50000
+security.media.remote_media_cache_max_size=25GiB
 # Generated thumbnails kept in memory (empty or 0 disables), and thumbnail
 # decodes one requester may run at once (over it: 429).
 # security.media.thumbnail_cache_size=64MiB
@@ -447,7 +447,7 @@ security.media.block_private_ip_fetches=true
 # the media fetch pool (server.http.media_fetch_*). remote_fetch_timeout is
 # parsed and validated, but the live fetch path uses a fixed 30 s deadline.
 security.media.remote_fetch_enabled=true
-# security.media.remote_fetch_timeout=30s
+security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true
 
 # Trust and safety policy transport
@@ -535,7 +535,7 @@ security.logging.structured=true
 # key material used to encrypt the Ed25519 signing secret before it is stored
 # in the database. When empty, fresh signing keys cannot be created; legacy
 # plaintext keys may still be loaded for migration.
-#security.secrets.master_key_file=/etc/merovingian/master-key
+security.secrets.master_key_file=/etc/merovingian/master-key
 
 # Client-server rate limits
 # Wall-clock per-IP and per-user caps keyed by normalized request target prefix.
@@ -559,16 +559,16 @@ client_rate_limits.default_per_ip=600/60s
 #   federation      inbound federation requests
 #   admin           operator-only endpoints
 #   generic         everything else
-#client_rate_limits.tier.auth_sensitive=20/60s
-#client_rate_limits.tier.media=120/60s
-#client_rate_limits.tier.sync=3000/60s
-#client_rate_limits.tier.federation=3000/60s
-#client_rate_limits.tier.admin=30/60s
-#client_rate_limits.tier.generic=600/60s
+client_rate_limits.tier.auth_sensitive=20/60s
+client_rate_limits.tier.media=120/60s
+client_rate_limits.tier.sync=3000/60s
+client_rate_limits.tier.federation=3000/60s
+client_rate_limits.tier.admin=30/60s
+client_rate_limits.tier.generic=600/60s
 # Thumbnail requests have a built-in 240/60s refinement. Raise only these
 # prefixes if clients still receive 429 responses during room rendering:
-#client_rate_limits.per_ip./_matrix/client/v1/media/thumbnail=480/60s
-#client_rate_limits.per_ip./_matrix/media/v3/thumbnail=480/60s
+client_rate_limits.per_ip./_matrix/client/v1/media/thumbnail=480/60s
+client_rate_limits.per_ip./_matrix/media/v3/thumbnail=480/60s
 
 # Per-module log level overrides
 # Each entry maps a logger name to a level (trace|debug|info|notice|
@@ -621,7 +621,7 @@ client_rate_limits.default_per_ip=600/60s
 # log_modules.transactions=info
 
 # All log module config
-log_modules.*=debug
+log_modules.*=info
 
 # Operational budgets (restart main and federation workers after changing).
 # Counts and bytes remain finite. Raise from observed demand, not user count alone.

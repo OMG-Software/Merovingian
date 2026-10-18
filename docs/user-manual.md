@@ -2478,7 +2478,7 @@ there is no separate media-blob directory to reconstruct. Include the private
 connection files, appservice registrations, registration token and TLS files
 referenced by the config, including any stored outside `/etc/merovingian`.
 Without the matching master key, encrypted signing secrets cannot be recovered.
-Preserve `server.server_name`, the signing key identity and the binary/package
+Preserve `server.name`, the signing key identity and the binary/package
 version with the backup. Protect recovery sets as secrets, encrypt off-host
 copies and restrict their access.
 
