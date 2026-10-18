@@ -1,3 +1,16 @@
+## 0.12.29
+
+- **DOCS:** reconcile security guarantees, master-key lock failure policy and its
+  superseded ADR, implemented endpoint status, runtime lock scopes and sync capacity
+  with the current implementation. No runtime security policy changes.
+- **DOCS:** correct application-service YAML registration support, autonomous delivery
+  retries, PostgreSQL migration-role enforcement, push budgets and rate-limit
+  defaults (including the stable sliding-sync generic-tier exception). Document
+  the SQLite worker's broader hydration and remaining signing-buffer lock limits.
+  Include `listeners.max_queued_connections` in the configuration example.
+- **DOCS:** add backend-specific backup and restore procedures with validation steps,
+  and align version-bump timing with the branch-creation rule.
+
 ## 0.12.28
 
 First wave of fixes for the 17 October 2026 Matrix v1.19 conformance audit

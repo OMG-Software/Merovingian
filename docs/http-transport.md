@@ -951,9 +951,10 @@ is answered.
 ## Request lock and blocking network calls
 
 Both request entry points — `handle_client_server_request` and
-`handle_local_http_request` — take `HomeserverRuntime::mutex` for the whole
-request. That single mutex also guards inbound federation handling, so anything
-holding it blocks every other client and every inbound `/send` transaction.
+`handle_local_http_request` — take `HomeserverRuntime::mutex` at entry and
+release it around blocking work. Inbound federation holds it for setup and narrower callbacks,
+not across the federation core or prepared database commits. Holding it still
+blocks other clients and federation operations that need those scopes.
 
 A synchronous outbound call made while holding it therefore stalls the whole
 process for the length of the remote's timeout. Two paths used to do exactly

@@ -679,8 +679,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **Never hold `HomeserverRuntime::mutex` across a blocking network call.** Wrap the call
   in a `homeserver::RuntimeLockRelease` scope (`homeserver/request_lock.hpp`) and keep every
   read and mutation of runtime state outside it.
-  Why: that one mutex serialises every client-server request and every inbound federation
-  transaction, so a network call held across it turns any remote server into a
+  Why: that mutex guards client-server request state and narrower inbound-federation
+  setup/callback scopes, so a network call held across it turns any remote server into a
   denial-of-service lever — accepting a TCP connection and then never answering is enough
   to halt the whole homeserver for the length of the timeout, and both a `/keys/query`
   naming a user on the attacker's server and any media reference pointing at it reach that

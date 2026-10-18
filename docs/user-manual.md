@@ -746,7 +746,9 @@ that set until the process runs out of descriptors or memory. Past the cap a
 new connection is closed immediately, which sheds load in the one way the
 client can observe and retry. Raise it if legitimate bursts are being refused;
 lower it to shed load sooner under a smaller memory budget. The long-poll
-`/sync` pool's queue uses the same bound. Restart required.
+`/sync` pool's queue uses the same bound. The reload plan classifies this setting
+as reloadable, though the live reload control path is not yet wired; restart the
+server to apply a changed value today.
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
 `localhost`, `::1`, or `[::1]`) **and** declare `reverse_proxy=true`, which is
@@ -1170,7 +1172,7 @@ exclusivity) is inert.
 
 | Key | Default | When to change |
 |---|---|---|
-| `appservice.registration_files` | (empty) | Comma-separated list of paths to appservice registration documents. Each is parsed as JSON (a strict subset of the YAML the spec describes — anchors, comments, and unquoted scalars are not supported); see a real bridge's own documentation for its registration file's required `as_token`/`hs_token`/`sender_localpart`/`namespaces` fields, or the example in `docs/matrix-v1.19-spec/application-service-api.md#registration`. **Requires restart** — the registry is parsed once at startup and never re-read on `SIGHUP`. |
+| `appservice.registration_files` | (empty) | Comma-separated list of paths to appservice registration documents. Each file is first parsed as a bounded block-style YAML subset; if that fails, JSON is tried as a fallback. Comments and plain (unquoted) scalars are supported. Anchors, aliases, tags, block scalars, tabs, document markers, and non-empty flow collections are unsupported. See a real bridge's documentation for its required `as_token`/`hs_token`/`sender_localpart`/`namespaces` fields, or the example in `docs/matrix-v1.19-spec/application-service-api.md#registration`. **Requires restart** — the registry is parsed once at startup and never re-read on `SIGHUP`. |
 
 A registration file with a duplicate `id` or `as_token` against another
 configured registration is rejected — per spec this MUST be unique — and
@@ -1341,6 +1343,9 @@ Default route-aware policies applied when no override is configured:
 | Device and key APIs | 120/60s per IP |
 | Media uploads and downloads | 120/60s per IP |
 | Media thumbnails | 240/60s per IP |
+| Search (`/_matrix/client/v3/search`) | 20/60s per IP |
+| Classic sync (`/_matrix/client/v3/sync`) and unstable sliding-sync aliases | 3000/60s per IP |
+| Stable sliding sync (`/_matrix/client/v4/sync`) | 600/60s generic per-IP default |
 | Generic client APIs | 600/60s per IP fallback |
 
 Example overrides:
@@ -1365,9 +1370,11 @@ client_rate_limits.per_ip./_matrix/media/v3/thumbnail=480/60s
 Restart to apply, then review actual 429 responses and resource use before
 raising the cap further. These overrides preserve upload/download limits.
 A `client_rate_limits.tier.media` override would change all media operations.
-Sync has its own 90/minute per-IP bucket: investigate immediate sync responses,
-multiple devices behind one IP, or retry loops before tuning
-`client_rate_limits.tier.sync`. Hiding warnings does not prevent HTTP 429s.
+Classic sync and the unstable sliding-sync aliases have a 3000/60s per-IP
+default. The current classifier leaves stable `/v4/sync` in the generic tier
+(default 600/60s). Investigate immediate responses, shared IPs and retry loops
+before tuning the tier used by the route. Search has a separate 20/60s per-IP default.
+Hiding warnings does not prevent HTTP 429s.
 
 #### Per-module log levels — `log_modules.*`
 
@@ -1406,6 +1413,7 @@ only reports what *would* happen.
 | `security.federation.*` | Restart required |
 | `server.client_api.*` | Restart required |
 | `client_rate_limits.*` | Restart required |
+| `listeners.max_queued_connections` | Reloadable |
 | `log_modules.*` | Restart required |
 | `security.secrets.master_key_file` | Restart required |
 | `federation.worker.*` | Restart required |
@@ -2464,15 +2472,148 @@ dispatcher (`src/homeserver/local_http_router.cpp`,
 
 ### Backups
 
-Back up at least:
+Back up the database, the matching master key and all deployment configuration
+as one recovery set. Media bytes and delivery queues are in the database;
+there is no separate media-blob directory to reconstruct. Include the private
+connection files, appservice registrations, registration token and TLS files
+referenced by the config, including any stored outside `/etc/merovingian`.
+Without the matching master key, encrypted signing secrets cannot be recovered.
+Preserve `server.server_name`, the signing key identity and the binary/package
+version with the backup. Protect recovery sets as secrets, encrypt off-host
+copies and restrict their access.
 
-- The database (PostgreSQL dump or SQLite file).
-- `/etc/merovingian/master-key` (required to decrypt the signing secret stored
-  in the database).
-- `/etc/merovingian/merovingian.conf`.
+The examples below are POSIX commands for a **root shell** on a systemd
+installation using the default paths and a database named `merovingian`.
+Adapt service names, paths and database maintenance credentials first. For
+PostgreSQL these examples use the local OS `postgres` maintenance account;
+remote installations need an authorized backup/restore account and the same
+explicit TLS policy as their connection configuration. Do not put passwords
+on the command line or use the restricted federation-worker credential.
 
-Without the master key, the signing secret cannot be recovered from the
-database.
+Stop the server and confirm its workers have exited and there are no other
+writers. This gives a consistent recovery point across database state and
+configuration; copying a live SQLite file is not this procedure.
+
+```bash
+set -eu
+umask 077
+backup="/var/backups/merovingian/$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 0700 "$backup"
+systemctl stop merovingian
+cp -a /etc/merovingian "$backup/config"
+merovingian-server --version > "$backup/version.txt"
+```
+
+Copy any referenced files outside that config directory into the protected
+recovery set as well, recording their original paths. Then run the appropriate
+database step:
+
+**PostgreSQL:** install PostgreSQL client tools compatible with the server.
+`pg_dump` captures this database's objects, data, ownership and grants, but not
+cluster roles or passwords. Retain secure, deployment-specific role definitions,
+memberships and credentials separately so the restored grants name existing
+roles. The role scripts under `packaging/postgresql/` describe the expected main,
+migration, runtime and worker boundaries; use the definitions for the backed-up
+release rather than granting the worker broad access to get a restore working.
+
+```bash
+sudo -u postgres pg_dump --format=custom --dbname=merovingian > "$backup/database.dump"
+pg_restore --list "$backup/database.dump" > "$backup/database.list"
+```
+
+**SQLite:** with the server stopped, use SQLite's backup command rather than
+copying a file while it may be written. The server currently pins DELETE
+journal mode, and worker reads refuse WAL databases.
+
+```bash
+sqlite3 -readonly /var/lib/merovingian/merovingian.sqlite3 ".backup '$backup/database.sqlite3'"
+test "$(sqlite3 -readonly "$backup/database.sqlite3" 'PRAGMA integrity_check;')" = ok
+```
+
+Record checksums after all files have been added, copy the recovery set to its
+protected off-host destination, and restart only after the database command
+succeeded. An archive listing or integrity check does not prove that a whole
+homeserver can be restored.
+
+```bash
+(cd "$backup" && find . -type f ! -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS)
+systemctl start merovingian
+```
+
+### Restore and recovery validation
+
+Restore to a fresh isolated destination using the **same release** first;
+perform an upgrade separately after recovery. Keep the original instance
+stopped. Never run two publicly reachable servers with the same server name
+and signing identity. Keep client/federation exposure and outbound federation
+blocked during validation, while allowing any database connection required.
+The commands below assume a root shell, `backup` pointing at the recovered
+set, and no existing destination database/file; they deliberately do not drop
+or overwrite a live database. Start a fresh root shell with fail-fast handling;
+replace `RECOVERY_SET` with the actual recovered directory:
+
+```bash
+set -eu
+umask 077
+backup=/var/backups/merovingian/RECOVERY_SET
+test -d "$backup"
+```
+
+Stop on any failed restore or validation command. Do not proceed to startup
+until that failure is resolved.
+
+1. Verify the recovery set with `(cd "$backup" && sha256sum --check SHA256SUMS)`.
+   Install the recorded release and recreate the service account. Restore the
+   saved config and its external dependencies to their original paths on the
+   replacement host. Remap saved numeric ownership if the service UID changed.
+   The master key, private database URI files, registration token and TLS private
+   keys must be owned by the effective service UID and mode `0400`; the config
+   and parent directories must also remain accessible to that account. Do not
+   generate a replacement master key or change `server.server_name`.
+2. Restore the appropriate database as below. For PostgreSQL, recreate the
+   original roles, memberships and login credentials **before** restoring;
+   archive ownership and grants depend on them. The provisioning scripts use
+   `CREATE ROLE`, so do not blindly rerun them against roles that already exist.
+   Ensure both main and the worker connect to the restored database, with their
+   original separate privilege boundaries.
+
+   PostgreSQL, after the deployment's roles exist (the example login/database
+   owner is `merovingian`):
+
+   ```bash
+   sudo -u postgres createdb --owner=merovingian merovingian
+   sudo -u postgres pg_restore --exit-on-error --single-transaction --dbname=merovingian < "$backup/database.dump"
+   ```
+
+   SQLite, on a fresh destination with no existing file or sidecars:
+
+   ```bash
+   install -d -o merovingian -g merovingian -m 0700 /var/lib/merovingian
+   test ! -e /var/lib/merovingian/merovingian.sqlite3
+   test ! -L /var/lib/merovingian/merovingian.sqlite3
+   install -o merovingian -g merovingian -m 0600 "$backup/database.sqlite3" /var/lib/merovingian/merovingian.sqlite3
+   test "$(sqlite3 -readonly /var/lib/merovingian/merovingian.sqlite3 'PRAGMA integrity_check;')" = ok
+   ```
+
+3. Validate configuration as the service account:
+   `sudo -u merovingian merovingian-server --check-config /etc/merovingian/merovingian.conf`.
+   This checks config and secret-file admission; it does **not** prove a
+   database connection, migration, worker launch or successful startup.
+4. Start the isolated service and inspect its startup/hardening results,
+   database/schema admission and worker readiness. Compare the published server
+   signing key and server name with the recovery record. Through the loopback
+   client listener, check `/_matrix/client/versions`, authenticate a known test
+   account, read existing room history and download an existing media item.
+   Confirm both main and worker database access work without widening grants.
+5. Stop the isolated instance before transferring it to the live deployment,
+   then restore the intended listener/proxy exposure and network access. Keep
+   the original stopped. Retain the pre-restore and pre-upgrade recovery sets;
+   rollback requires a compatible binary, database and matching key/config set,
+   not merely reinstalling an older binary over a migrated database.
+
+These steps are an operator procedure, not evidence of an end-to-end recovery
+certification. Rehearse them on disposable data and record the actual restore,
+startup and client checks for your deployment before relying on a backup.
 
 ### Upgrades
 

@@ -20,7 +20,6 @@
 * [0014 - Confine cryptographic primitives behind providers](0014-confine-cryptographic-primitives-behind-providers.md)
 * [0016 - Require a master key rather than storing secrets in plaintext](0016-require-a-master-key-rather-than-storing-secrets-in-plaintext.md)
 * [0017 - Never regenerate a signing key silently](0017-never-regenerate-a-signing-key-silently.md)
-* [0018 - Warn rather than abort when memory locking fails](0018-warn-rather-than-abort-when-memory-locking-fails.md)
 * [0019 - Apply rate limiting before authentication](0019-apply-rate-limiting-before-authentication.md)
 * [0020 - Keep rate limit counters in memory](0020-keep-rate-limit-counters-in-memory.md)
 * [0021 - Deny when a rate limit policy cannot be resolved](0021-deny-when-a-rate-limit-policy-cannot-be-resolved.md)
@@ -168,6 +167,7 @@
 * [0165 - Retain unresolved federation PDUs and retry them](0165-retain-unresolved-federation-pdus-and-retry-them.md)
 * [0166 - Derive to-device message IDs per sender and record them only after the messages commit](0166-derive-to-device-message-ids-per-sender.md)
 * [0167 - Use std::thread and StopFlag, never std::jthread or std::stop_token](0167-no-jthread-or-stop-token-use-std-thread-and-stop-flag.md)
+* [0168 - Refuse an unlocked master key](0168-refuse-an-unlocked-master-key.md)
 
 ## Proposed Records
 
@@ -178,6 +178,8 @@
 * None
 
 ## Superseded Records
+
+* [0018 - Warn rather than abort when memory locking fails](0018-warn-rather-than-abort-when-memory-locking-fails.md) — superseded by ADR-0168; master-key lock failure is fatal
 
 * [0029 - Bound pusher delivery rather than registration](0029-bound-pusher-delivery-rather-than-registration.md) — superseded by ADR-0151 for registration: distinct pushers per user are now capped; the per-delivery bound remains
 * [0027 - Bound the connection queue but not the IPC queue](0027-bound-the-connection-queue-but-not-the-ipc-queue.md) — superseded by ADR-0065 for the IPC pools only; the connection-queue half remains accepted

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.28
+Version:        0.12.29
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Oct 18 2026 James Chapman <claude@ping.me.uk> - 0.12.29-1
+- Reconcile documentation with implementation; document backup and restore procedures.
+
 * Sat Oct 17 2026 James Chapman <claude@ping.me.uk> - 0.12.28-1
 - Queue appservice transactions durably; commit to-device sends atomically with per-sender message IDs.
 - Retain and retry federation PDUs whose history is missing instead of dropping them.

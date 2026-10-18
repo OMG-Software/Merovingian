@@ -128,6 +128,10 @@ listeners.federation.tls=false
 listeners.federation.reverse_proxy=true
 listeners.federation.tls_certificate_file=
 listeners.federation.tls_private_key_file=
+# Maximum accepted connections waiting for their first request. 0 disables
+# this cap; changes are classified as reloadable, but currently need restart
+# because the live reload control path is not yet wired.
+listeners.max_queued_connections=1024
 
 # Database backend
 # database.backend selects the storage engine:

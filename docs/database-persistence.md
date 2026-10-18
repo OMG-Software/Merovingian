@@ -1,8 +1,8 @@
 # Database persistence
 
 This capability note describes the project-owned database persistence boundary,
-the SQLite runtime backend, the initial PostgreSQL/libpq boundary, and the
-remaining work before PostgreSQL-backed production operation.
+the SQLite runtime backend, the PostgreSQL/libpq backend, and remaining work for
+production operation.
 
 The deployed configuration parser accepts only `postgresql` and `sqlite`.
 PostgreSQL startup fails when its URI file is missing, unreadable, or empty; it
@@ -960,66 +960,27 @@ The boundary provides these guarantees:
 
 ## Deliberately not included
 
-These remain deferred:
-
-- Hydration of the federation queue tables (`federation_destinations`,
-  `federation_transactions`) and of `push_rules`, on both backends. Policy
-  rules and media blob metadata are hydrated on both backends (see above).
+The `push_rules` schema table remains unused: clients can fetch the server's
+default push ruleset, but cannot mutate or persist user rules. Federation queue
+tables (`federation_destinations`, `federation_transactions`) are hydrated and
+used by the runtime on both backends; media metadata and policy rows are also
+persisted and hydrated.
 
 ## Next starting points
 
-1. Extend transaction helpers across federation queues, policy actions, and
-   media metadata once those rows are runtime-wired.
-2. Persist push rules, federation queues, and media blob metadata.
-3. **Wire PostgreSQL migration/runtime role separation into the live
-   connection path (production-milestone.md release blocker).** Today the
-   role-enforcement mechanism (`set_postgresql_role`/`reset_postgresql_role`,
-   `docs/database-persistence.md` above) and its CI proof
-   (`postgres-integration.yml`) are real and passing, and
-   `packaging/postgresql/provision-roles.sql` provisions the two roles for an
-   operator — but nothing in the live startup path actually calls
-   `set_postgresql_role()`. `merovingian-db-migrate` (`src/db_migrate.cpp`)
-   never opens a database connection at all; it only prints an offline
-   migration *plan*. Schema migrations are applied automatically by
-   `bootstrap_local_database()`/`migration.hpp` on every server startup.
-   **Partly closed in 0.12.3**: when `database.runtime_role` is configured,
-   every PostgreSQL connection assumes it after opening — not just the
-   bootstrap one, since connections are created per operation — and an
-   unassumable role refuses the open rather than serving with the login
-   role's wider privileges.
-
-   **Closed for the server in 0.12.5** (audit finding 18). Migrations had
-   continued to run as the login role because `ALTER TABLE` is permitted only
-   to an object's owner and the migration role owned nothing — so the
-   separation did not cover the one operation that actually needs DDL. The
-   answer is for the migration role to own the schema:
-
-   - `provision-roles.sql` creates objects under `:migration_role`, and ends
-     with a scoped transfer of the `public` tables and sequences `:login_role`
-     still owns — the one step an existing database needs before upgrading.
-     The `postgres-integration` CI job runs the same statements, so the
-     operator sequence is exercised. It is deliberately not `REASSIGN OWNED`,
-     which operates on everything the role owns including pinned system
-     objects, and so fails when the login role is the cluster bootstrap
-     superuser.
-   - `open_postgresql_persistent_store()` takes `database.migration_role`,
-     `SET ROLE`s to it before applying pending migrations, and resets the
-     session before assuming the runtime role.
-   - An unassumable migration role refuses the open rather than falling back
-     to the login role. Only a *pending* migration reaches the role switch, so
-     a misconfigured `migration_role` breaks an upgrade rather than every
-     routine restart; leaving it unset keeps single-role deployments working.
-
-   Still open: `merovingian-db-migrate` becoming a real tool that connects
-   rather than printing an offline plan. The startup path is covered by the
-   role-separation and migration-role scenarios in
-   `test_postgresql_persistence_flow.cpp`, which drive
-   `open_postgresql_persistent_store` itself rather than the primitive in
-   isolation — note they require a live PostgreSQL URI and role environment
-   variables, so they run only in `postgres-integration`. See
-   `packaging/postgresql/provision-roles.sql` for the stricter alternative
-   (never grant the login role membership of the migration role; run
-   migrations out-of-band and leave `database.migration_role` unset).
+- `merovingian-db-migrate` (`src/db_migrate.cpp`) remains an offline planning
+  tool: it prints a migration plan and does not connect to a database. Runtime
+  startup applies pending schema migrations automatically.
+- PostgreSQL role separation is enforced in the live server path. When roles
+  are configured, `open_postgresql_persistent_store()` assumes
+  `database.migration_role` for pending DDL, resets it, and then assumes
+  `database.runtime_role` for runtime access. Live role scenarios run in the
+  `postgres-integration` workflow because they require PostgreSQL and the role
+  environment variables. See `packaging/postgresql/provision-roles.sql`.
+- Generic user push-rule mutation and persistence remain unimplemented; the
+  schema's `push_rules` table is unused. The configuration key
+  `server.identity_server.allowed_bind_domains` is accepted but currently read
+  by no bind or `requestToken` path, so it is not enforced.
 
 ## Federation worker least-privilege role (ADR-0062 part 2)
 
@@ -1069,8 +1030,7 @@ Two independent mechanisms close this, together:
    one exception found during review is `state_conflict_resolver`, covered
    below).
 
-2. **A load profile, so the worker never pulls unlisted data into its own
-   memory regardless of which credential it holds.**
+2. **A load profile for PostgreSQL-backed workers.**
    `database::TableLoadProfile` and `database::table_load_profile_includes`
    (`include/merovingian/database/persistent_store.hpp`) decide which tables
    `open_postgresql_persistent_store`'s row loader hydrates.
@@ -1120,12 +1080,20 @@ Two independent mechanisms close this, together:
    `src/federation/remote_key_cache.cpp`) and simply re-fetches on the next
    request, so the failure degrades performance, not correctness.
 
-   Every table PersistentStore can hold that is **not** in the allowlist is
-   read by NO worker-local code path — verified table by table during
-   review (not merely "probably relayed"), listed in full under "Every
-   table classified" below, since `TableLoadProfile` only gates the
-   PostgreSQL loader and SQLite's own loader is never exercised by a test
-   that could catch a wrong exclusion.
+   Every table `PersistentStore` can hold that is **not** in the allowlist is
+   read by no worker-local code path — verified table by table during review
+   and listed under "Every table classified" below. This code-path audit is
+   separate from what the backend hydrates: the profile gates PostgreSQL
+   hydration only. SQLite's `open_sqlite_persistent_store()` accepts a profile
+   but currently uses it only to open the database read-only for the worker;
+   `load_persistent_rows()` then uses the full loader without applying the
+   allowlist. Consequently, a SQLite-backed federation worker holds data such
+   as user password hashes, token hashes and stored signing-key ciphertext
+   that the PostgreSQL worker profile excludes. Media blob bytes remain
+   read-on-demand rather than all being hydrated.
+   Read-only mode prevents writes to the file; it does not provide this
+   in-memory least-privilege boundary. This remains an open gap requiring
+   profile-aware SQLite hydration and a regression test.
 
    **One dormant write path found during review:** `state_conflict_resolver`
    (`local_http_router.cpp:1255`, wired unconditionally by
@@ -1210,10 +1178,11 @@ behaviour. `config::validate()` rejects `database.backend=postgresql` with
 this is set (`src/config/config.cpp`), and `homeserver::WorkerPool::
 WorkerPool` logs `CRITICAL` on every startup while it applies, so the
 downgrade cannot go unnoticed. Ignored entirely for
-`database.backend=sqlite`: a single shared file offers no role boundary to
-separate, so the worker keeps opening the same file there and the load
-profile above is its only protection (see ADR-0062 part 2, "Positive
-Consequences").
+`database.backend=sqlite`: a single shared file offers no PostgreSQL role
+boundary. The SQLite connection is read-only in the worker, but the current
+SQLite row loader uses full hydration and does not enforce the worker table-load
+profile. The profile therefore is not an in-memory protection on SQLite yet
+(see the open gap above and ADR-0062 part 2, "Positive Consequences").
 
 **Migration role never reachable from the worker.** The worker's own
 connection always passes empty `runtime_role`/`migration_role` to
