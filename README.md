@@ -113,9 +113,11 @@ The full parameter reference (server identity, CORS, TURN, listeners, database, 
 2. **Copy and edit the example configuration**, setting at minimum `server.name`, `server.public_baseurl`, and `server.trusted_proxies`.
 3. **Generate the master key**, which encrypts the Ed25519 signing secret at rest:
    ```sh
-   openssl rand -out /etc/merovingian/master-key 32
-   chmod 0600 /etc/merovingian/master-key
+   (umask 077; openssl rand -out /etc/merovingian/master-key 32)
+   chmod 0400 /etc/merovingian/master-key
+   chown merovingian:merovingian /etc/merovingian/master-key
    ```
+   Startup rejects a master key that is writable or readable by anyone but its owner.
 4. **Configure the database** — SQLite for a quick evaluation, PostgreSQL for anything else.
 5. **Validate the configuration**:
    ```sh

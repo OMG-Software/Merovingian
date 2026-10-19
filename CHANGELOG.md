@@ -10,6 +10,10 @@
   Include `listeners.max_queued_connections` in the configuration example.
 - **DOCS:** add backend-specific backup and restore procedures with validation steps,
   and align version-bump timing with the branch-creation rule.
+- **DOCS (review fixes):** the README master-key step now uses mode `0400` and owner
+  `merovingian`, as the startup secret-file check requires (`0600` was rejected). The
+  restore procedure names the `server.name` key, not `server.server_name`. The manual
+  notes that the Docker image needs a master key mounted at `/etc/merovingian/master-key`.
 
 ## 0.12.28
 

@@ -1524,6 +1524,12 @@ The server refuses to start unless every check in the table above reports
   `CapabilityBoundingSet=`; for the Docker image, start the container with
   `docker run --cap-drop=ALL --security-opt=no-new-privileges ...`, or the
   `capability bounding` check stays `unknown`.
+* **Provide the master key.** The image's `/etc/merovingian/merovingian.conf` is
+  the example config, which sets `security.secrets.master_key_file` to
+  `/etc/merovingian/master-key`. The image ships no key, so mount one there
+  (generated as in [Generate the master key](#3-generate-the-master-key), mode
+  `0400`, owned by the `merovingian` user) or point the setting at your own
+  path. Without it `--check-config` and startup reject the configuration.
 
 ## Database backends
 
@@ -2569,7 +2575,7 @@ until that failure is resolved.
    The master key, private database URI files, registration token and TLS private
    keys must be owned by the effective service UID and mode `0400`; the config
    and parent directories must also remain accessible to that account. Do not
-   generate a replacement master key or change `server.server_name`.
+   generate a replacement master key or change `server.name`.
 2. Restore the appropriate database as below. For PostgreSQL, recreate the
    original roles, memberships and login credentials **before** restoring;
    archive ownership and grants depend on them. The provisioning scripts use
