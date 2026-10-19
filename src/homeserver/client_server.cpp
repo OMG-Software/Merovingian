@@ -4737,9 +4737,36 @@ namespace
             // Without this, clients that poll legacy /sync (e.g. Element) never
             // learn a receipt cleared the room's unread state until their own
             // next message arrives.
-            auto const read_markers = sync::read_receipt_markers(rt.homeserver, store, room.room_id, user);
-            auto const notification_count = sync::count_notifications(store, room.room_id, user, read_markers);
-            auto const highlight_count = sync::count_highlights(store, room.room_id, user, read_markers);
+            //
+            // Spec (GET /sync): with unread_thread_notifications set on the
+            // RoomEventFilter, unread_notifications "will only be for the main
+            // timeline", and unread_thread_notifications holds "the notification
+            // counts for each thread in this room ... keyed by thread root ID";
+            // a thread with no notifications, or the whole object, may be omitted.
+            auto const unread = sync::count_unread_by_thread(
+                store, room.room_id, user, sync::read_receipt_markers(rt.homeserver, store, room.room_id, user));
+            auto const per_thread = filter.room.timeline.unread_thread_notifications;
+            auto const main_thread = unread.threads.find(sync::main_thread_id);
+            auto const room_counts =
+                !per_thread ? unread.total()
+                            : (main_thread != unread.threads.end() ? main_thread->second : sync::NotificationCounts{});
+            auto const counts_object = [](sync::NotificationCounts const& counts) {
+                return json_obj({
+                    json_member("notification_count", json_int(static_cast<std::int64_t>(counts.notification_count))),
+                    json_member("highlight_count", json_int(static_cast<std::int64_t>(counts.highlight_count))),
+                });
+            };
+            auto thread_counts = canonicaljson::Object{};
+            if (per_thread)
+            {
+                for (auto const& [thread_id, counts] : unread.threads)
+                {
+                    if (thread_id != sync::main_thread_id)
+                    {
+                        thread_counts.push_back(json_member(thread_id, counts_object(counts)));
+                    }
+                }
+            }
 
             // Incremental sync: suppress rooms that have nothing new to report.
             // Without this check, re-dispatches after a long-poll timeout emit
@@ -4753,28 +4780,25 @@ namespace
             }
 
             ++join_count;
-            join_members.push_back(json_member(
-                room.room_id,
-                json_obj({
-                    json_member("timeline",
-                                json_obj({
-                                    json_member("events", json_arr(std::move(timeline_events))),
-                                    json_member("limited", json_bool(limited)),
-                                    json_member("prev_batch", json_str(prev_batch)),
-                                    json_member("event_count", json_int(static_cast<std::int64_t>(event_count))),
-                                })),
-                    json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
-                    json_member("account_data",
-                                json_obj({json_member("events", json_arr(std::move(room_account_data)))})),
-                    json_member("ephemeral", json_obj({json_member("events", json_arr(std::move(ephemeral_events)))})),
-                    json_member(
-                        "unread_notifications",
-                        json_obj({
-                            json_member("notification_count", json_int(static_cast<std::int64_t>(notification_count))),
-                            json_member("highlight_count", json_int(static_cast<std::int64_t>(highlight_count))),
-                        })),
-                    json_member("summary", room_summary_object(rt, store, room.room_id, user)),
-                })));
+            auto joined_room = canonicaljson::Object{
+                json_member("timeline",
+                            json_obj({
+                                json_member("events", json_arr(std::move(timeline_events))),
+                                json_member("limited", json_bool(limited)),
+                                json_member("prev_batch", json_str(prev_batch)),
+                                json_member("event_count", json_int(static_cast<std::int64_t>(event_count))),
+                            })),
+                json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
+                json_member("account_data", json_obj({json_member("events", json_arr(std::move(room_account_data)))})),
+                json_member("ephemeral", json_obj({json_member("events", json_arr(std::move(ephemeral_events)))})),
+                json_member("unread_notifications", counts_object(room_counts)),
+                json_member("summary", room_summary_object(rt, store, room.room_id, user)),
+            };
+            if (!thread_counts.empty())
+            {
+                joined_room.push_back(json_member("unread_thread_notifications", json_obj(std::move(thread_counts))));
+            }
+            join_members.push_back(json_member(room.room_id, json_obj(std::move(joined_room))));
         }
 
         // Invite list. Per spec, a room the caller left *before* the `since`

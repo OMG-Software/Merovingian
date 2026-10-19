@@ -46,6 +46,19 @@ read came back unread.
   `count_notifications` / `count_highlights` take `ReadMarkers`. This applies to `/sync`, sliding
   sync, the room-list `by_notification_count` sort, the push-gateway badge and
   `GET /notifications` `read`. Scenarios tagged `[threaded-receipts]` and `[read-markers]`.
+- **NEW (per-thread unread counts):** `/sync` honours the RoomEventFilter flag
+  `unread_thread_notifications` (read from `room.timeline`). With it set, `unread_notifications`
+  counts only the main timeline and `unread_thread_notifications` holds the counts of each thread
+  that has any, keyed by root event ID; without it the counts are summed as before.
+  `sync::count_unread_by_thread` is the one count walk; `count_notifications` and
+  `count_highlights` sum it. A highlight is now counted once per event rather than once per
+  matching `m.mentions` entry. Scenarios tagged `[thread-notifications]`.
+- **FIXED (sending a message did not mark earlier messages read):** spec, "When the user updates
+  their read receipt (either by using the API or by sending an event), notifications prior to and
+  including that event MUST be marked as read". A non-state event the user sends now reads its own
+  thread up to itself (`sync::read_markers_for`). State events do not count, so the membership
+  update a profile change sends to every room marks nothing read. The position is not stored or
+  sent as a receipt (ADR-0170). Scenarios tagged `[own-event-read]`.
 
 ## 0.12.28
 

@@ -442,28 +442,48 @@ namespace
         return ts;
     }
 
-    // True when an event past the user's unthreaded receipt is still covered by
-    // the threaded receipt of its own thread. Resolving the thread follows the
-    // event's relations, so it is done only when the user has a threaded receipt
-    // in the room at all.
-    [[nodiscard]] auto read_in_its_thread(database::PersistentStore const& store, ReadMarkers const& markers,
-                                          std::uint64_t stream_ordering, canonicaljson::Object const& event) -> bool
+    // True when the event's content names `user` in m.mentions.user_ids (MSC3952 / Matrix v1.7+).
+    [[nodiscard]] auto mentions_user(canonicaljson::Object const& content, std::string_view user) -> bool
     {
-        return !markers.threads.empty() && markers.covers(stream_ordering, event_thread_id(store, event));
+        auto const* mentions_val = find_member(content, "m.mentions");
+        auto const* mentions = mentions_val != nullptr ? as_object(*mentions_val) : nullptr;
+        auto const* uids_val = mentions != nullptr ? find_member(*mentions, "user_ids") : nullptr;
+        auto const* uids = uids_val != nullptr ? std::get_if<canonicaljson::Array>(&uids_val->storage()) : nullptr;
+        if (uids == nullptr)
+        {
+            return false;
+        }
+        return std::ranges::any_of(*uids, [user](canonicaljson::Value const& uid_val) {
+            auto const* uid = as_string(uid_val);
+            return uid != nullptr && *uid == user;
+        });
     }
 
 } // namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-// Counts the events `markers` do not cover — relative to the user's read
-// receipts, NOT the sync position (#417). The user's own events never count
-// as unread. Shared by sliding sync and the legacy /sync
-// unread_notifications block.
-auto count_notifications(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
-                         ReadMarkers const& markers) -> std::uint64_t
+auto ThreadNotificationCounts::total() const noexcept -> NotificationCounts
 {
-    auto count = std::uint64_t{0U};
+    auto sum = NotificationCounts{};
+    for (auto const& [thread_id, counts] : threads)
+    {
+        sum.notification_count += counts.notification_count;
+        sum.highlight_count += counts.highlight_count;
+    }
+    return sum;
+}
+
+// Counts the events `markers` do not cover — relative to the user's read
+// receipts, NOT the sync position (#417) — per thread, as the spec asks: "the
+// server is to partition the notification count to each thread (with the main
+// timeline being its own thread)". The user's own events never count as
+// unread. An m.room.message or m.room.encrypted event is a notification; an
+// event of any type whose m.mentions names the user is a highlight.
+auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
+                            ReadMarkers const& markers) -> ThreadNotificationCounts
+{
+    auto counts = ThreadNotificationCounts{};
     for (auto const& ev : store.events)
     {
         if (ev.room_id != room_id || ev.stream_ordering <= markers.unthreaded || ev.sender_user_id == user)
@@ -482,69 +502,36 @@ auto count_notifications(database::PersistentStore const& store, std::string_vie
         }
         auto const* type_val = find_member(*root, "type");
         auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
-        if (type_s == nullptr)
+        auto const* content_val = find_member(*root, "content");
+        auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
+        auto const notifies = type_s != nullptr && (*type_s == "m.room.message" || *type_s == "m.room.encrypted");
+        auto const highlights = content != nullptr && mentions_user(*content, user);
+        if (!notifies && !highlights)
         {
             continue;
         }
-        if ((*type_s == "m.room.message" || *type_s == "m.room.encrypted") &&
-            !read_in_its_thread(store, markers, ev.stream_ordering, *root))
+        auto thread_id = event_thread_id(store, *root);
+        if (markers.covers(ev.stream_ordering, thread_id))
         {
-            ++count;
+            continue;
         }
+        auto& thread = counts.threads[std::move(thread_id)];
+        thread.notification_count += notifies ? 1U : 0U;
+        thread.highlight_count += highlights ? 1U : 0U;
     }
-    return count;
+    return counts;
+}
+
+auto count_notifications(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
+                         ReadMarkers const& markers) -> std::uint64_t
+{
+    return count_unread_by_thread(store, room_id, user, markers).total().notification_count;
 }
 
 auto count_highlights(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
                       ReadMarkers const& markers) -> std::uint64_t
 {
-    // Simple mention scan: check m.mentions.user_ids or body for @user_id.
-    auto count = std::uint64_t{0U};
-    for (auto const& ev : store.events)
-    {
-        if (ev.room_id != room_id || ev.stream_ordering <= markers.unthreaded || ev.sender_user_id == user)
-        {
-            continue;
-        }
-        auto const parsed = canonicaljson::parse_lossless(ev.json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            continue;
-        }
-        auto const* root = as_object(parsed.value);
-        if (root == nullptr)
-        {
-            continue;
-        }
-        auto const* content_val = find_member(*root, "content");
-        auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
-        if (content == nullptr || read_in_its_thread(store, markers, ev.stream_ordering, *root))
-        {
-            continue;
-        }
-        // Check m.mentions.user_ids (MSC3952 / Matrix v1.7+).
-        if (auto const* mentions_val = find_member(*content, "m.mentions"); mentions_val != nullptr)
-        {
-            if (auto const* mentions = as_object(*mentions_val); mentions != nullptr)
-            {
-                if (auto const* uids_val = find_member(*mentions, "user_ids"); uids_val != nullptr)
-                {
-                    if (auto const* arr = std::get_if<canonicaljson::Array>(&uids_val->storage()); arr != nullptr)
-                    {
-                        for (auto const& uid_val : *arr)
-                        {
-                            auto const* uid = as_string(uid_val);
-                            if (uid != nullptr && *uid == user)
-                            {
-                                ++count;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return count;
+    return count_unread_by_thread(store, room_id, user, markers).total().highlight_count;
 }
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
@@ -682,9 +669,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // #417: counts are relative to the user's last READ RECEIPT, not the sync
     // position — "events the user hasn't read", not "events the client hasn't
     // synced".
-    auto const markers = read_receipt_markers(rt, store, room_id, user);
-    resp.notification_count = count_notifications(store, room_id, user, markers);
-    resp.highlight_count = count_highlights(store, room_id, user, markers);
+    auto const unread =
+        count_unread_by_thread(store, room_id, user, read_receipt_markers(rt, store, room_id, user)).total();
+    resp.notification_count = unread.notification_count;
+    resp.highlight_count = unread.highlight_count;
 
     // ── Timestamp ───────────────────────────────────────────────────────────
     resp.timestamp = latest_timestamp(store, room_id);

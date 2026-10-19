@@ -80,6 +80,10 @@ to each thread". An unthreaded receipt covers every earlier event; a threaded on
 covers only its own thread (`main` or the root), found by `event_thread_id()`
 through up to 3 relation hops. Do not compare an event's stream ordering with a
 single receipt position: that is the bug a threaded receipt used to cause.
+`count_unread_by_thread()` is the one walk; `/sync` reports its split when the
+filter sets `unread_thread_notifications`. A non-state event the user sent also
+reads its own thread (`read_markers_for`, ADR-0170); never let a state event do
+so, or a profile change would mark every room read.
 
 ## History visibility and room read access
 

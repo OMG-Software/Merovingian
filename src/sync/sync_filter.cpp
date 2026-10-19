@@ -104,6 +104,13 @@ namespace
                 target.lazy_load_members = *flag;
             }
         }
+        if (auto const* thread_counts = find_member(source, "unread_thread_notifications"); thread_counts != nullptr)
+        {
+            if (auto const* flag = std::get_if<bool>(&thread_counts->storage()); flag != nullptr)
+            {
+                target.unread_thread_notifications = *flag;
+            }
+        }
         if (auto const* redundant = find_member(source, "include_redundant_members"); redundant != nullptr)
         {
             if (auto const* flag = std::get_if<bool>(&redundant->storage()); flag != nullptr)

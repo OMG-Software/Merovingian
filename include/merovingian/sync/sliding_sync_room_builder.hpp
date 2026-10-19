@@ -9,6 +9,8 @@
 #include "merovingian/sync/sliding_sync.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -79,6 +81,32 @@ namespace merovingian::sync
 // "events the client has not synced" (#417).
 [[nodiscard]] auto read_receipt_markers(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
                                         std::string_view room_id, std::string_view user) -> ReadMarkers;
+
+// Unread counts of one thread, or of a whole room.
+struct NotificationCounts final
+{
+    std::uint64_t notification_count{0U};
+    std::uint64_t highlight_count{0U};
+};
+
+// A room's unread counts split by thread: `main` for the main timeline, a
+// thread root's event ID for each thread. A thread with nothing unread has no
+// entry.
+struct ThreadNotificationCounts final
+{
+    std::map<std::string, NotificationCounts, std::less<>> threads{};
+
+    [[nodiscard]] auto total() const noexcept -> NotificationCounts;
+};
+
+// The room's unread counts per thread: the `m.room.message` /
+// `m.room.encrypted` events (notifications) and the events whose m.mentions
+// names `user` (highlights) that `markers` do not cover, excluding the user's
+// own events. `/sync` reports them split by thread when the filter sets
+// `unread_thread_notifications`, and summed otherwise.
+[[nodiscard]] auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id,
+                                          std::string_view user, ReadMarkers const& markers)
+    -> ThreadNotificationCounts;
 
 // Number of `m.room.message` / `m.room.encrypted` events in the room that
 // `markers` do not cover, excluding the user's own events. Used for both

@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -812,6 +813,169 @@ SCENARIO("a read receipt clears the notifications of the events it covers and no
             THEN("the thread receipt does not move the main-timeline read position back")
             {
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 0);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The room's entry in rooms.join of an initial /sync with an inline `filter`.
+[[nodiscard]] auto synced_room_with_filter(merovingian::homeserver::ClientServerRuntime& runtime,
+                                           std::string const& token, std::string const& room_id,
+                                           std::string const& filter) -> merovingian::canonicaljson::Object
+{
+    auto const target = filter.empty() ? std::string{"/_matrix/client/v3/sync"}
+                                       : std::string{"/_matrix/client/v3/sync?filter="} + filter;
+    auto const sync = merovingian::homeserver::handle_client_server_request(runtime, {"GET", target, token, {}});
+    REQUIRE(sync.response.status == 200U);
+    auto const body = parse_object(sync.response.body);
+    auto const* rooms = object_member_as_object(body, "rooms");
+    REQUIRE(rooms != nullptr);
+    auto const* join = object_member_as_object(*rooms, "join");
+    REQUIRE(join != nullptr);
+    auto const* room = object_member_as_object(*join, room_id);
+    REQUIRE(room != nullptr);
+    return *room;
+}
+
+[[nodiscard]] auto count_in(merovingian::canonicaljson::Object const& counts, std::string_view key) -> std::int64_t
+{
+    auto const* count = int_member(counts, key);
+    REQUIRE(count != nullptr);
+    return *count;
+}
+
+constexpr auto thread_counts_filter = std::string_view{R"({"room":{"timeline":{"unread_thread_notifications":true}}})"};
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19, GET /sync and Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+//
+// RoomEventFilter `unread_thread_notifications`: "If true, enables per-thread notification
+// counts. Only applies to the /sync endpoint." Joined room `unread_notifications`: "If
+// unread_thread_notifications was specified as true on the RoomEventFilter, these counts will only
+// be for the main timeline rather than all events in the room." `unread_thread_notifications`:
+// "the notification counts for each thread in this room. The object is keyed by thread root ID ...
+// If a thread does not have any notifications it can be omitted from this object. If no threads
+// have notification counts, this whole object can be omitted."
+SCENARIO("/sync splits unread counts by thread when the filter asks for it",
+         "[conformance][client-server][receipt][threaded-receipts][thread-notifications]")
+{
+    GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const fixture = make_threaded_room(started.runtime);
+
+        WHEN("alice syncs without unread_thread_notifications")
+        {
+            auto const room = synced_room_with_filter(started.runtime, fixture.alice, fixture.room_id, {});
+
+            THEN("the room's counts cover every event, in a thread or not, and no per-thread counts are sent")
+            {
+                auto const* unread = object_member_as_object(room, "unread_notifications");
+                REQUIRE(unread != nullptr);
+                REQUIRE(count_in(*unread, "notification_count") == 3);
+                REQUIRE(object_member_as_object(room, "unread_thread_notifications") == nullptr);
+            }
+        }
+
+        WHEN("alice syncs with unread_thread_notifications")
+        {
+            auto const room = synced_room_with_filter(started.runtime, fixture.alice, fixture.room_id,
+                                                      std::string{thread_counts_filter});
+
+            THEN("unread_notifications counts only the main timeline")
+            {
+                auto const* unread = object_member_as_object(room, "unread_notifications");
+                REQUIRE(unread != nullptr);
+                REQUIRE(count_in(*unread, "notification_count") == 2);
+                REQUIRE(count_in(*unread, "highlight_count") == 0);
+            }
+            THEN("unread_thread_notifications counts the thread under its root's event ID")
+            {
+                auto const* threads = object_member_as_object(room, "unread_thread_notifications");
+                REQUIRE(threads != nullptr);
+                REQUIRE(threads->size() == 1U);
+                auto const* thread = object_member_as_object(*threads, fixture.root_id);
+                REQUIRE(thread != nullptr);
+                REQUIRE(count_in(*thread, "notification_count") == 1);
+                REQUIRE(count_in(*thread, "highlight_count") == 0);
+            }
+        }
+
+        WHEN("alice reads the thread and then syncs with unread_thread_notifications")
+        {
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.thread_reply_id,
+                                 R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
+            auto const room = synced_room_with_filter(started.runtime, fixture.alice, fixture.room_id,
+                                                      std::string{thread_counts_filter});
+
+            THEN("the thread, having no notifications, is not listed and the main timeline is unchanged")
+            {
+                REQUIRE(object_member_as_object(room, "unread_thread_notifications") == nullptr);
+                auto const* unread = object_member_as_object(room, "unread_notifications");
+                REQUIRE(unread != nullptr);
+                REQUIRE(count_in(*unread, "notification_count") == 2);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, Push Notifications — "Marking notifications as read"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#receiving-notifications
+//
+// "When the user updates their read receipt (either by using the API or by sending an event),
+// notifications prior to and including that event MUST be marked as read. Which specific events
+// are affected can vary depending on whether a threaded read receipt was used." An event the user
+// sends is in one thread (the main timeline or a thread), so it marks that thread read (ADR-0170).
+SCENARIO("an event the user sends marks the events before it in its thread as read",
+         "[conformance][client-server][receipt][threaded-receipts][own-event-read]")
+{
+    GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message, none read by alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const fixture = make_threaded_room(started.runtime);
+        REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 3);
+
+        WHEN("alice sends a message in the main timeline")
+        {
+            std::ignore = send_as(started.runtime, fixture.alice, fixture.room_id, "txn_alice_main",
+                                  R"({"msgtype":"m.text","body":"hi"})");
+
+            THEN("the main timeline before it is read, and the reply in the thread is not")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 1);
+            }
+        }
+
+        WHEN("alice replies in the thread")
+        {
+            std::ignore =
+                send_as(started.runtime, fixture.alice, fixture.room_id, "txn_alice_thread",
+                        R"({"msgtype":"m.text","body":"me too","m.relates_to":{"rel_type":"m.thread","event_id":")" +
+                            fixture.root_id + R"("}})");
+
+            THEN("the thread is read and both main-timeline messages are not")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 2);
+            }
+        }
+
+        WHEN("alice changes her display name, which the server sends to the room as her membership")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/@alice:example.org/displayname", fixture.alice,
+                                  R"({"displayname":"Alice Liddell"})"});
+            REQUIRE(put.response.status == 200U);
+
+            THEN("nothing is marked read: a state event the server sends for her is not her reading the room")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 3);
             }
         }
     }

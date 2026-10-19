@@ -41,7 +41,9 @@ struct ReadMarkers final
 };
 
 // The user's read markers in `room_id`, from `receipts`, with stream orderings looked up in
-// `store`. A receipt naming an event `store` does not hold covers nothing.
+// `store`. A receipt naming an event `store` does not hold covers nothing. Each non-state event
+// the user sent in the room also reads its own thread up to itself (spec: the read receipt is
+// updated "either by using the API or by sending an event"; ADR-0170).
 [[nodiscard]] auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts,
                                     database::PersistentStore const& store, std::string_view room_id,
                                     std::string_view user) -> ReadMarkers;

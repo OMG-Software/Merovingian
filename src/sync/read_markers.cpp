@@ -82,25 +82,55 @@ auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, 
     }
 
     auto markers = ReadMarkers{};
-    if (relevant.empty())
+    if (!relevant.empty())
     {
-        return markers;
-    }
-    for (auto const& event : store.events)
-    {
-        if (event.room_id != room_id)
+        for (auto const& event : store.events)
         {
-            continue;
-        }
-        for (auto const* receipt : relevant)
-        {
-            if (receipt->event_id != event.event_id)
+            if (event.room_id != room_id)
             {
                 continue;
             }
-            auto& position = receipt->thread_id.empty() ? markers.unthreaded : markers.threads[receipt->thread_id];
-            position = std::max(position, event.stream_ordering);
+            for (auto const* receipt : relevant)
+            {
+                if (receipt->event_id != event.event_id)
+                {
+                    continue;
+                }
+                auto& position = receipt->thread_id.empty() ? markers.unthreaded : markers.threads[receipt->thread_id];
+                position = std::max(position, event.stream_ordering);
+            }
         }
+    }
+
+    // Spec: "When the user updates their read receipt (either by using the API or by sending an
+    // event), notifications prior to and including that event MUST be marked as read." An event
+    // the user sends is in one thread, so it reads that thread up to itself (ADR-0170). Only
+    // non-state events count: a state event can be sent for the user by this server without the
+    // user looking at the room (a profile change is sent to every room as their m.room.member).
+    // Events an unthreaded receipt already covers cannot move any position, so they are skipped.
+    for (auto const& event : store.events)
+    {
+        if (event.room_id != room_id || event.sender_user_id != user || event.stream_ordering <= markers.unthreaded)
+        {
+            continue;
+        }
+        auto thread_id = std::string{main_thread_id};
+        // Without either key the event is a non-state event in the main timeline; parse only when
+        // the text could hold a state_key or a relation.
+        if (event.json.find("\"state_key\"") != std::string::npos ||
+            event.json.find("\"m.relates_to\"") != std::string::npos)
+        {
+            auto const parsed = canonicaljson::parse_lossless(event.json);
+            auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (parsed.error != canonicaljson::ParseError::none || object == nullptr ||
+                member_value(*object, "state_key") != nullptr)
+            {
+                continue;
+            }
+            thread_id = event_thread_id(store, *object);
+        }
+        auto& position = markers.threads[thread_id];
+        position = std::max(position, event.stream_ordering);
     }
     return markers;
 }

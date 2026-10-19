@@ -153,3 +153,45 @@ SCENARIO("read_markers_for builds the user's read positions from their receipts"
         }
     }
 }
+
+// Spec: Client-Server API, "Marking notifications as read": the read receipt is updated "either by
+// using the API or by sending an event". ADR-0170: an event the user sends reads its own thread up
+// to itself, and state events (which the server may send for the user) do not count.
+SCENARIO("read_markers_for counts the user's own non-state events as reading their thread",
+         "[sync][read-markers][own-event-read]")
+{
+    GIVEN("a room where alice has sent a message, a thread reply and a state event")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        add_event(store, "$root", R"({"type":"m.room.message","content":{"body":"root"}})", 10U);
+        add_event(store, "$alice_main", R"({"type":"m.room.message","content":{"body":"hi"}})", 20U);
+        add_event(store, "$alice_thread", relates_to("m.thread", "$root"), 30U);
+        add_event(store, "$alice_state", R"({"type":"m.room.member","state_key":"@alice:example.org","content":{}})",
+                  40U);
+        for (auto& event : store.events)
+        {
+            if (event.event_id != "$root")
+            {
+                event.sender_user_id = "@alice:example.org";
+            }
+        }
+
+        WHEN("alice's markers are built with no receipts at all")
+        {
+            auto const markers =
+                merovingian::sync::read_markers_for({}, store, "!room:example.org", "@alice:example.org");
+
+            THEN("her message reads the main timeline and her reply reads the thread, each up to itself")
+            {
+                REQUIRE(markers.unthreaded == 0U);
+                REQUIRE(markers.threads.size() == 2U);
+                REQUIRE(markers.threads.at("main") == 20U);
+                REQUIRE(markers.threads.at("$root") == 30U);
+            }
+            THEN("her state event, the latest of all, moves nothing")
+            {
+                REQUIRE_FALSE(markers.covers(40U, "main"));
+            }
+        }
+    }
+}
