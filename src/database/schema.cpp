@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{23U};
+    constexpr auto schema_version = std::uint32_t{24U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -79,6 +79,12 @@ namespace
         std::string_view{"deferred_pdus"},
     };
 
+    // v24 (024_receipts.sql, ADR-0169): read receipts, so unread counts survive a
+    // restart. Main-process only; not in the federation worker allowlist.
+    constexpr auto v24_table_names = std::array{
+        std::string_view{"receipts"},
+    };
+
     [[nodiscard]] auto table_is_post_v1(std::string_view table_name) noexcept -> bool
     {
         return std::ranges::find(v2_table_names, table_name) != v2_table_names.end() ||
@@ -92,14 +98,15 @@ namespace
                std::ranges::find(v13_table_names, table_name) != v13_table_names.end() ||
                std::ranges::find(v15_table_names, table_name) != v15_table_names.end() ||
                std::ranges::find(v22_table_names, table_name) != v22_table_names.end() ||
-               std::ranges::find(v23_table_names, table_name) != v23_table_names.end();
+               std::ranges::find(v23_table_names, table_name) != v23_table_names.end() ||
+               std::ranges::find(v24_table_names, table_name) != v24_table_names.end();
     }
 
     constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size() + v4_table_names.size() +
                                          v6_table_names.size() + v8_table_names.size() + v9_table_names.size() +
                                          v10_table_names.size() + v12_table_names.size() + v13_table_names.size() +
-                                         v15_table_names.size() + v22_table_names.size() +
-                                         v23_table_names.size();
+                                         v15_table_names.size() + v22_table_names.size() + v23_table_names.size() +
+                                         v24_table_names.size();
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -283,6 +290,13 @@ namespace
                               "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, origin TEXT NOT NULL, "
                               "pdu_json TEXT NOT NULL, received_at_ms TEXT NOT NULL DEFAULT '0', "
                               "attempts TEXT NOT NULL DEFAULT '0'"                                                                                                      },
+        // v24 (ADR-0169): one read receipt per (room, type, user, thread). An
+        // unthreaded receipt has thread_id ''. Numbers are TEXT like every other
+        // numeric column here.
+        SchemaTableDefinition{
+                              "receipts",                "room_id TEXT NOT NULL, receipt_type TEXT NOT NULL, user_id TEXT NOT NULL, "
+                        "thread_id TEXT NOT NULL DEFAULT '', event_id TEXT NOT NULL, ts TEXT NOT NULL DEFAULT '0', "
+                        "stream_id TEXT NOT NULL DEFAULT '0', PRIMARY KEY (room_id, receipt_type, user_id, thread_id)"         },
     };
 
 } // namespace

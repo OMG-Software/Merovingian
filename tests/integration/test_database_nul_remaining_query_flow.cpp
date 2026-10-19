@@ -38,9 +38,9 @@ class RemainingQuerySqliteFixture final
 {
 public:
     RemainingQuerySqliteFixture()
-        : directory_{merovingian::tests::temporary_directory() /
-                     ("db6-remaining-query-" +
-                      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))}
+        : directory_{
+              merovingian::tests::temporary_directory() /
+              ("db6-remaining-query-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))}
         , path_{directory_ / "server.sqlite"}
     {
         if (!std::filesystem::create_directory(directory_))
@@ -72,8 +72,8 @@ private:
     std::filesystem::path path_;
 };
 
-[[nodiscard]] auto remaining_string_field(merovingian::canonicaljson::Value const& value,
-                                          std::string_view key) -> std::optional<std::string>
+[[nodiscard]] auto remaining_string_field(merovingian::canonicaljson::Value const& value, std::string_view key)
+    -> std::optional<std::string>
 {
     namespace json = merovingian::canonicaljson;
     if (!std::holds_alternative<json::Object>(value.storage()))
@@ -333,17 +333,19 @@ SCENARIO("Profile, presence and room identities ignore unrelated raw query text"
                         std::ignore = receipt_response;
                         // Receipts are in-memory: never invent a durable receipt field.
                         // Exact identity catches both appended query text and double decoding.
-                        record(std::ranges::count_if(runtime.homeserver.receipts, [&](auto const& receipt) {
-                                   return receipt.room_id == room.value && receipt.user_id == owner.value &&
-                                          receipt.receipt_type == receipt_type && receipt.event_id == *event_id;
-                               }) == 1);
+                        record(std::ranges::count_if(
+                                   runtime.homeserver.database.persistent_store.receipts, [&](auto const& receipt) {
+                                       return receipt.room_id == room.value && receipt.user_id == owner.value &&
+                                              receipt.receipt_type == receipt_type && receipt.event_id == *event_id;
+                                   }) == 1);
                     }
                     auto const fully_read =
                         send_request("POST", room_path + "/receipt/m.fully_read/" + encoded_event + query, "{}");
                     std::ignore = fully_read;
-                    record(std::ranges::count_if(runtime.homeserver.receipts, [&](auto const& receipt) {
-                               return receipt.room_id == room.value && receipt.user_id == owner.value;
-                           }) == 2);
+                    record(std::ranges::count_if(
+                               runtime.homeserver.database.persistent_store.receipts, [&](auto const& receipt) {
+                                   return receipt.room_id == room.value && receipt.user_id == owner.value;
+                               }) == 2);
 
                     auto const leave = send_request("POST", room_path + "/leave" + with_marker("/leave"), "{}");
                     std::ignore = leave;

@@ -1,3 +1,52 @@
+## 0.12.30
+
+Two user-reported defects: a changed display name was never seen in any room, and rooms marked
+read came back unread.
+
+- **FIXED (display name and avatar never reached any room):** `PUT /profile/{userId}/displayname`
+  and `/avatar_url` updated only the profile row. Clients show members by the `displayname` and
+  `avatar_url` of their `m.room.member` events, so neither the user nor anyone else saw the change.
+  Spec, "Events on Change of Profile Information": "an m.room.member event (with a join
+  membership) is sent to every room the user is a member of". `homeserver::propagate_profile_change`
+  now sends that join, carrying the current display name and avatar URL, through `send_event` to
+  every joined room whose membership does not already carry it. It is federated, pushed and
+  delivered to appservices like any other event. A room that refuses the event is skipped and
+  logged. The section's second mechanism, "an m.presence presence status update ... containing
+  the new values of the displayname and avatar_url keys, in addition to the required presence
+  key", is sent too: the user's current presence (offline if never set) is stored again at a new
+  sync stream position, and every `m.presence` in `/sync` now carries the sender's display name
+  and avatar URL when this server holds their profile. Presence is not federated by this server,
+  so remote peers learn the change from the member events. A failed profile write now answers
+  500 instead of 200. The spec also says that
+  membership events a server emits for its own users "should include the display name and avatar
+  URL fields": local joins, the creator's join in `createRoom` and the join sent over federation
+  after `make_join` now carry them. Scenarios tagged `[profile-propagation]`.
+- **FIXED (rooms marked read came back unread):** read receipts lived only in
+  `HomeserverRuntime::receipts`, in memory. Every unread count is computed from them, so a server
+  restart reset every room to unread. They are now kept in a `receipts` table (migration `024`,
+  schema version 24), mirrored in `PersistentStore::receipts` and written through
+  `database::store_receipt` / `remove_receipt`. `HomeserverRuntime::receipts` and `InboundReceipt`
+  are gone. The inbound federation cap no longer evicts a local user's receipt, only the oldest
+  receipt of a remote user (ADR-0169). Scenarios tagged `[receipt-persistence]`.
+- **FIXED (threaded receipts):** `thread_id` was ignored. A receipt in a thread replaced the
+  user's main-timeline receipt of the same type, which could move the read position back and
+  mark the room unread again. Receipts are now keyed by `(room, type, user, thread_id)`. Spec:
+  "Each user_id, receipt_type, and categorisation (unthreaded, or thread_id) tuple must be
+  associated with only a single event_id". `POST /receipt` answers 400 `M_INVALID_PARAM` for a
+  `thread_id` that is not a string, is empty, is sent with `m.fully_read`, or is neither `main`
+  nor the ID of an event in the room (so a client cannot create a receipt row per invented
+  thread). An inbound federated `thread_id` over 255 bytes rejects the EDU. `m.receipt` in
+  `/sync` and the sliding sync receipts extension carry `thread_id` (one shared
+  `sync::ReceiptContentBuilder`). Federated receipts carry it both ways in `data.thread_id`.
+- **FIXED (unread counts ignored threads):** counts are partitioned by thread as the spec
+  requires. An unthreaded receipt covers every earlier event. A threaded receipt covers only its
+  own thread (`main` or a root's event ID), resolved through up to 3 relation hops
+  (`sync::ReadMarkers`, `sync::read_markers_for`, `sync::event_thread_id`).
+  `sync::read_receipt_ordering` is replaced by `sync::read_receipt_markers`, and
+  `count_notifications` / `count_highlights` take `ReadMarkers`. This applies to `/sync`, sliding
+  sync, the room-list `by_notification_count` sort, the push-gateway badge and
+  `GET /notifications` `read`. Scenarios tagged `[threaded-receipts]` and `[read-markers]`.
+
 ## 0.12.28
 
 First wave of fixes for the 17 October 2026 Matrix v1.19 conformance audit

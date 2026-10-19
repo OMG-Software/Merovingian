@@ -697,6 +697,23 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {22U, "drop_deferred_pdus", std::move(statements), MigrationDirection::downgrade};
 }
 
+// ADR-0169: read receipts are kept in a table so a restart does not mark every
+// room unread again. Main-process only.
+[[nodiscard]] auto upgrade_receipts_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("receipts").value()).value());
+    return {24U, "receipts", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v24 -> v23: drop the receipts table.
+[[nodiscard]] auto downgrade_receipts_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("receipts").value());
+    return {23U, "drop_receipts", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -721,7 +738,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_remote_media_cache_mapping_migration(),
             upgrade_room_alias_creator_migration(),
             upgrade_appservice_outbox_migration(),
-            upgrade_deferred_pdus_migration()};
+            upgrade_deferred_pdus_migration(),
+            upgrade_receipts_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -872,7 +890,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_deferred_pdus_migration(),
+    return {downgrade_receipts_migration(),
+            downgrade_deferred_pdus_migration(),
             downgrade_appservice_outbox_migration(),
             downgrade_room_alias_creator_migration(),
             downgrade_remote_media_cache_mapping_migration(),

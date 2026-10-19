@@ -510,13 +510,13 @@ SCENARIO("Sliding sync notification counts are baselined on the user's read rece
         store.events.push_back({"$m2", "!room:example.org", "@bob:example.org", message_json, 1U, 20U, {}, {}, {}});
         store.events.push_back({"$m3", "!room:example.org", "@bob:example.org", message_json, 1U, 30U, {}, {}, {}});
 
-        auto receipt = merovingian::homeserver::InboundReceipt{};
+        auto receipt = merovingian::database::PersistentReceipt{};
         receipt.room_id = "!room:example.org";
         receipt.receipt_type = "m.read";
         receipt.user_id = "@alice:example.org";
         receipt.event_id = "$m2";
         receipt.stream_id = 1U;
-        runtime.receipts.push_back(receipt);
+        runtime.database.persistent_store.receipts.push_back(receipt);
 
         auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
         sub.timeline_limit = 20U;
@@ -538,7 +538,8 @@ SCENARIO("Sliding sync notification counts are baselined on the user's read rece
         WHEN("the read-receipt baseline is computed directly")
         {
             auto const ordering =
-                merovingian::sync::read_receipt_ordering(runtime, store, "!room:example.org", "@alice:example.org");
+                merovingian::sync::read_receipt_markers(runtime, store, "!room:example.org", "@alice:example.org")
+                    .unthreaded;
 
             THEN("it is the stream ordering of the receipted event")
             {
@@ -547,8 +548,9 @@ SCENARIO("Sliding sync notification counts are baselined on the user's read rece
 
             THEN("a user with no receipt has a zero baseline")
             {
-                REQUIRE(merovingian::sync::read_receipt_ordering(runtime, store, "!room:example.org",
-                                                                 "@carol:example.org") == 0U);
+                REQUIRE(
+                    merovingian::sync::read_receipt_markers(runtime, store, "!room:example.org", "@carol:example.org")
+                        .unthreaded == 0U);
             }
         }
     }
@@ -618,8 +620,8 @@ SCENARIO("count_notifications counts m.room.message and m.room.encrypted after r
 
         WHEN("count_notifications is called for alice with read_ordering 20")
         {
-            auto const count =
-                merovingian::sync::count_notifications(store, "!room:example.org", "@alice:example.org", 20U);
+            auto const count = merovingian::sync::count_notifications(store, "!room:example.org", "@alice:example.org",
+                                                                      merovingian::sync::ReadMarkers{20U, {}});
 
             THEN("only the after-baseline message and encrypted event from bob count")
             {
@@ -663,8 +665,8 @@ SCENARIO("count_highlights counts only after-baseline events mentioning the user
 
         WHEN("count_highlights is called for alice with read_ordering 20")
         {
-            auto const count =
-                merovingian::sync::count_highlights(store, "!room:example.org", "@alice:example.org", 20U);
+            auto const count = merovingian::sync::count_highlights(store, "!room:example.org", "@alice:example.org",
+                                                                   merovingian::sync::ReadMarkers{20U, {}});
 
             THEN("only the after-baseline event mentioning alice by another sender counts")
             {

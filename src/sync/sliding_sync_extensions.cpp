@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
+#include "merovingian/sync/receipt_content_builder.hpp"
 #include "merovingian/sync/receipt_visibility.hpp"
 #include "merovingian/sync/room_access.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
@@ -33,11 +34,6 @@ namespace
     [[nodiscard]] auto jstr(std::string s) -> canonicaljson::Value
     {
         return canonicaljson::Value{std::move(s)};
-    }
-
-    [[nodiscard]] auto jint(std::int64_t n) -> canonicaljson::Value
-    {
-        return canonicaljson::Value{n};
     }
 
     [[nodiscard]] auto jobj(canonicaljson::Object obj) -> canonicaljson::Value
@@ -247,10 +243,9 @@ namespace
             {
                 continue;
             }
-            // Index: event_id → receipt_type → user_id → ts
-            auto idx = std::map<std::string, std::map<std::string, std::map<std::string, std::uint64_t>>>{};
+            auto receipts = ReceiptContentBuilder{};
 
-            for (auto const& receipt : rt.receipts)
+            for (auto const& receipt : rt.database.persistent_store.receipts)
             {
                 if (receipt.room_id != room_id || receipt.stream_id <= since_sync_stream_id)
                 {
@@ -269,31 +264,15 @@ namespace
                 {
                     continue;
                 }
-                idx[receipt.event_id][receipt.receipt_type][receipt.user_id] = receipt.ts;
+                receipts.add(receipt);
             }
-            if (idx.empty())
+            if (receipts.empty())
             {
                 continue;
             }
 
-            // Build m.receipt content: {event_id: {receipt_type: {user_id: {ts: N}}}}
-            auto content = canonicaljson::Object{};
-            for (auto& [event_id, receipt_types] : idx)
-            {
-                auto type_obj = canonicaljson::Object{};
-                for (auto& [receipt_type, users] : receipt_types)
-                {
-                    auto user_obj = canonicaljson::Object{};
-                    for (auto const& [uid, ts] : users)
-                    {
-                        auto ts_obj = canonicaljson::Object{};
-                        ts_obj.push_back(canonicaljson::make_member("ts", jint(static_cast<std::int64_t>(ts))));
-                        user_obj.push_back(canonicaljson::make_member(uid, jobj(std::move(ts_obj))));
-                    }
-                    type_obj.push_back(canonicaljson::make_member(receipt_type, jobj(std::move(user_obj))));
-                }
-                content.push_back(canonicaljson::make_member(event_id, jobj(std::move(type_obj))));
-            }
+            // m.receipt content: {event_id: {receipt_type: {user_id: {ts: N, thread_id: T}}}}
+            auto content = receipts.build();
             // m.receipt is an EphemeralRoom-kind event (ruma's SyncReceiptEvent):
             // the client expects {"type":"m.receipt","content":{...}}, not the
             // bare content object. Sending bare content fails deserialization

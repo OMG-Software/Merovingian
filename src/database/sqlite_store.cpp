@@ -1101,6 +1101,19 @@ namespace
                              store.deferred_pdus.push_back(std::move(entry));
                          }) &&
                load_rows(connection,
+                         "SELECT room_id, receipt_type, user_id, thread_id, event_id, ts, stream_id FROM receipts",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentReceipt entry{};
+                             entry.room_id = column_text(row, 0);
+                             entry.receipt_type = column_text(row, 1);
+                             entry.user_id = column_text(row, 2);
+                             entry.thread_id = column_text(row, 3);
+                             entry.event_id = column_text(row, 4);
+                             entry.ts = parse_u64(column_text(row, 5));
+                             entry.stream_id = parse_u64(column_text(row, 6));
+                             store.receipts.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
                          "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups",
                          [&store](sqlite3_stmt& row) {
                              PersistentStateGroup entry{};

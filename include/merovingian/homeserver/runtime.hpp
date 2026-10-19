@@ -186,8 +186,9 @@ struct LocalDatabase final
 // Caps on the in-memory ephemeral state a federating peer can create
 // (0.12.5 audit, findings 12 and 13).
 //
-// Both vectors are fed straight from federation EDUs. `typing_users` only ever
-// shrank when a previously-seen user sent typing=false, and `receipts` was
+// Both collections are fed straight from federation EDUs: `typing_users` here
+// and the receipts in `database.persistent_store.receipts`. `typing_users` only
+// ever shrank when a previously-seen user sent typing=false, and receipts are
 // upserted but never reaped, so a malicious peer could grow either without
 // bound by varying room_id and user_id — monotonic memory growth from remote
 // input, ending in an OOM kill.
@@ -195,10 +196,14 @@ struct LocalDatabase final
 // The primary bound is membership: an EDU for a room this server holds no
 // membership row for is dropped, so a peer can only create entries for rooms we
 // actually participate in. These caps are the backstop for a peer that is a
-// legitimate member of a large room and simply floods it; the oldest entry is
-// evicted, since ephemeral state that old is already stale.
+// legitimate member of a large room and simply floods it. The oldest typing
+// entry is evicted; for receipts the oldest receipt of a remote user is, never
+// a local user's, since a local user's receipts are their unread state.
 constexpr auto max_inbound_typing_entries = std::size_t{4096U};
 constexpr auto max_inbound_receipt_entries = std::size_t{65536U};
+// A federated receipt's thread_id is `main` or a thread root's event ID, and an
+// event ID is at most 255 bytes (appendices, "Event IDs").
+constexpr auto max_receipt_thread_id_bytes = std::size_t{255U};
 
 // Most (user, device) deliveries one inbound m.direct_to_device EDU may queue
 // (audit FED-3). Deliveries past this are dropped and logged: a peer that names
@@ -211,16 +216,6 @@ struct InboundTypingUser final
     std::string room_id{};
     std::string user_id{};
     bool typing{false};
-    std::uint64_t stream_id{0U};
-};
-
-struct InboundReceipt final
-{
-    std::string room_id{};
-    std::string receipt_type{"m.read"};
-    std::string user_id{};
-    std::string event_id{};
-    std::uint64_t ts{0U};
     std::uint64_t stream_id{0U};
 };
 
@@ -383,7 +378,6 @@ struct HomeserverRuntime final
     bool crypto_provider_overridden{false};
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
-    std::vector<InboundReceipt> receipts{};
     // Replay window for inbound m.direct_to_device message IDs, keyed on
     // (origin, message_id). In memory only: a restart forgets it (see
     // federation/edu_idempotence.hpp). Guarded by `mutex` like the state above.

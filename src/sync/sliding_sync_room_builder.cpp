@@ -442,21 +442,31 @@ namespace
         return ts;
     }
 
+    // True when an event past the user's unthreaded receipt is still covered by
+    // the threaded receipt of its own thread. Resolving the thread follows the
+    // event's relations, so it is done only when the user has a threaded receipt
+    // in the room at all.
+    [[nodiscard]] auto read_in_its_thread(database::PersistentStore const& store, ReadMarkers const& markers,
+                                          std::uint64_t stream_ordering, canonicaljson::Object const& event) -> bool
+    {
+        return !markers.threads.empty() && markers.covers(stream_ordering, event_thread_id(store, event));
+    }
+
 } // namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-// Counts events strictly after `read_ordering` — the user's last read
-// receipt position, NOT the sync position (#417). The user's own events
-// never count as unread. Shared by sliding sync and the legacy /sync
+// Counts the events `markers` do not cover — relative to the user's read
+// receipts, NOT the sync position (#417). The user's own events never count
+// as unread. Shared by sliding sync and the legacy /sync
 // unread_notifications block.
 auto count_notifications(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
-                         std::uint64_t read_ordering) noexcept -> std::uint64_t
+                         ReadMarkers const& markers) -> std::uint64_t
 {
     auto count = std::uint64_t{0U};
     for (auto const& ev : store.events)
     {
-        if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
+        if (ev.room_id != room_id || ev.stream_ordering <= markers.unthreaded || ev.sender_user_id == user)
         {
             continue;
         }
@@ -476,7 +486,8 @@ auto count_notifications(database::PersistentStore const& store, std::string_vie
         {
             continue;
         }
-        if (*type_s == "m.room.message" || *type_s == "m.room.encrypted")
+        if ((*type_s == "m.room.message" || *type_s == "m.room.encrypted") &&
+            !read_in_its_thread(store, markers, ev.stream_ordering, *root))
         {
             ++count;
         }
@@ -485,13 +496,13 @@ auto count_notifications(database::PersistentStore const& store, std::string_vie
 }
 
 auto count_highlights(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
-                      std::uint64_t read_ordering) noexcept -> std::uint64_t
+                      ReadMarkers const& markers) -> std::uint64_t
 {
     // Simple mention scan: check m.mentions.user_ids or body for @user_id.
     auto count = std::uint64_t{0U};
     for (auto const& ev : store.events)
     {
-        if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
+        if (ev.room_id != room_id || ev.stream_ordering <= markers.unthreaded || ev.sender_user_id == user)
         {
             continue;
         }
@@ -507,7 +518,7 @@ auto count_highlights(database::PersistentStore const& store, std::string_view r
         }
         auto const* content_val = find_member(*root, "content");
         auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
-        if (content == nullptr)
+        if (content == nullptr || read_in_its_thread(store, markers, ev.stream_ordering, *root))
         {
             continue;
         }
@@ -671,9 +682,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     // #417: counts are relative to the user's last READ RECEIPT, not the sync
     // position — "events the user hasn't read", not "events the client hasn't
     // synced".
-    auto const read_ordering = read_receipt_ordering(rt, store, room_id, user);
-    resp.notification_count = count_notifications(store, room_id, user, read_ordering);
-    resp.highlight_count = count_highlights(store, room_id, user, read_ordering);
+    auto const markers = read_receipt_markers(rt, store, room_id, user);
+    resp.notification_count = count_notifications(store, room_id, user, markers);
+    resp.highlight_count = count_highlights(store, room_id, user, markers);
 
     // ── Timestamp ───────────────────────────────────────────────────────────
     resp.timestamp = latest_timestamp(store, room_id);
@@ -828,40 +839,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     return resp;
 }
 
-auto read_receipt_ordering(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
-                           std::string_view room_id, std::string_view user) -> std::uint64_t
+auto read_receipt_markers(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+                          std::string_view room_id, std::string_view user) -> ReadMarkers
 {
-    // Collect the events named by the user's read receipts in this room.
-    // m.read and m.read.private both advance the read position; the baseline
-    // is the highest stream ordering among the receipted events.
-    auto receipted_event_ids = std::unordered_set<std::string>{};
-    for (auto const& receipt : rt.receipts)
-    {
-        if (receipt.room_id != room_id || receipt.user_id != user)
-        {
-            continue;
-        }
-        if (receipt.receipt_type != "m.read" && receipt.receipt_type != "m.read.private")
-        {
-            continue;
-        }
-        receipted_event_ids.insert(receipt.event_id);
-    }
-    if (receipted_event_ids.empty())
-    {
-        return 0U;
-    }
-
-    auto read_ordering = std::uint64_t{0U};
-    for (auto const& ev : store.events)
-    {
-        if (ev.room_id != room_id || !receipted_event_ids.contains(ev.event_id))
-        {
-            continue;
-        }
-        read_ordering = std::max(read_ordering, ev.stream_ordering);
-    }
-    return read_ordering;
+    return read_markers_for(rt.database.persistent_store.receipts, store, room_id, user);
 }
 
 } // namespace merovingian::sync

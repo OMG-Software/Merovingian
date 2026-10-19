@@ -56,6 +56,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/sync/history_visibility.hpp"
+#include "merovingian/sync/receipt_content_builder.hpp"
 #include "merovingian/sync/receipt_visibility.hpp"
 #include "merovingian/sync/room_access.hpp"
 #include "merovingian/sync/room_read_access.hpp"
@@ -4123,6 +4124,35 @@ namespace
                                           json_serialize(json_obj(std::move(content))), 0U});
     }
 
+    // Sets one of the user's receipts and wakes /sync. Spec (Receipts): "Each user_id,
+    // receipt_type, and categorisation (unthreaded, or thread_id) tuple must be associated with
+    // only a single event_id"; database::store_receipt keys the row that way and commits it, so
+    // the user's read position survives a restart (ADR-0169). `thread_id` is empty for an
+    // unthreaded receipt.
+    [[nodiscard]] auto store_local_receipt(ClientServerRuntime& runtime, std::string_view room_id,
+                                           std::string_view user_id, std::string_view receipt_type,
+                                           std::string_view event_id, std::string_view thread_id, std::int64_t ts)
+        -> bool
+    {
+        auto receipt = database::PersistentReceipt{};
+        receipt.room_id = std::string{room_id};
+        receipt.receipt_type = std::string{receipt_type};
+        receipt.user_id = std::string{user_id};
+        receipt.event_id = std::string{event_id};
+        receipt.ts = ts > 0 ? static_cast<std::uint64_t>(ts) : 0U;
+        receipt.thread_id = std::string{thread_id};
+        if (!database::store_receipt(runtime.homeserver.database.persistent_store, std::move(receipt)))
+        {
+            return false;
+        }
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(runtime.homeserver.database.next_stream_ordering - 1U,
+                                           runtime.homeserver.database.persistent_store.next_sync_stream_id);
+        }
+        return true;
+    }
+
     [[nodiscard]] auto build_current_state_events_array(database::PersistentStore const& store,
                                                         sync::EventTypeFilter const& filter, std::string_view room_id)
         -> canonicaljson::Array
@@ -4229,8 +4259,8 @@ namespace
             }
         }
 
-        auto receipt_index = std::map<std::string, std::map<std::string, std::map<std::string, std::uint64_t>>>{};
-        for (auto const& receipt : runtime.receipts)
+        auto receipts = sync::ReceiptContentBuilder{};
+        for (auto const& receipt : runtime.database.persistent_store.receipts)
         {
             if (receipt.room_id != room_id || receipt.stream_id <= since_sync_stream_id)
             {
@@ -4257,28 +4287,12 @@ namespace
             {
                 continue;
             }
-            receipt_index[receipt.event_id][receipt.receipt_type][receipt.user_id] = receipt.ts;
+            receipts.add(receipt);
         }
-        if (!receipt_index.empty())
+        if (!receipts.empty())
         {
-            auto content = canonicaljson::Object{};
-            for (auto const& [event_id, receipt_types] : receipt_index)
-            {
-                auto receipt_type_members = canonicaljson::Object{};
-                for (auto const& [receipt_type, users] : receipt_types)
-                {
-                    auto user_members = canonicaljson::Object{};
-                    for (auto const& [user_id, ts] : users)
-                    {
-                        user_members.push_back(json_member(
-                            user_id, json_obj({json_member("ts", json_int(static_cast<std::int64_t>(ts)))})));
-                    }
-                    receipt_type_members.push_back(json_member(receipt_type, json_obj(std::move(user_members))));
-                }
-                content.push_back(json_member(event_id, json_obj(std::move(receipt_type_members))));
-            }
             events.push_back(json_obj(
-                {json_member("type", json_str("m.receipt")), json_member("content", json_obj(std::move(content)))}));
+                {json_member("type", json_str("m.receipt")), json_member("content", json_obj(receipts.build()))}));
         }
 
         return events;
@@ -4409,6 +4423,20 @@ namespace
             }
             content.push_back(json_member("last_active_ago", json_int(presence.last_active_ago)));
             content.push_back(json_member("currently_active", json_bool(presence.currently_active)));
+            // Spec (m.presence): "displayname: The current display name for this user, if any" and
+            // "avatar_url: The current avatar URL for this user, if any" — this server knows them for
+            // the users whose profile it holds.
+            if (auto const profile = database::find_profile(store, presence.user_id); profile.has_value())
+            {
+                if (!profile->displayname.empty())
+                {
+                    content.push_back(json_member("displayname", json_str(profile->displayname)));
+                }
+                if (!profile->avatar_url.empty())
+                {
+                    content.push_back(json_member("avatar_url", json_str(profile->avatar_url)));
+                }
+            }
             auto event = canonicaljson::Object{};
             event.push_back(json_member("type", json_str(std::string{"m.presence"})));
             event.push_back(json_member("sender", json_str(presence.user_id)));
@@ -4703,14 +4731,15 @@ namespace
             auto ephemeral_events = build_room_ephemeral_events_array(
                 rt.homeserver, room.room_id, user, since_sync_stream_id, max_observed_sync_stream_id, ignored_senders);
 
-            // unread_notifications: counts are relative to the user's last
-            // m.read/m.read.private receipt, not the sync position (#417,
-            // ported from the sliding-sync path). Without this, clients that
-            // poll legacy /sync (e.g. Element) never learn a receipt cleared
-            // the room's unread state until their own next message arrives.
-            auto const read_ordering = sync::read_receipt_ordering(rt.homeserver, store, room.room_id, user);
-            auto const notification_count = sync::count_notifications(store, room.room_id, user, read_ordering);
-            auto const highlight_count = sync::count_highlights(store, room.room_id, user, read_ordering);
+            // unread_notifications: counts are relative to the user's
+            // m.read/m.read.private receipts, unthreaded and per thread, not
+            // the sync position (#417, ported from the sliding-sync path).
+            // Without this, clients that poll legacy /sync (e.g. Element) never
+            // learn a receipt cleared the room's unread state until their own
+            // next message arrives.
+            auto const read_markers = sync::read_receipt_markers(rt.homeserver, store, room.room_id, user);
+            auto const notification_count = sync::count_notifications(store, room.room_id, user, read_markers);
+            auto const highlight_count = sync::count_highlights(store, room.room_id, user, read_markers);
 
             // Incremental sync: suppress rooms that have nothing new to report.
             // Without this check, re-dispatches after a long-poll timeout emit
@@ -5358,7 +5387,8 @@ namespace
                         return ad.user_id == user && ad.stream_id > since_sync_stream_id;
                     });
                 bool const has_relevant_receipts =
-                    wants_receipts && std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
+                    wants_receipts &&
+                    std::ranges::any_of(rt.homeserver.database.persistent_store.receipts, [&](auto const& r) {
                         return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user) &&
                                sync::receipt_visible_to(r.receipt_type, r.user_id, user);
                     });
@@ -12441,19 +12471,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, rt.limits.max_notifications_page_size));
         }
 
-        // Memoizes read_receipt_ordering per room_id: a user can have many
+        // Memoizes read_receipt_markers per room_id: a user can have many
         // notifications in the same room across one response, and the
         // receipt lookup scans every receipt the user has ever sent.
-        auto read_ordering_by_room = std::unordered_map<std::string, std::uint64_t>{};
-        auto const read_ordering_for_room = [&](std::string const& room_id) -> std::uint64_t {
-            auto const cached = read_ordering_by_room.find(room_id);
-            if (cached != read_ordering_by_room.end())
+        auto read_markers_by_room = std::unordered_map<std::string, sync::ReadMarkers>{};
+        auto const read_markers_for_room = [&](std::string const& room_id) -> sync::ReadMarkers const& {
+            auto const cached = read_markers_by_room.find(room_id);
+            if (cached != read_markers_by_room.end())
             {
                 return cached->second;
             }
-            auto const ordering = sync::read_receipt_ordering(rt.homeserver, store, room_id, *user);
-            read_ordering_by_room.emplace(room_id, ordering);
-            return ordering;
+            return read_markers_by_room
+                .emplace(room_id, sync::read_receipt_markers(rt.homeserver, store, room_id, *user))
+                .first->second;
         };
 
         auto array = canonicaljson::Array{};
@@ -12490,8 +12520,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // receipt indicating that they have read this message." Computed
             // from the user's current m.read/m.read.private baseline in this
             // room (see "Marking notifications as read"), not stored on the
-            // row, so it always reflects the latest receipt.
-            auto const read = notification.stream_ordering <= read_ordering_for_room(notification.room_id);
+            // row, so it always reflects the latest receipt. A threaded receipt
+            // covers only its own thread, so the event's thread is resolved
+            // when the user has one in this room.
+            auto const& markers = read_markers_for_room(notification.room_id);
+            auto const read = [&]() {
+                if (notification.stream_ordering <= markers.unthreaded || markers.threads.empty())
+                {
+                    return notification.stream_ordering <= markers.unthreaded;
+                }
+                auto const parsed_event = canonicaljson::parse_lossless(event_it->json);
+                auto const* event_object = std::get_if<canonicaljson::Object>(&parsed_event.value.storage());
+                return event_object != nullptr &&
+                       markers.covers(notification.stream_ordering, sync::event_thread_id(store, *event_object));
+            }();
 
             auto actions_parsed = canonicaljson::parse_lossless(notification.actions);
             auto actions_value = actions_parsed.error == canonicaljson::ParseError::none
@@ -12911,20 +12953,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "profile update body must be a JSON object");
             }
             auto& store = rt.homeserver.database.persistent_store;
-            if (!database::find_profile(store, *user).has_value())
+            if (!database::find_profile(store, *user).has_value() && !database::store_profile(store, {*user, {}, {}}))
             {
-                std::ignore = database::store_profile(store, {*user, {}, {}});
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
             }
-            if (is_displayname)
+            auto const field = is_displayname ? std::string_view{"displayname"} : std::string_view{"avatar_url"};
+            auto const* val = string_member(*obj, field);
+            auto const value = val != nullptr ? std::string_view{*val} : std::string_view{};
+            auto const updated = is_displayname ? database::update_profile_displayname(store, *user, value)
+                                                : database::update_profile_avatar_url(store, *user, value);
+            if (!updated)
             {
-                auto const* val = string_member(*obj, "displayname");
-                std::ignore = database::update_profile_displayname(store, *user, val != nullptr ? *val : "");
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the profile");
             }
-            else
-            {
-                auto const* val = string_member(*obj, "avatar_url");
-                std::ignore = database::update_profile_avatar_url(store, *user, val != nullptr ? *val : "");
-            }
+            // Spec (Events on Change of Profile Information): the change is sent as an
+            // m.room.member join "to every room the user is a member of" — clients show the
+            // display name and avatar from those events, not from the profile.
+            std::ignore = propagate_profile_change(rt.homeserver, req.access_token);
             return dispatch_resp(req, rt, 200U, "{}");
         }
     }
@@ -14759,38 +14804,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                               std::chrono::system_clock::now().time_since_epoch())
                                                               .count());
 
-            // Helper: upsert a local receipt entry and notify sync.
-            auto upsert_receipt = [&](std::string const& receipt_type, std::string const& event_id) {
-                auto existing = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
-                    return r.room_id == room_id && r.user_id == *user && r.receipt_type == receipt_type;
-                });
-                auto const stream_id = database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
-                if (existing != rt.homeserver.receipts.end())
-                {
-                    existing->event_id = event_id;
-                    existing->ts = static_cast<std::uint64_t>(now_ts);
-                    existing->stream_id = stream_id;
-                }
-                else
-                {
-                    rt.homeserver.receipts.push_back({std::string{room_id}, receipt_type, std::string{*user}, event_id,
-                                                      static_cast<std::uint64_t>(now_ts), stream_id});
-                }
-                if (rt.sync_notifier != nullptr)
-                {
-                    rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
-                                              rt.homeserver.database.persistent_store.next_sync_stream_id);
-                }
-            };
-
             if (body_obj != nullptr)
             {
-                // m.read — federated read receipt.
+                // m.read — federated read receipt. The body of /read_markers has no
+                // thread_id, so both receipts it sets are unthreaded.
                 auto const* m_read = string_member(*body_obj, "m.read");
                 if (m_read != nullptr && !m_read->empty())
                 {
+                    if (!store_local_receipt(rt, room_id, *user, "m.read", *m_read, {}, now_ts))
+                    {
+                        return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the read receipt");
+                    }
                     auto const edu_content_opt =
-                        federation::build_receipt_edu_content(room_id, "m.read", *user, *m_read, now_ts);
+                        federation::build_receipt_edu_content(room_id, "m.read", *user, *m_read, now_ts, {});
                     if (edu_content_opt.has_value())
                     {
                         auto const enqueued =
@@ -14805,7 +14831,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             });
                         }
                     }
-                    upsert_receipt("m.read", std::string{*m_read});
                 }
 
                 // m.fully_read — the owner's room account data, not a receipt: never
@@ -14821,9 +14846,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
                 // m.read.private — local-only receipt, MUST NOT be federated.
                 auto const* m_read_private = string_member(*body_obj, "m.read.private");
-                if (m_read_private != nullptr && !m_read_private->empty())
+                if (m_read_private != nullptr && !m_read_private->empty() &&
+                    !store_local_receipt(rt, room_id, *user, "m.read.private", *m_read_private, {}, now_ts))
                 {
-                    upsert_receipt("m.read.private", std::string{*m_read_private});
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the read receipt");
                 }
             }
 
@@ -14858,12 +14884,35 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         // The receipt endpoint accepts an empty body, but any
                         // present body MUST be valid JSON.
+                        auto thread_id = std::string{};
                         if (!req.body.empty())
                         {
                             auto const receipt_body = canonicaljson::parse_lossless(req.body);
                             if (receipt_body.error != canonicaljson::ParseError::none)
                             {
                                 return dispatch_err(req, rt, 400U, "M_BAD_JSON", "receipt body must be valid JSON");
+                            }
+                            // Spec: thread_id is "The thread root's event ID (or main) for which
+                            // thread this receipt is intended to be under. If not specified, the
+                            // read receipt is unthreaded". 400 when "It is not a string. It is
+                            // empty. It is provided for an incompatible receipt type."
+                            auto const* body_obj = std::get_if<canonicaljson::Object>(&receipt_body.value.storage());
+                            auto const* thread_value =
+                                body_obj != nullptr ? object_member(*body_obj, "thread_id") : nullptr;
+                            if (thread_value != nullptr)
+                            {
+                                auto const* thread_string = std::get_if<std::string>(&thread_value->storage());
+                                if (thread_string == nullptr || thread_string->empty())
+                                {
+                                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                                        "thread_id field must be a non-empty string");
+                                }
+                                if (receipt_type == "m.fully_read")
+                                {
+                                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                                        "thread_id is not valid for m.fully_read");
+                                }
+                                thread_id = *thread_string;
                             }
                         }
 
@@ -14877,23 +14926,51 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
                         }
+                        // A thread_id is "The thread root's event ID (or main)". One naming no event
+                        // in this room is not a thread root; refusing it also bounds the receipt rows
+                        // a user can create to one per event in the room.
+                        if (!thread_id.empty() && thread_id != sync::main_thread_id &&
+                            std::ranges::none_of(rt.homeserver.database.persistent_store.events,
+                                                 [&](database::PersistentEvent const& event) {
+                                                     return event.event_id == thread_id && event.room_id == room_id;
+                                                 }))
+                        {
+                            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                                "thread_id must be main or the event ID of a thread root in the room");
+                        }
                         log_diagnostic("room.receipt.accepted", {
                                                                     {"actor",        *user,        false},
                                                                     {"room_id",      room_id,      false},
                                                                     {"receipt_type", receipt_type, false},
-                                                                    {"event_id",     event_id,     false}
+                                                                    {"event_id",     event_id,     false},
+                                                                    {"thread_id",    thread_id,    false}
                         });
                         auto const now_ts =
                             static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                           std::chrono::system_clock::now().time_since_epoch())
                                                           .count());
+                        // Spec: for m.fully_read this endpoint "effectively calls /read_markers
+                        // internally", i.e. it sets the room account data marker, not a receipt.
+                        if (receipt_type == "m.fully_read")
+                        {
+                            if (!store_fully_read_marker(rt, *user, room_id, event_id))
+                            {
+                                return dispatch_err(req, rt, 500U, "M_UNKNOWN",
+                                                    "failed to persist the fully read marker");
+                            }
+                            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+                        }
+                        if (!store_local_receipt(rt, room_id, *user, receipt_type, event_id, thread_id, now_ts))
+                        {
+                            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist the read receipt");
+                        }
                         // Spec (S-S API, m.receipt): "only a single <receipt_type> should be used:
                         // m.read. m.read.private MUST NOT appear in this federated m.receipt EDU."
                         // m.fully_read is private room account data, so it is not federated either.
                         if (receipt_type == "m.read")
                         {
-                            auto const edu_content_opt =
-                                federation::build_receipt_edu_content(room_id, receipt_type, *user, event_id, now_ts);
+                            auto const edu_content_opt = federation::build_receipt_edu_content(
+                                room_id, receipt_type, *user, event_id, now_ts, thread_id);
                             if (edu_content_opt.has_value())
                             {
                                 auto const enqueued = dispatch_outbound_edu(rt.homeserver, *receipt_room_it,
@@ -14908,39 +14985,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     });
                                 }
                             }
-                        }
-                        // Spec: for m.fully_read this endpoint "effectively calls /read_markers
-                        // internally", i.e. it sets the room account data marker, not a receipt.
-                        if (receipt_type == "m.fully_read")
-                        {
-                            if (!store_fully_read_marker(rt, *user, room_id, event_id))
-                            {
-                                return dispatch_err(req, rt, 500U, "M_UNKNOWN",
-                                                    "failed to persist the fully read marker");
-                            }
-                            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
-                        }
-                        auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
-                            return r.room_id == room_id && r.user_id == *user && r.receipt_type == receipt_type;
-                        });
-                        auto const stream_id =
-                            database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
-                        if (existing_receipt != rt.homeserver.receipts.end())
-                        {
-                            existing_receipt->event_id = std::string{event_id};
-                            existing_receipt->ts = static_cast<std::uint64_t>(now_ts);
-                            existing_receipt->stream_id = stream_id;
-                        }
-                        else
-                        {
-                            rt.homeserver.receipts.push_back({std::string{room_id}, receipt_type, std::string{*user},
-                                                              std::string{event_id}, static_cast<std::uint64_t>(now_ts),
-                                                              stream_id});
-                        }
-                        if (rt.sync_notifier != nullptr)
-                        {
-                            rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
-                                                      rt.homeserver.database.persistent_store.next_sync_stream_id);
                         }
                         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
                     }

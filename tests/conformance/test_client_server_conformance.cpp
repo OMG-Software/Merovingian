@@ -10096,8 +10096,8 @@ SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} stores receipt an
                 auto const body = parse_object(response.response.body);
                 REQUIRE(body.empty());
                 // Spec MUST: receipt is recorded for the user, room, and event.
-                REQUIRE(!started.runtime.homeserver.receipts.empty());
-                auto const& receipt = started.runtime.homeserver.receipts.back();
+                REQUIRE(!started.runtime.homeserver.database.persistent_store.receipts.empty());
+                auto const& receipt = started.runtime.homeserver.database.persistent_store.receipts.back();
                 REQUIRE(receipt.room_id == room_id);
                 REQUIRE(receipt.receipt_type == "m.read");
                 REQUIRE(receipt.event_id == event_id);

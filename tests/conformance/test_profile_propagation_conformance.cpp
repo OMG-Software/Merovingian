@@ -1,0 +1,466 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// +-------------------------------------------------------------------------+
+// |         MATRIX PROFILE PROPAGATION CONFORMANCE TESTS                     |
+// |                                                                          |
+// |  Spec: Matrix Client-Server API v1.19                                     |
+// |  URL:  ../../docs/matrix-v1.19-spec/client-server-api.md                  |
+// |                                                                          |
+// |  Covers "Events on Change of Profile Information": a display name or     |
+// |  avatar change sends an m.room.member join event to every joined room,   |
+// |  and membership events this server emits for its own users carry the     |
+// |  display name and avatar URL.                                            |
+// +-------------------------------------------------------------------------+
+
+#include "../support/in_memory_database_config.hpp"
+#include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
+#include "../support/registration_token.hpp"
+#include "merovingian/homeserver/client_server.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstddef>
+#include <string>
+#include <string_view>
+
+namespace
+{
+
+using namespace merovingian::tests;
+
+[[nodiscard]] auto conformance_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::tests::in_memory_database_config(),
+        security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+    };
+}
+
+[[nodiscard]] auto logged_in_token(merovingian::homeserver::ClientServerRuntime& runtime, std::string_view localpart)
+    -> std::string
+{
+    auto const reg = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST",
+                  "/_matrix/client/v3/register",
+                  {},
+                  merovingian::tests::registration_json(localpart, "CorrectHorse7!")});
+    REQUIRE(reg.response.status == 200U);
+
+    auto const login_body =
+        std::string{"{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"@"} +
+        std::string{localpart} + ":example.org\"},\"password\":\"CorrectHorse7!\",\"device_id\":\"DEVICE1\"}";
+    auto const login = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/login", {}, login_body});
+    REQUIRE(login.response.status == 200U);
+
+    auto const body = parse_object(login.response.body);
+    auto const* token = string_member(body, "access_token");
+    REQUIRE(token != nullptr);
+    return *token;
+}
+
+[[nodiscard]] auto create_public_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
+{
+    auto const create = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+    REQUIRE(create.response.status == 200U);
+    auto const body = parse_object(create.response.body);
+    auto const* room_id = string_member(body, "room_id");
+    REQUIRE(room_id != nullptr);
+    return *room_id;
+}
+
+auto join(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token, std::string const& room_id)
+    -> void
+{
+    auto const joined = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/join/" + room_id, token, "{}"});
+    REQUIRE(joined.response.status == 200U);
+}
+
+auto put_profile_field(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                       std::string const& user_id, std::string const& field, std::string const& value) -> void
+{
+    auto const put = merovingian::homeserver::handle_client_server_request(
+        runtime,
+        {"PUT", "/_matrix/client/v3/profile/" + user_id + "/" + field, token, "{\"" + field + "\":\"" + value + "\"}"});
+    REQUIRE(put.response.status == 200U);
+}
+
+// The content of the user's current m.room.member state event in the room.
+[[nodiscard]] auto member_content(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                  std::string const& room_id, std::string const& user_id)
+    -> merovingian::canonicaljson::Object
+{
+    auto const state = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.member/" + user_id, token, {}});
+    REQUIRE(state.response.status == 200U);
+    return parse_object(state.response.body);
+}
+
+// Number of m.room.member events for `user_id` in the room's timeline of an
+// initial /sync by `token`, and the display name the last one carries.
+struct TimelineMembership final
+{
+    std::size_t count{0U};
+    std::string last_displayname{};
+};
+
+[[nodiscard]] auto timeline_membership(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                       std::string const& room_id, std::string const& user_id) -> TimelineMembership
+{
+    auto const sync =
+        merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+    REQUIRE(sync.response.status == 200U);
+    auto const body = parse_object(sync.response.body);
+    auto const* rooms = object_member_as_object(body, "rooms");
+    REQUIRE(rooms != nullptr);
+    auto const* joined = object_member_as_object(*rooms, "join");
+    REQUIRE(joined != nullptr);
+    auto const* room = object_member_as_object(*joined, room_id);
+    REQUIRE(room != nullptr);
+    auto const* timeline = object_member_as_object(*room, "timeline");
+    REQUIRE(timeline != nullptr);
+    auto const* events = object_member_as_array(*timeline, "events");
+    REQUIRE(events != nullptr);
+
+    auto result = TimelineMembership{};
+    for (auto const& value : *events)
+    {
+        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+        if (event == nullptr)
+        {
+            continue;
+        }
+        auto const* type = string_member(*event, "type");
+        auto const* state_key = string_member(*event, "state_key");
+        if (type == nullptr || *type != "m.room.member" || state_key == nullptr || *state_key != user_id)
+        {
+            continue;
+        }
+        ++result.count;
+        auto const* content = object_member_as_object(*event, "content");
+        auto const* displayname = content != nullptr ? string_member(*content, "displayname") : nullptr;
+        result.last_displayname = displayname != nullptr ? *displayname : std::string{};
+    }
+    return result;
+}
+
+[[nodiscard]] auto next_batch_of(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
+{
+    auto const sync =
+        merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+    REQUIRE(sync.response.status == 200U);
+    auto const body = parse_object(sync.response.body);
+    auto const* next_batch = string_member(body, "next_batch");
+    REQUIRE(next_batch != nullptr);
+    return *next_batch;
+}
+
+// The content of the last m.presence event from `sender` in an incremental /sync since `since`,
+// or an empty object when there is none.
+[[nodiscard]] auto presence_since(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                  std::string const& since, std::string const& sender)
+    -> merovingian::canonicaljson::Object
+{
+    auto const sync = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v3/sync?timeout=0&since=" + since, token, {}});
+    REQUIRE(sync.response.status == 200U);
+    auto const body = parse_object(sync.response.body);
+    auto const* presence = object_member_as_object(body, "presence");
+    auto const* events = presence != nullptr ? object_member_as_array(*presence, "events") : nullptr;
+    auto result = merovingian::canonicaljson::Object{};
+    if (events == nullptr)
+    {
+        return result;
+    }
+    for (auto const& value : *events)
+    {
+        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+        auto const* type = event != nullptr ? string_member(*event, "type") : nullptr;
+        auto const* event_sender = event != nullptr ? string_member(*event, "sender") : nullptr;
+        if (type == nullptr || *type != "m.presence" || event_sender == nullptr || *event_sender != sender)
+        {
+            continue;
+        }
+        auto const* content = object_member_as_object(*event, "content");
+        if (content != nullptr)
+        {
+            result = *content;
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
+//
+// "an m.presence presence status update is sent, again containing the new values of the
+// displayname and avatar_url keys, in addition to the required presence key containing the
+// current presence state of the user. Both of these should be done automatically by the
+// homeserver when a user successfully changes their display name or avatar URL fields."
+SCENARIO("changing the display name or avatar sends an m.presence update carrying them",
+         "[conformance][client-server][profile][profile-propagation][presence]")
+{
+    GIVEN("Alice and Bob in a room, with Alice online and Bob synced up to date")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const bob = logged_in_token(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        join(started.runtime, bob, room_id);
+        auto const online = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"PUT", "/_matrix/client/v3/presence/@alice:example.org/status", alice,
+                              R"({"presence":"online","status_msg":"baking"})"});
+        REQUIRE(online.response.status == 200U);
+        auto const since = next_batch_of(started.runtime, bob);
+
+        WHEN("Alice sets her display name")
+        {
+            put_profile_field(started.runtime, alice, "@alice:example.org", "displayname", "Alice Liddell");
+            auto const content = presence_since(started.runtime, bob, since, "@alice:example.org");
+
+            THEN("Bob receives her presence again, unchanged, now with the new display name")
+            {
+                auto const* presence = string_member(content, "presence");
+                REQUIRE(presence != nullptr);
+                REQUIRE(*presence == "online");
+                auto const* status_msg = string_member(content, "status_msg");
+                REQUIRE(status_msg != nullptr);
+                REQUIRE(*status_msg == "baking");
+                auto const* displayname = string_member(content, "displayname");
+                REQUIRE(displayname != nullptr);
+                REQUIRE(*displayname == "Alice Liddell");
+            }
+        }
+
+        WHEN("Alice sets her avatar URL")
+        {
+            put_profile_field(started.runtime, alice, "@alice:example.org", "avatar_url", "mxc://example.org/alice");
+            auto const content = presence_since(started.runtime, bob, since, "@alice:example.org");
+
+            THEN("Bob's presence update carries the new avatar URL")
+            {
+                auto const* presence = string_member(content, "presence");
+                REQUIRE(presence != nullptr);
+                REQUIRE(*presence == "online");
+                auto const* avatar_url = string_member(content, "avatar_url");
+                REQUIRE(avatar_url != nullptr);
+                REQUIRE(*avatar_url == "mxc://example.org/alice");
+            }
+        }
+    }
+
+    GIVEN("Alice and Bob in a room, where Alice has never set a presence")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const bob = logged_in_token(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        join(started.runtime, bob, room_id);
+        auto const since = next_batch_of(started.runtime, bob);
+
+        WHEN("Alice sets her display name")
+        {
+            put_profile_field(started.runtime, alice, "@alice:example.org", "displayname", "Alice Liddell");
+            auto const content = presence_since(started.runtime, bob, since, "@alice:example.org");
+
+            THEN("the update still carries the required presence key, as offline, and the display name")
+            {
+                auto const* presence = string_member(content, "presence");
+                REQUIRE(presence != nullptr);
+                REQUIRE(*presence == "offline");
+                auto const* displayname = string_member(content, "displayname");
+                REQUIRE(displayname != nullptr);
+                REQUIRE(*displayname == "Alice Liddell");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
+//
+// "an m.room.member event (with a join membership) is sent to every room the user is a member of,
+// to update the displayname and avatar_url ... Both of these should be done automatically by the
+// homeserver when a user successfully changes their display name or avatar URL fields."
+SCENARIO("changing the display name sends a join m.room.member event carrying it to every joined room",
+         "[conformance][client-server][profile][profile-propagation]")
+{
+    GIVEN("Alice and Bob joined to two rooms Alice created")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const bob = logged_in_token(started.runtime, "bob");
+        auto const first_room = create_public_room(started.runtime, alice);
+        auto const second_room = create_public_room(started.runtime, alice);
+        join(started.runtime, bob, first_room);
+        join(started.runtime, bob, second_room);
+
+        WHEN("Alice sets her display name")
+        {
+            put_profile_field(started.runtime, alice, "@alice:example.org", "displayname", "Alice Liddell");
+
+            THEN("her membership in each room is still join and carries the new display name")
+            {
+                for (auto const& room_id : {first_room, second_room})
+                {
+                    auto const content = member_content(started.runtime, bob, room_id, "@alice:example.org");
+                    auto const* membership = string_member(content, "membership");
+                    REQUIRE(membership != nullptr);
+                    REQUIRE(*membership == "join");
+                    auto const* displayname = string_member(content, "displayname");
+                    REQUIRE(displayname != nullptr);
+                    REQUIRE(*displayname == "Alice Liddell");
+                }
+            }
+            THEN("Bob's /sync delivers the membership update in the room timeline")
+            {
+                auto const seen = timeline_membership(started.runtime, bob, first_room, "@alice:example.org");
+                REQUIRE(seen.count >= 2U);
+                REQUIRE(seen.last_displayname == "Alice Liddell");
+            }
+        }
+
+        WHEN("Alice sets her avatar URL")
+        {
+            put_profile_field(started.runtime, alice, "@alice:example.org", "avatar_url", "mxc://example.org/avatar");
+
+            THEN("her membership in each room carries the new avatar URL")
+            {
+                for (auto const& room_id : {first_room, second_room})
+                {
+                    auto const content = member_content(started.runtime, bob, room_id, "@alice:example.org");
+                    auto const* membership = string_member(content, "membership");
+                    REQUIRE(membership != nullptr);
+                    REQUIRE(*membership == "join");
+                    auto const* avatar_url = string_member(content, "avatar_url");
+                    REQUIRE(avatar_url != nullptr);
+                    REQUIRE(*avatar_url == "mxc://example.org/avatar");
+                }
+            }
+        }
+
+        WHEN("Alice sets a display name and then an avatar URL")
+        {
+            put_profile_field(started.runtime, alice, "@alice:example.org", "displayname", "Alice Liddell");
+            put_profile_field(started.runtime, alice, "@alice:example.org", "avatar_url", "mxc://example.org/avatar");
+
+            THEN("the latest membership event carries both, so neither change undoes the other")
+            {
+                auto const content = member_content(started.runtime, bob, first_room, "@alice:example.org");
+                auto const* displayname = string_member(content, "displayname");
+                REQUIRE(displayname != nullptr);
+                REQUIRE(*displayname == "Alice Liddell");
+                auto const* avatar_url = string_member(content, "avatar_url");
+                REQUIRE(avatar_url != nullptr);
+                REQUIRE(*avatar_url == "mxc://example.org/avatar");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
+//
+// The update goes to "every room the user is a member of": a room the user has left is not one,
+// and sending a join there would rejoin them.
+SCENARIO("changing the display name leaves rooms the user has left untouched",
+         "[conformance][client-server][profile][profile-propagation]")
+{
+    GIVEN("Bob joined a room of Alice's and then left it")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const bob = logged_in_token(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        join(started.runtime, bob, room_id);
+        auto const left = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob, "{}"});
+        REQUIRE(left.response.status == 200U);
+
+        WHEN("Bob sets his display name")
+        {
+            put_profile_field(started.runtime, bob, "@bob:example.org", "displayname", "Robert");
+
+            THEN("his membership of that room is still leave")
+            {
+                auto const content = member_content(started.runtime, alice, room_id, "@bob:example.org");
+                auto const* membership = string_member(content, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "leave");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
+//
+// "when homeservers emit room membership events for their own users, they should include the
+// display name and avatar URL fields in these events so that clients already have these details
+// to hand, and do not have to perform extra round trips to query it."
+SCENARIO("membership events this server emits for its own users carry their profile",
+         "[conformance][client-server][profile][profile-propagation]")
+{
+    GIVEN("Alice and Bob who have both set a display name and an avatar URL")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const bob = logged_in_token(started.runtime, "bob");
+        put_profile_field(started.runtime, alice, "@alice:example.org", "displayname", "Alice Liddell");
+        put_profile_field(started.runtime, alice, "@alice:example.org", "avatar_url", "mxc://example.org/alice");
+        put_profile_field(started.runtime, bob, "@bob:example.org", "displayname", "Robert");
+        put_profile_field(started.runtime, bob, "@bob:example.org", "avatar_url", "mxc://example.org/bob");
+
+        WHEN("Alice creates a room and Bob joins it")
+        {
+            auto const room_id = create_public_room(started.runtime, alice);
+            join(started.runtime, bob, room_id);
+
+            THEN("Alice's creator membership carries her display name and avatar URL")
+            {
+                auto const content = member_content(started.runtime, alice, room_id, "@alice:example.org");
+                auto const* displayname = string_member(content, "displayname");
+                REQUIRE(displayname != nullptr);
+                REQUIRE(*displayname == "Alice Liddell");
+                auto const* avatar_url = string_member(content, "avatar_url");
+                REQUIRE(avatar_url != nullptr);
+                REQUIRE(*avatar_url == "mxc://example.org/alice");
+            }
+            THEN("Bob's join carries his display name and avatar URL")
+            {
+                auto const content = member_content(started.runtime, alice, room_id, "@bob:example.org");
+                auto const* membership = string_member(content, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "join");
+                auto const* displayname = string_member(content, "displayname");
+                REQUIRE(displayname != nullptr);
+                REQUIRE(*displayname == "Robert");
+                auto const* avatar_url = string_member(content, "avatar_url");
+                REQUIRE(avatar_url != nullptr);
+                REQUIRE(*avatar_url == "mxc://example.org/bob");
+            }
+        }
+    }
+}

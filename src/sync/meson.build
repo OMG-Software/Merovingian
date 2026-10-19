@@ -1,6 +1,8 @@
 sync_sources = files(
   'device_list_delta.cpp',
   'history_visibility.cpp',
+  'read_markers.cpp',
+  'receipt_content_builder.cpp',
   'receipt_visibility.cpp',
   'room_access.cpp',
   'room_read_access.cpp',

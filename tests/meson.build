@@ -319,6 +319,7 @@ shell = find_program('sh')
       'unit/test_push_gateway_client.cpp',
       'unit/test_push_pusher_store.cpp',
       'unit/test_openid_token_store.cpp',
+      'unit/test_read_markers.cpp',
     ),
     include_directories: inc,
     # Test-only: lets test_worker_db_uri.cpp locate
@@ -377,6 +378,7 @@ shell = find_program('sh')
       'conformance/test_room_admin_gates_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
+      'conformance/test_profile_propagation_conformance.cpp',
       'conformance/test_receipt_conformance.cpp',
       'conformance/test_safety_report_conformance.cpp',
       'conformance/test_search_conformance.cpp',
@@ -459,6 +461,7 @@ shell = find_program('sh')
       'integration/test_observability_flow.cpp',
       'integration/test_pdu_ingestion_backfill_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
+      'integration/test_receipt_persistence_flow.cpp',
       'integration/test_database_nul_http_flow.cpp',
       'integration/test_database_nul_remaining_query_flow.cpp',
       'integration/test_database_nul_transport_flow.cpp',

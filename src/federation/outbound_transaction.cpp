@@ -151,11 +151,17 @@ auto build_edu_transaction_body(std::string_view origin, std::string_view edu_ty
 }
 
 auto build_receipt_edu_content(std::string_view room_id, std::string_view receipt_type, std::string_view user_id,
-                               std::string_view event_id, std::int64_t ts) -> std::optional<std::string>
+                               std::string_view event_id, std::int64_t ts, std::string_view thread_id)
+    -> std::optional<std::string>
 {
     // Matrix spec receipt EDU content shape (per §receipts):
     // { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
+    // with "<content (ts & thread_id, currently)>": a threaded receipt carries its thread_id.
     auto receipt_data = canonicaljson::Object{};
+    if (!thread_id.empty())
+    {
+        receipt_data.push_back(canonicaljson::make_member("thread_id", canonicaljson::Value{std::string{thread_id}}));
+    }
     receipt_data.push_back(canonicaljson::make_member("ts", canonicaljson::Value{ts}));
 
     auto user_obj = canonicaljson::Object{};

@@ -19,8 +19,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -88,8 +90,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto first_room_ephemeral_events(merovingian::homeserver::ClientServerRuntime& runtime,
-                                               std::string const& token,
-                                               std::string const& room_id) -> merovingian::canonicaljson::Array
+                                               std::string const& token, std::string const& room_id)
+    -> merovingian::canonicaljson::Array
 {
     auto const sync =
         merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
@@ -119,8 +121,8 @@ using namespace merovingian::tests;
     return {};
 }
 
-[[nodiscard]] auto find_receipt_for_event(merovingian::canonicaljson::Array const& events,
-                                          std::string const& event_id) -> merovingian::canonicaljson::Object const*
+[[nodiscard]] auto find_receipt_for_event(merovingian::canonicaljson::Array const& events, std::string const& event_id)
+    -> merovingian::canonicaljson::Object const*
 {
     for (auto const& ev : events)
     {
@@ -553,6 +555,263 @@ SCENARIO("m.fully_read is delivered as room account data and never under m.recei
                 REQUIRE(std::ranges::find(alice_view.receipt_types, "m.read.private") !=
                         alice_view.receipt_types.end());
                 REQUIRE(std::ranges::find(alice_view.receipt_types, "m.fully_read") == alice_view.receipt_types.end());
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// A room where bob has posted a thread root, a reply in that thread, and then a later message
+// in the main timeline, in that order.
+struct ThreadedRoom final
+{
+    std::string alice{};
+    std::string bob{};
+    std::string room_id{};
+    std::string root_id{};
+    std::string thread_reply_id{};
+    std::string latest_main_id{};
+};
+
+[[nodiscard]] auto send_as(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                           std::string const& room_id, std::string const& txn_id, std::string const& body)
+    -> std::string
+{
+    auto const send = merovingian::homeserver::handle_client_server_request(
+        runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn_id, token, body});
+    REQUIRE(send.response.status == 200U);
+    return event_id_from_send(send.response.body);
+}
+
+[[nodiscard]] auto make_threaded_room(merovingian::homeserver::ClientServerRuntime& runtime) -> ThreadedRoom
+{
+    auto fixture = ThreadedRoom{};
+    fixture.alice = logged_in_token(runtime, "alice");
+    fixture.bob = logged_in_token(runtime, "bob");
+    auto const create = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/createRoom", fixture.alice, R"({"preset":"public_chat"})"});
+    REQUIRE(create.response.status == 200U);
+    fixture.room_id = room_id_from_create(create.response.body);
+    REQUIRE(merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + fixture.room_id + "/join", fixture.bob, "{}"})
+                .response.status == 200U);
+    fixture.root_id =
+        send_as(runtime, fixture.bob, fixture.room_id, "txn_root", R"({"msgtype":"m.text","body":"root"})");
+    fixture.thread_reply_id =
+        send_as(runtime, fixture.bob, fixture.room_id, "txn_thread",
+                R"({"msgtype":"m.text","body":"in thread","m.relates_to":{"rel_type":"m.thread","event_id":")" +
+                    fixture.root_id + R"("}})");
+    fixture.latest_main_id =
+        send_as(runtime, fixture.bob, fixture.room_id, "txn_latest", R"({"msgtype":"m.text","body":"latest"})");
+    return fixture;
+}
+
+[[nodiscard]] auto post_receipt(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                std::string const& room_id, std::string const& receipt_type,
+                                std::string const& event_id, std::string const& body) -> std::uint16_t
+{
+    return merovingian::homeserver::handle_client_server_request(
+               runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/" + receipt_type + "/" + event_id,
+                         token, body})
+        .response.status;
+}
+
+// unread_notifications.notification_count for the room in an initial /sync.
+[[nodiscard]] auto notification_count(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                      std::string const& room_id) -> std::int64_t
+{
+    auto const sync =
+        merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+    REQUIRE(sync.response.status == 200U);
+    auto const body = parse_object(sync.response.body);
+    auto const* rooms = object_member_as_object(body, "rooms");
+    REQUIRE(rooms != nullptr);
+    auto const* join = object_member_as_object(*rooms, "join");
+    REQUIRE(join != nullptr);
+    auto const* room = object_member_as_object(*join, room_id);
+    REQUIRE(room != nullptr);
+    auto const* unread = object_member_as_object(*room, "unread_notifications");
+    REQUIRE(unread != nullptr);
+    auto const* count = int_member(*unread, "notification_count");
+    REQUIRE(count != nullptr);
+    return *count;
+}
+
+// The thread_id alice's m.read receipt on `event_id` carries in her /sync: "<absent>" when the
+// receipt carries none, "<missing>" when there is no such receipt.
+[[nodiscard]] auto receipt_thread_id(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                     std::string const& room_id, std::string const& event_id) -> std::string
+{
+    auto const events = first_room_ephemeral_events(runtime, token, room_id);
+    auto const* content = find_receipt_for_event(events, event_id);
+    if (content == nullptr)
+        return "<missing>";
+    auto const* by_type = object_member_as_object(*content, event_id);
+    auto const* users = by_type == nullptr ? nullptr : object_member_as_object(*by_type, "m.read");
+    auto const* receipt = users == nullptr ? nullptr : object_member_as_object(*users, "@alice:example.org");
+    if (receipt == nullptr)
+        return "<missing>";
+    auto const* thread_id = string_member(*receipt, "thread_id");
+    return thread_id == nullptr ? std::string{"<absent>"} : *thread_id;
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
+//
+// 400: "The thread_id is invalid in some way. For example: It is not a string. It is empty. It is
+// provided for an incompatible receipt type."
+SCENARIO("POST /receipt rejects an invalid thread_id with M_INVALID_PARAM",
+         "[conformance][client-server][receipt][threaded-receipts]")
+{
+    GIVEN("alice in a room with a message to acknowledge")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const fixture = make_threaded_room(started.runtime);
+
+        // A thread_id is "The thread root's event ID (or main)": one naming no event in the room
+        // is not a thread root. Refusing it also stops a client minting a receipt row per
+        // invented thread.
+        WHEN("the thread_id is empty, not a string, sent with m.fully_read, or names no event in the room")
+        {
+            auto const bodies = std::vector<std::pair<std::string, std::string>>{
+                {"m.read",         R"({"thread_id":""})"                    },
+                {"m.read",         R"({"thread_id":7})"                     },
+                {"m.fully_read",   R"({"thread_id":"main"})"                },
+                {"m.read",         R"({"thread_id":"not-a-thread"})"        },
+                {"m.read.private", R"({"thread_id":"$missing:example.org"})"},
+            };
+            THEN("each request is refused with 400 M_INVALID_PARAM")
+            {
+                for (auto const& [receipt_type, body] : bodies)
+                {
+                    auto const response = merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST",
+                                          "/_matrix/client/v3/rooms/" + fixture.room_id + "/receipt/" + receipt_type +
+                                              "/" + fixture.latest_main_id,
+                                          fixture.alice, body});
+                    REQUIRE(response.response.status == 400U);
+                    auto const error = parse_object(response.response.body);
+                    auto const* errcode = string_member(error, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_INVALID_PARAM");
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, Receipts
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#receipts
+//
+// "Each user_id, receipt_type, and categorisation (unthreaded, or thread_id) tuple must be
+// associated with only a single event_id." A threaded receipt is a separate marker: it must not
+// replace the user's main-timeline or unthreaded receipt, and /sync carries its thread_id.
+SCENARIO("a threaded receipt is kept apart from the user's other receipts and carries its thread_id",
+         "[conformance][client-server][receipt][threaded-receipts]")
+{
+    GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const fixture = make_threaded_room(started.runtime);
+
+        WHEN("alice reads the main timeline to the latest message, then reads the thread")
+        {
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
+                                 R"({"thread_id":"main"})") == 200U);
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.thread_reply_id,
+                                 R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
+
+            THEN("both receipts are delivered, each with its own thread_id")
+            {
+                REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.latest_main_id) ==
+                        "main");
+                REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.thread_reply_id) ==
+                        fixture.root_id);
+            }
+            THEN("alice has no unread notifications left in the room")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 0);
+            }
+        }
+
+        WHEN("alice sends an unthreaded receipt for the latest message")
+        {
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
+                                 {}) == 200U);
+
+            THEN("the receipt carries no thread_id")
+            {
+                REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.latest_main_id) ==
+                        "<absent>");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, Push Notifications — "Marking notifications as read"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#receiving-notifications
+//
+// "When the user updates their read receipt ... notifications prior to and including that event
+// MUST be marked as read. Which specific events are affected can vary depending on whether a
+// threaded read receipt was used." With threaded receipts "the server is to partition the
+// notification count to each thread (with the main timeline being its own thread)", and "an
+// unthreaded read receipt on D would mark A, B, C, and D as read".
+SCENARIO("a read receipt clears the notifications of the events it covers and no others",
+         "[conformance][client-server][receipt][threaded-receipts][notifications]")
+{
+    GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const fixture = make_threaded_room(started.runtime);
+        REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 3);
+
+        WHEN("alice sends an unthreaded receipt for the latest message")
+        {
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
+                                 {}) == 200U);
+            THEN("every earlier event, in the thread or not, is read")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 0);
+            }
+        }
+
+        WHEN("alice sends a main-timeline receipt for the latest message")
+        {
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
+                                 R"({"thread_id":"main"})") == 200U);
+            THEN("the main timeline is read but the reply in the thread is still unread")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 1);
+            }
+        }
+
+        WHEN("alice sends only a receipt in the thread")
+        {
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read.private",
+                                 fixture.thread_reply_id, R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
+            THEN("the thread is read but both main-timeline messages are still unread")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 2);
+            }
+        }
+
+        WHEN("alice reads the main timeline and then sends a thread receipt for an earlier event")
+        {
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
+                                 R"({"thread_id":"main"})") == 200U);
+            REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.thread_reply_id,
+                                 R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
+            THEN("the thread receipt does not move the main-timeline read position back")
+            {
+                REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 0);
             }
         }
     }

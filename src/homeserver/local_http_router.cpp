@@ -1766,30 +1766,66 @@ namespace
                             auto const* ts_value = data == nullptr ? nullptr : object_member_as_int(*data, "ts");
                             auto const ts =
                                 ts_value != nullptr && *ts_value > 0 ? static_cast<std::uint64_t>(*ts_value) : 0U;
-                            auto existing = std::ranges::find_if(rt->receipts, [&](auto const& current) {
-                                return current.room_id == room_member.key && current.user_id == user_member.key &&
-                                       current.receipt_type == receipt_type_member.key;
-                            });
-                            auto const stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
-                            if (existing != rt->receipts.end())
+                            // Spec (S-S API, Receipts): the user entry's data is "<content (ts &
+                            // thread_id, currently)>". A receipt without thread_id is unthreaded.
+                            auto thread_id = std::string{};
+                            if (auto const* thread_value =
+                                    data == nullptr ? nullptr : object_member(*data, "thread_id");
+                                thread_value != nullptr)
                             {
-                                existing->event_id = *first_event_id;
-                                existing->ts = ts;
-                                existing->stream_id = stream_id;
-                            }
-                            else
-                            {
-                                // 0.12.5 audit, finding 13. Same shape as the
-                                // typing cap: the membership check above is the
-                                // real bound, this evicts the oldest read
-                                // receipt if a peer floods a room it is in.
-                                if (rt->receipts.size() >= max_inbound_receipt_entries)
+                                auto const* thread_string = std::get_if<std::string>(&thread_value->storage());
+                                // `main` or a thread root's event ID, and the appendices cap an
+                                // event ID at 255 bytes.
+                                if (thread_string == nullptr || thread_string->empty() ||
+                                    thread_string->size() > max_receipt_thread_id_bytes)
                                 {
-                                    rt->receipts.erase(rt->receipts.begin());
+                                    return {federation::EduDispositionStatus::rejected_invalid,
+                                            "receipt thread_id must be a non-empty string of at most 255 bytes"};
                                 }
-                                rt->receipts.push_back({room_member.key, receipt_type_member.key, user_member.key,
-                                                        *first_event_id, ts, stream_id});
+                                thread_id = *thread_string;
                             }
+                            auto& store = rt->database.persistent_store;
+                            auto const replaces_existing =
+                                std::ranges::any_of(store.receipts, [&](auto const& current) {
+                                    return current.room_id == room_member.key && current.user_id == user_member.key &&
+                                           current.receipt_type == receipt_type_member.key &&
+                                           current.thread_id == thread_id;
+                                });
+                            // 0.12.5 audit, finding 13. Same shape as the typing cap: the
+                            // membership check above is the real bound, this evicts the oldest
+                            // receipt of a remote user if a peer floods a room it is in. A local
+                            // user's receipts are never evicted: they are that user's unread
+                            // state, and a peer must not be able to mark rooms unread for them.
+                            if (!replaces_existing && store.receipts.size() >= max_inbound_receipt_entries)
+                            {
+                                auto const& local_server = rt->config.server().server_name;
+                                auto victim = store.receipts.end();
+                                for (auto candidate = store.receipts.begin(); candidate != store.receipts.end();
+                                     ++candidate)
+                                {
+                                    if (server_name_from_user_id(candidate->user_id) != local_server &&
+                                        (victim == store.receipts.end() || candidate->stream_id < victim->stream_id))
+                                    {
+                                        victim = candidate;
+                                    }
+                                }
+                                if (victim != store.receipts.end())
+                                {
+                                    auto const evicted = *victim;
+                                    std::ignore = database::remove_receipt(store, evicted);
+                                }
+                            }
+                            auto incoming = database::PersistentReceipt{};
+                            incoming.room_id = room_member.key;
+                            incoming.receipt_type = receipt_type_member.key;
+                            incoming.user_id = user_member.key;
+                            incoming.event_id = *first_event_id;
+                            incoming.ts = ts;
+                            incoming.thread_id = std::move(thread_id);
+                            // A receipt that cannot be committed is not kept: it is ephemeral
+                            // data the peer has already been told was accepted, and the next
+                            // receipt from this user replaces it in any case.
+                            std::ignore = database::store_receipt(store, std::move(incoming));
                         }
                     }
                 }

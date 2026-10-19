@@ -1569,6 +1569,32 @@ namespace
             }
         }
 
+        if (table_load_profile_includes("receipts", profile))
+        {
+            auto receipts_result =
+                query_rows(connection, "postgresql_load_receipts",
+                           "SELECT room_id, receipt_type, user_id, thread_id, event_id, ts, stream_id FROM receipts");
+            if (!receipts_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : receipts_result.rows)
+            {
+                if (row.size() >= 7U)
+                {
+                    PersistentReceipt entry{};
+                    entry.room_id = row[0];
+                    entry.receipt_type = row[1];
+                    entry.user_id = row[2];
+                    entry.thread_id = row[3];
+                    entry.event_id = row[4];
+                    entry.ts = parse_u64(row[5]);
+                    entry.stream_id = parse_u64(row[6]);
+                    store.receipts.push_back(std::move(entry));
+                }
+            }
+        }
+
         if (table_load_profile_includes("sync_stream_watermark", profile))
         {
             auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",

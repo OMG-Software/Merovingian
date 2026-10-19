@@ -168,6 +168,7 @@
 * [0165 - Retain unresolved federation PDUs and retry them](0165-retain-unresolved-federation-pdus-and-retry-them.md)
 * [0166 - Derive to-device message IDs per sender and record them only after the messages commit](0166-derive-to-device-message-ids-per-sender.md)
 * [0167 - Use std::thread and StopFlag, never std::jthread or std::stop_token](0167-no-jthread-or-stop-token-use-std-thread-and-stop-flag.md)
+* [0169 - Read receipts are durable, and a peer's flood never evicts a local user's receipt](0169-read-receipts-are-durable-and-a-peer-flood-never-evicts-a-local-users-receipt.md)
 
 ## Proposed Records
 

@@ -3818,6 +3818,69 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
 namespace
 {
 
+    [[nodiscard]] auto same_receipt_key(PersistentReceipt const& left, PersistentReceipt const& right) noexcept -> bool
+    {
+        return left.room_id == right.room_id && left.receipt_type == right.receipt_type &&
+               left.user_id == right.user_id && left.thread_id == right.thread_id;
+    }
+
+} // namespace
+
+[[nodiscard]] auto store_receipt(PersistentStore& store, PersistentReceipt receipt) -> bool
+{
+    if (receipt.room_id.empty() || receipt.receipt_type.empty() || receipt.user_id.empty() || receipt.event_id.empty())
+    {
+        return false;
+    }
+    receipt.stream_id = allocate_sync_stream_id(store);
+    auto const statement = record_statement(
+        "upsert_receipt",
+        "INSERT INTO receipts (room_id, receipt_type, user_id, thread_id, event_id, ts, stream_id) VALUES ($1, $2, "
+        "$3, $4, $5, $6, $7) ON CONFLICT (room_id, receipt_type, user_id, thread_id) DO UPDATE SET event_id = $5, "
+        "ts = $6, stream_id = $7",
+        {public_value(receipt.room_id), public_value(receipt.receipt_type), public_value(receipt.user_id),
+         public_value(receipt.thread_id), public_value(receipt.event_id), public_value(std::to_string(receipt.ts)),
+         public_value(std::to_string(receipt.stream_id))});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.receipts, [&receipt](PersistentReceipt const& current) {
+        return same_receipt_key(current, receipt);
+    });
+    if (existing != store.receipts.end())
+    {
+        *existing = std::move(receipt);
+        return true;
+    }
+    store.receipts.push_back(std::move(receipt));
+    return true;
+}
+
+[[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool
+{
+    auto const existing = std::ranges::find_if(store.receipts, [&receipt](PersistentReceipt const& current) {
+        return same_receipt_key(current, receipt);
+    });
+    if (existing == store.receipts.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("delete_receipt",
+                                                    "DELETE FROM receipts WHERE room_id = $1 AND receipt_type = $2 "
+                                                    "AND user_id = $3 AND thread_id = $4",
+                                                    {public_value(receipt.room_id), public_value(receipt.receipt_type),
+                                                     public_value(receipt.user_id), public_value(receipt.thread_id)})))
+    {
+        return false;
+    }
+    store.receipts.erase(existing);
+    return true;
+}
+
+namespace
+{
+
     // The rows one atomic to-device write adds and evicts, and the statements
     // that do it. Building a batch changes nothing in `PersistentStore`; the
     // caller commits `statements` in one transaction and only then applies the
@@ -4306,6 +4369,10 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         consider(row.stream_id);
     }
     for (auto const& row : store.presence_states)
+    {
+        consider(row.stream_id);
+    }
+    for (auto const& row : store.receipts)
     {
         consider(row.stream_id);
     }

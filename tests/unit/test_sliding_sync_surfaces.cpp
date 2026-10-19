@@ -319,7 +319,7 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
     GIVEN("pending extension data across multiple sync surfaces")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
-        runtime.receipts = {
+        runtime.database.persistent_store.receipts = {
             {"!room-a:example.org", "m.read", "@alice:example.org", "$event-a",   111U, 3U},
             {"!room-b:example.org", "m.read", "@bob:example.org",   "$event-b",   222U, 4U},
             {"!room-a:example.org", "m.read", "@carol:example.org", "$event-old", 99U,  1U},
@@ -448,7 +448,7 @@ SCENARIO("Sliding sync receipts and typing extensions serve only joined rooms an
     GIVEN("alice joined to one room, an outsider room she is not in, and receipts from bob and alice")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
-        runtime.receipts = {
+        runtime.database.persistent_store.receipts = {
             {"!joined:example.org",  "m.read",         "@bob:example.org",   "$bob-public",    10U, 5U},
             {"!joined:example.org",  "m.read.private", "@bob:example.org",   "$bob-private",   11U, 6U},
             {"!joined:example.org",  "m.fully_read",   "@bob:example.org",   "$bob-fully",     12U, 7U},

@@ -310,43 +310,14 @@ namespace
     }
 
     // Total number of unread m.room.message / m.room.encrypted events in the
-    // room since the user's last read receipt (#417). Without the receipt
+    // room, relative to the user's read receipts (#417). Without the receipt
     // baseline this sort key degenerates to "total message count" and every
-    // room sorts identically regardless of read state.
+    // room sorts identically regardless of read state. The same count as the
+    // room's notification_count.
     [[nodiscard]] auto notification_key(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
                                         std::string_view room_id, std::string_view user) -> std::uint64_t
     {
-        auto const read_ordering = read_receipt_ordering(rt, store, room_id, user);
-
-        auto count = std::uint64_t{0U};
-        for (auto const& ev : store.events)
-        {
-            if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
-            {
-                continue;
-            }
-            auto const parsed = canonicaljson::parse_lossless(ev.json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            auto const* type_val = find_member(*root, "type");
-            auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
-            if (type_s == nullptr)
-            {
-                continue;
-            }
-            if (*type_s == "m.room.message" || *type_s == "m.room.encrypted")
-            {
-                ++count;
-            }
-        }
-        return count;
+        return count_notifications(store, room_id, user, read_receipt_markers(rt, store, room_id, user));
     }
 
     [[nodiscard]] auto room_display_name(database::PersistentStore const& store, std::string_view room_id)
