@@ -14,6 +14,10 @@
   `merovingian`, as the startup secret-file check requires (`0600` was rejected). The
   restore procedure names the `server.name` key, not `server.server_name`. The manual
   notes that the Docker image needs a master key mounted at `/etc/merovingian/master-key`.
+- **TESTS:** the example-config smoke tests (`server-check-config`, `server-example-config`,
+  `server-example-config-summary`) now provision an owner-only master key and point the copied
+  example at it. The example enables `security.secrets.master_key_file`, and a configured key
+  that is missing fails `--check-config` and `--dry-run`, which failed every CI build job.
 
 ## 0.12.28
 
