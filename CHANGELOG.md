@@ -18,6 +18,8 @@
   `server-example-config-summary`) now provision an owner-only master key and point the copied
   example at it. The example enables `security.secrets.master_key_file`, and a configured key
   that is missing fails `--check-config` and `--dry-run`, which failed every CI build job.
+  `scripts/validate-phase1-config.sh`, which the Linux CI jobs run after the test suite, does
+  the same for its `--dry-run` of the example (it exited 66, `config_io_error`).
 
 ## 0.12.28
 
