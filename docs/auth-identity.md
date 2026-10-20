@@ -819,6 +819,12 @@ be updated. Retrying the same PUT repairs pending updates, skipping rooms whose
 membership already carries the current profile; it does not duplicate their joins.
 There is no automatic background retry queue for these failures.
 
+Every `m.room.member` join this server signs for a local user carries only that
+user's own profile. On a federated join the resident server's `make_join`
+template supplies the membership, but any `displayname` or `avatar_url` it
+contains is dropped before the local profile is added, so an unset local field
+is left out rather than taking the resident server's value.
+
 ## Next starting points
 
 1. Preserve the reviewed libsodium boundary for random token generation and password hashing as auth flows expand.

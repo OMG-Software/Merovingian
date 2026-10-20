@@ -4137,11 +4137,16 @@ namespace
         auto const room_version = validated.room_version;
         auto event_object = validated.event;
         // The resident server's template carries the membership; the joining user's display name
-        // and avatar URL are this server's to add, before the content hash and signature.
+        // and avatar URL are this server's to add, before the content hash and signature. Any the
+        // template supplies are dropped first: add_member_profile leaves an unset local field out,
+        // so a resident value would otherwise be signed as this user's profile.
         if (auto const* template_content = object_member_as_object(event_object, "content");
             template_content != nullptr)
         {
             auto content = *template_content;
+            std::erase_if(content, [](canonicaljson::ObjectMember const& member) {
+                return member.key == "displayname" || member.key == "avatar_url";
+            });
             add_member_profile(content, profile);
             replace_or_add_member(event_object, "content", canonicaljson::Value{std::move(content)});
         }

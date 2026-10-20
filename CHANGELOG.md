@@ -1,5 +1,16 @@
 ## 0.12.30
 
+- **FIXED (resident-supplied profile signed as ours):** a federated join kept a `displayname`
+  or `avatar_url` from the resident server's `make_join` template whenever the joining user had
+  not set that field locally, and this server then hashed and signed it as the user's profile.
+  The template's profile fields are now dropped before the local profile is added. The live
+  federated join scenario covers no profile, an empty profile, and display-name-only and
+  avatar-only profiles against a template carrying forged values.
+- **TESTS:** the self-signed certificates in the join, outbound-federation and listener flow
+  tests are backdated an hour. They were valid from the instant of creation, so a backward
+  clock step under WSL made one "not yet valid" mid-scenario (`tls_verification_failed`).
+- **DOCS:** include `receipts` in the worker table inventory and correct the
+  worker-never-read total to 46 tables, matching the schema classification test.
 - **CI / REVIEW:** use an explicit string view for the notification-sort lookup
   so GCC 16 can compile it; align the profile propagation definition's
   `[[nodiscard]]` annotation and the threaded-receipt scenario's spec citation.

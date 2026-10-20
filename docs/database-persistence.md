@@ -1155,7 +1155,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (44 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (46 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1165,7 +1165,8 @@ migration's table cannot go unclassified:
   `room_account_data`, `to_device_messages`, `device_list_changes`,
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
-  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`, plus six tables `schema.cpp`
+  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
+  `receipts`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from
