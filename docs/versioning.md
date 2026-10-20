@@ -27,10 +27,12 @@ or epoch. All three numbers are always present (e.g. `0.11.4`, never `0.11`).
 
 ## Bump policy
 
-**One bump per branch, at merge time.** Do not increment the version on every
-intermediate commit within a feature or fix branch. Record the intended new
-version in `CHANGELOG.md` when the branch is created, then update all other
-locations in a single commit immediately before (or as part of) raising the PR.
+**One bump per branch, when the branch is created.** Update `CHANGELOG.md`
+and every version location below together before the branch's first commit.
+Do not increment again on intermediate commits. Before raising the PR, verify
+that the version remains consistent with the base branch; if another branch
+has used that version in the meantime, update all locations together to the
+next available patch version. There is no separate merge-time bump.
 
 ## Canonical source of truth
 
@@ -81,11 +83,12 @@ than the others.
 
 ## Release process
 
-1. Create a branch: `feature/…` or `fix/…` from `main`.
-2. Make the code changes.
-3. Add a `## X.Y.Z` section to `CHANGELOG.md` describing what changed.
-4. Update every location in the table above in a single commit.
-5. Raise a PR. CI builds all three packages and runs the test suite.
+1. Update `main` from `origin`, then create a feature or fix branch from it.
+2. Increment the patch version in every location above and add its changelog section.
+3. Make the changes and keep that version for intermediate commits.
+4. Before raising the PR, check version consistency and conflicts with the base branch.
+5. Raise a PR. CI builds the configured platform artifacts and runs the test suite;
+   see [platform-support.md](platform-support.md) for the artifact matrix.
 6. Merge to `main`. The `publish-latest` CI job replaces the rolling GitHub
    `latest` pre-release with the new artifacts automatically.
 7. For a tagged release, push a `vX.Y.Z` tag — a separate CI workflow creates

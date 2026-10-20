@@ -76,9 +76,11 @@ own primitives.
   length secrets are compared by hashing both inputs with a domain-separated
   `crypto_generichash` context and then comparing the fixed-size digests with
   `sodium_memcmp`, so the comparison does not leak the secret length.
-* Short-lived plaintext secrets are pinned while in use with `sodium_mlock` /
-  `sodium_munlock` and overwritten with zeros before release
-  (`src/homeserver/auth_service.cpp` registration-token handling).
+* Short-lived plaintext secret buffers attempt `sodium_mlock` and are wiped on
+  release. Master-key loading and `SecureKeyBytes` require a successful lock;
+  general `SecretBuffer` allocations record failure without rejecting it.
+  Not every signing-secret copy checks that result. See
+  [crypto-boundary.md](crypto-boundary.md) for the precise guarantees.
 * The seccomp-bpf allowlist permits `mlock`, `munlock`, `mlockall`,
   `munlockall`, and `getrandom` so libsodium can lock pages and fetch entropy.
 * Main alone admits `fchmod(fd, 0600)` for descriptor-bound SQLite permission

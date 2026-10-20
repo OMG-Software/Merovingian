@@ -623,8 +623,11 @@ threat it closes; the controls above are the standing defences these reinforce.
   non-room requests route to shard 0. A crash or resource exhaustion in one
   shard only affects the rooms owned by that shard. As of v0.10.4 the
   out-of-process worker is mandatory and there is no `fallback_in_process`
-  option; federation is always isolated and fails closed if the worker cannot
-  be launched. The `WorkerSupervisor` restarts crashed workers automatically
+  option; startup fails closed if the worker pool cannot be created. This does
+  not move every federation operation out of main: request verification,
+  designated local routes, EDU-only sends, completed retries and failed room
+  snapshot reloads have explicit main-process paths in `FederationProxy`.
+  The `WorkerSupervisor` restarts crashed workers automatically
   with exponential back-off.
 
 - **Unbounded client-supplied `via` list drove unbounded thread spawning and
