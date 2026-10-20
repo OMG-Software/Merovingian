@@ -712,10 +712,11 @@ SCENARIO("POST /receipt rejects an invalid thread_id with M_INVALID_PARAM",
 }
 
 // Spec: Matrix Client-Server API v1.19
-// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
+// Endpoint / Section: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
-// Spec: thread_id names a thread root (or "main"); an event directly in a thread is not its root.
-// Spec: thread roots and events related to a root by non-thread relations are in the main timeline.
+//
+// thread_id names a thread root (or "main"); an event directly in a thread is not its root.
+// Thread roots and events related to a root by non-thread relations are in the main timeline.
 SCENARIO("POST /receipt accepts only thread roots as thread_id and accepts main-timeline events",
          "[conformance][client-server][receipt][threaded-receipts]")
 {

@@ -6,6 +6,8 @@
   The template's profile fields are now dropped before the local profile is added. The live
   federated join scenario covers no profile, an empty profile, and display-name-only and
   avatar-only profiles against a template carrying forged values.
+- **TESTS:** give the thread-root `thread_id` receipt conformance scenario the required
+  `// Endpoint / Section:` citation.
 - **TESTS:** the self-signed certificates in the join, outbound-federation and listener flow
   tests are backdated an hour. They were valid from the instant of creation, so a backward
   clock step under WSL made one "not yet valid" mid-scenario (`tls_verification_failed`).
