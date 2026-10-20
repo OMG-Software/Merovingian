@@ -8,18 +8,24 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/sqlite_insert_fault.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include <sqlite3.h>
 
 namespace
 {
@@ -140,6 +146,84 @@ using namespace merovingian::tests;
     return nullptr;
 }
 
+[[nodiscard]] auto persisted_receipt(merovingian::database::PersistentStore const& store,
+                                     merovingian::database::PersistentReceipt const& receipt) -> bool
+{
+    auto const found = std::ranges::find_if(store.receipts, [&receipt](auto const& current) {
+        return current.room_id == receipt.room_id && current.receipt_type == receipt.receipt_type &&
+               current.user_id == receipt.user_id && current.thread_id == receipt.thread_id &&
+               current.event_id == receipt.event_id;
+    });
+    return found != store.receipts.end();
+}
+
+[[nodiscard]] auto receipt_count_for_key(merovingian::database::PersistentStore const& store,
+                                         merovingian::database::PersistentReceipt const& receipt) -> std::size_t
+{
+    return static_cast<std::size_t>(std::ranges::count_if(store.receipts, [&receipt](auto const& current) {
+        return current.room_id == receipt.room_id && current.receipt_type == receipt.receipt_type &&
+               current.user_id == receipt.user_id && current.thread_id == receipt.thread_id;
+    }));
+}
+
+[[nodiscard]] auto test_receipt(std::string user_id, std::string event_id, std::string thread_id = {})
+    -> merovingian::database::PersistentReceipt
+{
+    auto receipt = merovingian::database::PersistentReceipt{};
+    receipt.room_id = "!receipt-room:example.org";
+    receipt.receipt_type = "m.read";
+    receipt.user_id = std::move(user_id);
+    receipt.event_id = std::move(event_id);
+    receipt.thread_id = std::move(thread_id);
+    return receipt;
+}
+
+class SqliteReceiptDeleteFault final
+{
+public:
+    explicit SqliteReceiptDeleteFault(std::filesystem::path const& path)
+        : drop_sql_{"DROP TRIGGER IF EXISTS receipt_delete_fault"}
+    {
+        auto* raw_connection = static_cast<sqlite3*>(nullptr);
+        auto const status = sqlite3_open(path.string().c_str(), &raw_connection);
+        connection_.reset(raw_connection);
+        REQUIRE(status == SQLITE_OK);
+        REQUIRE(connection_ != nullptr);
+        REQUIRE(execute("CREATE TRIGGER receipt_delete_fault BEFORE DELETE ON receipts "
+                        "BEGIN SELECT RAISE(ABORT, 'injected receipt delete failure'); END"));
+        active_ = true;
+    }
+
+    SqliteReceiptDeleteFault(SqliteReceiptDeleteFault const&) = delete;
+    auto operator=(SqliteReceiptDeleteFault const&) -> SqliteReceiptDeleteFault& = delete;
+    SqliteReceiptDeleteFault(SqliteReceiptDeleteFault&&) = delete;
+    auto operator=(SqliteReceiptDeleteFault&&) -> SqliteReceiptDeleteFault& = delete;
+
+    ~SqliteReceiptDeleteFault() noexcept
+    {
+        if (active_)
+        {
+            std::ignore = execute(drop_sql_);
+        }
+    }
+
+    auto clear() -> void
+    {
+        REQUIRE(execute(drop_sql_));
+        active_ = false;
+    }
+
+private:
+    [[nodiscard]] auto execute(std::string const& sql) const -> bool
+    {
+        return sqlite3_exec(connection_.get(), sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
+    }
+
+    std::unique_ptr<sqlite3, merovingian::tests::SqliteCloser> connection_{};
+    std::string drop_sql_{};
+    bool active_{false};
+};
+
 } // namespace
 
 SCENARIO("read receipts survive a server restart", "[receipt][receipt-persistence][restart][sqlite]")
@@ -244,6 +328,154 @@ SCENARIO("read receipts survive a server restart", "[receipt][receipt-persistenc
                 REQUIRE(find_receipt(alice_room, latest_id, "m.read", "@alice:example.org") == nullptr);
                 REQUIRE(notification_count(alice_room) == 1);
             }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("receipt replacement atomically evicts the selected receipt and persists the new receipt",
+         "[receipt][receipt-atomicity][sqlite]")
+{
+    GIVEN("a SQLite store with an evictable remote receipt and an unrelated local private receipt")
+    {
+        auto const path = unique_sqlite_path();
+        auto const victim = test_receipt("@remote:remote.example.org", "$old:remote.example.org");
+        auto protected_receipt = test_receipt("@alice:example.org", "$private:example.org", "$thread:example.org");
+        protected_receipt.receipt_type = "m.read.private";
+        auto incoming = test_receipt("@remote:remote.example.org", "$new:remote.example.org", "main");
+        {
+            auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            REQUIRE(merovingian::database::store_receipt(opened.store, victim));
+            REQUIRE(merovingian::database::store_receipt(opened.store, protected_receipt));
+
+            WHEN("the new receipt replaces the selected remote receipt")
+            {
+                REQUIRE(merovingian::database::store_receipt(opened.store, incoming, victim));
+
+                THEN("the mirror contains the new and protected receipts, but not the victim")
+                {
+                    REQUIRE(persisted_receipt(opened.store, incoming));
+                    REQUIRE_FALSE(persisted_receipt(opened.store, victim));
+                    REQUIRE(persisted_receipt(opened.store, protected_receipt));
+                }
+            }
+        }
+
+        {
+            auto reloaded = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(reloaded.ok);
+            REQUIRE(persisted_receipt(reloaded.store, incoming));
+            REQUIRE_FALSE(persisted_receipt(reloaded.store, victim));
+            REQUIRE(persisted_receipt(reloaded.store, protected_receipt));
+            REQUIRE(receipt_count_for_key(reloaded.store, incoming) == 1U);
+            REQUIRE(receipt_count_for_key(reloaded.store, protected_receipt) == 1U);
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("receipt inserts without eviction and upserts its existing key", "[receipt][receipt-atomicity][sqlite]")
+{
+    GIVEN("an empty SQLite receipt table")
+    {
+        auto const path = unique_sqlite_path();
+        auto ordinary = test_receipt("@alice:example.org", "$ordinary:example.org");
+        auto updated = ordinary;
+        updated.event_id = "$ordinary-updated:example.org";
+        {
+            auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+
+            WHEN("a receipt is stored without a victim and then updated with the same key")
+            {
+                REQUIRE(merovingian::database::store_receipt(opened.store, ordinary));
+                REQUIRE(merovingian::database::store_receipt(opened.store, updated));
+
+                THEN("the key has its latest event")
+                {
+                    REQUIRE(persisted_receipt(opened.store, updated));
+                    REQUIRE_FALSE(persisted_receipt(opened.store, ordinary));
+                    REQUIRE(receipt_count_for_key(opened.store, updated) == 1U);
+                }
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("a failed receipt insert rolls back the preceding eviction in memory and on disk",
+         "[receipt][receipt-atomicity][sqlite]")
+{
+    GIVEN("a SQLite store with a remote receipt and a trigger that rejects new receipt rows")
+    {
+        auto const path = unique_sqlite_path();
+        auto const victim = test_receipt("@remote:remote.example.org", "$old:remote.example.org");
+        auto const incoming = test_receipt("@remote:remote.example.org", "$new:remote.example.org", "main");
+        {
+            auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            REQUIRE(merovingian::database::store_receipt(opened.store, victim));
+            auto fault = SqliteInsertFault{path, "receipts", "receipt_insert_failure"};
+
+            WHEN("the replacement's insert fails after its delete statement")
+            {
+                REQUIRE_FALSE(merovingian::database::store_receipt(opened.store, incoming, victim));
+
+                THEN("the old receipt remains in the mirror and the incoming receipt is absent")
+                {
+                    REQUIRE(persisted_receipt(opened.store, victim));
+                    REQUIRE_FALSE(persisted_receipt(opened.store, incoming));
+                }
+            }
+            fault.clear();
+        }
+
+        {
+            auto reloaded = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(reloaded.ok);
+            REQUIRE(persisted_receipt(reloaded.store, victim));
+            REQUIRE_FALSE(persisted_receipt(reloaded.store, incoming));
+            REQUIRE(receipt_count_for_key(reloaded.store, victim) == 1U);
+            REQUIRE(receipt_count_for_key(reloaded.store, incoming) == 0U);
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("a failed receipt delete prevents insertion of the replacement", "[receipt][receipt-atomicity][sqlite]")
+{
+    GIVEN("a SQLite store with a remote receipt and a trigger that rejects receipt deletes")
+    {
+        auto const path = unique_sqlite_path();
+        auto const victim = test_receipt("@remote:remote.example.org", "$old:remote.example.org");
+        auto const incoming = test_receipt("@remote:remote.example.org", "$new:remote.example.org", "main");
+        {
+            auto opened = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(opened.ok);
+            REQUIRE(merovingian::database::store_receipt(opened.store, victim));
+            auto fault = SqliteReceiptDeleteFault{path};
+
+            WHEN("the replacement delete fails")
+            {
+                REQUIRE_FALSE(merovingian::database::store_receipt(opened.store, incoming, victim));
+
+                THEN("the old receipt remains and the new receipt is absent")
+                {
+                    REQUIRE(persisted_receipt(opened.store, victim));
+                    REQUIRE_FALSE(persisted_receipt(opened.store, incoming));
+                }
+            }
+            fault.clear();
+        }
+
+        {
+            auto reloaded = merovingian::database::open_sqlite_persistent_store(path.string());
+            REQUIRE(reloaded.ok);
+            REQUIRE(persisted_receipt(reloaded.store, victim));
+            REQUIRE_FALSE(persisted_receipt(reloaded.store, incoming));
+            REQUIRE(receipt_count_for_key(reloaded.store, victim) == 1U);
+            REQUIRE(receipt_count_for_key(reloaded.store, incoming) == 0U);
         }
         std::filesystem::remove(path);
     }

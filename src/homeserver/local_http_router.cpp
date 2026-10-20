@@ -1797,6 +1797,7 @@ namespace
                             // receipt of a remote user if a peer floods a room it is in. A local
                             // user's receipts are never evicted: they are that user's unread
                             // state, and a peer must not be able to mark rooms unread for them.
+                            auto evicted = std::optional<database::PersistentReceipt>{};
                             if (!replaces_existing && store.receipts.size() >= max_inbound_receipt_entries)
                             {
                                 auto const& local_server = rt->config.server().server_name;
@@ -1812,8 +1813,7 @@ namespace
                                 }
                                 if (victim != store.receipts.end())
                                 {
-                                    auto const evicted = *victim;
-                                    std::ignore = database::remove_receipt(store, evicted);
+                                    evicted = *victim;
                                 }
                             }
                             auto incoming = database::PersistentReceipt{};
@@ -1825,8 +1825,9 @@ namespace
                             incoming.thread_id = std::move(thread_id);
                             // A receipt that cannot be committed is not kept: it is ephemeral
                             // data the peer has already been told was accepted, and the next
-                            // receipt from this user replaces it in any case.
-                            std::ignore = database::store_receipt(store, std::move(incoming));
+                            // receipt from this user replaces it in any case. Commit any
+                            // eviction with the upsert so failure preserves the old receipt.
+                            std::ignore = database::store_receipt(store, std::move(incoming), std::move(evicted));
                         }
                     }
                 }

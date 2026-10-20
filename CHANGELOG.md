@@ -1,5 +1,12 @@
 ## 0.12.30
 
+- **CI / REVIEW:** use an explicit string view for the notification-sort lookup
+  so GCC 16 can compile it; align the profile propagation definition's
+  `[[nodiscard]]` annotation and the threaded-receipt scenario's spec citation.
+- **FIXED:** commit inbound receipt eviction and replacement in one transaction.
+  A failed delete or insert preserves the old receipt in memory and on disk.
+  Add SQLite failure-injection and restart checks; correct the push unread-count
+  documentation to describe thread-partitioned read markers.
 - **MERGE:** integrate the 0.12.29 documentation and startup-example corrections,
   retaining the 0.12.30 versions and thread-aware receipt documentation.
 - **REVIEW FIXES:** serialize inbound receipt callbacks with runtime readers;

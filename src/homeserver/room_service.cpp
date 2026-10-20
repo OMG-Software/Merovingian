@@ -6786,7 +6786,8 @@ namespace
 
 } // namespace
 
-auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
+[[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
+    -> OperationResult
 {
     auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);

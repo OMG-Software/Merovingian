@@ -1643,9 +1643,11 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 // Sets the receipt `receipt` names by (room_id, receipt_type, user_id,
 // thread_id) to its event_id and ts, at a newly allocated sync stream
 // position written back into the stored row. The row is committed before the
-// in-memory mirror changes; false, with nothing changed, if the commit fails
-// or a key field is empty.
-[[nodiscard]] auto store_receipt(PersistentStore& store, PersistentReceipt receipt) -> bool;
+// in-memory mirror changes. An optional eviction is deleted in the same
+// transaction as the upsert. Returns false on a backend failure or an empty
+// key field, without changing the mirror; allocated stream IDs are never reused.
+[[nodiscard]] auto store_receipt(PersistentStore& store, PersistentReceipt receipt,
+                                 std::optional<PersistentReceipt> evicted = std::nullopt) -> bool;
 // Removes the receipt with `receipt`'s key. False if there was none or the
 // delete could not be committed.
 [[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool;

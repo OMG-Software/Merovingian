@@ -466,7 +466,10 @@ value. Test fixtures that do not exercise persistence select it through
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
   are implemented for both SQLite and PostgreSQL and hydrated on backend open;
   `store_receipt` allocates the sync stream position and commits the row before
-  the mirror changes. The inbound receipt callback takes `HomeserverRuntime::mutex`
+  the mirror changes. At the inbound cap, it deletes the selected victim and
+  upserts the incoming receipt in one transaction. A failed delete or upsert
+  preserves the previous receipts in both the database and the mirror.
+  The inbound receipt callback takes `HomeserverRuntime::mutex`
   before checking membership or reading/updating the receipt mirror, including on
   direct federation requests; worker relays can re-enter this recursive lock.
   Only `m.read` and `m.read.private` are stored here:

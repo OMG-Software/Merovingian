@@ -661,14 +661,11 @@ struct ThreadedRoom final
 } // namespace
 
 // Spec: Matrix Client-Server API v1.19
-// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
-// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
-//
-// A thread_id is the thread root's event ID (or "main"). A direct reply in a thread is not a
-// root; roots and events related to a root through a non-thread relation remain in the main
-// timeline. A 400 response is required when thread_id is invalid.
+// Endpoint / Section: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId} —
+//                     Threaded read receipts
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#threaded-read-receipts
-// Spec: thread_id targets a thread root or "main"; root events are in the main timeline.
+//
+// A thread_id is "main" or a thread root's event ID; an invalid thread_id is rejected with 400.
 SCENARIO("POST /receipt rejects an invalid thread_id with M_INVALID_PARAM",
          "[conformance][client-server][receipt][threaded-receipts]")
 {

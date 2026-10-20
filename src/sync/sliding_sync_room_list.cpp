@@ -446,7 +446,7 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
     // Compute this store-wide scan once per room. The sort comparator may run
     // O(N log N) times while the caller holds the runtime lock.
     auto notification_keys = std::unordered_map<std::string, std::uint64_t>{};
-    if (std::ranges::find(list.sort, "by_notification_count") != list.sort.end())
+    if (std::ranges::find(list.sort, std::string_view{"by_notification_count"}) != list.sort.end())
     {
         notification_keys.reserve(joined_room_ids.size());
         for (auto const& room_id : joined_room_ids)
