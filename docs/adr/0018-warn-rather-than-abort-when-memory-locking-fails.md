@@ -1,6 +1,6 @@
 # Warn rather than abort when memory locking fails
 
-* Status: accepted
+* Status: superseded by [ADR-0168](0168-refuse-an-unlocked-master-key.md)
 * Date: 2026-09-06
 
 ## Context and Problem Statement

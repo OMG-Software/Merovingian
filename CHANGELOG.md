@@ -1,3 +1,26 @@
+## 0.12.29
+
+- **DOCS:** reconcile security guarantees, master-key lock failure policy and its
+  superseded ADR, implemented endpoint status, runtime lock scopes and sync capacity
+  with the current implementation. No runtime security policy changes.
+- **DOCS:** correct application-service YAML registration support, autonomous delivery
+  retries, PostgreSQL migration-role enforcement, push budgets and rate-limit
+  defaults (including the stable sliding-sync generic-tier exception). Document
+  the SQLite worker's broader hydration and remaining signing-buffer lock limits.
+  Include `listeners.max_queued_connections` in the configuration example.
+- **DOCS:** add backend-specific backup and restore procedures with validation steps,
+  and align version-bump timing with the branch-creation rule.
+- **DOCS (review fixes):** the README master-key step now uses mode `0400` and owner
+  `merovingian`, as the startup secret-file check requires (`0600` was rejected). The
+  restore procedure names the `server.name` key, not `server.server_name`. The manual
+  notes that the Docker image needs a master key mounted at `/etc/merovingian/master-key`.
+- **TESTS:** the example-config smoke tests (`server-check-config`, `server-example-config`,
+  `server-example-config-summary`) now provision an owner-only master key and point the copied
+  example at it. The example enables `security.secrets.master_key_file`, and a configured key
+  that is missing fails `--check-config` and `--dry-run`, which failed every CI build job.
+  `scripts/validate-phase1-config.sh`, which the Linux CI jobs run after the test suite, does
+  the same for its `--dry-run` of the example (it exited 66, `config_io_error`).
+
 ## 0.12.28
 
 First wave of fixes for the 17 October 2026 Matrix v1.19 conformance audit

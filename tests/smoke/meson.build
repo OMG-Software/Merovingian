@@ -5,7 +5,16 @@ setup_dev_env_script = meson.project_source_root() / 'scripts' / 'setup-dev-env.
 build_linux_script = meson.project_source_root() / 'scripts' / 'build-linux.sh'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
 tmp_smoke_prefix = 'tmpdir=$(mktemp -d) && trap "rm -rf \"$tmpdir\"" EXIT HUP INT TERM && '
-secure_example_config = 'example_config="$tmpdir/merovingian.conf.example" && cp ' + example_config + ' "$example_config" && chmod 0644 "$example_config" && '
+# The example config sets security.secrets.master_key_file, and a configured
+# master key that is missing fails --check-config and --dry-run. Provision one
+# the way an operator would (owner-only, 0400) and point the copy at it; every
+# other line of the example is tested as shipped.
+secure_example_config = (
+  'example_config="$tmpdir/merovingian.conf.example" && master_key="$tmpdir/master-key"'
+  + ' && (umask 077 && dd if=/dev/urandom of="$master_key" bs=32 count=1 2>/dev/null) && chmod 0400 "$master_key"'
+  + ' && sed "s|^security.secrets.master_key_file=.*|security.secrets.master_key_file=$master_key|" '
+  + example_config + ' > "$example_config" && chmod 0644 "$example_config" && '
+)
 
 test(
   'server-help-smoke-test',

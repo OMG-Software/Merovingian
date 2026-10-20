@@ -64,9 +64,10 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
 ## The runtime lock and blocking calls
 
 `handle_client_server_request` and `handle_local_http_request` each take
-`HomeserverRuntime::mutex` for the whole request, and that same mutex guards
-inbound federation handling. Anything holding it blocks every other client and
-every inbound `/send`.
+`HomeserverRuntime::mutex` around request state. Inbound federation takes it
+for setup and narrower runtime callbacks; its core runs outside the global
+lock, and prepared database commits release it. Anything holding the mutex
+still blocks other clients and federation callbacks that need runtime state.
 
 Never make a blocking network call while holding it. Wrap the call — and only
 the call — in a `homeserver::RuntimeLockRelease` scope

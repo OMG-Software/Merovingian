@@ -1,4 +1,4 @@
-# Cryptography boundary and signing service scaffold
+# Cryptography boundary and signing service
 
 This capability note describes project-owned cryptography interfaces without
 implementing custom cryptographic primitives.
@@ -16,7 +16,7 @@ implementing custom cryptographic primitives.
   cannot unlock another live secret that happened to share a heap page.
   Explicit `sodium_mlock` records lock success; destruction wipes and unlocks
   only the owned allocation, and moves transfer ownership without copying bytes.
-- Random-source interface for future reviewed RNG integration.
+- Bounded libsodium-backed `secure_random_bytes` and `secure_random_hex` helpers, alongside the random-source interface.
 - Ed25519 provider interface for reviewed signing and verification integration.
 - Server signing-key store interface.
 - Server signing service that selects the active server key and delegates
@@ -65,7 +65,7 @@ implementing custom cryptographic primitives.
   never a `std::string`. `make_federation_signature` takes a `std::span<std::uint8_t const>`
   from `SecretBuffer::bytes()` so the signing primitive still sees a span, but
   `OutboundCall::secret_key`, `DispatchWorkerConfig::secret_key`, and
-  `perform_sync_outbound_call` now own an mlocked `SecretBuffer` copy made while the
+  `perform_sync_outbound_call` now own a zeroising `SecretBuffer` copy made while the
   caller holds `runtime.mutex`. This removes the `std::string{reinterpret_cast<…>(…bytes().data()…)}`
   copies that left the key unpinned and unzeroised on the heap, and prevents a
   dangling span if the runtime key is rotated during the network round trip
@@ -106,18 +106,22 @@ implementing custom cryptographic primitives.
   other key is derived from is actually materialised in process memory, and
   removes the concurrent `mlock` churn that could exhaust `RLIMIT_MEMLOCK`
   under load.
-- **`core::SecretBuffer::is_locked()` is now consulted.**
-  `crypto::load_master_key_material()` already recorded whether
-  `sodium_mlock` succeeded on the buffer holding the master key, but nothing
-  ever read it back, so a server whose `mlock` call failed held its root
-  secret in swappable memory with no indication anywhere. It now warns once
-  per process (not on every load — the condition is a deployment-level fault,
-  and repeating it per load would be noise) naming the remedy: raise
-  `RLIMIT_MEMLOCK` for the service or grant it `CAP_IPC_LOCK`. This is
-  deliberately a warning, not a fatal error — refusing to start over a failed
-  `mlock` would turn a hardening shortfall into an outage, and the key is
-  still zeroised on destruction either way (`SecretBuffer`'s destructor falls
-  back to plain `sodium_memzero` when the mlock did not hold).
+- **Master-key lock failure is fatal.** The secure-file reader rejects an
+  unlocked `SecretBuffer` before returning material to
+  `crypto::load_master_key_material()`; the loader also has a defensive lock
+  check. The reader's failure currently reaches the generic
+  `master_key.load_failed` diagnostic in the `crypto` module, not a distinct lock-failure
+  event. Check file admission and the service's `RLIMIT_MEMLOCK`; raise the
+  locked-memory allowance or provision `CAP_IPC_LOCK` where appropriate.
+  The previous warn-and-continue policy is superseded by
+  [ADR-0168](adr/0168-refuse-an-unlocked-master-key.md).
+- **Locking guarantees depend on the owning type and call site.** A general
+  `SecretBuffer` records a failed lock without failing construction. Master-key
+  loading and `SecureKeyBytes` enforce locking; decrypted signing secrets and
+  their runtime `SecretBuffer` copies do not all check `is_locked()`. They are
+  zeroised on release, but the implementation does not establish that every
+  signing-secret allocation is pinned. This documentation correction does not
+  change that runtime policy.
 
 ## Security posture
 
@@ -152,7 +156,7 @@ persisted rows.
 
 The runtime signing key is generated using `crypto_sign_keypair`, which produces
 a cryptographically random keypair, written directly into a `core::SecretBuffer`
-so the seed is mlocked and zeroised for its whole lifetime rather than passing
+so the seed is zeroised on release and memory locking is attempted, rather than passing
 through a plain `std::array` between generation and storage. The secret seed is
 encrypted at rest with `secret_box` and a random nonce, stored as
 `secretbox:v1:<base64(nonce || mac || ciphertext)>`, and transparently decrypted

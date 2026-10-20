@@ -148,7 +148,7 @@ merovingian-server
   - main pool (`server.http.request_threads`, default 32): all non-sync
     requests; a worker is given a connection only once it is readable, and one
     client address may hold at most a quarter of the pool (ADR-0077)
-  - sync pool (`server.http.sync_threads`, default 128): `/sync` long-polls only
+  - sync pool (`server.http.sync_threads`, default 128): classic and sliding-sync long-polls
   - connection dispatcher thread: holds every connection that is not being
     served (before its first byte, between keep-alive requests) in one
     `poll(2)` set and hands readable ones to the main pool (ADR-0077)
@@ -162,7 +162,7 @@ merovingian-server
     per-channel dispatch thread
   - observability pipeline
 
-merovingian-fed-worker x N  [spawned when federation.worker.enabled=true]
+merovingian-fed-worker x N  [spawned when security.federation.enabled=true]
   Each worker owns a subset of room IDs by FNV-1a hash of the room ID.
   - IPC reader thread: routes frames only — responses wake pending waiters,
     request frames are queued for the IPC dispatch thread
@@ -178,7 +178,7 @@ Request flow:
 1. Listener thread accepts a connection, submits the fd to the pool.
 2. Pool thread reads one HTTP request, routes it via `dispatch_local_http_request()`.
 3. Authenticated client-server requests go to `handle_client_server_request()`.
-4. Federation requests go to `FederationProxy::handle()` (when `federation.worker.enabled=true`) which verifies the inbound X-Matrix signature itself (`verify_inbound_federation_signature`), then extracts and percent-decodes the room ID, selects the owning worker shard (`fnv1a_32(room_id) % federation.worker.shards`), and serialises only the verified identity (`origin`/`key_id`/`sig_verified`) over the authenticated, encrypted IPC channel to that `merovingian-fed-worker` process; the raw peer `Authorization` header never crosses IPC (#323). Non-room requests route to shard 0. When the worker is disabled, requests go directly to `handle_federation_http_request()`, which performs verification in-process.
+4. With federation enabled, `main.cpp` creates `FederationProxy` and starts the worker pool; proxy construction failure aborts startup. The proxy verifies inbound X-Matrix signatures in main, selects a worker shard (`fnv1a_32(room_id) % federation.worker.shards`) and forwards the verified identity over authenticated encrypted IPC. Raw peer authorization headers do not cross IPC. Main serves designated local endpoints, EDU-only transactions, completed transaction retries and requests for rooms whose worker snapshot reload failed; normal room requests go to the worker. A runtime constructed without a proxy (for example in-process tests) uses `handle_federation_http_request()` directly. There is no `federation.worker.enabled` configuration switch.
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
 6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
 
@@ -188,14 +188,16 @@ malformed first-PDU room ID is only a missing shard hint, not proof of an empty
 transaction. Such nonempty transactions retain the empty key, skip the proxy's
 room-sync fallback and enter worker shard zero. Later PDUs are not searched for
 another room ID: that would risk selecting the main-process failed-sync fallback.
-Main still parses the JSON envelope; ordinary room routing, media bypass and
-worker-disabled deployments are unchanged. See
+Main still parses the JSON envelope; ordinary room routing and media bypass
+are unchanged. Direct in-process test runtimes remain supported. See
 [ADR-0131](adr/0131-keep-malformed-first-pdu-transactions-inside-worker-shard-zero.md).
 
 **Blocking network calls under the runtime mutex.** The recursive mutex above
-is held for the whole of each client-server and local-router request, and it
-also guards inbound federation handling — so whatever holds it stalls every
-other client and every inbound `/send`. Synchronous outbound calls made from a
+guards client-server and local-router request state. Inbound federation takes
+it for setup and narrower runtime callbacks, but releases it before entering
+its federation core and across prepared database commits. Holding it still
+blocks other clients and federation work that needs those scopes; it does not
+serialise an entire `/send` under one global lock. Synchronous outbound calls made from a
 request handler (remote device-key queries, remote media fetches, the
 server-discovery cascade feeding both, and — since 0.12.1 — the
 `trust_safety.policy_server_url` round trip made by `resolve_policy_server_hook`
@@ -543,12 +545,12 @@ Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in 
 - **Unauthenticated**: `GET /versions`
 - **Registration & auth**: `POST /register`, `POST /login`, `POST /logout`, `POST /logout/all`, `POST /refresh`, `POST /account/password`, account 3PID request/add/bind/unbind/delete/list routes
 - **Devices**: `GET/PUT/DELETE /devices/{deviceId}`, `GET /devices`, `POST /delete_devices`
-- **Rooms**: `POST /createRoom`, `POST /join/{roomIdOrAlias}`, `POST /knock/{roomIdOrAlias}`, `POST /rooms/{roomId}/join`, `POST /rooms/{roomId}/leave`, `POST /rooms/{roomId}/forget`, `POST /rooms/{roomId}/invite`, `POST /rooms/{roomId}/kick`, `POST /rooms/{roomId}/ban`, `POST /rooms/{roomId}/unban`, `PUT /rooms/{roomId}/send`, `PUT /rooms/{roomId}/state`, `GET /rooms/{roomId}/state`, `GET /rooms/{roomId}/members`, `GET /rooms/{roomId}/joined_members`, `PUT /rooms/{roomId}/typing/{userId}`, `PUT /rooms/{roomId}/receipt/{receiptType}/{eventId}`
-- **Sync**: `GET /sync` and MSC4186 sliding sync unstable routes (long-polling with `needs_wait` offload)
-- **E2EE keys**: `POST /keys/query`, `POST /keys/claim`, `GET /keys/devices/{userId}`, `GET /keys/changes`, `PUT /keys/upload`, `PUT /sendToDevice/{eventType}/{txnId}`, cross-signing and key backup routes
-- **Presence**: `GET/PUT /presence/{userId}/status`
+- **Rooms**: `POST /createRoom`, `POST /join/{roomIdOrAlias}`, `POST /knock/{roomIdOrAlias}`, `POST /rooms/{roomId}/join`, `POST /rooms/{roomId}/leave`, `POST /rooms/{roomId}/forget`, `POST /rooms/{roomId}/invite`, `POST /rooms/{roomId}/kick`, `POST /rooms/{roomId}/ban`, `POST /rooms/{roomId}/unban`, `PUT /rooms/{roomId}/send`, `PUT /rooms/{roomId}/state`, `GET /rooms/{roomId}/state`, `GET /rooms/{roomId}/members`, `GET /rooms/{roomId}/joined_members`, `PUT /rooms/{roomId}/typing/{userId}`, `POST /rooms/{roomId}/receipt/{receiptType}/{eventId}`
+- **Sync**: `GET /sync`, `POST /_matrix/client/v4/sync` and MSC4186 sliding-sync unstable aliases (long-polling with `needs_wait` offload)
+- **E2EE keys**: `POST /keys/query`, `POST /keys/claim`, `GET /keys/devices/{userId}`, `GET /keys/changes`, `POST /keys/upload`, `PUT /sendToDevice/{eventType}/{txnId}`, cross-signing and key backup routes
+- **Presence**: `PUT /presence/{userId}/status`; presence GET is not routed.
 - **Profile**: `GET /profile/{userId}`, `PUT /profile/{userId}/displayname`, `PUT /profile/{userId}/avatar_url`
-- **Account data**: `PUT /user/{userId}/account_data/{type}`, `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
+- **Account data**: `GET/PUT /user/{userId}/account_data/{type}`. Room-scoped account-data GET/PUT is not routed; internal room account data such as tags and read markers has separate routes.
 - **Filters**: `POST /user/{userId}/filter`, `GET /user/{userId}/filter/{filterId}`
 - **Directory**: `GET/POST /publicRooms`, `GET/PUT /directory/room/{alias}`, `GET /joined_rooms`
 - **Media**: `POST /media/v3/upload`, `GET /media/v3/download/{server}/{mediaId}`, `GET /media/v3/thumbnail/{server}/{mediaId}`, `GET /media/v3/config`
@@ -563,7 +565,7 @@ Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in 
 
 **SyncNotifier** (`sync/sync_notifier.hpp`): Long-polling primitive using `std::mutex` + `std::condition_variable`. Tracks `stream_ordering_` (timeline events) and `sync_stream_id_` (sync surfaces). `publish()` wakes all waiters. `wait_for_change()` blocks until either counter advances past the client's `since` values.
 
-**Sync flow**: Client sends `GET /sync?since=...&timeout=...`. Handler acquires the runtime mutex, builds the response. If no new data since the token, returns `DispatchResult::needs_wait` with `SyncWaitParams`. The HTTP layer releases the mutex, waits on the notifier, re-acquires the lock, and rebuilds the response. Sync waits are offloaded to the dedicated 32-thread `sync_pool`.
+**Sync flow**: Client sends `GET /sync?since=...&timeout=...`. Handler acquires the runtime mutex, builds the response. If no new data since the token, returns `DispatchResult::needs_wait` with `SyncWaitParams`. The HTTP layer releases the mutex, waits on the notifier, re-acquires the lock, and rebuilds the response. Classic and sliding-sync waits are offloaded to `sync_pool`, sized by `server.http.sync_threads` (default 128).
 
 **`rooms.leave` timeline content**: `rooms.leave.<room_id>.timeline` must carry the room's state changes up to the point the caller left; Matrix v1.19 describes leave behaviour in [Behaviour on Room Leave](matrix-v1.19-spec/client-server-api.md#behaviour-on-room-leave). Real clients derive membership by processing that timeline's state events, not merely from the `room_id` key being present under `rooms.leave`. `build_leave_timeline_events_array()` (`client_server.cpp`) includes the user's current `m.room.member` state event for the room from `store.state`, including on idempotent repeat `/leave` calls.
 

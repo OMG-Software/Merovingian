@@ -756,13 +756,13 @@ The boundary establishes these guarantees:
   `POST /keys/signatures/upload` and the `/room_keys/` backup subtree — not the
   whole `/keys` prefix, which also covers key upload and one-time-key claiming
   (participation, not verification).
-- `PUT /rooms/{roomId}/redact/{eventId}/{txnId}` is already reserved on the
-  suspension allowlist (the spec permits a suspended user to redact their own
-  events), but the endpoint itself is not routed today and answers
-  `404 M_UNRECOGNIZED`. The gate cannot see an unredacted event's sender, so
-  whoever implements the route must enforce the own-events-only restriction
-  itself — see the comment on `action_allowed_while_suspended` in
-  `src/homeserver/client_server.cpp`.
+- `PUT /rooms/{roomId}/redact/{eventId}/{txnId}` is implemented and admitted by
+  the suspension allowlist. The endpoint checks the target event's sender and
+  rejects a suspended user attempting to redact someone else's event with
+  `403 M_USER_SUSPENDED`. It composes an `m.room.redaction` through the local
+  event path and records the transaction ID for idempotent retries. The
+  request-level suspension gate alone cannot enforce target ownership; that
+  check belongs in the endpoint.
 - Token *rotation* is gated as well as token issue. `POST /refresh`
   authenticates with a refresh token, so it never reaches the request-path
   moderation gate — `refresh_local_session` therefore carries the locked-account
@@ -811,7 +811,7 @@ These remain deferred:
 
 ## Next starting points
 
-1. Add a reviewed crypto dependency boundary for random token generation and password hashing.
+1. Preserve the reviewed libsodium boundary for random token generation and password hashing as auth flows expand.
 2. Extend conformance fixtures beyond the beta auth/device/key happy paths into
    UI auth, interactive auth, and negative-device-list cases.
 

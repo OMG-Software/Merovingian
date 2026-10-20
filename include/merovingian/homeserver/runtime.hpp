@@ -341,8 +341,9 @@ struct HomeserverRuntime final
     // a restart the first attempt is immediate. Guarded by `mutex`.
     std::map<std::string, AppserviceDeliveryBackoff, std::less<>> appservice_delivery_backoff{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
-    // Non-null when federation.worker.enabled = true. Intercepts inbound
-    // federation requests and forwards them to the out-of-process worker.
+    // Installed by main when security.federation.enabled is true. Verifies and
+    // routes inbound federation, including explicit main-process bypasses.
+    // In-process test runtimes may leave it null.
     std::unique_ptr<FederationProxy> federation_proxy{};
     // Test-only: when non-null, every call site that changes this server's
     // residency in a room (create_room, join_room, leave_room) appends
