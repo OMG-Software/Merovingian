@@ -12993,7 +12993,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // Spec (Events on Change of Profile Information): the change is sent as an
             // m.room.member join "to every room the user is a member of" — clients show the
             // display name and avatar from those events, not from the profile.
-            std::ignore = propagate_profile_change(rt.homeserver, req.access_token);
+            auto const propagated = propagate_profile_change(rt.homeserver, req.access_token);
+            if (!propagated.ok)
+            {
+                return dispatch_err(req, rt, propagated.status, "M_UNKNOWN", propagated.reason);
+            }
             return dispatch_resp(req, rt, 200U, "{}");
         }
     }
@@ -14954,10 +14958,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         // in this room is not a thread root; refusing it also bounds the receipt rows
                         // a user can create to one per event in the room.
                         if (!thread_id.empty() && thread_id != sync::main_thread_id &&
-                            std::ranges::none_of(rt.homeserver.database.persistent_store.events,
-                                                 [&](database::PersistentEvent const& event) {
-                                                     return event.event_id == thread_id && event.room_id == room_id;
-                                                 }))
+                            std::ranges::none_of(
+                                rt.homeserver.database.persistent_store.events,
+                                [&](database::PersistentEvent const& event) {
+                                    if (event.event_id != thread_id || event.room_id != room_id)
+                                    {
+                                        return false;
+                                    }
+                                    auto const parsed = canonicaljson::parse_lossless(event.json);
+                                    auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                                    return parsed.error == canonicaljson::ParseError::none && object != nullptr &&
+                                           sync::event_thread_id(rt.homeserver.database.persistent_store, *object) ==
+                                               sync::main_thread_id;
+                                }))
                         {
                             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
                                                 "thread_id must be main or the event ID of a thread root in the room");

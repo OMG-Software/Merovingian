@@ -22,6 +22,7 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1649,6 +1650,59 @@ SCENARIO("A receipt EDU skips rooms this server is not in without discarding the
                 // one stale room id must not throw away the others.
                 REQUIRE(response.status == 200U);
                 REQUIRE_FALSE(runtime->database.persistent_store.receipts.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Receipt callbacks serialize with runtime readers and permit an already-held recursive lock",
+         "[homeserver][federation][receipt][receipt-locking]")
+{
+    GIVEN("a joined remote user and a wired receipt callback")
+    {
+        auto runtime =
+            edu_runtime("matrix.example.org", "ed25519:auto", "receipt-lock-seed", {"!known:matrix.example.org"});
+        runtime->database.persistent_store.memberships.push_back(
+            {"!known:matrix.example.org", "@b:matrix.example.org", "join", 2U});
+        merovingian::homeserver::wire_federation_callbacks(*runtime);
+        auto const envelope = merovingian::federation::InboundEduEnvelope{
+            merovingian::federation::EduType::receipt, "m.receipt",
+            R"({"!known:matrix.example.org":{"m.read":{"@b:matrix.example.org":{"event_ids":["$y:matrix.example.org"],"data":{"ts":2}}}}})",
+            "matrix.example.org"};
+
+        WHEN("a runtime reader holds the lock while another thread delivers a receipt")
+        {
+            auto guard = std::unique_lock{runtime->mutex};
+            auto entered = std::promise<void>{};
+            auto entered_future = entered.get_future();
+            auto delivered = std::async(std::launch::async, [&] {
+                entered.set_value();
+                return runtime->federation.edu_sink(envelope);
+            });
+            entered_future.wait();
+            auto const completed_while_locked =
+                delivered.wait_for(std::chrono::milliseconds{100}) == std::future_status::ready;
+            guard.unlock();
+            auto const result = delivered.get();
+
+            THEN("the receipt waits until the reader releases the lock and is then stored")
+            {
+                REQUIRE_FALSE(completed_while_locked);
+                REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(runtime->database.persistent_store.receipts.size() == 1U);
+                REQUIRE(runtime->database.persistent_store.receipts.front().event_id == "$y:matrix.example.org");
+            }
+        }
+
+        WHEN("the relay already holds the runtime lock on this thread")
+        {
+            auto const guard = std::unique_lock{runtime->mutex};
+            auto const result = runtime->federation.edu_sink(envelope);
+
+            THEN("the recursive callback completes and stores the receipt")
+            {
+                REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(runtime->database.persistent_store.receipts.size() == 1U);
             }
         }
     }

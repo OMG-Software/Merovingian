@@ -1684,6 +1684,7 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::receipt: {
+                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                 auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
                 auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
                 if (parsed.error != canonicaljson::ParseError::none || root == nullptr)

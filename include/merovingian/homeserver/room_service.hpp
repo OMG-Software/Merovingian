@@ -267,12 +267,15 @@ struct SendJoinStateIngestResult final
 // display name or avatar URL, "an m.room.member event (with a join membership) is sent to every
 // room the user is a member of, to update the displayname and avatar_url". Sends that event,
 // carrying the user's current profile, through send_event to each room `access_token`'s user has
-// joined whose membership does not already carry it, and returns how many were sent. A room that
-// refuses the event (its auth rules or size limits) is skipped and logged; the others still get
-// theirs. Then sends the section's m.presence update: the user's current presence (offline if
+// joined whose membership does not already carry it. A room that refuses the event (its auth
+// rules or size limits) is logged; the others still get theirs. Then sends the section's
+// m.presence update: the user's current presence (offline if
 // never set) is stored again at a new sync stream position, and /sync adds the display name and
-// avatar URL to it. Takes runtime.mutex (recursive).
-[[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token) -> std::size_t;
+// avatar URL to it. Reports failure if any room or presence update fails, even though the profile
+// and other rooms may already be updated. Retrying the same profile update repairs pending rooms
+// without sending duplicate membership events to rooms already current. Takes runtime.mutex (recursive).
+[[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
+    -> OperationResult;
 // Evaluates push rules and dispatches push notifications (and GET
 // /notifications history rows) for `envelope`, an event that was just
 // accepted through federation ingestion (ingest_pdu_event) rather than

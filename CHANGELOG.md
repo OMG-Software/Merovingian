@@ -2,6 +2,13 @@
 
 - **MERGE:** integrate the 0.12.29 documentation and startup-example corrections,
   retaining the 0.12.30 versions and thread-aware receipt documentation.
+- **REVIEW FIXES:** serialize inbound receipt callbacks with runtime readers;
+  cache notification counts once per room before sorting sliding-sync lists;
+  reject a thread reply supplied as a receipt's thread root; and report incomplete
+  room or presence propagation with HTTP 500. Repeating the same profile update
+  repairs missing updates without duplicating membership events already current.
+  Add failure/retry, receipt-locking, thread-root, and notification-ordering regressions,
+  and clarify the conformance assertions' specification rationale.
 
 Two user-reported defects: a changed display name was never seen in any room, and rooms marked
 read came back unread.
@@ -20,7 +27,9 @@ read came back unread.
   sync stream position, and every `m.presence` in `/sync` now carries the sender's display name
   and avatar URL when this server holds their profile. Presence is not federated by this server,
   so remote peers learn the change from the member events. A failed profile write now answers
-  500 instead of 200. The spec also says that
+  500 instead of 200, as does incomplete room or presence propagation. The profile
+  itself may already be saved; retrying the identical request repairs pending room
+  updates while skipping rooms already current. The spec also says that
   membership events a server emits for its own users "should include the display name and avatar
   URL fields": local joins, the creator's join in `createRoom` and the join sent over federation
   after `make_join` now carry them. Scenarios tagged `[profile-propagation]`.

@@ -13,6 +13,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -442,6 +443,18 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
 
     auto const total_count = static_cast<std::uint64_t>(joined_room_ids.size());
 
+    // Compute this store-wide scan once per room. The sort comparator may run
+    // O(N log N) times while the caller holds the runtime lock.
+    auto notification_keys = std::unordered_map<std::string, std::uint64_t>{};
+    if (std::ranges::find(list.sort, "by_notification_count") != list.sort.end())
+    {
+        notification_keys.reserve(joined_room_ids.size());
+        for (auto const& room_id : joined_room_ids)
+        {
+            notification_keys.emplace(room_id, notification_key(rt, store, room_id, user));
+        }
+    }
+
     // Step 3 — sort.
     // Sort keys are applied left-to-right; ties fall through to the next key.
     std::stable_sort(joined_room_ids.begin(), joined_room_ids.end(), [&](std::string const& a, std::string const& b) {
@@ -449,8 +462,8 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
         {
             if (key == "by_notification_count")
             {
-                auto const na = notification_key(rt, store, a, user);
-                auto const nb = notification_key(rt, store, b, user);
+                auto const na = notification_keys.at(a);
+                auto const nb = notification_keys.at(b);
                 if (na != nb)
                 {
                     return na > nb; // descending

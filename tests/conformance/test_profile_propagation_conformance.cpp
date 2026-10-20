@@ -20,6 +20,7 @@
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstddef>
 #include <string>
@@ -55,6 +56,7 @@ using namespace merovingian::tests;
                   "/_matrix/client/v3/register",
                   {},
                   merovingian::tests::registration_json(localpart, "CorrectHorse7!")});
+    // Fixture: registration must succeed before this helper can log in the user.
     REQUIRE(reg.response.status == 200U);
 
     auto const login_body =
@@ -62,10 +64,12 @@ using namespace merovingian::tests;
         std::string{localpart} + ":example.org\"},\"password\":\"CorrectHorse7!\",\"device_id\":\"DEVICE1\"}";
     auto const login = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/login", {}, login_body});
+    // Fixture: login must succeed so the profile request uses an authenticated session.
     REQUIRE(login.response.status == 200U);
 
     auto const body = parse_object(login.response.body);
     auto const* token = string_member(body, "access_token");
+    // Fixture: the successful login response must provide the token used by later requests.
     REQUIRE(token != nullptr);
     return *token;
 }
@@ -75,9 +79,11 @@ using namespace merovingian::tests;
 {
     auto const create = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+    // Fixture: room creation must succeed before room propagation is exercised.
     REQUIRE(create.response.status == 200U);
     auto const body = parse_object(create.response.body);
     auto const* room_id = string_member(body, "room_id");
+    // Fixture: the successful room-creation response must provide a room ID.
     REQUIRE(room_id != nullptr);
     return *room_id;
 }
@@ -87,6 +93,7 @@ auto join(merovingian::homeserver::ClientServerRuntime& runtime, std::string con
 {
     auto const joined = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/join/" + room_id, token, "{}"});
+    // Fixture: the second user must join before room membership propagation is exercised.
     REQUIRE(joined.response.status == 200U);
 }
 
@@ -96,6 +103,7 @@ auto put_profile_field(merovingian::homeserver::ClientServerRuntime& runtime, st
     auto const put = merovingian::homeserver::handle_client_server_request(
         runtime,
         {"PUT", "/_matrix/client/v3/profile/" + user_id + "/" + field, token, "{\"" + field + "\":\"" + value + "\"}"});
+    // Fixture: each profile field update in these scenarios must succeed.
     REQUIRE(put.response.status == 200U);
 }
 
@@ -106,6 +114,7 @@ auto put_profile_field(merovingian::homeserver::ClientServerRuntime& runtime, st
 {
     auto const state = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.member/" + user_id, token, {}});
+    // Fixture: the caller must be able to read the room member state used by these assertions.
     REQUIRE(state.response.status == 200U);
     return parse_object(state.response.body);
 }
@@ -123,17 +132,23 @@ struct TimelineMembership final
 {
     auto const sync =
         merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+    // Fixture: the initial sync must succeed before inspecting its membership timeline.
     REQUIRE(sync.response.status == 200U);
     auto const body = parse_object(sync.response.body);
     auto const* rooms = object_member_as_object(body, "rooms");
+    // Fixture: a successful sync response includes the rooms object.
     REQUIRE(rooms != nullptr);
     auto const* joined = object_member_as_object(*rooms, "join");
+    // Fixture: the joined-room section is needed to inspect the requested room.
     REQUIRE(joined != nullptr);
     auto const* room = object_member_as_object(*joined, room_id);
+    // Fixture: the requested joined room must appear in the sync response.
     REQUIRE(room != nullptr);
     auto const* timeline = object_member_as_object(*room, "timeline");
+    // Fixture: each joined-room sync response includes a timeline object.
     REQUIRE(timeline != nullptr);
     auto const* events = object_member_as_array(*timeline, "events");
+    // Fixture: the room timeline must expose its events array.
     REQUIRE(events != nullptr);
 
     auto result = TimelineMembership{};
@@ -163,9 +178,11 @@ struct TimelineMembership final
 {
     auto const sync =
         merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+    // Fixture: the initial sync must succeed before its token is used as a baseline.
     REQUIRE(sync.response.status == 200U);
     auto const body = parse_object(sync.response.body);
     auto const* next_batch = string_member(body, "next_batch");
+    // Fixture: a successful sync response must provide the next_batch baseline.
     REQUIRE(next_batch != nullptr);
     return *next_batch;
 }
@@ -178,6 +195,7 @@ struct TimelineMembership final
 {
     auto const sync = merovingian::homeserver::handle_client_server_request(
         runtime, {"GET", "/_matrix/client/v3/sync?timeout=0&since=" + since, token, {}});
+    // Fixture: the incremental sync must succeed before presence events are inspected.
     REQUIRE(sync.response.status == 200U);
     auto const body = parse_object(sync.response.body);
     auto const* presence = object_member_as_object(body, "presence");
@@ -209,6 +227,60 @@ struct TimelineMembership final
 
 // Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
+// Both membership and presence updates should follow a successful profile change.
+SCENARIO("incomplete profile propagation reports failure and an identical update can repair it",
+         "[conformance][client-server][profile][profile-propagation][profile-propagation-failure]")
+{
+    GIVEN("Alice belongs to two rooms and one propagation write will fail")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before profile propagation can be tested.
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const first_room = create_public_room(started.runtime, alice);
+        auto const second_room = create_public_room(started.runtime, alice);
+        auto const field = std::string{GENERATE("displayname", "avatar_url")};
+        auto const value =
+            field == "displayname" ? std::string{"Alice Liddell"} : std::string{"mxc://example.org/alice"};
+        auto const statement = GENERATE("insert_event", "upsert_presence");
+        merovingian::database::force_persist_failure_for_statement(started.runtime.homeserver.database.persistent_store,
+                                                                   statement);
+        auto const request =
+            merovingian::homeserver::LocalHttpRequest{"PUT", "/_matrix/client/v3/profile/@alice:example.org/" + field,
+                                                      alice, "{\"" + field + "\":\"" + value + "\"}"};
+
+        WHEN("Alice changes her profile while propagation cannot complete")
+        {
+            auto const failed = merovingian::homeserver::handle_client_server_request(started.runtime, request);
+
+            THEN("the response reports the partial failure and retrying completes without duplicate joins")
+            {
+                // Project policy: an incomplete propagation write returns HTTP 500; the spec does not prescribe this
+                // status.
+                REQUIRE(failed.response.status == 500U);
+                auto const retry = merovingian::homeserver::handle_client_server_request(started.runtime, request);
+                // Project policy: retrying the identical request after storage recovers completes successfully.
+                REQUIRE(retry.response.status == 200U);
+                for (auto const& room_id : {first_room, second_room})
+                {
+                    auto const content = member_content(started.runtime, alice, room_id, "@alice:example.org");
+                    auto const* actual = string_member(content, field);
+                    // Spec SHOULD: membership propagation carries the changed displayname or avatar_url.
+                    REQUIRE(actual != nullptr);
+                    // Spec SHOULD: the changed profile value reaches every room Alice is a member of.
+                    REQUIRE(*actual == value);
+                    auto const seen = timeline_membership(started.runtime, alice, room_id, "@alice:example.org");
+                    // Project policy: retry must not duplicate the earlier membership event; the spec only recommends
+                    // profile propagation.
+                    REQUIRE(seen.count == 2U);
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
 //
 // "an m.presence presence status update is sent, again containing the new values of the
 // displayname and avatar_url keys, in addition to the required presence key containing the
@@ -220,6 +292,7 @@ SCENARIO("changing the display name or avatar sends an m.presence update carryin
     GIVEN("Alice and Bob in a room, with Alice online and Bob synced up to date")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before profile propagation can be tested.
         REQUIRE(started.started);
         auto const alice = logged_in_token(started.runtime, "alice");
         auto const bob = logged_in_token(started.runtime, "bob");
@@ -228,6 +301,7 @@ SCENARIO("changing the display name or avatar sends an m.presence update carryin
         auto const online = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"PUT", "/_matrix/client/v3/presence/@alice:example.org/status", alice,
                               R"({"presence":"online","status_msg":"baking"})"});
+        // Fixture: Alice's online state is needed to verify the current presence value is preserved.
         REQUIRE(online.response.status == 200U);
         auto const since = next_batch_of(started.runtime, bob);
 
@@ -239,13 +313,19 @@ SCENARIO("changing the display name or avatar sends an m.presence update carryin
             THEN("Bob receives her presence again, unchanged, now with the new display name")
             {
                 auto const* presence = string_member(content, "presence");
+                // Spec SHOULD: the propagated presence update contains the required current presence key.
                 REQUIRE(presence != nullptr);
+                // Fixture: the update preserves Alice's existing presence state.
                 REQUIRE(*presence == "online");
                 auto const* status_msg = string_member(content, "status_msg");
+                // Fixture: the profile update preserves the unrelated status message.
                 REQUIRE(status_msg != nullptr);
+                // Fixture: the profile update preserves the unrelated status message value.
                 REQUIRE(*status_msg == "baking");
                 auto const* displayname = string_member(content, "displayname");
+                // Spec SHOULD: the presence update includes the changed displayname.
                 REQUIRE(displayname != nullptr);
+                // Spec SHOULD: the presence update carries the new displayname value.
                 REQUIRE(*displayname == "Alice Liddell");
             }
         }
@@ -258,10 +338,14 @@ SCENARIO("changing the display name or avatar sends an m.presence update carryin
             THEN("Bob's presence update carries the new avatar URL")
             {
                 auto const* presence = string_member(content, "presence");
+                // Spec SHOULD: the propagated presence update contains the required current presence key.
                 REQUIRE(presence != nullptr);
+                // Fixture: the update preserves Alice's existing presence state.
                 REQUIRE(*presence == "online");
                 auto const* avatar_url = string_member(content, "avatar_url");
+                // Spec SHOULD: the presence update includes the changed avatar_url.
                 REQUIRE(avatar_url != nullptr);
+                // Spec SHOULD: the presence update carries the new avatar_url value.
                 REQUIRE(*avatar_url == "mxc://example.org/alice");
             }
         }
@@ -270,6 +354,7 @@ SCENARIO("changing the display name or avatar sends an m.presence update carryin
     GIVEN("Alice and Bob in a room, where Alice has never set a presence")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before profile propagation can be tested.
         REQUIRE(started.started);
         auto const alice = logged_in_token(started.runtime, "alice");
         auto const bob = logged_in_token(started.runtime, "bob");
@@ -285,10 +370,14 @@ SCENARIO("changing the display name or avatar sends an m.presence update carryin
             THEN("the update still carries the required presence key, as offline, and the display name")
             {
                 auto const* presence = string_member(content, "presence");
+                // Spec SHOULD: the propagated presence update contains the required current presence key.
                 REQUIRE(presence != nullptr);
+                // Fixture: Alice has no prior presence event, so this runtime reports her default as offline.
                 REQUIRE(*presence == "offline");
                 auto const* displayname = string_member(content, "displayname");
+                // Spec SHOULD: the presence update includes the changed displayname.
                 REQUIRE(displayname != nullptr);
+                // Spec SHOULD: the presence update carries the new displayname value.
                 REQUIRE(*displayname == "Alice Liddell");
             }
         }
@@ -307,6 +396,7 @@ SCENARIO("changing the display name sends a join m.room.member event carrying it
     GIVEN("Alice and Bob joined to two rooms Alice created")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before room membership propagation is tested.
         REQUIRE(started.started);
         auto const alice = logged_in_token(started.runtime, "alice");
         auto const bob = logged_in_token(started.runtime, "bob");
@@ -325,17 +415,23 @@ SCENARIO("changing the display name sends a join m.room.member event carrying it
                 {
                     auto const content = member_content(started.runtime, bob, room_id, "@alice:example.org");
                     auto const* membership = string_member(content, "membership");
+                    // Spec SHOULD: profile propagation sends a join membership event to each member room.
                     REQUIRE(membership != nullptr);
+                    // Spec SHOULD: the propagated room membership event uses join membership.
                     REQUIRE(*membership == "join");
                     auto const* displayname = string_member(content, "displayname");
+                    // Spec SHOULD: the membership event includes the changed displayname.
                     REQUIRE(displayname != nullptr);
+                    // Spec SHOULD: the membership event carries the new displayname value.
                     REQUIRE(*displayname == "Alice Liddell");
                 }
             }
             THEN("Bob's /sync delivers the membership update in the room timeline")
             {
                 auto const seen = timeline_membership(started.runtime, bob, first_room, "@alice:example.org");
+                // Spec SHOULD: the profile change adds a membership event to the room timeline.
                 REQUIRE(seen.count >= 2U);
+                // Spec SHOULD: the new timeline membership event carries the updated displayname.
                 REQUIRE(seen.last_displayname == "Alice Liddell");
             }
         }
@@ -350,10 +446,14 @@ SCENARIO("changing the display name sends a join m.room.member event carrying it
                 {
                     auto const content = member_content(started.runtime, bob, room_id, "@alice:example.org");
                     auto const* membership = string_member(content, "membership");
+                    // Spec SHOULD: profile propagation sends a join membership event to each member room.
                     REQUIRE(membership != nullptr);
+                    // Spec SHOULD: the propagated room membership event uses join membership.
                     REQUIRE(*membership == "join");
                     auto const* avatar_url = string_member(content, "avatar_url");
+                    // Spec SHOULD: the membership event includes the changed avatar_url.
                     REQUIRE(avatar_url != nullptr);
+                    // Spec SHOULD: the membership event carries the new avatar_url value.
                     REQUIRE(*avatar_url == "mxc://example.org/avatar");
                 }
             }
@@ -368,10 +468,14 @@ SCENARIO("changing the display name sends a join m.room.member event carrying it
             {
                 auto const content = member_content(started.runtime, bob, first_room, "@alice:example.org");
                 auto const* displayname = string_member(content, "displayname");
+                // Spec SHOULD: the latest membership event retains the changed displayname.
                 REQUIRE(displayname != nullptr);
+                // Spec SHOULD: the latest membership event carries the new displayname value.
                 REQUIRE(*displayname == "Alice Liddell");
                 auto const* avatar_url = string_member(content, "avatar_url");
+                // Spec SHOULD: the latest membership event retains the changed avatar_url.
                 REQUIRE(avatar_url != nullptr);
+                // Spec SHOULD: the latest membership event carries the new avatar_url value.
                 REQUIRE(*avatar_url == "mxc://example.org/avatar");
             }
         }
@@ -389,6 +493,7 @@ SCENARIO("changing the display name leaves rooms the user has left untouched",
     GIVEN("Bob joined a room of Alice's and then left it")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before room membership is exercised.
         REQUIRE(started.started);
         auto const alice = logged_in_token(started.runtime, "alice");
         auto const bob = logged_in_token(started.runtime, "bob");
@@ -396,6 +501,7 @@ SCENARIO("changing the display name leaves rooms the user has left untouched",
         join(started.runtime, bob, room_id);
         auto const left = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob, "{}"});
+        // Fixture: Bob's leave must succeed before the post-leave profile change.
         REQUIRE(left.response.status == 200U);
 
         WHEN("Bob sets his display name")
@@ -406,7 +512,9 @@ SCENARIO("changing the display name leaves rooms the user has left untouched",
             {
                 auto const content = member_content(started.runtime, alice, room_id, "@bob:example.org");
                 auto const* membership = string_member(content, "membership");
+                // Spec SHOULD: profile updates target rooms the user is a member of, not a room already left.
                 REQUIRE(membership != nullptr);
+                // Fixture: the profile change must not undo Bob's earlier leave.
                 REQUIRE(*membership == "leave");
             }
         }
@@ -425,6 +533,7 @@ SCENARIO("membership events this server emits for its own users carry their prof
     GIVEN("Alice and Bob who have both set a display name and an avatar URL")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before its own membership events are inspected.
         REQUIRE(started.started);
         auto const alice = logged_in_token(started.runtime, "alice");
         auto const bob = logged_in_token(started.runtime, "bob");
@@ -442,23 +551,33 @@ SCENARIO("membership events this server emits for its own users carry their prof
             {
                 auto const content = member_content(started.runtime, alice, room_id, "@alice:example.org");
                 auto const* displayname = string_member(content, "displayname");
+                // Spec SHOULD: membership events for the server's own user include the display name.
                 REQUIRE(displayname != nullptr);
+                // Spec SHOULD: that membership event carries Alice's display name.
                 REQUIRE(*displayname == "Alice Liddell");
                 auto const* avatar_url = string_member(content, "avatar_url");
+                // Spec SHOULD: membership events for the server's own user include the avatar URL.
                 REQUIRE(avatar_url != nullptr);
+                // Spec SHOULD: that membership event carries Alice's avatar URL.
                 REQUIRE(*avatar_url == "mxc://example.org/alice");
             }
             THEN("Bob's join carries his display name and avatar URL")
             {
                 auto const content = member_content(started.runtime, alice, room_id, "@bob:example.org");
                 auto const* membership = string_member(content, "membership");
+                // Spec SHOULD: the new member's propagated room membership event uses join membership.
                 REQUIRE(membership != nullptr);
+                // Spec SHOULD: the new member's propagated room membership event is a join.
                 REQUIRE(*membership == "join");
                 auto const* displayname = string_member(content, "displayname");
+                // Spec SHOULD: membership events for the server's own user include the display name.
                 REQUIRE(displayname != nullptr);
+                // Spec SHOULD: Bob's membership event carries his display name.
                 REQUIRE(*displayname == "Robert");
                 auto const* avatar_url = string_member(content, "avatar_url");
+                // Spec SHOULD: membership events for the server's own user include the avatar URL.
                 REQUIRE(avatar_url != nullptr);
+                // Spec SHOULD: Bob's membership event carries his avatar URL.
                 REQUIRE(*avatar_url == "mxc://example.org/bob");
             }
         }

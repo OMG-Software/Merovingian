@@ -664,14 +664,18 @@ struct ThreadedRoom final
 // Endpoint: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
 //
-// 400: "The thread_id is invalid in some way. For example: It is not a string. It is empty. It is
-// provided for an incompatible receipt type."
+// A thread_id is the thread root's event ID (or "main"). A direct reply in a thread is not a
+// root; roots and events related to a root through a non-thread relation remain in the main
+// timeline. A 400 response is required when thread_id is invalid.
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#threaded-read-receipts
+// Spec: thread_id targets a thread root or "main"; root events are in the main timeline.
 SCENARIO("POST /receipt rejects an invalid thread_id with M_INVALID_PARAM",
          "[conformance][client-server][receipt][threaded-receipts]")
 {
     GIVEN("alice in a room with a message to acknowledge")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture requirement: the runtime starts before endpoint requests are made.
         REQUIRE(started.started);
         auto const fixture = make_threaded_room(started.runtime);
 
@@ -696,12 +700,88 @@ SCENARIO("POST /receipt rejects an invalid thread_id with M_INVALID_PARAM",
                                           "/_matrix/client/v3/rooms/" + fixture.room_id + "/receipt/" + receipt_type +
                                               "/" + fixture.latest_main_id,
                                           fixture.alice, body});
+                    // Spec: malformed or incompatible thread_id values produce HTTP 400.
                     REQUIRE(response.response.status == 400U);
                     auto const error = parse_object(response.response.body);
                     auto const* errcode = string_member(error, "errcode");
+                    // Fixture check: this endpoint maps the specified 400 response to M_INVALID_PARAM.
                     REQUIRE(errcode != nullptr);
+                    // Fixture check: this endpoint maps the specified 400 response to M_INVALID_PARAM.
                     REQUIRE(*errcode == "M_INVALID_PARAM");
                 }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
+// Spec: thread_id names a thread root (or "main"); an event directly in a thread is not its root.
+// Spec: thread roots and events related to a root by non-thread relations are in the main timeline.
+SCENARIO("POST /receipt accepts only thread roots as thread_id and accepts main-timeline events",
+         "[conformance][client-server][receipt][threaded-receipts]")
+{
+    GIVEN("a room with a thread root, a reply, and a non-thread relation to the root")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture requirement: the runtime starts before endpoint requests are made.
+        REQUIRE(started.started);
+        auto const fixture = make_threaded_room(started.runtime);
+        auto const referenced_main_id =
+            send_as(started.runtime, fixture.bob, fixture.room_id, "txn_reference",
+                    R"({"msgtype":"m.text","body":"reference","m.relates_to":{"rel_type":"m.reference","event_id":")" +
+                        fixture.root_id + R"("}})");
+        auto const referenced_thread_reply_id = send_as(
+            started.runtime, fixture.bob, fixture.room_id, "txn_reference_thread",
+            R"({"msgtype":"m.text","body":"reply to reference","m.relates_to":{"rel_type":"m.thread","event_id":")" +
+                referenced_main_id + R"("}})");
+
+        WHEN("alice names a direct thread reply as the receipt's thread root")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + fixture.room_id + "/receipt/m.read/" + fixture.thread_reply_id,
+                 fixture.alice, R"({"thread_id":")" + fixture.thread_reply_id + R"("})"});
+            THEN("the server rejects it and stores no receipt for that reply")
+            {
+                // Spec MUST: return 400 when thread_id is invalid.
+                REQUIRE(response.response.status == 400U);
+                auto const error = parse_object(response.response.body);
+                auto const* errcode = string_member(error, "errcode");
+                // Fixture check: the local endpoint maps this invalid parameter to its M_INVALID_PARAM error.
+                REQUIRE(errcode != nullptr);
+                // Fixture check: the local endpoint maps this invalid parameter to its M_INVALID_PARAM error.
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+                // Fixture invariant: a refused receipt request does not create a stored receipt.
+                REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.thread_reply_id) ==
+                        "<missing>");
+            }
+        }
+
+        WHEN("alice acknowledges the main timeline and replies using their actual thread roots")
+        {
+            THEN("main and both actual thread roots are accepted")
+            {
+                // Spec: "main" identifies the main timeline for a threaded receipt.
+                REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
+                                     R"({"thread_id":"main"})") == 200U);
+                // Spec: this event's relation targets the actual root and therefore its receipt uses that thread ID.
+                REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.thread_reply_id,
+                                     R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
+                // The m.reference event stays in the main timeline and can root its own m.thread reply.
+                REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read",
+                                     referenced_thread_reply_id,
+                                     R"({"thread_id":")" + referenced_main_id + R"("})") == 200U);
+                // Spec: the receipt data includes the requested thread_id categorization.
+                REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.latest_main_id) ==
+                        "main");
+                // Spec: a receipt for a thread reply carries the root ID as thread_id.
+                REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.thread_reply_id) ==
+                        fixture.root_id);
+                // Spec: a receipt for a thread reply carries the root ID as thread_id.
+                REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id,
+                                          referenced_thread_reply_id) == referenced_main_id);
             }
         }
     }
@@ -719,36 +799,44 @@ SCENARIO("a threaded receipt is kept apart from the user's other receipts and ca
     GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture requirement: the runtime starts before these endpoint scenarios execute.
         REQUIRE(started.started);
         auto const fixture = make_threaded_room(started.runtime);
 
         WHEN("alice reads the main timeline to the latest message, then reads the thread")
         {
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
                                  R"({"thread_id":"main"})") == 200U);
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.thread_reply_id,
                                  R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
 
             THEN("both receipts are delivered, each with its own thread_id")
             {
+                // Spec: sync receipt content includes the thread_id categorization.
                 REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.latest_main_id) ==
                         "main");
+                // Spec: sync receipt content includes the thread_id categorization.
                 REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.thread_reply_id) ==
                         fixture.root_id);
             }
             THEN("alice has no unread notifications left in the room")
             {
+                // Spec MUST: notifications at and before the user's read position are marked read.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 0);
             }
         }
 
         WHEN("alice sends an unthreaded receipt for the latest message")
         {
+            // Spec: an absent thread_id represents an unthreaded receipt.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
                                  {}) == 200U);
 
             THEN("the receipt carries no thread_id")
             {
+                // Spec: an unthreaded receipt has no thread_id categorization in sync.
                 REQUIRE(receipt_thread_id(started.runtime, fixture.alice, fixture.room_id, fixture.latest_main_id) ==
                         "<absent>");
             }
@@ -770,48 +858,60 @@ SCENARIO("a read receipt clears the notifications of the events it covers and no
     GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture requirement: the runtime starts before these endpoint scenarios execute.
         REQUIRE(started.started);
         auto const fixture = make_threaded_room(started.runtime);
+        // Fixture state: one main root, one thread reply, and one later main message are unread.
+        // Fixture state: all three incoming messages are unread before Alice sends a receipt.
         REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 3);
 
         WHEN("alice sends an unthreaded receipt for the latest message")
         {
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
                                  {}) == 200U);
             THEN("every earlier event, in the thread or not, is read")
             {
+                // Spec MUST: an unthreaded receipt marks preceding notifications across the room as read.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 0);
             }
         }
 
         WHEN("alice sends a main-timeline receipt for the latest message")
         {
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
                                  R"({"thread_id":"main"})") == 200U);
             THEN("the main timeline is read but the reply in the thread is still unread")
             {
+                // Spec: threaded receipts partition notification counts by timeline.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 1);
             }
         }
 
         WHEN("alice sends only a receipt in the thread")
         {
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read.private",
                                  fixture.thread_reply_id, R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
             THEN("the thread is read but both main-timeline messages are still unread")
             {
+                // Spec: threaded receipts partition notification counts by timeline.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 2);
             }
         }
 
         WHEN("alice reads the main timeline and then sends a thread receipt for an earlier event")
         {
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.latest_main_id,
                                  R"({"thread_id":"main"})") == 200U);
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.thread_reply_id,
                                  R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
             THEN("the thread receipt does not move the main-timeline read position back")
             {
+                // Spec: each thread's receipt and notification position is separate.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 0);
             }
         }
@@ -867,6 +967,7 @@ SCENARIO("/sync splits unread counts by thread when the filter asks for it",
     GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture requirement: the runtime starts before these sync scenarios execute.
         REQUIRE(started.started);
         auto const fixture = make_threaded_room(started.runtime);
 
@@ -877,8 +978,11 @@ SCENARIO("/sync splits unread counts by thread when the filter asks for it",
             THEN("the room's counts cover every event, in a thread or not, and no per-thread counts are sent")
             {
                 auto const* unread = object_member_as_object(room, "unread_notifications");
+                // Spec: joined-room unread_notifications is present for the returned room.
                 REQUIRE(unread != nullptr);
+                // Spec: without the per-thread filter, the count covers all unread room events.
                 REQUIRE(count_in(*unread, "notification_count") == 3);
+                // Spec: unread_thread_notifications applies only when the filter requests it.
                 REQUIRE(object_member_as_object(room, "unread_thread_notifications") == nullptr);
             }
         }
@@ -891,24 +995,33 @@ SCENARIO("/sync splits unread counts by thread when the filter asks for it",
             THEN("unread_notifications counts only the main timeline")
             {
                 auto const* unread = object_member_as_object(room, "unread_notifications");
+                // Spec: with unread_thread_notifications enabled, unread_notifications counts the main timeline.
                 REQUIRE(unread != nullptr);
+                // Spec: the main timeline contains two unread events in this fixture.
                 REQUIRE(count_in(*unread, "notification_count") == 2);
+                // Fixture behavior: neither main-timeline event is a highlight.
                 REQUIRE(count_in(*unread, "highlight_count") == 0);
             }
             THEN("unread_thread_notifications counts the thread under its root's event ID")
             {
                 auto const* threads = object_member_as_object(room, "unread_thread_notifications");
+                // Spec: this field carries per-thread notification counts when requested.
                 REQUIRE(threads != nullptr);
+                // Spec: the only thread with unread notifications is represented by one entry.
                 REQUIRE(threads->size() == 1U);
                 auto const* thread = object_member_as_object(*threads, fixture.root_id);
+                // Spec: the per-thread object is keyed by the thread root event ID.
                 REQUIRE(thread != nullptr);
+                // Spec: the thread contains one unread reply in this fixture.
                 REQUIRE(count_in(*thread, "notification_count") == 1);
+                // Fixture behavior: the unread thread reply is not a highlight.
                 REQUIRE(count_in(*thread, "highlight_count") == 0);
             }
         }
 
         WHEN("alice reads the thread and then syncs with unread_thread_notifications")
         {
+            // Spec: HTTP 200 means the requested receipt was sent.
             REQUIRE(post_receipt(started.runtime, fixture.alice, fixture.room_id, "m.read", fixture.thread_reply_id,
                                  R"({"thread_id":")" + fixture.root_id + R"("})") == 200U);
             auto const room = synced_room_with_filter(started.runtime, fixture.alice, fixture.room_id,
@@ -916,9 +1029,12 @@ SCENARIO("/sync splits unread counts by thread when the filter asks for it",
 
             THEN("the thread, having no notifications, is not listed and the main timeline is unchanged")
             {
+                // Spec permits omitting unread_thread_notifications when no threads have notification counts.
                 REQUIRE(object_member_as_object(room, "unread_thread_notifications") == nullptr);
                 auto const* unread = object_member_as_object(room, "unread_notifications");
+                // Spec: joined-room unread_notifications remains present.
                 REQUIRE(unread != nullptr);
+                // Spec: marking the thread read leaves the two main-timeline notifications unread.
                 REQUIRE(count_in(*unread, "notification_count") == 2);
             }
         }
@@ -938,8 +1054,10 @@ SCENARIO("an event the user sends marks the events before it in its thread as re
     GIVEN("bob's thread root, a reply in that thread, and a later main-timeline message, none read by alice")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture requirement: the runtime starts before these message scenarios execute.
         REQUIRE(started.started);
         auto const fixture = make_threaded_room(started.runtime);
+        // Fixture state: the three incoming messages are unread before alice sends anything.
         REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 3);
 
         WHEN("alice sends a message in the main timeline")
@@ -949,6 +1067,7 @@ SCENARIO("an event the user sends marks the events before it in its thread as re
 
             THEN("the main timeline before it is read, and the reply in the thread is not")
             {
+                // Spec MUST: notifications preceding an event sent by the user in that thread are marked read.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 1);
             }
         }
@@ -962,6 +1081,7 @@ SCENARIO("an event the user sends marks the events before it in its thread as re
 
             THEN("the thread is read and both main-timeline messages are not")
             {
+                // Spec MUST: notifications preceding an event sent by the user in that thread are marked read.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 2);
             }
         }
@@ -971,10 +1091,12 @@ SCENARIO("an event the user sends marks the events before it in its thread as re
             auto const put = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"PUT", "/_matrix/client/v3/profile/@alice:example.org/displayname", fixture.alice,
                                   R"({"displayname":"Alice Liddell"})"});
+            // Fixture check: update succeeds before unread state is inspected.
             REQUIRE(put.response.status == 200U);
 
             THEN("nothing is marked read: a state event the server sends for her is not her reading the room")
             {
+                // Fixture behavior: a server-sent profile membership event does not advance Alice's read marker.
                 REQUIRE(notification_count(started.runtime, fixture.alice, fixture.room_id) == 3);
             }
         }

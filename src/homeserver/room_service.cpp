@@ -6786,20 +6786,20 @@ namespace
 
 } // namespace
 
-auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token) -> std::size_t
+auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
     auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return 0U;
+        return make_operation_result(false, {}, "profile propagation requires authentication", 401U);
     }
     auto const& store = runtime.database.persistent_store;
     auto const profile = database::find_profile(store, *user_id);
     auto const event_json = serialize_own_join_event_json(store, *user_id);
     if (!event_json.has_value())
     {
-        return 0U;
+        return make_operation_result(false, {}, "profile saved but membership serialization failed", 500U);
     }
     // Copied first: send_event appends to each room's events while this walks the rooms.
     auto joined_rooms = std::vector<std::string>{};
@@ -6811,6 +6811,7 @@ auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view acces
         }
     }
     auto sent = std::size_t{0U};
+    auto failed = std::size_t{0U};
     for (auto const& room_id : joined_rooms)
     {
         if (membership_carries_profile(store, room_id, *user_id, profile))
@@ -6823,6 +6824,7 @@ auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view acces
             ++sent;
             continue;
         }
+        ++failed;
         log_diagnostic("profile.propagation.skipped", {
                                                           {"actor",   *user_id,                      false},
                                                           {"room_id", room_id,                       false},
@@ -6851,7 +6853,12 @@ auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view acces
                                                         {"rooms",    std::to_string(sent),              false},
                                                         {"presence", presence_sent ? "sent" : "failed", false}
     });
-    return sent;
+    if (failed != 0U || !presence_sent)
+    {
+        return make_operation_result(false, {}, "profile saved but propagation incomplete; retry the profile update",
+                                     500U);
+    }
+    return make_operation_result(true, {});
 }
 
 // See the doc comment in room_service.hpp. Builds a ComposedEvent-shaped
