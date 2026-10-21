@@ -726,9 +726,12 @@ auto exercise_sticky_backfill_denial(bool capacity_full, bool partial_progress) 
 // Spec: docs/matrix-v1.19-spec/rooms/v10.md, auth rule 4.2.1: "If content has a
 // join_authorised_via_users_server key: If the event is not validly signed by
 // the homeserver of the user ID denoted by the key, reject." The rule applies
-// whatever the room's join rule, so the room below is public: the join's
-// authorisation then depends on nothing but that signature, and a
-// structurally present but forged one is the only thing under test.
+// whatever the room's join rule. The room below is restricted, so a join by a
+// non-member also needs rule 4.3.5: the authorising user must be joined with
+// invite power, which the auth rules can check only if every path selects that
+// user's m.room.member event into the auth map ("Auth events selection").
+// A genuine join is accepted and a structurally present but forged authorising
+// signature is refused.
 
 constexpr auto authorising_server = "authoriser.example.org";
 constexpr auto authorising_user = "@dave:authoriser.example.org";
@@ -780,7 +783,7 @@ enum class AuthorisingSignature
     return it == stored.end() ? std::nullopt : std::optional<std::string>{it->status};
 }
 
-// The room's genesis (seed_room_with_genesis_state_group) plus a public
+// The room's genesis (seed_room_with_genesis_state_group) plus a restricted
 // m.room.join_rules event and the authorising user's join (default invite
 // power), in both the room's current state and the state group the genesis
 // events map to, so a join whose prev_event is the admin's join sees them.
@@ -799,8 +802,11 @@ auto seed_authorising_user(HomeserverRuntime& runtime, std::string const& room_i
     };
     store.events.push_back(
         {join_rules_id, room_id, local_admin,
-         state_event_json("m.room.join_rules", "", local_admin, R"({"join_rule":"public"})", 4, join_rules_id), 4U, 0U,
-         std::vector<std::string>{}, std::vector<std::string>{}, std::vector<events::EventSignature>{}});
+         state_event_json(
+             "m.room.join_rules", "", local_admin,
+             R"({"join_rule":"restricted","allow":[{"type":"m.room_membership","room_id":"!allowed:example.org"}]})", 4,
+             join_rules_id),
+         4U, 0U, std::vector<std::string>{}, std::vector<std::string>{}, std::vector<events::EventSignature>{}});
     store.state.push_back({room_id, "m.room.join_rules", "", join_rules_id});
     store.events.push_back({authoriser_id, room_id, authorising_user,
                             state_event_json("m.room.member", authorising_user, authorising_user,

@@ -118,10 +118,18 @@ namespace
     // room_service.cpp for locally-created events so all paths apply
     // identical auth rules.
     // Spec: SS API §authorization-rules — receivers MUST check auth before persisting.
+    //
+    // `authorising_user` is a join's content.join_authorised_via_users_server
+    // (join_authorising_user below); its m.room.member event is selected into
+    // authorising_user_member, as "Auth events selection" says and as state
+    // resolution does. Without it the restricted branch of the auth rules
+    // (rule 4.3.5.2) refuses every join by a non-member. The authorising
+    // server's signature is verified before any of this, on every ingestion
+    // path (ADR-0171); this map only lets the membership and power checks run.
     [[nodiscard]] auto build_auth_event_map_from_entries(
         database::PersistentStore const& store, std::vector<database::PersistentStateGroupStateEntry> const& entries,
         std::string_view sender, std::string_view target_state_key, std::string_view event_type,
-        std::string_view third_party_invite_token = {}) -> events::AuthEventMap
+        std::string_view third_party_invite_token = {}, std::string_view authorising_user = {}) -> events::AuthEventMap
     {
         auto load = [&](std::string_view event_id) -> canonicaljson::Value {
             for (auto const& evt : store.events)
@@ -168,8 +176,34 @@ namespace
             {
                 result.third_party_invite = load(entry.event_id);
             }
+            // Not part of the chain above: the authorising user may also be the
+            // sender or target, and each slot must still be filled.
+            if (!authorising_user.empty() && entry.event_type == "m.room.member" && entry.state_key == authorising_user)
+            {
+                result.authorising_user_member = load(entry.event_id);
+            }
         }
         return result;
+    }
+
+    // A join's content.join_authorised_via_users_server, or empty. Spec "Auth
+    // events selection": "If membership is join,
+    // content.join_authorised_via_users_server is present, and the room version
+    // supports restricted rooms, then the m.room.member event with state_key
+    // matching content.join_authorised_via_users_server". No room-version gate
+    // here, as in state resolution: only the restricted join branch reads the
+    // member event, and no pre-v8 room reaches it.
+    [[nodiscard]] auto join_authorising_user(canonicaljson::Value const& pdu) -> std::string
+    {
+        if (events::extract_content_membership(pdu) != "join")
+        {
+            return {};
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&pdu.storage());
+        auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
+        auto const* authorised =
+            content != nullptr ? string_member(*content, "join_authorised_via_users_server") : nullptr;
+        return authorised != nullptr ? *authorised : std::string{};
     }
 
     // Every (room_id-scoped) row of store.state as flat state-group-style
@@ -196,10 +230,12 @@ namespace
     [[nodiscard]] auto build_pdu_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
                                                 std::string_view sender, std::string_view target_state_key,
                                                 std::string_view event_type,
-                                                std::string_view third_party_invite_token = {}) -> events::AuthEventMap
+                                                std::string_view third_party_invite_token = {},
+                                                std::string_view authorising_user = {}) -> events::AuthEventMap
     {
         return build_auth_event_map_from_entries(store, state_entries_for_room(store, room_id), sender,
-                                                 target_state_key, event_type, third_party_invite_token);
+                                                 target_state_key, event_type, third_party_invite_token,
+                                                 authorising_user);
     }
 
     // Resolves the events a PDU names in `auth_event_ids` to flat state
@@ -2310,7 +2346,8 @@ namespace
                 {
                     auto auth_events_map = build_auth_event_map_from_entries(
                         store, state_entries_from_named_events(store, envelope.auth_event_ids), envelope.sender,
-                        envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+                        envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
+                        join_authorising_user(effective_pdu));
                     // v12 (MSC4291): the create event is implicit in the room
                     // ID and MUST NOT be named in auth_events, so fill it from
                     // the room's recorded state — same as ingest_pdu_event.
@@ -2349,7 +2386,7 @@ namespace
             {
                 auto state_before_map = build_auth_event_map_from_entries(
                     store, state_before.state, envelope.sender, envelope.state_key.value_or(std::string{}),
-                    envelope.event_type, membership_third_party_token);
+                    envelope.event_type, membership_third_party_token, join_authorising_user(membership_effective_pdu));
                 fill_create_from_room_state(state_before_map, store, room_id);
                 auto const state_before_decision = events::authorize_event_against_auth_events(
                     membership_effective_pdu, *room_policy, state_before_map);
@@ -2369,9 +2406,9 @@ namespace
             // references pre-ban history from evading the ban.
             if (outcome == MembershipReceiptOutcome::accepted)
             {
-                auto current_state_map = build_pdu_auth_event_map(store, room_id, envelope.sender,
-                                                                  envelope.state_key.value_or(std::string{}),
-                                                                  envelope.event_type, membership_third_party_token);
+                auto current_state_map = build_pdu_auth_event_map(
+                    store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type,
+                    membership_third_party_token, join_authorising_user(membership_effective_pdu));
                 fill_create_from_room_state(current_state_map, store, room_id);
                 auto const current_state_decision = events::authorize_event_against_auth_events(
                     membership_effective_pdu, *room_policy, current_state_map);
@@ -3683,7 +3720,8 @@ namespace
         auto auth_events_map = build_auth_event_map_from_entries(
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
-            envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+            envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
+            join_authorising_user(effective_pdu));
         if (policy.create_event_is_room_id && std::holds_alternative<std::nullptr_t>(auth_events_map.create.storage()))
         {
             auth_events_map.create = create_event_json_for_room(runtime.database.persistent_store, room_id);
@@ -3745,9 +3783,10 @@ namespace
         }
         else
         {
-            state_before_map = build_auth_event_map_from_entries(
-                runtime.database.persistent_store, state_before, envelope.sender,
-                envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+            state_before_map =
+                build_auth_event_map_from_entries(runtime.database.persistent_store, state_before, envelope.sender,
+                                                  envelope.state_key.value_or(std::string{}), envelope.event_type,
+                                                  third_party_invite_token, join_authorising_user(effective_pdu));
             fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
             state_before_decision =
                 events::authorize_event_against_auth_events(effective_pdu, policy, state_before_map);
@@ -4512,7 +4551,8 @@ namespace
         auto auth_events_map = build_auth_event_map_from_entries(
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
-            envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+            envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token,
+            join_authorising_user(effective_pdu));
         // v12 (MSC4291): the create event is implicit in the room ID and
         // MUST NOT be listed in auth_events (validate_auth_events_selection
         // rejects a PDU that names it), so it can never come from the named
@@ -4555,9 +4595,10 @@ namespace
     // Step 5: auth against the state immediately before the event.
     if (outcome == ReceiptOutcome::accepted)
     {
-        auto state_before_map = build_auth_event_map_from_entries(
-            runtime.database.persistent_store, state_before.state, envelope.sender,
-            envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+        auto state_before_map =
+            build_auth_event_map_from_entries(runtime.database.persistent_store, state_before.state, envelope.sender,
+                                              envelope.state_key.value_or(std::string{}), envelope.event_type,
+                                              third_party_invite_token, join_authorising_user(effective_pdu));
         fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
         auto const state_before_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, state_before_map);
@@ -4572,9 +4613,9 @@ namespace
     // failure" — a failure here does not reject the event.
     if (outcome == ReceiptOutcome::accepted)
     {
-        auto current_state_map = build_pdu_auth_event_map(runtime.database.persistent_store, room_id, envelope.sender,
-                                                          envelope.state_key.value_or(std::string{}),
-                                                          envelope.event_type, third_party_invite_token);
+        auto current_state_map = build_pdu_auth_event_map(
+            runtime.database.persistent_store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}),
+            envelope.event_type, third_party_invite_token, join_authorising_user(effective_pdu));
         fill_create_from_room_state(current_state_map, runtime.database.persistent_store, room_id);
         auto const current_state_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, current_state_map);

@@ -203,7 +203,11 @@ selection names for such a join; only state resolution adds it). The
 restricted branch of the auth rules then refuses the join ("restricted join
 missing authorising user membership"). Fixing it is safe only now that every
 ingestion path verifies the authorising server's signature (0.12.31,
-ADR-0171). Status: `not-started`.
+ADR-0171). Status: `resolved` in 0.12.32: every router auth map now selects
+the authorising user's member event, so a join validly signed by the
+authorising server and naming a joined member with invite power is accepted
+on `/send`, `send_join` and backfill; one naming a non-member is still
+refused (rule 4.3.5.2). The resident-side gap above is unchanged.
 
 The other findings recorded here on the 0.12.13 branch (v1/v2 event-ID
 signatures, key validity against `origin_server_ts`, `/event/{eventId}` ID
