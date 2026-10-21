@@ -1,3 +1,21 @@
+## 0.12.32
+
+- **FIXED (federated restricted joins were always refused):** a join into a restricted or
+  knock_restricted room by a user who is not invited carries
+  `join_authorised_via_users_server`. The auth rules then need that user's `m.room.member`
+  event to check they are joined with invite power (rule 4.3.5.2). "Auth events selection"
+  names that event for such a join, and state resolution selected it, but the router's
+  ingestion auth maps (`build_auth_event_map_from_entries`) never did. So `/send`,
+  `send_join` and backfill refused every such join, genuine or not. All eight map builds on
+  those paths now select it. This fix depends on 0.12.31, which made every ingestion path
+  verify the authorising server's signature first (ADR-0171).
+- **TESTS:** the worker-relay and backfill `[evt1]` scenarios now use a restricted room
+  instead of a public one. A genuine authorised join is accepted, forged authorising
+  signatures are still refused, and a validly signed join naming a user who is not in the
+  room is refused.
+- **DOCS:** `docs/todos/capability-gaps.md` marks the 0.12.31 receiving-side gap resolved.
+  `docs/event-engine.md` describes the auth-map selection.
+
 ## 0.12.31
 
 Fixes the two HIGH findings from security audit run-1 (2026-10-20).

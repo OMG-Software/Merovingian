@@ -393,9 +393,12 @@ auto exhaust_main_admission(homeserver::HomeserverRuntime& runtime, bool occupie
 // Spec: docs/matrix-v1.19-spec/rooms/v10.md, auth rule 4.2.1: "If content has a
 // join_authorised_via_users_server key: If the event is not validly signed by
 // the homeserver of the user ID denoted by the key, reject." The rule applies
-// whatever the room's join rule, so the room below is public: the join's
-// authorisation then depends on nothing but that signature, and a
-// structurally present but forged one is the only thing under test.
+// whatever the room's join rule. The room below is restricted, so a join by a
+// non-member also needs rule 4.3.5: the authorising user must be joined with
+// invite power, which the auth rules can check only if every path selects that
+// user's m.room.member event into the auth map ("Auth events selection").
+// A genuine join is accepted and a structurally present but forged authorising
+// signature is refused.
 
 constexpr auto authorising_server = "authoriser.example.org";
 constexpr auto authorising_user = "@dave:authoriser.example.org";
@@ -444,7 +447,7 @@ enum class AuthorisingSignature
     return it == stored.end() ? std::string{} : it->status;
 }
 
-// The seeded remote room, plus a public m.room.join_rules event and the
+// The seeded remote room, plus a restricted m.room.join_rules event and the
 // authorising user's join (default invite power), in both the room's current
 // state and the state group the join's prev_event maps to.
 [[nodiscard]] auto seed_authorising_room(homeserver::HomeserverRuntime& runtime, std::string room_id) -> RemoteRoom
@@ -463,8 +466,11 @@ enum class AuthorisingSignature
     };
     store.events.push_back(
         {join_rules_id, room.room_id, local_admin,
-         state_event_json("m.room.join_rules", "", local_admin, R"({"join_rule":"public"})", 4, join_rules_id), 4U, 0U,
-         std::vector<std::string>{}, std::vector<std::string>{}, std::vector<events::EventSignature>{}});
+         state_event_json(
+             "m.room.join_rules", "", local_admin,
+             R"({"join_rule":"restricted","allow":[{"type":"m.room_membership","room_id":"!allowed:example.org"}]})", 4,
+             join_rules_id),
+         4U, 0U, std::vector<std::string>{}, std::vector<std::string>{}, std::vector<events::EventSignature>{}});
     store.state.push_back({room.room_id, "m.room.join_rules", "", join_rules_id});
     store.events.push_back({authoriser_id, room.room_id, authorising_user,
                             state_event_json("m.room.member", authorising_user, authorising_user,
@@ -535,18 +541,23 @@ enum class AuthorisingSignature
     return signed_event.event_json;
 }
 
-// A join by a user of the sending server, naming the authorising user. The
-// sender's server's signature is always genuine; `kind` is the authorising
-// server's.
-[[nodiscard]] auto authorised_join_json(RemoteRoom const& room, AuthorisingSignature kind) -> std::string
+// A join by a user of the sending server, naming `named_authoriser` (by
+// default the joined authorising user). The sender's server's signature is
+// always genuine; `kind` is the authorising server's. The join lists the named
+// user's m.room.member event in auth_events only when the room has one.
+[[nodiscard]] auto authorised_join_json(RemoteRoom const& room, AuthorisingSignature kind,
+                                        std::string_view named_authoriser = authorising_user) -> std::string
 {
     auto content = canonicaljson::Object{};
     content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
     content.push_back(canonicaljson::make_member("join_authorised_via_users_server",
-                                                 canonicaljson::Value{std::string{authorising_user}}));
-    auto const auth_event_ids =
-        std::vector<std::string>{room.room_id + ":create", room.room_id + ":pl", room.room_id + ":join_rules",
-                                 room.room_id + ":member:authoriser"};
+                                                 canonicaljson::Value{std::string{named_authoriser}}));
+    auto auth_event_ids =
+        std::vector<std::string>{room.room_id + ":create", room.room_id + ":pl", room.room_id + ":join_rules"};
+    if (named_authoriser == authorising_user)
+    {
+        auth_event_ids.push_back(room.room_id + ":member:authoriser");
+    }
     return with_authorising_signature(make_remote_event_json(room.room_id, "m.room.member", std::string{joiner}, joiner,
                                                              std::move(content), room.prev_event_ids(), auth_event_ids,
                                                              6, 70),
@@ -1051,6 +1062,24 @@ SCENARIO("main refuses a relayed join whose authorising server signature is not 
                 {
                     CHECK(membership_of(runtime, room.room_id, joiner) == "join");
                 }
+            }
+        }
+
+        // rooms/v10.md auth rule 4.3.5.2: "If the join_authorised_via_users_server key in content is
+        // not a user with sufficient permission to invite other users or is not a joined member of
+        // the room, reject." A valid signature does not stand in for the authorising membership.
+        WHEN("the worker relays a join validly signed by the authorising server but naming a user who is not in "
+             "the room")
+        {
+            auto const env = parse_envelope(
+                authorised_join_json(room, AuthorisingSignature::genuine, "@nobody:authoriser.example.org"));
+            auto const accepted = relay_accepted_join(env);
+
+            THEN("main refuses the join and the joiner does not become a member")
+            {
+                CHECK_FALSE(accepted);
+                CHECK(event_status(runtime, env.event_id) != "accepted");
+                CHECK(membership_of(runtime, room.room_id, joiner).empty());
             }
         }
 

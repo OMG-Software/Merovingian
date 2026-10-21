@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.31
+Version:        0.12.32
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.32-1
+- Accept federated restricted joins authorised by a joined member with invite power.
+
 * Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.31-1
 - Verify the authorising server's signature on restricted joins received by worker relay or backfill.
 - Bound sliding-sync list sorting and request sizes so one request cannot stall the server.
