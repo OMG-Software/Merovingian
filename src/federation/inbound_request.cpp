@@ -527,14 +527,18 @@ namespace
                                                          std::optional<FederationKeyRecord> const& key)
         -> FederationDecision
     {
-        auto failure = std::optional<KeyResolutionFailureKind>{};
+        // Several authorising-server keys may be tried. As in
+        // verify_join_authorising_server_signature, a local denial on any of
+        // them is sticky (a later failure must not turn it into a refusal) and
+        // counts only when nothing verified (it must not override an accept).
+        auto locally_denied = false;
         auto const resolver = [&runtime, &request,
-                               &failure](std::string_view server_name,
-                                         std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+                               &locally_denied](std::string_view server_name,
+                                                std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
             auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
             if (!resolved.key.has_value())
             {
-                failure = resolved.failure;
+                locally_denied = locally_denied || resolved.failure == KeyResolutionFailureKind::local_resource_denial;
                 return std::nullopt;
             }
             auto remote = FederationRemoteRuntime{};
@@ -544,7 +548,7 @@ namespace
         };
         auto verifier = FederationEd25519Verifier{};
         auto const decision = authorize_federation_pdu(pdu, request.origin, key, resolver, verifier);
-        if (failure == KeyResolutionFailureKind::local_resource_denial)
+        if (!decision.accepted && locally_denied)
         {
             return make_decision(false, 503U, "local signing-key resolution admission unavailable");
         }
