@@ -15592,20 +15592,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     // that push fan-out and every /sync scan under runtime.mutex, so
                     // new types stop at the per-user cap (M_TOO_LARGE, nothing stored
                     // or evicted, as for the ADR-0118 caps). A type the user already
-                    // holds can always be updated.
-                    auto const& account_rows = rt.homeserver.database.persistent_store.account_data;
-                    auto held_types = std::size_t{0U};
-                    auto holds_type = false;
-                    for (auto const& row : account_rows)
-                    {
-                        if (row.user_id != path_user || !row.room_id.empty())
-                        {
-                            continue;
-                        }
-                        ++held_types;
-                        holds_type = holds_type || row.event_type == type;
-                    }
-                    if (!holds_type && held_types >= rt.limits.max_global_account_data_per_user)
+                    // holds can always be updated. The cap check and the store share
+                    // one pass over the rows.
+                    auto const outcome = set_global_account_data_within_cap(
+                        rt, {path_user, std::string{}, type, req.body, 0U}, rt.limits.max_global_account_data_per_user);
+                    if (outcome == database::CappedAccountDataStore::over_cap)
                     {
                         log_diagnostic("account_data.rejected",
                                        {
@@ -15618,7 +15609,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                 std::to_string(rt.limits.max_global_account_data_per_user) +
                                                 " types reached");
                     }
-                    if (!set_account_data(rt, {path_user, std::string{}, type, req.body, 0U}))
+                    if (outcome != database::CappedAccountDataStore::stored)
                     {
                         log_diagnostic("account_data.rejected",
                                        {
@@ -16035,6 +16026,19 @@ auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountD
         std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
+}
+
+auto set_global_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
+                                        std::size_t max_global_types) -> database::CappedAccountDataStore
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const outcome = database::store_global_account_data_within_cap(runtime.homeserver.database.persistent_store,
+                                                                        std::move(data), max_global_types);
+    if (outcome == database::CappedAccountDataStore::stored)
+    {
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    return outcome;
 }
 
 auto run_client_server_flow(config::Config const& config) -> OperationResult

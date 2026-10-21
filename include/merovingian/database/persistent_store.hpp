@@ -1640,6 +1640,24 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
+
+// Outcome of store_global_account_data_within_cap.
+enum class CappedAccountDataStore
+{
+    stored,
+    // The user already holds `max_global_types` other global types; nothing was written.
+    over_cap,
+    // Not a global row (room_id set), a missing user or type, or the write failed.
+    failed,
+};
+
+// Stores a global (room_id empty) account-data row unless it would give the user more than
+// `max_global_types` distinct global types (ADR-0173). A type the user already holds is always
+// updated. One pass over the in-memory rows both counts the user's types and finds the row to
+// update, because the PUT path runs under runtime.mutex. A refusal writes nothing and allocates
+// no sync stream position.
+[[nodiscard]] auto store_global_account_data_within_cap(PersistentStore& store, PersistentAccountData data,
+                                                        std::size_t max_global_types) -> CappedAccountDataStore;
 // Sets the receipt `receipt` names by (room_id, receipt_type, user_id,
 // thread_id) to its event_id and ts, at a newly allocated sync stream
 // position written back into the stored row. The row is committed before the

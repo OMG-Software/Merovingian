@@ -4169,3 +4169,84 @@ SCENARIO("The store retains deferred PDUs, one row per event, inside fixed bound
         }
     }
 }
+
+// Security audit run-1 (sp02.account-data-unbounded-linear-scan, ADR-0173): the PUT path checks
+// the per-user cap and stores the row in one pass over the account-data mirror, under
+// runtime.mutex. Only the user's own global types count; a type already held can always be
+// updated; a refusal writes nothing and allocates no stream position.
+SCENARIO("Global account data is stored within a per-user cap of distinct types",
+         "[database][persistence][account-data][security][sp02]")
+{
+    GIVEN("alice holds two global types and a room tag, and bob holds a global type, with a cap of 2")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        merovingian::database::enable_statement_capture(store, 256U);
+        REQUIRE(merovingian::database::store_account_data(store, {"@alice:example.org", "", "m.a", R"({})", 0U}));
+        REQUIRE(merovingian::database::store_account_data(store, {"@alice:example.org", "", "m.b", R"({})", 0U}));
+        REQUIRE(merovingian::database::store_account_data(
+            store, {"@alice:example.org", "!room:example.org", "m.tag", R"({"tags":{}})", 0U}));
+        REQUIRE(merovingian::database::store_account_data(store, {"@bob:example.org", "", "m.a", R"({})", 0U}));
+        auto const rows_before = store.account_data.size();
+        auto const stream_before = store.next_sync_stream_id;
+
+        WHEN("alice stores a third global type")
+        {
+            auto const outcome = merovingian::database::store_global_account_data_within_cap(
+                store, {"@alice:example.org", "", "m.c", R"({})", 0U}, 2U);
+
+            THEN("it is refused as over the cap, and nothing is stored or allocated")
+            {
+                REQUIRE(outcome == merovingian::database::CappedAccountDataStore::over_cap);
+                REQUIRE(store.account_data.size() == rows_before);
+                REQUIRE(store.next_sync_stream_id == stream_before);
+            }
+        }
+
+        WHEN("alice updates a global type she already holds")
+        {
+            auto const outcome = merovingian::database::store_global_account_data_within_cap(
+                store, {"@alice:example.org", "", "m.b", R"({"updated":true})", 0U}, 2U);
+
+            THEN("it is stored in place, without adding a row")
+            {
+                REQUIRE(outcome == merovingian::database::CappedAccountDataStore::stored);
+                REQUIRE(store.account_data.size() == rows_before);
+                auto const row = std::ranges::find_if(
+                    store.account_data, [](merovingian::database::PersistentAccountData const& candidate) {
+                        return candidate.user_id == "@alice:example.org" && candidate.room_id.empty() &&
+                               candidate.event_type == "m.b";
+                    });
+                REQUIRE(row != store.account_data.end());
+                REQUIRE(row->content_json == R"({"updated":true})");
+                REQUIRE(row->stream_id > stream_before);
+            }
+        }
+
+        WHEN("bob stores a second global type")
+        {
+            auto const outcome = merovingian::database::store_global_account_data_within_cap(
+                store, {"@bob:example.org", "", "m.b", R"({})", 0U}, 2U);
+
+            THEN("alice's rows do not count against him, so it is stored")
+            {
+                REQUIRE(outcome == merovingian::database::CappedAccountDataStore::stored);
+                REQUIRE(store.account_data.size() == rows_before + 1U);
+            }
+        }
+
+        WHEN("the row is not a global one, or is malformed")
+        {
+            auto const room_row = merovingian::database::store_global_account_data_within_cap(
+                store, {"@alice:example.org", "!room:example.org", "m.tag", R"({})", 0U}, 2U);
+            auto const no_type = merovingian::database::store_global_account_data_within_cap(
+                store, {"@alice:example.org", "", "", R"({})", 0U}, 2U);
+
+            THEN("it fails without being stored")
+            {
+                REQUIRE(room_row == merovingian::database::CappedAccountDataStore::failed);
+                REQUIRE(no_type == merovingian::database::CappedAccountDataStore::failed);
+                REQUIRE(store.account_data.size() == rows_before);
+            }
+        }
+    }
+}

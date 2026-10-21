@@ -214,6 +214,10 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
     -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
+// set_account_data for a global row, refused past `max_global_types` distinct types (ADR-0173).
+[[nodiscard]] auto set_global_account_data_within_cap(ClientServerRuntime& runtime,
+                                                      database::PersistentAccountData data,
+                                                      std::size_t max_global_types) -> database::CappedAccountDataStore;
 
 struct ClientServerStartResult final
 {

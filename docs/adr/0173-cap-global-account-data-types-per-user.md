@@ -33,6 +33,8 @@ Chosen option: "refuse a new global type past a configurable per-user cap; count
 `server.client_api.max_global_account_data_per_user` (default 1000, at most 100000) bounds how many
 distinct global types a user holds. A `PUT` for a type the user already holds always succeeds
 (it replaces the row). A new type past the cap gets `400 M_TOO_LARGE`, as ADR-0118's caps do.
+`database::store_global_account_data_within_cap` counts the user's types and finds the row to
+update in the same pass, so the cap adds no second scan under the lock.
 
 Room account data is not counted. Its rows come from `m.tag` (which requires the user to be in the
 room) and read markers, so membership already bounds them. Counting them would make a user in many

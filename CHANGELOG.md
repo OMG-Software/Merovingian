@@ -23,8 +23,9 @@ make the server do work, sized by its own input, while the server-wide runtime l
   global account-data types without limit, growing the rows every account-data read scans under
   the lock. New `server.client_api.max_global_account_data_per_user` (default 1000, 1 to
   100000, restart required). A new type past it gets `400 M_TOO_LARGE`; updating a type the
-  user already holds always succeeds. Room account data is bounded by membership and is not
-  counted (ADR-0173).
+  user already holds always succeeds. The check and the write share one pass over the rows
+  (`database::store_global_account_data_within_cap`). Room account data is bounded by membership
+  and is not counted (ADR-0173).
 - **SECURITY (appservice namespaces, `sp02.appservice-regex-compile-under-mutex`):** each
   namespace regex was compiled on every match, once per member per event, under the lock.
   `appservice::Namespace` now compiles its pattern once, when it is built, and shares the
