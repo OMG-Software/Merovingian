@@ -189,6 +189,21 @@ and let the dispatcher wait. A connection is owned by exactly one of the dispatc
 one sync-pool task or one media-fetch-pool task (`std::unique_ptr<HttpConnection>`); pass it on by
 moving it, never by sharing it.
 
+## Work under the runtime lock is bounded by the request
+
+Anything done while `runtime.mutex` is held must not grow faster than linearly with input a
+client, sender or remote server controls, and per-user rows that requests scan must be capped
+(security audit run-1). Examples in this module:
+
+- `parse_federation_media_multipart` runs under the lock on a body a remote server chooses. It
+  refuses a boundary over 70 characters and finds delimiters with a linear scan; keep it linear
+  (ADR-0176).
+- `PUT /user/{userId}/account_data/{type}` refuses a new global type past
+  `max_global_account_data_per_user` with `400 M_TOO_LARGE`, and always allows an update to a
+  type the user already holds (ADR-0173). Room account data is bounded by membership.
+- Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
+  (ADR-0174).
+
 ## Media upload boundary
 
 `client_server.cpp` is responsible for:

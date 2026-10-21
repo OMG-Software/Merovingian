@@ -2326,3 +2326,29 @@ Security audit run-1 (2026-10-20) found two HIGH issues, both fixed in 0.12.31.
   a list's cost still grows with the user's joined-room count; the 32-list cap bounds how often
   a request repeats it. The audit's other runtime-lock findings (extension rooms arrays, push
   glob matching, account-data scans) are not addressed by this change.
+
+### Request-sized work under the runtime lock (0.12.33)
+
+Security audit run-1 (2026-10-20) found five MEDIUM issues of one kind: work done while
+`runtime.mutex` is held, sized by input a client, a sender or a remote server controls. While
+the lock is held no other client request or federation callback that needs runtime state can
+run, so each was a way for one party to slow the whole server (CWE-407).
+
+- **Sliding-sync extension rooms.** The `receipts` and `typing` `rooms` arrays were uncapped,
+  and each room cost a scan of every membership row. **Mitigation:** each array is capped at
+  `room_subscriptions` and de-duplicated, and rooms are classified through one membership index
+  per request (ADR-0174).
+- **Push glob matching.** `event_match` allocated per character, and `content.body` matching
+  was quadratic in the body, for every local recipient of every event. **Mitigation:** linear
+  matchers with no per-character allocation, checked against the old implementation
+  (ADR-0175). Residual risk: none known; user push rules are not yet evaluated server-side.
+- **Global account data.** One user could add types without bound, growing the rows every
+  account-data read scans. **Mitigation:** a configurable per-user cap on global types,
+  `400 M_TOO_LARGE` beyond it (ADR-0173). Residual risk: the scans are still linear in the
+  total row count; they are bounded, not indexed.
+- **Appservice namespace regexes.** Each match compiled the regex again, for every member of
+  every room an event reached. **Mitigation:** `appservice::Namespace` compiles once when it is
+  built.
+- **Federation media multipart.** The delimiter search was O(body × boundary) on a body and
+  boundary a remote server chooses. **Mitigation:** boundaries over 70 characters are refused
+  (RFC 2046) and the search is linear (ADR-0176).

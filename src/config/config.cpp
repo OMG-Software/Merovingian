@@ -809,6 +809,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("server.client_api.max_key_signatures_per_user",
                    config.server().client_api.max_key_signatures_per_user, 1000000U);
     validate_count("server.client_api.max_filters_per_user", config.server().client_api.max_filters_per_user, 100000U);
+    validate_count("server.client_api.max_global_account_data_per_user",
+                   config.server().client_api.max_global_account_data_per_user, 100000U);
     validate_count("server.client_api.max_threads_page_size", config.server().client_api.max_threads_page_size, 1000U);
     validate_count("server.client_api.max_relations_page_size", config.server().client_api.max_relations_page_size,
                    1000U);

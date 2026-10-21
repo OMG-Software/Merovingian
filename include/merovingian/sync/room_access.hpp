@@ -4,6 +4,9 @@
 
 #include "merovingian/database/persistent_store.hpp"
 
+#include <functional>
+#include <map>
+#include <string>
 #include <string_view>
 
 namespace merovingian::sync
@@ -32,5 +35,15 @@ enum class RoomAccess
 // (fail closed).
 [[nodiscard]] auto room_access_for(database::PersistentStore const& store, std::string_view room_id,
                                    std::string_view user) noexcept -> RoomAccess;
+
+// Every room the user holds a membership row in, with room_access_for's answer for it, built
+// in one pass over the store's memberships. A room that is not in the map answers
+// `RoomAccess::none`, as room_access_for does for it.
+//
+// A caller that classifies many client-named rooms in one request uses this instead of calling
+// room_access_for per room: each of those calls scans every membership row in the store, and
+// they run under `runtime.mutex` (security audit run-1, sp01.sliding-sync-extension-rooms-unbounded).
+[[nodiscard]] auto room_access_index(database::PersistentStore const& store, std::string_view user)
+    -> std::map<std::string, RoomAccess, std::less<>>;
 
 } // namespace merovingian::sync

@@ -103,6 +103,8 @@ struct ClientApiLimits final
     std::uint32_t max_one_time_keys_per_device{1000U};
     std::uint32_t max_key_signatures_per_user{10000U};
     std::uint32_t max_filters_per_user{1000U};
+    // Security audit run-1 (ADR-0173): global account-data types per user.
+    std::uint32_t max_global_account_data_per_user{1000U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };

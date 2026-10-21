@@ -1,3 +1,46 @@
+## 0.12.33
+
+Fixes the five MEDIUM findings from security audit run-1 (2026-10-20) where a request could
+make the server do work, sized by its own input, while the server-wide runtime lock was held.
+
+- **SECURITY (sliding-sync extension rooms, `sp01.sliding-sync-extension-rooms-unbounded`):**
+  the `receipts` and `typing` extensions' `rooms` arrays were uncapped and not de-duplicated.
+  Each named room cost a scan of every membership row (and, for receipts, every stored
+  receipt). Each array is now capped at the `room_subscriptions` limit (default 256,
+  `400 M_INVALID_PARAM` beyond), repeated room IDs are kept once, and the rooms are
+  classified through `sync::room_access_index`, one pass over the caller's memberships built
+  once per request. Receipts and typing then make one pass over their tables. The
+  `room_subscriptions` classification uses the same index (ADR-0174).
+- **SECURITY (push glob matching, `sp01.push-glob-dp-allocation-per-character`):**
+  `event_match` allocated a full (value × pattern) table per match, and the `content.body`
+  matcher tried every pair of word boundaries. Whole-value matching now compares exactly when
+  the pattern has no wildcard, and otherwise uses a greedy matcher that backtracks to the last
+  `*` with no allocation. Word-boundary substring matching is one pass over the body. The
+  server evaluates only the default ruleset today (user push rules are not writable), so the
+  body matcher was latent; it is fixed anyway (ADR-0175).
+- **SECURITY (account data, `sp02.account-data-unbounded-linear-scan`):** a user could add
+  global account-data types without limit, growing the rows every account-data read scans under
+  the lock. New `server.client_api.max_global_account_data_per_user` (default 1000, 1 to
+  100000, restart required). A new type past it gets `400 M_TOO_LARGE`; updating a type the
+  user already holds always succeeds. Room account data is bounded by membership and is not
+  counted (ADR-0173).
+- **SECURITY (appservice namespaces, `sp02.appservice-regex-compile-under-mutex`):** each
+  namespace regex was compiled on every match, once per member per event, under the lock.
+  `appservice::Namespace` now compiles its pattern once, when it is built, and shares the
+  compiled form between copies. A malformed pattern still matches nothing.
+- **SECURITY (federation media multipart, `med01.federation-multipart-quadratic-boundary-scan`):**
+  the delimiter search compared the boundary at every offset of a body a remote server controls,
+  which a long, repetitive boundary made O(body × boundary) under the lock. A boundary longer
+  than RFC 2046's 70 characters is refused, and delimiters are found with a linear
+  Knuth-Morris-Pratt scan (ADR-0176).
+- **TESTS:** new `[security][sp01]`, `[security][sp02]` and `[security][med01]` scenarios cover
+  each fix: the push matchers are checked against the old implementation on 3000 seeded cases,
+  `room_access_index` against `room_access_for`, and the multipart parser against a
+  pathological all-dash boundary and 1 MB of dashes. New `tests/unit/test_account_data_cap.cpp`.
+- **DOCS:** ADR-0173 to ADR-0176; `docs/threat-model.md`, `docs/security-coding-rules.md`,
+  `docs/user-manual.md`, `docs/media-repository.md`, and the `src/sync`, `src/push`,
+  `src/appservice` and `src/homeserver` `AGENTS.md` files.
+
 ## 0.12.32
 
 - **FIXED (federated restricted joins were always refused):** a join into a restricted or

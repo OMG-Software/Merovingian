@@ -589,6 +589,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   which registration should win.
   Source: `src/appservice/AGENTS.md`.
 
+- **A namespace regex is compiled once, when `appservice::Namespace` is built. Request paths
+  match against the compiled form and never compile a pattern.**
+  Why: namespace matching runs for every member of every room an event reaches, under the
+  runtime lock. Compiling the regex on each match multiplied that cost (CWE-407; security
+  audit run-1, `sp02.appservice-regex-compile-under-mutex`).
+  Source: `src/appservice/AGENTS.md`.
+
 ## Identity Service client
 
 - **Every Identity Service host must resolve to SSRF-safe pinned addresses via
@@ -752,6 +759,14 @@ media-fetch-pool task.
   for most of an hour on an unauthenticated 50 MiB upload (audit HTTP-1, HTTP-6; ADR-0077).
   Source: `src/homeserver/AGENTS.md`, `src/http/AGENTS.md`.
 
+- **Rows a user can add, and that requests scan under the runtime lock, are capped per user.**
+  A new global account-data type past `server.client_api.max_global_account_data_per_user` is
+  refused with `400 M_TOO_LARGE`; an update to a type the user holds is always allowed. Caps
+  refuse, never evict (ADR-0118).
+  Why: account-data reads scan every row under the lock, so one user adding types without bound
+  slowed every request that reads them (CWE-770; security audit run-1, ADR-0173).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## Database
 
 - **Never interpolate values into SQL strings — always use prepared statements with bound
@@ -876,6 +891,14 @@ media-fetch-pool task.
   contained to a throwaway process instead of the main server.
   Source: `src/media/AGENTS.md`, `docs/threat-model.md`.
 
+- **A federation media `multipart/mixed` boundary longer than 70 characters is refused, and
+  delimiters are found with a linear scan.**
+  Why: a remote server chooses the boundary and the body, and the parse runs under the runtime
+  lock. Comparing the boundary at every offset made a long, repetitive boundary cost
+  O(body × boundary) (CWE-407; security audit run-1, ADR-0176). RFC 2046 §5.1.1 limits a
+  boundary to 70 characters.
+  Source: `src/homeserver/AGENTS.md`.
+
 ## Platform hardening
 
 - **Check a sequence of irreversible restrictions in full before its first step.**
@@ -998,6 +1021,26 @@ media-fetch-pool task.
   authenticated request could stall the whole server (CWE-407 Inefficient Algorithmic
   Complexity; security audit run-1, ADR-0172).
   Source: `src/sync/AGENTS.md`.
+
+- **A client-named room list is capped and de-duplicated, and its rooms are classified
+  through `sync::room_access_index`, built once per request, not `room_access_for` per room.**
+  The receipts and typing extensions' `rooms` arrays share the `room_subscriptions` cap.
+  Why: `room_access_for` scans every membership row in the store, and this runs under the
+  runtime lock. Uncapped arrays let one request repeat that scan thousands of times (CWE-407;
+  security audit run-1, ADR-0174).
+  Source: `src/sync/AGENTS.md`.
+
+## Push notifications
+
+- **Glob matching for push rules is linear and never uses `std::regex`.** A pattern without
+  wildcards is compared exactly; whole-value matching backtracks only to the last `*`;
+  `content.body` matching is one pass over the body.
+  Why: rules are evaluated for every local recipient of every event, under the runtime lock, on
+  values the sender controls. The old matchers allocated per character and were quadratic in
+  the body (CWE-407). `std::regex` backtracks and can take exponential time on patterns with
+  several stars (CWE-1333). A randomised test pins the answers to the old implementation
+  (ADR-0175).
+  Source: `src/push/AGENTS.md`.
 
 ## Trust and safety
 
@@ -1155,7 +1198,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
-| `src/homeserver/AGENTS.md` | Authentication and authorization; HTTP and network boundary; Federation; Sync |
+| `src/homeserver/AGENTS.md` | Authentication and authorization; HTTP and network boundary; Federation; Media; Sync |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |
 | `migrations/AGENTS.md` | Database |
@@ -1164,6 +1207,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/platform/AGENTS.md` | Platform hardening |
 | `src/federation_worker/AGENTS.md` | Platform hardening |
 | `src/sync/AGENTS.md` | Sync |
+| `src/push/AGENTS.md` | Push notifications |
 | `src/trust_safety/AGENTS.md` | Trust and safety |
 | `packaging/AGENTS.md` | Packaging and deployment |
 | `scripts/AGENTS.md` | Memory safety; Process |

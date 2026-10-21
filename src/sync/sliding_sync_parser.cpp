@@ -10,8 +10,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -74,6 +76,29 @@ namespace
         for (auto const& item : *arr)
         {
             if (auto const* s = as_string(item); s != nullptr)
+            {
+                out.push_back(*s);
+            }
+        }
+        return out;
+    }
+
+    // The strings of a JSON array, each kept once, in the order first seen. Used for the
+    // extensions' room lists, where a repeated room ID asks for nothing more but would cost
+    // another lookup under the runtime lock and count against the cap again.
+    [[nodiscard]] auto extract_unique_strings(canonicaljson::Value const& v) -> std::vector<std::string>
+    {
+        auto out = std::vector<std::string>{};
+        auto const* arr = as_array(v);
+        if (arr == nullptr)
+        {
+            return out;
+        }
+        auto seen = std::set<std::string_view, std::less<>>{};
+        for (auto const& item : *arr)
+        {
+            // The views point into the parsed document, which outlives this loop.
+            if (auto const* s = as_string(item); s != nullptr && seen.insert(*s).second)
             {
                 out.push_back(*s);
             }
@@ -364,7 +389,7 @@ namespace
                 req.enabled = parse_enabled(*o);
                 if (auto const* rv = find_member(*o, "rooms"); rv != nullptr)
                 {
-                    req.rooms = extract_strings(*rv);
+                    req.rooms = extract_unique_strings(*rv);
                 }
                 ext.receipts = req;
             }
@@ -378,7 +403,7 @@ namespace
                 req.enabled = parse_enabled(*o);
                 if (auto const* rv = find_member(*o, "rooms"); rv != nullptr)
                 {
-                    req.rooms = extract_strings(*rv);
+                    req.rooms = extract_unique_strings(*rv);
                 }
                 ext.typing = req;
             }
@@ -557,6 +582,20 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
         if (subscription.required_state.size() > limits.required_state_entries)
         {
             return "too many required_state entries in a room subscription";
+        }
+    }
+    // The receipts and typing extensions name rooms as room_subscriptions does, and each named
+    // room costs a membership lookup under the runtime lock, so the same cap bounds them.
+    if (request.extensions.has_value())
+    {
+        auto const& extensions = *request.extensions;
+        if (extensions.receipts.has_value() && extensions.receipts->rooms.size() > limits.room_subscriptions)
+        {
+            return "too many rooms in the receipts extension";
+        }
+        if (extensions.typing.has_value() && extensions.typing->rooms.size() > limits.room_subscriptions)
+        {
+            return "too many rooms in the typing extension";
         }
     }
     return std::nullopt;

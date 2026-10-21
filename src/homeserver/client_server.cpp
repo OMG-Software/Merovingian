@@ -78,6 +78,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -5465,11 +5466,17 @@ namespace
         // answered with its stripped invite state alone (below); every other membership is
         // omitted silently. Nothing about an omitted room may reach the response, so it must not
         // enter `response_room_ids`, which also scopes the account_data extension.
+        // The rooms are classified through one index over the caller's memberships rather than
+        // a scan of every membership row per subscription (security audit run-1, sp01).
         auto invited_subscription_ids = std::vector<std::string>{};
+        auto const subscription_access = ssreq.room_subscriptions.empty()
+                                             ? std::map<std::string, sync::RoomAccess, std::less<>>{}
+                                             : sync::room_access_index(store, user);
         for (auto const& [room_id, sub_unused] : ssreq.room_subscriptions)
         {
             std::ignore = sub_unused;
-            switch (sync::room_access_for(store, room_id, user))
+            auto const found = subscription_access.find(room_id);
+            switch (found == subscription_access.end() ? sync::RoomAccess::none : found->second)
             {
             case sync::RoomAccess::joined:
                 if (seen_rooms.insert(room_id).second)
@@ -9934,6 +9941,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_one_time_keys_per_device = client_api.max_one_time_keys_per_device;
     rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
+    rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
@@ -15574,6 +15582,36 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     if (req.body.empty())
                     {
                         return dispatch_err(req, rt, 400U, "M_BAD_JSON", "account data body must not be empty");
+                    }
+                    // Security audit run-1 (ADR-0173): each new global type is a row
+                    // that push fan-out and every /sync scan under runtime.mutex, so
+                    // new types stop at the per-user cap (M_TOO_LARGE, nothing stored
+                    // or evicted, as for the ADR-0118 caps). A type the user already
+                    // holds can always be updated.
+                    auto const& account_rows = rt.homeserver.database.persistent_store.account_data;
+                    auto held_types = std::size_t{0U};
+                    auto holds_type = false;
+                    for (auto const& row : account_rows)
+                    {
+                        if (row.user_id != path_user || !row.room_id.empty())
+                        {
+                            continue;
+                        }
+                        ++held_types;
+                        holds_type = holds_type || row.event_type == type;
+                    }
+                    if (!holds_type && held_types >= rt.limits.max_global_account_data_per_user)
+                    {
+                        log_diagnostic("account_data.rejected",
+                                       {
+                                           {"actor",  *user,                                 false},
+                                           {"type",   type,                                  false},
+                                           {"reason", "per-user account data limit reached", false}
+                        });
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "account data limit of " +
+                                                std::to_string(rt.limits.max_global_account_data_per_user) +
+                                                " types reached");
                     }
                     if (!set_account_data(rt, {path_user, std::string{}, type, req.body, 0U}))
                     {

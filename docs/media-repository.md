@@ -186,7 +186,9 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
   (`GET /_matrix/federation/v1/media/download/{mediaId}`). The `multipart/mixed`
   200 response is parsed strictly per RFC 2046: the boundary delimiter must sit
   on its own line, the boundary token may be quoted or unquoted with optional
-  whitespace around `=`, a preamble before the first delimiter is skipped,
+  whitespace around `=` and is at most 70 characters (longer is refused), delimiters are found
+  with a linear scan because the parse runs under the runtime lock (ADR-0176),
+  a preamble before the first delimiter is skipped,
   LF-only transport padding is tolerated, and the parser fails closed unless
   exactly two parts are present. A `Location` redirect part may carry an empty
   body.

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.32
+Version:        0.12.33
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.33-1
+- Bound the work requests can force while the server-wide lock is held (sliding-sync extensions, push rules, account data, appservice namespaces, remote media).
+
 * Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.32-1
 - Accept federated restricted joins authorised by a joined member with invite power.
 

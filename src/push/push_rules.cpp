@@ -6,7 +6,11 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cstddef>
+#include <string_view>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace merovingian::push
 {
@@ -141,43 +145,61 @@ namespace
         return result;
     }
 
+    [[nodiscard]] auto has_glob_wildcard(std::string_view pattern) noexcept -> bool
+    {
+        return pattern.find_first_of("*?") != std::string_view::npos;
+    }
+
     // Glob-style match per docs/matrix-v1.19-spec/appendices.md#glob-style-matching:
     // '*' matches zero or more characters, '?' matches exactly one. Matching
-    // is against the *entire* value (callers wanting substring matching, as
-    // content.body requires, drive this per-candidate-substring instead).
-    // Standard O(n*m) DP wildcard match; both inputs are already lowercased
-    // by the caller so this is effectively case-insensitive.
-    [[nodiscard]] auto glob_matches_full(std::string_view value, std::string_view pattern) -> bool
+    // is against the *entire* value. Both inputs are already lowercased by the
+    // caller, so this is effectively case-insensitive.
+    //
+    // Evaluation runs per recipient, per event, under runtime.mutex, on values
+    // the sender controls (security audit run-1), so this allocates nothing: a
+    // pattern without wildcards is a plain comparison, and otherwise the
+    // standard greedy matcher backtracks only to the last '*' seen.
+    [[nodiscard]] auto glob_matches_full(std::string_view value, std::string_view pattern) noexcept -> bool
     {
-        auto const value_len = value.size();
-        auto const pattern_len = pattern.size();
-        // dp[i][j] == true means value[0..i) matches pattern[0..j)
-        auto dp = std::vector<std::vector<bool>>(value_len + 1U, std::vector<bool>(pattern_len + 1U, false));
-        dp[0U][0U] = true;
-        for (auto pattern_index = std::size_t{0U}; pattern_index < pattern_len; ++pattern_index)
+        if (!has_glob_wildcard(pattern))
         {
-            if (pattern[pattern_index] == '*')
+            return value == pattern;
+        }
+        auto value_index = std::size_t{0U};
+        auto pattern_index = std::size_t{0U};
+        auto star_index = std::string_view::npos;
+        auto star_value_index = std::size_t{0U};
+        while (value_index < value.size())
+        {
+            // '*' is checked first: a value may itself contain '*', and the pattern's '*' must
+            // still be a wildcard there, not a literal match.
+            if (pattern_index < pattern.size() && pattern[pattern_index] == '*')
             {
-                dp[0U][pattern_index + 1U] = dp[0U][pattern_index];
+                star_index = pattern_index++;
+                star_value_index = value_index;
+            }
+            else if (pattern_index < pattern.size() &&
+                     (pattern[pattern_index] == '?' || pattern[pattern_index] == value[value_index]))
+            {
+                ++value_index;
+                ++pattern_index;
+            }
+            else if (star_index != std::string_view::npos)
+            {
+                // Let the last '*' absorb one more character and retry after it.
+                pattern_index = star_index + 1U;
+                value_index = ++star_value_index;
+            }
+            else
+            {
+                return false;
             }
         }
-        for (auto value_index = std::size_t{0U}; value_index < value_len; ++value_index)
+        while (pattern_index < pattern.size() && pattern[pattern_index] == '*')
         {
-            for (auto pattern_index = std::size_t{0U}; pattern_index < pattern_len; ++pattern_index)
-            {
-                auto const pattern_character = pattern[pattern_index];
-                if (pattern_character == '*')
-                {
-                    dp[value_index + 1U][pattern_index + 1U] =
-                        dp[value_index][pattern_index + 1U] || dp[value_index + 1U][pattern_index];
-                }
-                else if (pattern_character == '?' || pattern_character == value[value_index])
-                {
-                    dp[value_index + 1U][pattern_index + 1U] = dp[value_index][pattern_index];
-                }
-            }
+            ++pattern_index;
         }
-        return dp[value_len][pattern_len];
+        return pattern_index == pattern.size();
     }
 
     [[nodiscard]] auto is_word_character(char character) noexcept -> bool
@@ -191,44 +213,70 @@ namespace
     // every boundary-delimited substring rather than assuming word-splitting
     // on whitespace, since the spec's word-boundary definition is broader
     // (any non [A-Za-z0-9_] character, not just whitespace).
+    //
+    // One left-to-right pass over the value that runs every candidate match at
+    // once: `active[j]` says some substring begun at a word boundary has so far
+    // matched pattern[0..j). A new candidate starts at each start boundary, and
+    // a candidate that has consumed the whole pattern at an end boundary is a
+    // match. O(value × pattern) time and two pattern-sized buffers, where trying
+    // every (start, end) pair was quadratic in the value before any matching
+    // (security audit run-1).
     [[nodiscard]] auto glob_matches_word_boundary_substring(std::string_view value, std::string_view pattern) -> bool
     {
         auto const lowered_value = ascii_lower(value);
         auto const lowered_pattern = ascii_lower(pattern);
         auto const length = lowered_value.size();
+        auto const pattern_length = lowered_pattern.size();
+        auto const is_start = [&](std::size_t index) {
+            return index == 0U || !is_word_character(lowered_value[index - 1U]);
+        };
+        auto const is_end = [&](std::size_t index) {
+            return index == length || !is_word_character(lowered_value[index]);
+        };
 
-        auto starts = std::vector<std::size_t>{};
-        for (auto index = std::size_t{0U}; index <= length; ++index)
+        auto active = std::vector<bool>(pattern_length + 1U, false);
+        auto next = std::vector<bool>(pattern_length + 1U, false);
+        for (auto index = std::size_t{0U};; ++index)
         {
-            if (index == 0U || !is_word_character(lowered_value[index - 1U]))
+            if (is_start(index))
             {
-                starts.push_back(index);
+                active[0U] = true;
             }
-        }
-        auto ends = std::vector<std::size_t>{};
-        for (auto index = std::size_t{0U}; index <= length; ++index)
-        {
-            if (index == length || !is_word_character(lowered_value[index]))
+            // A '*' may match nothing, so a candidate standing before it also
+            // stands after it.
+            for (auto j = std::size_t{0U}; j < pattern_length; ++j)
             {
-                ends.push_back(index);
+                if (active[j] && lowered_pattern[j] == '*')
+                {
+                    active[j + 1U] = true;
+                }
             }
-        }
-
-        for (auto const start : starts)
-        {
-            for (auto const end : ends)
+            if (active[pattern_length] && is_end(index))
             {
-                if (end < start)
+                return true;
+            }
+            if (index == length)
+            {
+                return false;
+            }
+            std::ranges::fill(next, false);
+            for (auto j = std::size_t{0U}; j < pattern_length; ++j)
+            {
+                if (!active[j])
                 {
                     continue;
                 }
-                if (glob_matches_full(std::string_view{lowered_value}.substr(start, end - start), lowered_pattern))
+                if (lowered_pattern[j] == '*')
                 {
-                    return true;
+                    next[j] = true; // the '*' absorbs this character
+                }
+                else if (lowered_pattern[j] == '?' || lowered_pattern[j] == lowered_value[index])
+                {
+                    next[j + 1U] = true;
                 }
             }
+            std::swap(active, next);
         }
-        return false;
     }
 
     // Literal-text word-boundary substring match, used for

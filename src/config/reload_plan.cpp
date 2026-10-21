@@ -925,6 +925,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "server.client_api.max_filters_per_user");
     }
+    if (current.server().client_api.max_global_account_data_per_user !=
+        next.server().client_api.max_global_account_data_per_user)
+    {
+        add_change(plan, "server.client_api.max_global_account_data_per_user");
+    }
     if (current.server().client_api.max_threads_page_size != next.server().client_api.max_threads_page_size)
     {
         add_change(plan, "server.client_api.max_threads_page_size");

@@ -800,3 +800,108 @@ SCENARIO("A media upload whose database write fails is refused and leaves no tra
         }
     }
 }
+
+namespace
+{
+
+// A two-part multipart/mixed body as the authenticated federation media endpoint returns it,
+// with `media` as the second part's bytes.
+[[nodiscard]] auto two_part_body(std::string const& boundary, std::string const& media) -> std::string
+{
+    return "--" + boundary + "\r\nContent-Type: application/json\r\n\r\n{}\r\n--" + boundary +
+           "\r\nContent-Type: application/octet-stream\r\n\r\n" + media + "\r\n--" + boundary + "--\r\n";
+}
+
+} // namespace
+
+// RFC 2046 §5.1.1: a boundary is 1 to 70 characters ("boundary := 0*69<bchars> bcharsnospace").
+// The remote chooses both the boundary and the body, so the delimiter search must be linear in
+// the body whatever boundary it picks (security audit run-1,
+// med01.federation-multipart-quadratic-boundary-scan).
+SCENARIO("parse_federation_media_multipart bounds the boundary and finds delimiters in linear time",
+         "[homeserver][media][security][med01]")
+{
+    GIVEN("a boundary of exactly 70 characters, the most RFC 2046 allows")
+    {
+        auto const boundary = std::string(70U, 'b');
+
+        WHEN("the response is decoded")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(
+                "multipart/mixed; boundary=" + boundary, two_part_body(boundary, "BYTES"));
+
+            THEN("it parses")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.bytes == "BYTES");
+            }
+        }
+    }
+
+    GIVEN("a boundary of 71 characters, one more than RFC 2046 allows")
+    {
+        auto const boundary = std::string(71U, 'b');
+
+        WHEN("the response is decoded")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(
+                "multipart/mixed; boundary=\"" + boundary + "\"", two_part_body(boundary, "BYTES"));
+
+            THEN("it is refused as unparseable")
+            {
+                REQUIRE_FALSE(parsed.ok);
+            }
+        }
+    }
+
+    GIVEN("a boundary made only of dashes, so the delimiter overlaps itself")
+    {
+        auto const boundary = std::string(70U, '-');
+
+        WHEN("the media bytes are full of runs of dashes one short of a delimiter")
+        {
+            auto media = std::string{};
+            for (auto i = 0; i < 200; ++i)
+            {
+                media += "\n" + std::string(71U, '-') + "x";
+            }
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(
+                "multipart/mixed; boundary=" + boundary, two_part_body(boundary, media));
+
+            THEN("the delimiters are still found and the media bytes come back unchanged")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.bytes == media);
+            }
+        }
+
+        WHEN("the body is a megabyte of dashes with no delimiter line")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(
+                "multipart/mixed; boundary=" + boundary, "x" + std::string(1024U * 1024U, '-'));
+
+            THEN("it is refused as unparseable")
+            {
+                REQUIRE_FALSE(parsed.ok);
+            }
+        }
+    }
+
+    GIVEN("media bytes containing the boundary text not on a line of its own")
+    {
+        auto const boundary = std::string{"inner-boundary"};
+        auto const media = std::string{"before--inner-boundary--after--inner-boundary\r\ntail"};
+
+        WHEN("the response is decoded")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(
+                "multipart/mixed; boundary=" + boundary, two_part_body(boundary, media));
+
+            THEN("the embedded text is not mistaken for a delimiter")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.bytes == media);
+            }
+        }
+    }
+}

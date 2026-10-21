@@ -977,3 +977,71 @@ SCENARIO("appservice sender_localpart users are created at runtime startup",
         }
     }
 }
+
+// The interest check runs per event, per registration and (for the users namespace) per room
+// member, while the runtime lock is held, so a namespace pattern is compiled once, when the
+// registration is loaded, never per match (security audit run-1,
+// sp02.appservice-regex-compile-under-mutex). Matching keeps its spec semantics: a POSIX regex
+// over the whole identifier (Application Service API "Registration").
+SCENARIO("a namespace compiles its pattern once, when it is built", "[appservice][registration][security][sp02]")
+{
+    GIVEN("a namespace built from a valid POSIX pattern")
+    {
+        auto const ns = merovingian::appservice::Namespace{true, "@_irc_.*"};
+
+        THEN("its compiled form exists and matches whole identifiers only")
+        {
+            REQUIRE(ns.compiled != nullptr);
+            auto const namespaces = std::vector<merovingian::appservice::Namespace>{ns};
+            REQUIRE(merovingian::appservice::any_namespace_matches(namespaces, "@_irc_bob:example.org"));
+            REQUIRE_FALSE(merovingian::appservice::any_namespace_matches(namespaces, "@evil@_irc_bob:example.org"));
+            REQUIRE(merovingian::appservice::any_exclusive_namespace_matches(namespaces, "@_irc_bob:example.org"));
+        }
+
+        WHEN("the namespace is copied, as registrations are into the registry")
+        {
+            auto const copy = ns;
+
+            THEN("the copy shares the one compiled pattern instead of compiling again")
+            {
+                REQUIRE(copy.compiled == ns.compiled);
+            }
+        }
+    }
+
+    GIVEN("a namespace built from a pattern that does not compile")
+    {
+        auto const ns = merovingian::appservice::Namespace{true, "(unclosed"};
+
+        THEN("it has no compiled form and matches nothing")
+        {
+            REQUIRE(ns.compiled == nullptr);
+            auto const namespaces = std::vector<merovingian::appservice::Namespace>{ns};
+            REQUIRE_FALSE(merovingian::appservice::any_namespace_matches(namespaces, "(unclosed"));
+            REQUIRE_FALSE(merovingian::appservice::any_namespace_matches(namespaces, "@anyone:example.org"));
+        }
+    }
+
+    GIVEN("a registration parsed from its YAML file")
+    {
+        auto const parsed = merovingian::appservice::parse_registration_yaml(
+            "id: \"IRC Bridge\"\n"
+            "url: \"http://127.0.0.1:1234\"\n"
+            "as_token: \"30c05ae90a248a4188e620216fa72e349803310ec83e2a77b34fe90be6081f46\"\n"
+            "hs_token: \"312df522183efd404ec1cd22d2ffa4bbc76a8c1ccf541dd692eef281356bb74e\"\n"
+            "sender_localpart: \"_irc_bot\"\n"
+            "namespaces:\n"
+            "  users:\n"
+            "    - exclusive: true\n"
+            "      regex: \"@_irc_bridge_.*\"\n"
+            "  aliases: []\n"
+            "  rooms: []\n");
+
+        THEN("every namespace it loads is already compiled")
+        {
+            REQUIRE(parsed.value.has_value());
+            REQUIRE_FALSE(parsed.value->namespaces.users.empty());
+            REQUIRE(parsed.value->namespaces.users.front().compiled != nullptr);
+        }
+    }
+}
