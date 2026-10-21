@@ -151,7 +151,8 @@ auto Namespace::regex() const noexcept -> std::string const&
     return m_regex;
 }
 
-auto Namespace::compiled() const noexcept -> std::shared_ptr<std::regex const> const& // SHARED_PTR: reviewed — immutable
+auto Namespace::compiled() const noexcept
+    -> std::shared_ptr<std::regex const> const& // SHARED_PTR: reviewed — immutable
 {
     return m_compiled;
 }
