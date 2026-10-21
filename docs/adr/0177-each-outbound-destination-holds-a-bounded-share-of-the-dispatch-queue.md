@@ -38,8 +38,11 @@ first successful delivery deleted the row the others' replay depended on.
 Chosen option: "bound each destination's share of the queue in `DispatchWorker::enqueue`". A
 destination may hold `DispatchWorkerConfig::max_pending_per_destination` queued transactions;
 zero derives it as `max(16, max_queue_depth / 16)`, which is 256 for the default queue. The count is
-kept per destination under the worker's mutex and changed only by `push_queue_locked` and
-`note_dequeued_locked`, so the check costs one hash lookup. Past the share, or past the whole
+kept per destination under the worker's mutex, so the check costs one hash lookup. It covers queued
+and in-flight transactions: a slot is taken on admission, kept while the transaction is attempted
+and while it waits to retry, and released only when it is delivered, dropped or fails to persist,
+so a concurrent enqueue cannot take an in-flight transaction's slot. Replay after a restart admits
+durable rows under the same share and parks the rest. Past the share, or past the whole
 queue, `enqueue` returns false and counts the refusal in `DispatchWorkerSummary::rejected`, which
 is exported as `merovingian_federation_outbound_rejected_total`. The room-event fan-out logs the
 refused destinations at warning level (`room.event.dispatch_refused`).

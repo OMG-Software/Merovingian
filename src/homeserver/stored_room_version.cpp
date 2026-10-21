@@ -38,7 +38,9 @@ auto declared_room_version(canonicaljson::Object const& create_event) -> std::st
         content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
     if (content == nullptr)
     {
-        return {};
+        // Nothing usable is declared. Treat it as version 1, as an absent room_version is: never
+        // an empty string, which some parsers would turn into their own default.
+        return "1";
     }
     auto const* version_value = member_of(*content, "room_version");
     if (version_value == nullptr)
@@ -48,7 +50,9 @@ auto declared_room_version(canonicaljson::Object const& create_event) -> std::st
         return "1";
     }
     auto const* version = std::get_if<std::string>(&version_value->storage());
-    return version == nullptr ? std::string{} : *version;
+    // Rule 1.3 rejects a room_version that is not a string, or empty; one that reached the store
+    // anyway declares nothing usable, so it too is version 1.
+    return version == nullptr || version->empty() ? std::string{"1"} : *version;
 }
 
 auto stored_room_version(database::PersistentStore const& store, std::string_view room_id) -> std::optional<std::string>
@@ -69,10 +73,10 @@ auto stored_room_version(database::PersistentStore const& store, std::string_vie
             auto const* object = parsed.error == canonicaljson::ParseError::none
                                      ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
                                      : nullptr;
-            return object == nullptr ? std::string{} : declared_room_version(*object);
+            return object == nullptr ? std::string{"1"} : declared_room_version(*object);
         }
         // The create row names an event that is not stored: nothing usable is declared.
-        return std::string{};
+        return std::string{"1"};
     }
     return std::nullopt;
 }

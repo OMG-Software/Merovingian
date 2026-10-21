@@ -375,6 +375,8 @@ SCENARIO("Outbound error names are stable, lowercase identifiers for audit logs"
 SCENARIO("Outbound requests refuse header names and values that are not valid HTTP fields",
          "[http][outbound][validation][security][sp02]")
 {
+    // A request that passes every other check (method, https URL, pinned public address), so the
+    // only thing a scenario below varies is the one header it adds.
     auto const request_with_header = [](std::string name, std::string value) {
         auto request = merovingian::http::OutboundRequest{};
         request.method = "POST";
@@ -384,6 +386,8 @@ SCENARIO("Outbound requests refuse header names and values that are not valid HT
         return request;
     };
 
+    // CR and LF end a header line and start another; NUL truncates it in C APIs; any other control
+    // character (0x01-0x1F except HTAB, and DEL) is outside RFC 9110 field-value.
     GIVEN("headers carrying CR, LF, NUL or another control character in the value")
     {
         auto const values = std::vector<std::string>{
@@ -409,6 +413,8 @@ SCENARIO("Outbound requests refuse header names and values that are not valid HT
         }
     }
 
+    // A field name is a token: no space, no separators such as ":" "(" ")" "\"", no control
+    // characters, and not empty.
     GIVEN("header names that are not HTTP tokens")
     {
         auto const names =
@@ -428,6 +434,8 @@ SCENARIO("Outbound requests refuse header names and values that are not valid HT
         }
     }
 
+    // The real headers outbound callers send must keep passing: HTAB is allowed inside a value, and
+    // an empty value is a valid field value.
     GIVEN("ordinary headers, including a value with a horizontal tab and visible punctuation")
     {
         auto request = request_with_header("Authorization", "Bearer abc.DEF-123_~+/=");
@@ -445,6 +453,8 @@ SCENARIO("Outbound requests refuse header names and values that are not valid HT
         }
     }
 
+    // perform() repeats the check itself, so a caller that skips validate_outbound_request still
+    // cannot put an invalid header on the wire.
     GIVEN("an OutboundClient and a request whose header value carries CR/LF")
     {
         auto client = merovingian::http::OutboundClient{};
@@ -463,6 +473,7 @@ SCENARIO("Outbound requests refuse header names and values that are not valid HT
         }
     }
 
+    // The error name is serialised across the worker IPC boundary, so it must round-trip.
     GIVEN("the invalid_header error")
     {
         WHEN("it is named and the name parsed back")

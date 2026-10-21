@@ -1851,6 +1851,8 @@ SCENARIO("A federated join is refused when the room's create event does not decl
                                      R"(","depth":3,"origin_server_ts":1000,)"
                                      R"("prev_events":[],"auth_events":[],)"
                                      R"("content":{"membership":"join"}})";
+        // The resident server answers make_join with version 10. Only the create event inside its send_join
+        // answer changes between the two WHEN blocks.
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
         auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
                                         creator + R"(","room_id":")" + joined_room +
@@ -1858,6 +1860,8 @@ SCENARIO("A federated join is refused when the room's create event does not decl
                                         R"("content":{"users":{")" +
                                         creator + R"(":100}}})";
 
+        // Builds a send_join answer whose state and auth chain hold a create event with the given content,
+        // signed by the resident server, plus its power levels.
         auto const send_join_with_create_content = [&](std::string const& create_content) {
             auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
                                       R"(","room_id":")" + joined_room +
@@ -1877,6 +1881,7 @@ SCENARIO("A federated join is refused when the room's create event does not decl
             return std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) + R"(,"auth_chain":)" +
                    canonicaljson_array_to_string(auth_chain_array) + "}";
         };
+        // Serves make_join then send_join from the mock resident server and joins bob through it.
         auto const join_through_resident = [&](std::string const& send_join_body) {
             auto captured_requests = std::vector<std::string>{};
             auto server_thread = std::thread{[&]() {
@@ -1889,6 +1894,7 @@ SCENARIO("A federated join is refused when the room's create event does not decl
             wait_for_join_background_tasks(runtime);
             return result;
         };
+        // Nothing of a refused room may be stored: no current state and no event.
         auto const room_is_stored = [&] {
             auto const lock = std::lock_guard{runtime.mutex};
             return std::ranges::any_of(runtime.database.persistent_store.state,
@@ -1900,6 +1906,7 @@ SCENARIO("A federated join is refused when the room's create event does not decl
                    });
         };
 
+        // No room_version means room version 1 (client-server-api.md, m.room.create), not 10.
         WHEN("the create event in its send_join state has no room_version (room version 1)")
         {
             auto const result =
@@ -1912,6 +1919,8 @@ SCENARIO("A federated join is refused when the room's create event does not decl
             }
         }
 
+        // A resident server must not choose the rule set by naming one version in make_join and another
+        // in the create event.
         WHEN("the create event declares room version 11 while make_join said 10")
         {
             auto const result = join_through_resident(

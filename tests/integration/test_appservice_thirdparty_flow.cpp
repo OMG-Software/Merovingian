@@ -43,6 +43,7 @@
 #include <variant>
 #include <vector>
 
+#include <poll.h>
 #include <unistd.h>
 
 namespace
@@ -520,6 +521,9 @@ SCENARIO("Third-party lookups that call an appservice take a client outbound pro
                     REQUIRE(response.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
                 }
                 REQUIRE(runtime.homeserver.client_outbound_budget->active() == 1U);
+                // No connection reached the appservice's listening socket.
+                auto pending = pollfd{acceptor.fd(), POLLIN, 0};
+                REQUIRE(::poll(&pending, 1, 0) == 0);
             }
         }
 

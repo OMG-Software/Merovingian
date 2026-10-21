@@ -500,3 +500,80 @@ SCENARIO("Dispatch worker limits each destination to its share of the queue",
         }
     }
 }
+
+// A destination's share counts its queued and in-flight transactions: the slot is held while a
+// transaction is attempted and while it waits to retry, so a concurrent enqueue cannot take it,
+// and it is released only when the transaction leaves for good.
+SCENARIO("A destination's queue share is released only when its transaction leaves for good",
+         "[federation][dispatch-worker][bounds][security]")
+{
+    GIVEN("a worker with a share of one per destination that drops a transaction after one failed attempt")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto config = worker_config();
+        config.max_pending_per_destination = 1U;
+        config.max_retries = 1U;
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver), {}, {}};
+        REQUIRE(worker.enqueue(sample_transaction("dead.example.org")));
+        REQUIRE_FALSE(worker.enqueue(sample_transaction("dead.example.org")));
+
+        WHEN("the worker's attempt fails and the transaction is dropped")
+        {
+            REQUIRE(worker.run_once());
+
+            THEN("the slot is free again")
+            {
+                REQUIRE(worker.summary().dropped == 1U);
+                REQUIRE(worker.enqueue(sample_transaction("dead.example.org")));
+            }
+        }
+    }
+}
+
+// Replay after a restart admits durable rows under the same share. Rows past a destination's share
+// are parked, not dropped, and do not hold up rows for other destinations.
+SCENARIO("Dispatch worker replays durable rows within each destination's share",
+         "[federation][dispatch-worker][persistence][bounds][security]")
+{
+    GIVEN("durable rows: three for one destination, then one for another, and a share of two")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        for (auto const* id : {"txn-a", "txn-b", "txn-c"})
+        {
+            REQUIRE(merovingian::database::store_federation_transaction(
+                store, {id, "dead.example.org", "PUT", std::string{"/_matrix/federation/v1/send/"} + id,
+                        "origin.example.org", "1234", R"({"pdus":[]})", 0U, 0U}));
+        }
+        REQUIRE(merovingian::database::store_federation_transaction(
+            store, {"txn-d", "live.example.org", "PUT", "/_matrix/federation/v1/send/txn-d", "origin.example.org",
+                    "1234", R"({"pdus":[]})", 0U, 0U}));
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto config = worker_config();
+        config.max_queue_depth = 64U;
+        config.max_pending_per_destination = 2U;
+        auto worker =
+            merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver), {}, {}, &store};
+
+        WHEN("the rows are replayed")
+        {
+            auto const replayed = worker.replay_pending();
+
+            THEN("two rows for the first destination and the other destination's row are queued, and one is parked")
+            {
+                REQUIRE(replayed == 3U);
+                REQUIRE(worker.summary().pending == 3U);
+                REQUIRE(store.federation_transactions.size() == 4U);
+                REQUIRE_FALSE(worker.enqueue(sample_transaction("dead.example.org")));
+                REQUIRE(worker.enqueue(sample_transaction("live.example.org")));
+            }
+        }
+    }
+}

@@ -34,7 +34,9 @@ then composed under one rule set, verified under another and refused by a third.
 
 Chosen option: "one accessor; explicit fallbacks only for unknown rooms; a join must match".
 `homeserver::declared_room_version` reads a create event: no `room_version` gives `"1"`; no
-content object, or a value that is not a string, gives `""`. `homeserver::stored_room_version`
+content object, or a value that is not a string, gives `"1"` too, as does a stored create row whose
+event is missing or unparseable. The result is never empty: several parsers replace an empty version
+with a default of their own (`"12"`). `homeserver::stored_room_version`
 returns `nullopt` only when no create is stored; `stored_room_version_policy` returns the policy or
 `nullptr`. Every reader of a stored create goes through them. Callers that need a value for an
 unknown room write their fallback as `value_or(...)` at the call site.

@@ -703,6 +703,10 @@ SCENARIO("User ID server name extraction splits on the first colon", "[conforman
 // IPv6 literal). So the server name of any sigilled identifier is everything after the FIRST ':'.
 // Splitting on the last ':' sent a port-suffixed server's traffic to "8448" (security audit run-1,
 // fed.outbound-fanout-rfind-colon-port-server-name).
+//
+// Spec: Matrix Appendices v1.19
+// Endpoint / Section: Identifier Grammar (user IDs, room IDs, room aliases, server name)
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#identifier-grammar
 SCENARIO("Server name extraction from any sigilled identifier splits on the first colon",
          "[conformance][identifiers][server-name][security]")
 {
@@ -712,6 +716,7 @@ SCENARIO("Server name extraction from any sigilled identifier splits on the firs
         {
             THEN("the whole server name, port included, is returned for every sigil")
             {
+                // Spec MUST: server_name = hostname [ ":" port ], and no localpart contains ':'.
                 REQUIRE(merovingian::auth::identifier_server_name("@u:example.org:8448") == "example.org:8448");
                 REQUIRE(merovingian::auth::identifier_server_name("!room:example.org:8448") == "example.org:8448");
                 REQUIRE(merovingian::auth::identifier_server_name("#alias:example.org:8448") == "example.org:8448");
@@ -721,6 +726,8 @@ SCENARIO("Server name extraction from any sigilled identifier splits on the firs
 
             THEN("anything without a sigil, a ':' or a server name yields nothing")
             {
+                // Spec MUST: these identifiers start with their sigil ('@', '!', '#') and, when they
+                // have a domain, ':' then the server name; a room v12 ID and an event ID have none.
                 REQUIRE(merovingian::auth::identifier_server_name("room:example.org").empty());
                 REQUIRE(merovingian::auth::identifier_server_name("!opaqueroomidv12").empty());
                 REQUIRE(merovingian::auth::identifier_server_name("#alias:").empty());

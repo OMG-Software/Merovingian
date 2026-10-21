@@ -210,9 +210,11 @@ client, sender or remote server controls, and per-user rows that requests scan m
 Read a stored room's version only through `stored_room_version` / `stored_room_version_policy`
 (`stored_room_version.hpp`), or `declared_room_version` for a create event in hand. A create event
 without `room_version` is version 1, which has no policy: refuse the room on `nullptr`, never
-substitute a default. Only a room with no stored create (unknown here) may take a caller-chosen
-fallback, written as `value_or(...)` at the call site. A federated join is refused unless the
-verified `m.room.create` declares the make_join version.
+substitute a default. The accessor never returns an empty string (an unusable declaration is version
+1 too), because several parsers replace an empty version with `"12"`. Only a room with no stored
+create (unknown here) may take a caller-chosen fallback, written as `value_or(...)` at the call
+site. A federated join is refused unless the verified `m.room.create` declares the make_join
+version.
 
 ## Media upload boundary
 

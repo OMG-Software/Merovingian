@@ -113,9 +113,12 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 12. **Each outbound destination holds a bounded share of the dispatch queue (ADR-0177).**
    `DispatchWorker::enqueue` refuses a transaction once its destination holds
    `effective_max_pending_per_destination` queued ones, or the queue is full, and counts it in
-   `summary().rejected`. Every insertion into or removal from `queue_` goes through
-   `push_queue_locked` / `note_dequeued_locked` under `mutex_`, so the counts stay exact; a new
-   path that touches `queue_` uses them. Never discard `enqueue`'s result: log a refusal. Give
+   `summary().rejected`. A destination's slots count its queued AND in-flight transactions:
+   `push_queue_locked` takes a slot on admission (enqueue, replay), `requeue_locked` puts a
+   retried transaction back without taking another, and `release_destination_slot_locked` frees
+   it only when the transaction leaves for good (delivered, dropped, or failed to persist), all
+   under `mutex_`. Replay parks rows past a destination's share instead of promoting them. A new
+   path that touches `queue_` uses these. Never discard `enqueue`'s result: log a refusal. Give
    every destination its own transaction ID: it is the durable `federation_transactions` key.
 
 ## Key files

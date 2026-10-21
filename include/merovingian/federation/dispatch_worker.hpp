@@ -160,10 +160,15 @@ private:
     // Promote replay-overflow rows into the active queue while capacity allows.
     // Caller must hold mutex_. Returns the number of rows promoted.
     auto top_up_replay_locked() -> std::size_t;
-    // Every insertion into and removal from queue_ goes through these two, so the per-destination
-    // counts stay exact. Caller must hold mutex_.
+    // A destination's slots count its queued AND in-flight transactions: a slot is taken when a
+    // transaction is admitted (push_queue_locked), kept while the worker attempts it and while it
+    // waits to retry (requeue_locked), and released only when it leaves for good: delivered,
+    // dropped, or failed to persist (release_destination_slot_locked). So a concurrent enqueue
+    // cannot take an in-flight transaction's slot. Caller must hold mutex_.
     auto push_queue_locked(OutboundTransaction transaction) -> void;
-    auto note_dequeued_locked(std::string const& destination) -> void;
+    auto requeue_locked(OutboundTransaction transaction) -> void;
+    auto release_destination_slot_locked(std::string const& destination) -> void;
+    [[nodiscard]] auto destination_at_share_locked(std::string const& destination) const -> bool;
 
     DispatchWorkerConfig config_{};
     http::OutboundClient& client_;
@@ -179,7 +184,8 @@ private:
     // Drained into queue_ as in-flight work completes so backlog larger than
     // the in-memory cap is not stranded until the next restart.
     std::deque<OutboundTransaction> pending_replay_{};
-    // Transactions in queue_ per destination (not pending_replay_), guarded by mutex_.
+    // Slots held per destination: transactions in queue_ or in flight (not pending_replay_),
+    // guarded by mutex_.
     std::unordered_map<std::string, std::size_t> queued_per_destination_{};
     std::vector<DispatchDestinationSnapshot> destinations_{};
     DispatchWorkerSummary summary_{};

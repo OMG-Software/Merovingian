@@ -73,17 +73,22 @@ SCENARIO("A room's stored version comes from its create event through one access
         auto const no_content = store_with_create(R"({"type":"m.room.create"})");
         auto const unparseable = store_with_create("{not json");
         auto const unknown = store_with_create(R"({"type":"m.room.create","content":{"room_version":"99"}})");
+        auto const empty = store_with_create(R"({"type":"m.room.create","content":{"room_version":""}})");
 
         WHEN("the stored version is resolved")
         {
             THEN("none resolves to a supported version or a default")
             {
-                for (auto const* store : {&non_string, &no_content, &unparseable, &unknown})
+                for (auto const* store : {&non_string, &no_content, &unparseable, &unknown, &empty})
                 {
                     REQUIRE(stored_room_version(*store, "!r:example.org").has_value());
                     REQUIRE(stored_room_version_policy(*store, "!r:example.org") == nullptr);
                 }
-                REQUIRE(stored_room_version(non_string, "!r:example.org") == std::optional<std::string>{""});
+                // Never an empty string, which parsers would replace with a default of their own.
+                REQUIRE(stored_room_version(non_string, "!r:example.org") == std::optional<std::string>{"1"});
+                REQUIRE(stored_room_version(no_content, "!r:example.org") == std::optional<std::string>{"1"});
+                REQUIRE(stored_room_version(unparseable, "!r:example.org") == std::optional<std::string>{"1"});
+                REQUIRE(stored_room_version(empty, "!r:example.org") == std::optional<std::string>{"1"});
             }
         }
     }

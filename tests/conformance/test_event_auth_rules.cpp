@@ -4113,6 +4113,9 @@ SCENARIO("Auth rules reject float power levels from room version 6",
 // present and is not a recognised version (client-server-api.md, m.room.create: room_version is a
 // string), so it is rejected too. Accepting it let a room's version be derived differently by
 // different components (security audit run-1).
+//
+// Spec: Room Versions v10, Authorisation rules (rule 1.3)
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md#authorisation-rules
 SCENARIO("Auth rules reject a create event whose room_version is not a string",
          "[events][auth][create][rule1][conformance][room-version]")
 {

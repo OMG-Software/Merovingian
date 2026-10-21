@@ -16,7 +16,9 @@ fixing them.
 - **SECURITY (`fed.outbound-fanout-unbounded-destinations-queue-poison`):** a destination whose
   circuit stayed open kept its transactions queued without counting retries, so one dead or hostile
   peer could fill the shared outbound queue and every other peer's transactions were refused. Each
-  destination now holds at most its share of the queue (`max(16, depth / 16)`, 256 by default).
+  destination now holds at most its share of the queue (`max(16, depth / 16)`, 256 by default),
+  counting its queued and in-flight transactions, and replay after a restart parks rows past the
+  share instead of promoting them.
   Refusals are counted (`merovingian_federation_outbound_rejected_total`) and the room-event fan-out
   logs them at warning level (`room.event.dispatch_refused`) instead of discarding them (ADR-0177).
 - **FIXED (durable outbound queue):** both fan-outs gave every destination one transaction ID, which
@@ -31,8 +33,9 @@ fixing them.
 - **SECURITY (`rooms.room-version-resolution-divergent-fallbacks-create-without-room_version`):**
   components derived a room's stored version with different defaults (`"1"`, `"10"`, `"12"`), and a
   federated join never checked the create event against the make_join version. There is now one
-  accessor (`homeserver::stored_room_version`): a create event without `room_version` is version 1
-  and has no policy. A join is refused (502) unless the create event declares the make_join version.
+  accessor (`homeserver::stored_room_version`): a create event without `room_version`, or with an
+  unusable one, is version 1 and has no policy; the accessor never returns an empty version, which
+  several parsers would replace with `"12"`. A join is refused (502) unless the create event declares the make_join version.
   Auth rule 1.3 also rejects a `room_version` that is not a string (ADR-0179).
 - **SECURITY (`sp02.thirdparty-no-proxy-slot`):** the `/thirdparty/*` routes called appservices
   without a client outbound proxy slot. Each now takes one before calling, and answers

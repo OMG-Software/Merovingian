@@ -126,13 +126,11 @@ auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
             ++summary_.rejected;
             return false;
         }
-        if (auto const held = queued_per_destination_.find(transaction.destination);
-            held != queued_per_destination_.end() && held->second >= effective_max_pending_per_destination(config_))
+        if (destination_at_share_locked(transaction.destination))
         {
             log_diagnostic("enqueue.rejected", {
                                                    {"transaction_id", transaction.transaction_id,        false},
                                                    {"destination",    transaction.destination,           false},
-                                                   {"queued",         std::to_string(held->second),      false},
                                                    {"reason",         "destination queue share reached", false}
             });
             ++summary_.rejected;
@@ -171,7 +169,19 @@ auto DispatchWorker::push_queue_locked(OutboundTransaction transaction) -> void
     queue_.push_back(std::move(transaction));
 }
 
-auto DispatchWorker::note_dequeued_locked(std::string const& destination) -> void
+auto DispatchWorker::requeue_locked(OutboundTransaction transaction) -> void
+{
+    // The transaction kept its slot while it was in flight; it is not counted again.
+    queue_.push_back(std::move(transaction));
+}
+
+auto DispatchWorker::destination_at_share_locked(std::string const& destination) const -> bool
+{
+    auto const held = queued_per_destination_.find(destination);
+    return held != queued_per_destination_.end() && held->second >= effective_max_pending_per_destination(config_);
+}
+
+auto DispatchWorker::release_destination_slot_locked(std::string const& destination) -> void
 {
     auto const held = queued_per_destination_.find(destination);
     if (held == queued_per_destination_.end())
@@ -242,7 +252,6 @@ auto DispatchWorker::take_next(OutboundTransaction& out) -> bool
     }
     out = std::move(*ready);
     queue_.erase(ready);
-    note_dequeued_locked(out.destination);
     // Removing an entry frees a slot under max_queue_depth — top up the
     // active queue from any replay overflow that was parked at startup.
     std::ignore = top_up_replay_locked();
@@ -283,6 +292,7 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
         // surface the transaction as failed instead of dropping it cleanly,
         // so the row survives in storage and is replayed next start.
         auto lock = std::lock_guard{mutex_};
+        release_destination_slot_locked(transaction.destination);
         if (persistent_store_ != nullptr &&
             !database::delete_federation_transaction(*persistent_store_, transaction.transaction_id))
         {
@@ -308,10 +318,11 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
         if (persistent_store_ != nullptr &&
             !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
         {
+            release_destination_slot_locked(transaction.destination);
             ++summary_.failed;
             return;
         }
-        push_queue_locked(std::move(transaction));
+        requeue_locked(std::move(transaction));
         ++summary_.pending;
     }
     cv_.notify_one();
@@ -409,6 +420,7 @@ auto DispatchWorker::run_once() -> bool
             }
             if (!durable_drop_failed)
             {
+                release_destination_slot_locked(transaction.destination);
                 ++summary_.delivered;
             }
         }
@@ -445,10 +457,11 @@ auto DispatchWorker::run_once() -> bool
             if (persistent_store_ != nullptr &&
                 !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
             {
+                release_destination_slot_locked(transaction.destination);
                 ++summary_.failed;
                 return true;
             }
-            push_queue_locked(std::move(transaction));
+            requeue_locked(std::move(transaction));
             ++summary_.pending;
         }
         cv_.notify_one();
@@ -461,14 +474,22 @@ auto DispatchWorker::run_once() -> bool
 auto DispatchWorker::top_up_replay_locked() -> std::size_t
 {
     auto promoted = std::size_t{0U};
-    while (!pending_replay_.empty())
+    // Look at each parked row at most once. A row whose destination is at its share goes to the
+    // back, so it does not hold up rows for other destinations.
+    for (auto remaining = pending_replay_.size(); remaining > 0U && !pending_replay_.empty(); --remaining)
     {
         if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
         {
             break;
         }
-        push_queue_locked(std::move(pending_replay_.front()));
+        auto row = std::move(pending_replay_.front());
         pending_replay_.pop_front();
+        if (destination_at_share_locked(row.destination))
+        {
+            pending_replay_.push_back(std::move(row));
+            continue;
+        }
+        push_queue_locked(std::move(row));
         ++summary_.enqueued;
         ++summary_.pending;
         ++promoted;
@@ -505,11 +526,12 @@ auto DispatchWorker::replay_pending() -> std::size_t
             {
                 continue;
             }
-            if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
+            if ((config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth) ||
+                destination_at_share_locked(outbound.destination))
             {
-                // Park overflow in pending_replay_ instead of stranding it in
-                // durable storage. top_up_replay_locked() pulls more rows in
-                // as in-flight work completes.
+                // Park overflow, and rows past their destination's share, in pending_replay_
+                // instead of stranding them in durable storage. top_up_replay_locked() pulls
+                // them in as in-flight work completes.
                 pending_replay_.push_back(std::move(outbound));
                 continue;
             }

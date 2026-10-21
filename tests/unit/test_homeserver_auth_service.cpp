@@ -1674,3 +1674,30 @@ SCENARIO("refresh_local_session fails closed when token revocation cannot persis
         }
     }
 }
+
+// Security audit run-1 (med01.remote-media-owner-sentinel-localpart-collision): every account
+// creation path goes through make_user, which refuses the server's own localparts. Bootstrap admin
+// creation is one of those paths.
+SCENARIO("The remote-media localpart cannot be created as a bootstrap administrator",
+         "[homeserver][auth][security][med01]")
+{
+    GIVEN("a started runtime")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("an administrator named remote-media is bootstrapped")
+        {
+            auto const result = merovingian::homeserver::bootstrap_admin_user(runtime, "remote-media", "AdminPass99!");
+
+            THEN("it is refused and no account exists")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(std::ranges::none_of(runtime.database.users, [](auto const& user) {
+                    return user.user_id == "@remote-media:example.org";
+                }));
+            }
+        }
+    }
+}
