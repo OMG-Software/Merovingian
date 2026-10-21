@@ -1,3 +1,38 @@
+## 0.12.31
+
+Fixes the two HIGH findings from security audit run-1 (2026-10-20).
+
+- **SECURITY (forged restricted joins via worker relay or backfill):** an `m.room.member`
+  event carrying `join_authorised_via_users_server` must be validly signed by that user's
+  server (rooms/v10.md rule 4.2.1). Only `/send` and `send_join` verified that signature.
+  Main's re-verification of PDUs relayed by the federation worker, and backfill /
+  missing-history ingestion, checked only the sender's signature, so the structural auth rule
+  accepted any non-empty authorising-server signature. In a restricted room this was latent:
+  those paths' auth maps never carry the authorising user's membership, so they refuse every
+  non-invited restricted join anyway (a separate bug, not fixed here). In a room with any
+  other join rule, a join carrying a forged authorising signature was accepted, which rule
+  4.2.1 forbids. All four paths now call one helper,
+  `federation::verify_join_authorising_server_signature`. It resolves the authorising
+  server's key through the caller's admitted lookup and refuses the event unless the
+  signature verifies. A local key-resolution overload is retryable (503 / `main_overloaded`),
+  never a verdict. The helper applies the rule to `m.room.member` events only, as the spec
+  says; the previous `/send` code also applied it to other event types (ADR-0171).
+- **SECURITY (one sliding-sync request could stall the server):** `by_recency` and `by_name`
+  were computed inside the sort comparator, rescanning the event store on every one of
+  O(N log N) comparisons while the runtime lock was held. Every sort key is now computed once
+  per room before the sort: `by_recency` in one newest-first pass that skips events that
+  cannot beat the room's current maximum, and `by_name` in one pass over state and one over
+  events. Requests over 32 lists, 3 sort keys per list or 64 `bump_event_types` per list are
+  refused with 400 `M_INVALID_PARAM` (ADR-0172).
+- **TESTS:** branch coverage for `verify_join_authorising_server_signature`; forged and valid
+  authorising signatures on the worker-relay (`pdu_ingest`, `membership_ingest`) and backfill
+  paths; the sliding-sync ordering contract over ascending, descending and shuffled stores;
+  and the new request caps at and over each limit.
+- **DOCS:** ADR-0171 and ADR-0172; rules added to `src/federation/AGENTS.md`,
+  `src/homeserver/AGENTS.md`, `src/sync/AGENTS.md` and `docs/security-coding-rules.md`;
+  threat-model entry; `docs/event-engine.md`; a correction to the EVT-1 residual note in
+  the 2026-09-29 audit report, which said every PDU path verified the signature.
+
 ## 0.12.30
 
 - **FIXED (resident-supplied profile signed as ours):** a federated join kept a `displayname`

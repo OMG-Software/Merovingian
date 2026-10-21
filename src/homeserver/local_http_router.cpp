@@ -3632,6 +3632,21 @@ namespace
         {
             return false;
         }
+        // EVT-1: a fetched event reaches the structural auth rules below, which
+        // only see that a restricted join's authorising-server signature is
+        // present. Verify it with a key this server resolves, as /send does.
+        auto const authorising = federation::verify_join_authorising_server_signature(
+            parsed.value, policy,
+            [&runtime, &budget](std::string_view server_name, std::string_view authorising_key_id) {
+                auto lookup =
+                    federation::resolve_verification_key(runtime.federation, {}, server_name, authorising_key_id);
+                budget.key_resolution_locally_denied = lookup.locally_denied;
+                return lookup;
+            });
+        if (!authorising.accepted)
+        {
+            return false;
+        }
 
         auto const envelope_opt = federation::parse_inbound_pdu_envelope(stored_json, policy.id);
         if (!envelope_opt.has_value())

@@ -18,6 +18,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    the key is not one we hold. Events in a `send_join` response must also belong to the room being
    joined; drop any other entry before verifying or storing it (ADR-0083).
 
+   The sender's signature is not the only one. An `m.room.member` event carrying
+   `join_authorised_via_users_server` must also be validly signed by that user's server
+   (rooms/v10.md rule 4.2.1), and the auth rules can only see that such a signature is
+   present. Every path that admits a remote PDU calls `verify_join_authorising_server_signature`
+   after the sender check and refuses the event unless it accepts: `/send` and `send_join`
+   through the resolver overload of `authorize_federation_pdu`, worker relay and backfill
+   directly (ADR-0171). A new ingestion path does the same.
+
    A failed signature is NEVER charged to the claimed origin's `RemoteTrustState`: the origin
    is unauthenticated until the signature verifies, so doing so lets any sender lock a real
    peer out (FED-4, ADR-0081). Charge it to the source address

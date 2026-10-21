@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.30
+Version:        0.12.31
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.31-1
+- Verify the authorising server's signature on restricted joins received by worker relay or backfill.
+- Bound sliding-sync list sorting and request sizes so one request cannot stall the server.
+
 * Mon Oct 19 2026 James Chapman <claude@ping.me.uk> - 0.12.30-1
 - Send a display name or avatar change to every joined room as an m.room.member join.
 - Keep read receipts in the database and honour threaded receipts in unread counts.

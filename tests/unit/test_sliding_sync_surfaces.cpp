@@ -8,7 +8,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -106,6 +109,105 @@ auto append_state(merovingian::database::PersistentStore& store, std::string_vie
         std::string{state_key},
         std::string{event_id},
     });
+}
+
+// One event of the sp01 ordering fixture. `name` is set only for an m.room.name event, which is
+// also recorded as the room's current name state.
+struct SortFixtureEvent final
+{
+    char room;
+    std::string type;
+    std::uint64_t stream_ordering;
+    std::string name{};
+};
+
+[[nodiscard]] auto sort_fixture_room_id(char room) -> std::string
+{
+    return std::string{"!"} + room + ":example.org";
+}
+
+// Fixed history for eight rooms ("a".."h"). Stream orderings are unique across the fixture.
+//   room  messages  other events  name
+//   a     10        topic 95      Delta (5)
+//   b     50        -             Alpha (6)
+//   c     30        topic 60      -
+//   d     70        -             Alpha (7)
+//   e     20        topic 80      -
+//   f     61        -             Bravo (9)
+//   g     -         topic 85      -
+//   h     -         topic 15      Echo (8)
+[[nodiscard]] auto sort_fixture_events() -> std::vector<SortFixtureEvent>
+{
+    return {
+        {'a', "m.room.message", 10U},
+        {'a', "m.room.topic", 95U},
+        {'a', "m.room.name", 5U, "Delta"},
+        {'b', "m.room.message", 50U},
+        {'b', "m.room.name", 6U, "Alpha"},
+        {'c', "m.room.message", 30U},
+        {'c', "m.room.topic", 60U},
+        {'d', "m.room.message", 70U},
+        {'d', "m.room.name", 7U, "Alpha"},
+        {'e', "m.room.message", 20U},
+        {'e', "m.room.topic", 80U},
+        {'f', "m.room.message", 61U},
+        {'f', "m.room.name", 9U, "Bravo"},
+        {'g', "m.room.topic", 85U},
+        {'h', "m.room.topic", 15U},
+        {'h', "m.room.name", 8U, "Echo"},
+    };
+}
+
+// Alice is joined to every fixture room, listed in descending ID order so that neither the room
+// order nor the final room-ID tie-break can be satisfied by accident. Events enter store.events
+// in exactly the order given.
+[[nodiscard]] auto make_sort_fixture_store(std::vector<SortFixtureEvent> const& events)
+    -> merovingian::database::PersistentStore
+{
+    auto store = merovingian::database::PersistentStore{};
+    auto membership_ordering = std::uint64_t{1U};
+    for (auto room = 'h'; room >= 'a'; --room)
+    {
+        store.rooms.push_back({sort_fixture_room_id(room), "@alice:example.org"});
+        store.memberships.push_back({sort_fixture_room_id(room), "@alice:example.org", "join", membership_ordering++});
+    }
+    for (auto const& event : events)
+    {
+        auto const room_id = sort_fixture_room_id(event.room);
+        auto const event_id = "$" + std::string{event.room} + std::to_string(event.stream_ordering);
+        auto const json = event.name.empty()
+                              ? R"({"type":")" + event.type + R"(","content":{}})"
+                              : R"({"type":")" + event.type + R"(","content":{"name":")" + event.name + R"("}})";
+        append_event(store, event_id, room_id, json, event.stream_ordering);
+        if (!event.name.empty())
+        {
+            append_state(store, room_id, event.type, "", event_id);
+        }
+    }
+    return store;
+}
+
+[[nodiscard]] auto sort_fixture_rooms(std::string_view letters) -> std::vector<std::string>
+{
+    auto out = std::vector<std::string>{};
+    for (auto const letter : letters)
+    {
+        out.push_back(sort_fixture_room_id(letter));
+    }
+    return out;
+}
+
+[[nodiscard]] auto sorted_rooms(merovingian::database::PersistentStore const& store, std::vector<std::string> sort,
+                                std::vector<std::string> bump_event_types) -> std::vector<std::string>
+{
+    auto const runtime = merovingian::homeserver::HomeserverRuntime{};
+    auto list = merovingian::sync::SlidingSyncList{};
+    list.ranges = {
+        {0U, 20U}
+    };
+    list.sort = std::move(sort);
+    list.bump_event_types = std::move(bump_event_types);
+    return merovingian::sync::compute_room_list(runtime, "@alice:example.org", list, {}, store).windowed_room_ids;
 }
 
 } // namespace
@@ -609,6 +711,123 @@ SCENARIO("Sliding sync collapses a repeated device-list subject to a single entr
             {
                 REQUIRE(responses.e2ee.has_value());
                 REQUIRE(responses.e2ee->changed == std::vector<std::string>{"@bob:example.org"});
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync room list ordering is fixed by the sort keys, not by the order events sit in the store",
+         "[sliding-sync][sort][sp01]")
+{
+    GIVEN("eight joined rooms whose events are stored ascending, descending and shuffled by stream ordering")
+    {
+        auto ascending_events = sort_fixture_events();
+        std::ranges::sort(ascending_events, {}, &SortFixtureEvent::stream_ordering);
+        auto descending_events = ascending_events;
+        std::ranges::reverse(descending_events);
+        // A stride coprime with the 16 events is a deterministic permutation that is neither
+        // ascending nor descending.
+        auto shuffled_events = std::vector<SortFixtureEvent>{};
+        for (auto i = std::size_t{0U}; i < ascending_events.size(); ++i)
+        {
+            shuffled_events.push_back(ascending_events[(i * 7U + 3U) % ascending_events.size()]);
+        }
+
+        auto const ascending = make_sort_fixture_store(ascending_events);
+        auto const descending = make_sort_fixture_store(descending_events);
+        auto const shuffled = make_sort_fixture_store(shuffled_events);
+        auto const stores = std::vector<std::reference_wrapper<merovingian::database::PersistentStore const>>{
+            ascending, descending, shuffled};
+
+        REQUIRE(std::ranges::is_sorted(ascending.events, {}, &merovingian::database::PersistentEvent::stream_ordering));
+        REQUIRE(std::ranges::is_sorted(descending.events, std::ranges::greater{},
+                                       &merovingian::database::PersistentEvent::stream_ordering));
+        REQUIRE_FALSE(
+            std::ranges::is_sorted(shuffled.events, {}, &merovingian::database::PersistentEvent::stream_ordering));
+        REQUIRE_FALSE(std::ranges::is_sorted(shuffled.events, std::ranges::greater{},
+                                             &merovingian::database::PersistentEvent::stream_ordering));
+
+        WHEN("rooms are sorted by recency counting only m.room.message events")
+        {
+            THEN("each room sorts by its newest message, ignoring newer events of other types, and ties go by room ID")
+            {
+                for (auto const& store : stores)
+                {
+                    REQUIRE(sorted_rooms(store.get(), {"by_recency"}, {"m.room.message"}) ==
+                            sort_fixture_rooms("dfbceagh"));
+                }
+            }
+        }
+
+        WHEN("rooms are sorted by recency with no bump event types")
+        {
+            THEN("every event type counts, so each room sorts by its newest event of any type")
+            {
+                for (auto const& store : stores)
+                {
+                    REQUIRE(sorted_rooms(store.get(), {"by_recency"}, {}) == sort_fixture_rooms("agedfcbh"));
+                }
+            }
+        }
+
+        WHEN("rooms are sorted by recency with two bump event types")
+        {
+            THEN("an event of either listed type bumps the room, and an unlisted type does not")
+            {
+                for (auto const& store : stores)
+                {
+                    REQUIRE(sorted_rooms(store.get(), {"by_recency"}, {"m.room.message", "m.room.topic"}) ==
+                            sort_fixture_rooms("agedfcbh"));
+                    REQUIRE(sorted_rooms(store.get(), {"by_recency"}, {"m.room.topic"}) ==
+                            sort_fixture_rooms("agechbdf"));
+                }
+            }
+        }
+
+        WHEN("rooms are sorted by name")
+        {
+            THEN("named rooms come first in lexicographic order, equal names go by room ID, unnamed rooms last")
+            {
+                for (auto const& store : stores)
+                {
+                    REQUIRE(sorted_rooms(store.get(), {"by_name"}, {}) == sort_fixture_rooms("bdfahceg"));
+                }
+            }
+        }
+
+        WHEN("rooms are sorted by recency and then by name")
+        {
+            THEN("the name only breaks ties in recency")
+            {
+                for (auto const& store : stores)
+                {
+                    // g and h have no message, so they tie on recency; h is named and so precedes g.
+                    REQUIRE(sorted_rooms(store.get(), {"by_recency", "by_name"}, {"m.room.message"}) ==
+                            sort_fixture_rooms("dfbceahg"));
+                }
+            }
+        }
+
+        WHEN("rooms are sorted by name and then by recency")
+        {
+            THEN("recency only breaks ties in name, so equal names and unnamed rooms order by newest message")
+            {
+                for (auto const& store : stores)
+                {
+                    REQUIRE(sorted_rooms(store.get(), {"by_name", "by_recency"}, {"m.room.message"}) ==
+                            sort_fixture_rooms("dbfahceg"));
+                }
+            }
+        }
+
+        WHEN("rooms are sorted with no sort key")
+        {
+            THEN("rooms order by room ID")
+            {
+                for (auto const& store : stores)
+                {
+                    REQUIRE(sorted_rooms(store.get(), {}, {}) == sort_fixture_rooms("abcdefgh"));
+                }
             }
         }
     }

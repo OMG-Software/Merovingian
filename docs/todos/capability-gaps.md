@@ -193,6 +193,18 @@ template never carries the field, so such joins fail the auth rules. Joins by
 invite, and joins this server makes into remote restricted rooms, are
 unaffected. Status: `not-started`.
 
+Found on the 0.12.31 branch (2026-10-21): this server also refuses every
+restricted join it *receives* from a non-invited user, even one validly
+authorised by another resident. The `/send` ingest, the `send_join` acceptor
+and backfill build their auth maps with `build_auth_event_map_from_entries`
+(`src/homeserver/local_http_router.cpp`), which never fills
+`AuthEventMap::authorising_user_member` (the member event the spec's auth-events
+selection names for such a join; only state resolution adds it). The
+restricted branch of the auth rules then refuses the join ("restricted join
+missing authorising user membership"). Fixing it is safe only now that every
+ingestion path verifies the authorising server's signature (0.12.31,
+ADR-0171). Status: `not-started`.
+
 The other findings recorded here on the 0.12.13 branch (v1/v2 event-ID
 signatures, key validity against `origin_server_ts`, `/event/{eventId}` ID
 checks, the raw-`event_id` backfill shortcut, dead `select_auth_events` /

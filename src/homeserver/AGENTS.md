@@ -144,7 +144,9 @@ hostile traffic, not a verified fact. Every worker-to-main relay that carries a
 PDU (`pdu_ingest`, `membership_ingest`, `invite_ingest` in `worker_pool.cpp`)
 re-verifies the sender server's signature with main's own
 `remote_key_resolver` and rebuilds the envelope from the verified event before
-anything is persisted (ADR-0071). Do it before taking `runtime.mutex`: resolving
+anything is persisted (ADR-0071). It also verifies a restricted join's
+authorising-server signature (`federation::verify_join_authorising_server_signature`,
+ADR-0171), as backfill ingestion does. Do it before taking `runtime.mutex`: resolving
 a key may go to the network. A new relay that carries a PDU follows the same
 pattern.
 

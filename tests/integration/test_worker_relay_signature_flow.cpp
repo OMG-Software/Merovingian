@@ -20,17 +20,21 @@
 #include "../federation_signing_test_support.hpp"
 #include "../support/joining_threads.hpp"
 #include "../support/remote_room_fixture.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
@@ -382,6 +386,171 @@ auto exhaust_main_admission(homeserver::HomeserverRuntime& runtime, bool occupie
     runtime.federation.key_resolutions_in_flight = occupied_slot ? 1U : 0U;
     if (!occupied_slot)
         runtime.federation.key_resolution_buckets.push_back({"<unknown>", 1U, std::chrono::steady_clock::now()});
+}
+
+// --- EVT-1: a restricted join's authorising server must have validly signed it
+//
+// Spec: docs/matrix-v1.19-spec/rooms/v10.md, auth rule 4.2.1: "If content has a
+// join_authorised_via_users_server key: If the event is not validly signed by
+// the homeserver of the user ID denoted by the key, reject." The rule applies
+// whatever the room's join rule, so the room below is public: the join's
+// authorisation then depends on nothing but that signature, and a
+// structurally present but forged one is the only thing under test.
+
+constexpr auto authorising_server = "authoriser.example.org";
+constexpr auto authorising_user = "@dave:authoriser.example.org";
+constexpr auto authorising_key_id = "ed25519:authoriser";
+constexpr auto authorising_key_seed = "worker-relay-authorising-server-seed";
+constexpr auto joiner = "@carol:remote.example.org";
+
+enum class AuthorisingSignature
+{
+    genuine,
+    signed_by_wrong_key,
+    garbage
+};
+
+// The authorising server's genuine published signing key.
+[[nodiscard]] auto authorising_runtime() -> federation::FederationRemoteRuntime
+{
+    auto remote = remote_runtime();
+    remote.server_name = authorising_server;
+    remote.signing_key = {authorising_server, authorising_key_id, 4'102'444'800'000U,
+                          federation::test::keypair_from_seed(authorising_key_seed).public_key};
+    remote.discovery.server_name = authorising_server;
+    return remote;
+}
+
+// A remote_key_resolver that knows the sending server's and the authorising
+// server's genuine keys, and nothing else.
+[[nodiscard]] auto both_servers_key_resolver()
+{
+    return [](std::string_view server_name,
+              std::string_view key_id) -> std::optional<federation::FederationRemoteRuntime> {
+        if (server_name == authorising_server && key_id == authorising_key_id)
+        {
+            return authorising_runtime();
+        }
+        return genuine_key_resolver()(server_name, key_id);
+    };
+}
+
+[[nodiscard]] auto event_status(homeserver::HomeserverRuntime const& runtime, std::string_view event_id) -> std::string
+{
+    auto const& stored = runtime.database.persistent_store.events;
+    auto const it = std::ranges::find_if(stored, [&](database::PersistentEvent const& e) {
+        return e.event_id == event_id;
+    });
+    return it == stored.end() ? std::string{} : it->status;
+}
+
+// The seeded remote room, plus a public m.room.join_rules event and the
+// authorising user's join (default invite power), in both the room's current
+// state and the state group the join's prev_event maps to.
+[[nodiscard]] auto seed_authorising_room(homeserver::HomeserverRuntime& runtime, std::string room_id) -> RemoteRoom
+{
+    auto const room = seed_remote_room(runtime, std::move(room_id));
+    auto& store = runtime.database.persistent_store;
+    auto const join_rules_id = room.room_id + ":join_rules";
+    auto const authoriser_id = room.room_id + ":member:authoriser";
+    auto const state_event_json = [&](std::string_view type, std::string_view state_key, std::string_view sender,
+                                      std::string_view content, std::int64_t depth, std::string_view event_id) {
+        return std::string{R"({"auth_events":[],"content":)"} + std::string{content} + R"(,"depth":)" +
+               std::to_string(depth) + R"(,"event_id":")" + std::string{event_id} +
+               R"(","hashes":{"sha256":"hash"},"origin_server_ts":)" + std::to_string(depth) +
+               R"(,"prev_events":[],"room_id":")" + room.room_id + R"(","sender":")" + std::string{sender} +
+               R"(","state_key":")" + std::string{state_key} + R"(","type":")" + std::string{type} + R"("})";
+    };
+    store.events.push_back(
+        {join_rules_id, room.room_id, local_admin,
+         state_event_json("m.room.join_rules", "", local_admin, R"({"join_rule":"public"})", 4, join_rules_id), 4U, 0U,
+         std::vector<std::string>{}, std::vector<std::string>{}, std::vector<events::EventSignature>{}});
+    store.state.push_back({room.room_id, "m.room.join_rules", "", join_rules_id});
+    store.events.push_back({authoriser_id, room.room_id, authorising_user,
+                            state_event_json("m.room.member", authorising_user, authorising_user,
+                                             R"({"membership":"join"})", 5, authoriser_id),
+                            5U, 0U, std::vector<std::string>{}, std::vector<std::string>{},
+                            std::vector<events::EventSignature>{}});
+    store.state.push_back({room.room_id, "m.room.member", authorising_user, authoriser_id});
+    store.memberships.push_back({room.room_id, authorising_user, "join", 0U});
+
+    auto const genesis_group = database::find_event_state_group(store, room.room_id + ":member");
+    REQUIRE(genesis_group.has_value());
+    auto const full_state = std::vector<database::PersistentStateGroupStateEntry>{
+        {"", "m.room.create",       "",               room.room_id + ":create"    },
+        {"", "m.room.power_levels", "",               room.room_id + ":pl"        },
+        {"", "m.room.member",       local_admin,      room.room_id + ":member"    },
+        {"", "m.room.member",       remote_member,    room.room_id + ":member:bob"},
+        {"", "m.room.join_rules",   "",               join_rules_id               },
+        {"", "m.room.member",       authorising_user, authoriser_id               },
+    };
+    auto const group = database::create_or_reuse_state_group(store, room.room_id, room.room_id + ":authoriser-group",
+                                                             genesis_group, full_state);
+    REQUIRE(group.has_value());
+    for (auto const& event_id :
+         std::vector<std::string>{room.room_id + ":create", room.room_id + ":pl", room.room_id + ":member",
+                                  room.room_id + ":member:bob", join_rules_id, authoriser_id})
+    {
+        REQUIRE(database::set_event_state_group(store, event_id, *group));
+    }
+    runtime.federation.remote_key_resolver = both_servers_key_resolver();
+    return room;
+}
+
+// Adds an entry under signatures[authorising_server] to an event that is
+// already signed by its sender's server. `genuine` is a valid signature;
+// `signed_by_wrong_key` is a well-formed signature made with another key;
+// `garbage` is a non-empty, well-formed base64 value that signs nothing.
+// The event ID (a reference hash) does not cover signatures, so all three
+// variants of one event share it.
+[[nodiscard]] auto with_authorising_signature(std::string const& sender_signed_json, AuthorisingSignature kind)
+    -> std::string
+{
+    auto const parsed = canonicaljson::parse_lossless(sender_signed_json);
+    REQUIRE(parsed.error == canonicaljson::ParseError::none);
+    if (kind == AuthorisingSignature::garbage)
+    {
+        auto const serialized = canonicaljson::serialize_canonical(parsed.value);
+        REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+        auto text = serialized.output;
+        auto const marker = std::string_view{R"("signatures":{)"};
+        auto const at = text.find(marker);
+        REQUIRE(at != std::string::npos);
+        text.insert(at + marker.size(), std::string{"\""} + authorising_server + "\":{\"" + authorising_key_id +
+                                            "\":\"" + std::string(86U, 'A') + "\"},");
+        return text;
+    }
+    auto const* policy = rooms::find_room_version_policy(room_version);
+    REQUIRE(policy != nullptr);
+    auto const key_seed = kind == AuthorisingSignature::genuine ? std::string_view{authorising_key_seed}
+                                                                : std::string_view{attacker_key_seed};
+    auto store = federation::test::TestSigningKeyStore{
+        crypto::SigningKeyRecord{authorising_server, authorising_key_id,
+                                 crypto::Ed25519PublicKey{federation::test::keypair_from_seed(key_seed).public_key},
+                                 true}
+    };
+    auto provider = federation::test::TestEd25519Provider{std::string{key_seed}};
+    auto const signed_event = events::sign_event_for_server(parsed.value, *policy, store, provider, authorising_server);
+    REQUIRE(signed_event.error.empty());
+    return signed_event.event_json;
+}
+
+// A join by a user of the sending server, naming the authorising user. The
+// sender's server's signature is always genuine; `kind` is the authorising
+// server's.
+[[nodiscard]] auto authorised_join_json(RemoteRoom const& room, AuthorisingSignature kind) -> std::string
+{
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
+    content.push_back(canonicaljson::make_member("join_authorised_via_users_server",
+                                                 canonicaljson::Value{std::string{authorising_user}}));
+    auto const auth_event_ids =
+        std::vector<std::string>{room.room_id + ":create", room.room_id + ":pl", room.room_id + ":join_rules",
+                                 room.room_id + ":member:authoriser"};
+    return with_authorising_signature(make_remote_event_json(room.room_id, "m.room.member", std::string{joiner}, joiner,
+                                                             std::move(content), room.prev_event_ids(), auth_event_ids,
+                                                             6, 70),
+                                      kind);
 }
 
 } // namespace
@@ -807,5 +976,84 @@ SCENARIO("main re-verifies the signature of an invite relayed by a federation wo
         }
 
         std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("main refuses a relayed join whose authorising server signature is not valid",
+         "[integration][federation-worker][worker-relay][security][evt1]")
+{
+    // rooms/v10.md auth rule 4.2.1; see the EVT-1 note above authorising_server.
+    GIVEN("a v10 room held by main with a joined authorising user on another server, and main knowing both "
+          "servers' genuine keys")
+    {
+        auto const relay_path = GENERATE(MainRelayPath::pdu, MainRelayPath::membership);
+        CAPTURE(relay_path);
+        auto const db_path = unique_sqlite_path("merovingian-worker-relay-evt1-");
+        std::filesystem::remove(db_path);
+        auto started = homeserver::start_runtime(config_with_sqlite(db_path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room = seed_authorising_room(runtime, "!relay-evt1:local.example.org");
+
+        // Whether main accepted the relayed join, over the pdu_ingest or the
+        // membership_ingest (send_join) frame.
+        auto const relay_accepted_join = [&](InboundPduEnvelope const& env) {
+            if (relay_path == MainRelayPath::pdu)
+            {
+                return homeserver::handle_pdu_ingest_request(runtime, envelope_frame("pdu_ingest", env)).status ==
+                       PduIngestionStatus::accepted;
+            }
+            auto const response = homeserver::handle_membership_ingest_request(
+                runtime, envelope_frame("membership_ingest", env, std::string{"send_join"}));
+            return response.find(R"("accepted":true)") != std::string::npos;
+        };
+
+        WHEN("the worker relays a join carrying a signature from the authorising server made with another key")
+        {
+            auto const env = parse_envelope(authorised_join_json(room, AuthorisingSignature::signed_by_wrong_key));
+            auto const before = main_relay_state(runtime);
+            auto const accepted = relay_accepted_join(env);
+
+            THEN("main refuses it and changes nothing")
+            {
+                CHECK_FALSE(accepted);
+                CHECK(main_relay_state(runtime) == before);
+                CHECK_FALSE(event_stored(runtime, env.event_id));
+                CHECK(membership_of(runtime, room.room_id, joiner).empty());
+            }
+        }
+
+        WHEN("the worker relays a join whose authorising server entry is a non-empty garbage signature")
+        {
+            auto const env = parse_envelope(authorised_join_json(room, AuthorisingSignature::garbage));
+            auto const before = main_relay_state(runtime);
+            auto const accepted = relay_accepted_join(env);
+
+            THEN("main refuses it and changes nothing")
+            {
+                CHECK_FALSE(accepted);
+                CHECK(main_relay_state(runtime) == before);
+                CHECK_FALSE(event_stored(runtime, env.event_id));
+                CHECK(membership_of(runtime, room.room_id, joiner).empty());
+            }
+        }
+
+        WHEN("the worker relays the same join validly signed by the authorising server")
+        {
+            auto const env = parse_envelope(authorised_join_json(room, AuthorisingSignature::genuine));
+            auto const accepted = relay_accepted_join(env);
+
+            THEN("main accepts and stores it")
+            {
+                CHECK(accepted);
+                CHECK(event_status(runtime, env.event_id) == "accepted");
+                if (relay_path == MainRelayPath::membership)
+                {
+                    CHECK(membership_of(runtime, room.room_id, joiner) == "join");
+                }
+            }
+        }
+
+        std::filesystem::remove(db_path);
     }
 }

@@ -2362,6 +2362,72 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     return make_decision(true, 200U, {});
 }
 
+auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
+                                              rooms::RoomVersionPolicy const& room_version,
+                                              AuthorisingKeyResolver const& resolve_key,
+                                              crypto::Ed25519Provider& provider) -> FederationDecision
+{
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    auto const* type = root == nullptr ? nullptr : find_canonical_member(*root, "type");
+    auto const* type_text = type == nullptr ? nullptr : std::get_if<std::string>(&type->storage());
+    if (type_text == nullptr || *type_text != "m.room.member")
+    {
+        return make_decision(true, 200U, {});
+    }
+    auto const authorising_server = join_authorising_user_server(event);
+    if (authorising_server.empty())
+    {
+        return make_decision(true, 200U, {});
+    }
+
+    // The first key the event lists under the authorising server, in the
+    // event's own (canonical) order.
+    auto authorising_key_id = std::string{};
+    auto const* signatures = find_canonical_member(*root, "signatures");
+    auto const* signatures_obj =
+        signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&signatures->storage());
+    auto const* server_signatures =
+        signatures_obj == nullptr ? nullptr : find_canonical_member(*signatures_obj, authorising_server);
+    auto const* server_signatures_obj =
+        server_signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&server_signatures->storage());
+    if (server_signatures_obj != nullptr && !server_signatures_obj->empty())
+    {
+        authorising_key_id = server_signatures_obj->front().key;
+    }
+    if (authorising_key_id.empty())
+    {
+        return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");
+    }
+
+    if (!resolve_key)
+    {
+        return make_decision(false, 403U, "could not resolve authorising user's server signing key");
+    }
+    auto const resolved = resolve_key(authorising_server, authorising_key_id);
+    if (resolved.locally_denied)
+    {
+        return make_decision(false, 503U, "local signing-key resolution admission unavailable");
+    }
+    if (!resolved.key.has_value())
+    {
+        return make_decision(false, 403U, "could not resolve authorising user's server signing key");
+    }
+    if (resolved.key->server_name != authorising_server)
+    {
+        return make_decision(false, 403U, "resolved authorising key does not match expected server");
+    }
+
+    return verify_event_signature_for_server(event, room_version, authorising_server, *resolved.key, provider);
+}
+
+auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
+                                              rooms::RoomVersionPolicy const& room_version,
+                                              AuthorisingKeyResolver const& resolve_key) -> FederationDecision
+{
+    auto verifier = FederationEd25519Verifier{};
+    return verify_join_authorising_server_signature(event, room_version, resolve_key, verifier);
+}
+
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
                               std::optional<FederationKeyRecord> const& key,
                               RemoteKeyResolver const& remote_key_resolver, crypto::Ed25519Provider& provider)
@@ -2386,40 +2452,23 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
         return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
     }
 
-    auto const authorising_server = join_authorising_user_server(parsed.value);
-    if (authorising_server.empty())
-    {
-        return make_decision(true, 200U, {});
-    }
-
-    // EVT-1: restricted/knock-restricted joins must be signed by the authorising
-    // user's homeserver. Resolve that server's key and verify the signature.
-    auto authorising_key_id = std::string{};
-    for (auto const& sig : pdu.signatures)
-    {
-        if (sig.server_name == authorising_server)
+    // The caller (authorize_admitted_federation_pdu) turns a local admission
+    // denial inside remote_key_resolver into its own 503, so a failed lookup
+    // here is reported as unresolved.
+    auto const resolve_key = [&remote_key_resolver](std::string_view server_name,
+                                                    std::string_view key_id) -> VerificationKeyResolution {
+        if (!remote_key_resolver)
         {
-            authorising_key_id = sig.key_id;
-            break;
+            return {};
         }
-    }
-    if (authorising_key_id.empty())
-    {
-        return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");
-    }
-
-    auto const resolved = remote_key_resolver(authorising_server, authorising_key_id);
-    if (!resolved.has_value())
-    {
-        return make_decision(false, 403U, "could not resolve authorising user's server signing key");
-    }
-    auto const auth_key = resolved->signing_key;
-    if (auth_key.server_name != authorising_server)
-    {
-        return make_decision(false, 403U, "resolved authorising key does not match expected server");
-    }
-
-    return verify_event_signature_for_server(parsed.value, *room_version, authorising_server, auth_key, provider);
+        auto resolved = remote_key_resolver(server_name, key_id);
+        if (!resolved.has_value())
+        {
+            return {};
+        }
+        return {std::move(resolved->signing_key)};
+    };
+    return verify_join_authorising_server_signature(parsed.value, *room_version, resolve_key, provider);
 }
 
 auto check_signing_key_valid_for_event(FederationKeyRecord const& key, canonicaljson::Value const& event,

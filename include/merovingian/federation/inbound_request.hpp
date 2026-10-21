@@ -471,6 +471,33 @@ struct VerificationKeyResolution final
                                             std::string_view server_name, std::string_view key_id)
     -> VerificationKeyResolution;
 
+// Resolves the authorising server's signing key for a restricted join through
+// the caller's own admitted key path (resolve_verification_key, or an adapter
+// over a RemoteKeyResolver).
+using AuthorisingKeyResolver =
+    std::function<VerificationKeyResolution(std::string_view server_name, std::string_view key_id)>;
+
+// EVT-1 (rooms/v8.md and v10.md auth rule 4.2.1; v12.md rule 5.2.1): an
+// m.room.member event whose content carries join_authorised_via_users_server
+// MUST be validly signed by that user's homeserver, whatever the join rule.
+// events::authorize_event_against_auth_events only checks that such a
+// signature is present, so every path that admits a PDU
+// into the event graph calls this after verifying the sender's signature: the
+// /send and send_join path (through the resolver overload of
+// authorize_federation_pdu), worker relay re-verification and backfill
+// ingestion. An event without the field is accepted unchanged. A local
+// admission denial from `resolve_key` is a retryable 503, never a verdict on
+// the signature; every other failure is a 403.
+[[nodiscard]] auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
+                                                            rooms::RoomVersionPolicy const& room_version,
+                                                            AuthorisingKeyResolver const& resolve_key,
+                                                            crypto::Ed25519Provider& provider) -> FederationDecision;
+// As above, verifying with libsodium directly (no signing provider involved).
+[[nodiscard]] auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
+                                                            rooms::RoomVersionPolicy const& room_version,
+                                                            AuthorisingKeyResolver const& resolve_key)
+    -> FederationDecision;
+
 // FED-10, ADR-0155: the key of `server_name`/`key_id` for verifying the state of
 // a room this server is joining. A network-free cached key is used when there
 // is one. Otherwise the fetch takes one of this runtime's

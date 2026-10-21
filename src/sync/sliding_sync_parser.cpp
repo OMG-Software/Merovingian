@@ -531,12 +531,24 @@ auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, Sli
     {
         return "too many room_subscriptions";
     }
+    if (request.lists.size() > limits.lists)
+    {
+        return "too many lists";
+    }
     for (auto const& [name, list] : request.lists)
     {
         std::ignore = name;
         if (list.required_state.size() > limits.required_state_entries)
         {
             return "too many required_state entries in a list";
+        }
+        if (list.sort.size() > limits.sort_keys)
+        {
+            return "too many sort keys in a list";
+        }
+        if (list.bump_event_types.size() > limits.bump_event_types)
+        {
+            return "too many bump_event_types in a list";
         }
     }
     for (auto const& [room_id, subscription] : request.room_subscriptions)

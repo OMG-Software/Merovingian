@@ -244,6 +244,24 @@ private:
     std::string key_material_{};
 };
 
+// A verifying Ed25519Provider (FederationTestEd25519Provider only signs).
+class FederationTestVerifyingProvider final : public merovingian::crypto::Ed25519Provider
+{
+public:
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&, std::string_view)
+        -> merovingian::crypto::SignatureResult override
+    {
+        return {{}, "verifying test provider does not sign"};
+    }
+
+    [[nodiscard]] auto verify(merovingian::crypto::Ed25519PublicKey const& public_key, std::string_view message,
+                              merovingian::crypto::Ed25519Signature const& signature)
+        -> merovingian::crypto::VerificationResult override
+    {
+        return merovingian::crypto::ed25519_verify(public_key, message, signature);
+    }
+};
+
 // Injects the real computed content hash so that verify_pdu_content_hash accepts
 // the PDU. sign_event_for_server does not compute or inject hashes.
 [[nodiscard]] auto with_correct_content_hash(merovingian::canonicaljson::Value event)
@@ -2526,6 +2544,199 @@ SCENARIO("Restricted join authorising-key overload stays retryable without penal
                     CHECK(runtime.key_resolution_buckets.front().resolutions_seen == 1U);
                     CHECK(runtime.key_resolution_failures.empty());
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("A restricted join must be cryptographically signed by the authorising user's server",
+         "[federation][inbound][security][evt1]")
+{
+    // Matrix v1.19 rooms/v10.md auth rule 4.2.1: "If content has a
+    // join_authorised_via_users_server key: If the event is not validly signed
+    // by the homeserver of the user ID denoted by the key, reject."
+    GIVEN("a v10 join naming a user on another server, signed by its sender")
+    {
+        auto const origin = std::string{"joining.example.org"};
+        auto const authoriser = std::string{"authoriser.example.org"};
+        auto const key_id = std::string{"ed25519:test"};
+        auto const seed = std::string{"evt1-authorising-key"};
+        auto const other_seed = std::string{"evt1-not-the-authorising-key"};
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const sign_with = [&](merovingian::canonicaljson::Value const& event, std::string const& server,
+                                   std::string const& key_seed) {
+            auto store = FederationTestSigningStore{
+                merovingian::crypto::SigningKeyRecord{
+                                                      server, key_id,
+                                                      merovingian::crypto::Ed25519PublicKey{
+                        remote_for(server, key_id, key_seed).signing_key.public_key_bytes},
+                                                      true}
+            };
+            auto provider = FederationTestEd25519Provider{key_seed};
+            auto const signed_event =
+                merovingian::events::sign_event_for_server(event, *policy, store, provider, server);
+            REQUIRE(signed_event.error.empty());
+            return parse_auth_json(signed_event.event_json);
+        };
+        auto const member_json =
+            std::string{"{\"auth_events\":[],\"content\":{\"membership\":\"join\","
+                        "\"join_authorised_via_users_server\":\"@admin:authoriser.example.org\"},\"depth\":1,"
+                        "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\","
+                        "\"sender\":\"@alice:joining.example.org\",\"state_key\":\"@alice:joining.example.org\","
+                        "\"type\":\"m.room.member\"}"};
+        auto const plain_member_json =
+            std::string{"{\"auth_events\":[],\"content\":{\"membership\":\"join\"},\"depth\":1,"
+                        "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\","
+                        "\"sender\":\"@alice:joining.example.org\",\"state_key\":\"@alice:joining.example.org\","
+                        "\"type\":\"m.room.member\"}"};
+        auto const message_json =
+            std::string{"{\"auth_events\":[],\"content\":{\"body\":\"hi\","
+                        "\"join_authorised_via_users_server\":\"@admin:authoriser.example.org\"},\"depth\":1,"
+                        "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\","
+                        "\"sender\":\"@alice:joining.example.org\",\"type\":\"m.room.message\"}"};
+
+        auto const join_by_sender = sign_with(with_correct_content_hash(parse_auth_json(member_json)), origin, seed);
+        auto const join_by_both = sign_with(join_by_sender, authoriser, seed);
+        auto const join_forged_by_wrong_key = sign_with(join_by_sender, authoriser, other_seed);
+        // A non-empty, well-formed base64 value under the authorising server
+        // that is not a signature of this event at all.
+        auto const join_garbage_signature = [&] {
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(join_by_sender);
+            REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+            auto text = serialized.output;
+            auto const marker = std::string_view{"\"signatures\":{"};
+            auto const at = text.find(marker);
+            REQUIRE(at != std::string::npos);
+            text.insert(at + marker.size(),
+                        "\"" + authoriser + "\":{\"" + key_id + "\":\"" + std::string(86U, 'A') + "\"},");
+            return parse_auth_json(text);
+        }();
+
+        auto const authoriser_key = remote_for(authoriser, key_id, seed).signing_key;
+        auto verifier = FederationTestVerifyingProvider{};
+        auto resolver_calls = std::size_t{};
+        auto const resolver_returning = [&resolver_calls](merovingian::federation::VerificationKeyResolution result) {
+            return merovingian::federation::AuthorisingKeyResolver{
+                [&resolver_calls, result = std::move(result)](std::string_view, std::string_view) {
+                    ++resolver_calls;
+                    return result;
+                }};
+        };
+
+        WHEN("the event does not carry join_authorised_via_users_server")
+        {
+            auto const event = sign_with(with_correct_content_hash(parse_auth_json(plain_member_json)), origin, seed);
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver_returning({}), verifier);
+
+            THEN("it is accepted without resolving any key")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+                CHECK(resolver_calls == 0U);
+            }
+        }
+
+        AND_WHEN("a non-membership event carries the field in its content")
+        {
+            auto const event = sign_with(with_correct_content_hash(parse_auth_json(message_json)), origin, seed);
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver_returning({}), verifier);
+
+            THEN("it is accepted, because the rule applies to m.room.member only")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+                CHECK(resolver_calls == 0U);
+            }
+        }
+
+        AND_WHEN("the authorising server's signature is absent")
+        {
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                join_by_sender, *policy, resolver_returning({authoriser_key, false}), verifier);
+
+            THEN("it is refused with 403")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+            }
+        }
+
+        AND_WHEN("the authorising server's entry holds a non-empty but garbage signature")
+        {
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                join_garbage_signature, *policy, resolver_returning({authoriser_key, false}), verifier);
+
+            THEN("it is refused with 403 although a signature entry is structurally present")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+            }
+        }
+
+        AND_WHEN("the authorising server's entry is a signature made with a different key")
+        {
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                join_forged_by_wrong_key, *policy, resolver_returning({authoriser_key, false}), verifier);
+
+            THEN("it is refused with 403")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+            }
+        }
+
+        AND_WHEN("the authorising server's key cannot be resolved")
+        {
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                join_by_both, *policy, resolver_returning({std::nullopt, false}), verifier);
+
+            THEN("it is refused with 403")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+                CHECK(resolver_calls == 1U);
+            }
+        }
+
+        AND_WHEN("the resolved key belongs to a different server")
+        {
+            auto const wrong_server_key = remote_for("elsewhere.example.org", key_id, seed).signing_key;
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                join_by_both, *policy, resolver_returning({wrong_server_key, false}), verifier);
+
+            THEN("it is refused with 403 even though the signature would verify under that key")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+            }
+        }
+
+        AND_WHEN("local admission denies the key resolution")
+        {
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                join_by_both, *policy, resolver_returning({std::nullopt, true}), verifier);
+
+            THEN("it is a retryable 503, not a verdict on the signature")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 503U);
+            }
+        }
+
+        AND_WHEN("the authorising server validly signed the event and its key resolves")
+        {
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                join_by_both, *policy, resolver_returning({authoriser_key, false}), verifier);
+
+            THEN("it is accepted")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+                CHECK(resolver_calls == 1U);
             }
         }
     }
