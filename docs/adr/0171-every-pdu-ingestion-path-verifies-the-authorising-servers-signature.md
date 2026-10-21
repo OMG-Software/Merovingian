@@ -60,6 +60,10 @@ is a retryable 503. A caller with a wall-clock budget passes its deadline, and n
 lookup starts after it (a 504, again no verdict); backfill does, so several uncached candidates
 cannot hold recovery past its deadline by more than the one lookup already in progress.
 
+The rule is triggered by the key being present, so a value that is not a user ID (a number, an
+object, a string without a server name) is refused: it denotes no homeserver that could have
+signed the event. It is never treated as an absent key.
+
 The helper checks only `m.room.member` events, as the rule says. The earlier `/send`-only code
 also checked other event types that carried the field; that was stricter than the spec and is
 dropped.

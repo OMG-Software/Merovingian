@@ -2308,41 +2308,6 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     return make_decision(true, 200U, {});
 }
 
-[[nodiscard]] auto join_authorising_user_server(canonicaljson::Value const& event) noexcept -> std::string
-{
-    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
-    if (root == nullptr)
-    {
-        return {};
-    }
-    auto const* content = find_canonical_member(*root, "content");
-    if (content == nullptr)
-    {
-        return {};
-    }
-    auto const* content_obj = std::get_if<canonicaljson::Object>(&content->storage());
-    if (content_obj == nullptr)
-    {
-        return {};
-    }
-    auto const* auth_user = find_canonical_member(*content_obj, "join_authorised_via_users_server");
-    if (auth_user == nullptr)
-    {
-        return {};
-    }
-    auto const* auth_user_text = std::get_if<std::string>(&auth_user->storage());
-    if (auth_user_text == nullptr)
-    {
-        return {};
-    }
-    auto const colon = auth_user_text->find(':');
-    if (colon == std::string::npos)
-    {
-        return {};
-    }
-    return auth_user_text->substr(colon + 1);
-}
-
 [[nodiscard]] auto verify_event_signature_for_server(canonicaljson::Value const& event,
                                                      rooms::RoomVersionPolicy const& room_version,
                                                      std::string_view server_name, FederationKeyRecord const& key,
@@ -2371,10 +2336,26 @@ auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::o
     {
         return std::nullopt;
     }
-    auto key = AuthorisingSignatureKey{join_authorising_user_server(event), {}};
-    if (key.server_name.empty())
+    // The rule applies when content HAS the key (rule 4.2). A value that is
+    // not a user ID denotes no homeserver: report it with an empty
+    // server_name, which the verifier refuses, rather than as an absent key.
+    auto const* content = find_canonical_member(*root, "content");
+    auto const* content_obj = content == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content->storage());
+    auto const* authorised =
+        content_obj == nullptr ? nullptr : find_canonical_member(*content_obj, "join_authorised_via_users_server");
+    if (authorised == nullptr)
     {
         return std::nullopt;
+    }
+    auto const* authorised_user = std::get_if<std::string>(&authorised->storage());
+    if (authorised_user == nullptr || !auth::user_id_is_valid_federated(*authorised_user))
+    {
+        return AuthorisingSignatureKey{};
+    }
+    auto key = AuthorisingSignatureKey{std::string{auth::user_id_server_name(*authorised_user)}, {}};
+    if (key.server_name.empty())
+    {
+        return AuthorisingSignatureKey{};
     }
     // The key IDs the event lists under the authorising server, in the event's
     // own (canonical) order, up to max_authorising_signature_keys.
@@ -2414,6 +2395,10 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
         return make_decision(true, 200U, {});
     }
     auto const& authorising_server = signature_key->server_name;
+    if (authorising_server.empty())
+    {
+        return make_decision(false, 403U, "join_authorised_via_users_server is not a user ID");
+    }
     if (signature_key->key_ids.empty())
     {
         return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");

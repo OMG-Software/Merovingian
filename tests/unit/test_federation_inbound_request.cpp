@@ -2742,6 +2742,135 @@ SCENARIO("A restricted join must be cryptographically signed by the authorising 
     }
 }
 
+// rooms/v10.md rule 4.2.1 (v12.md rule 5.2.1) applies when content HAS a
+// join_authorised_via_users_server key: "If the event is not validly signed by the homeserver of
+// the user ID denoted by the key, reject." A value that is not a user ID denotes no homeserver, so
+// the event cannot be validly signed by one: it is refused, never treated as an absent key.
+SCENARIO("A join whose join_authorised_via_users_server is not a user ID, or whose authorising "
+         "signature is malformed, is refused",
+         "[federation][inbound][security][evt1]")
+{
+    GIVEN("v10 and v12 joins signed by their sender, and a resolver that knows the authorising server")
+    {
+        auto const origin = std::string{"joining.example.org"};
+        auto const authoriser = std::string{"authoriser.example.org"};
+        auto const key_id = std::string{"ed25519:test"};
+        auto const seed = std::string{"evt1-authorising-key"};
+        auto const version = GENERATE(std::string{"10"}, std::string{"12"});
+        CAPTURE(version);
+        auto const* policy = merovingian::rooms::find_room_version_policy(version);
+        REQUIRE(policy != nullptr);
+        auto const sign_with = [&](merovingian::canonicaljson::Value const& event, std::string const& server,
+                                   std::string const& key_seed) {
+            auto store = FederationTestSigningStore{
+                merovingian::crypto::SigningKeyRecord{
+                                                      server, key_id,
+                                                      merovingian::crypto::Ed25519PublicKey{
+                        remote_for(server, key_id, key_seed).signing_key.public_key_bytes},
+                                                      true}
+            };
+            auto provider = FederationTestEd25519Provider{key_seed};
+            auto const signed_event =
+                merovingian::events::sign_event_for_server(event, *policy, store, provider, server);
+            REQUIRE(signed_event.error.empty());
+            return parse_auth_json(signed_event.event_json);
+        };
+        // A join whose content.join_authorised_via_users_server is the raw JSON `value`.
+        auto const join_naming = [&](std::string const& value) {
+            return sign_with(with_correct_content_hash(parse_auth_json(
+                                 "{\"auth_events\":[],\"content\":{\"join_authorised_via_users_server\":" + value +
+                                 ",\"membership\":\"join\"},\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],"
+                                 "\"room_id\":\"!room:example.org\",\"sender\":\"@alice:joining.example.org\","
+                                 "\"state_key\":\"@alice:joining.example.org\",\"type\":\"m.room.member\"}")),
+                             origin, seed);
+        };
+        // Replaces the authorising server's signature value with `signature`.
+        auto const with_authoriser_signature = [&](merovingian::canonicaljson::Value const& event,
+                                                   std::string const& signature) {
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(event);
+            REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+            auto text = serialized.output;
+            auto const marker = std::string_view{"\"signatures\":{"};
+            auto const at = text.find(marker);
+            REQUIRE(at != std::string::npos);
+            text.insert(at + marker.size(), "\"" + authoriser + "\":{\"" + key_id + "\":\"" + signature + "\"},");
+            return parse_auth_json(text);
+        };
+        auto const authoriser_key = remote_for(authoriser, key_id, seed).signing_key;
+        auto verifier = FederationTestVerifyingProvider{};
+        auto resolver_calls = std::size_t{};
+        auto const resolver =
+            merovingian::federation::AuthorisingKeyResolver{[&](std::string_view server, std::string_view id) {
+                ++resolver_calls;
+                if (server == authoriser && id == key_id)
+                {
+                    return merovingian::federation::VerificationKeyResolution{authoriser_key};
+                }
+                return merovingian::federation::VerificationKeyResolution{};
+            }};
+
+        WHEN("the key's value is not a user ID")
+        {
+            auto const value = GENERATE(std::string{"5"}, std::string{"{}"}, std::string{"\"admin\""},
+                                        std::string{"\"\""}, std::string{"\"@admin\""}, std::string{"\"@admin:\""});
+            CAPTURE(value);
+            auto const event = join_naming(value);
+            resolver_calls = 0U;
+            auto const decision =
+                merovingian::federation::verify_join_authorising_server_signature(event, *policy, resolver, verifier);
+
+            THEN("the join is refused without looking up any key")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+                CHECK(resolver_calls == 0U);
+            }
+        }
+
+        WHEN("the authorising server's signature is not valid unpadded base64 of the right length")
+        {
+            auto const signature = GENERATE(std::string(43U, 'A'), std::string(85U, 'A'), std::string{"!!!!"},
+                                            std::string(86U, '*'), std::string{});
+            auto const event = with_authoriser_signature(join_naming("\"@admin:authoriser.example.org\""), signature);
+
+            THEN("the join is refused")
+            {
+                auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                    event, *policy, resolver, verifier);
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+            }
+        }
+
+        WHEN("the join is validly signed by the authorising server")
+        {
+            auto const event = sign_with(join_naming("\"@admin:authoriser.example.org\""), authoriser, seed);
+            auto const decision =
+                merovingian::federation::verify_join_authorising_server_signature(event, *policy, resolver, verifier);
+
+            THEN("it is accepted")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+            }
+        }
+
+        WHEN("the join is signed for the authorising server with another key")
+        {
+            auto const event =
+                sign_with(join_naming("\"@admin:authoriser.example.org\""), authoriser, "not-the-authoriser-seed");
+            auto const decision =
+                merovingian::federation::verify_join_authorising_server_signature(event, *policy, resolver, verifier);
+
+            THEN("it is refused")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+            }
+        }
+    }
+}
+
 // rooms/v10.md rule 4.2.1 asks whether the event is validly signed by the authorising user's
 // homeserver: any one of that server's keys will do. The signatures object is not covered by the
 // signature, so whoever relays the event can add key IDs under the authorising server; a junk ID

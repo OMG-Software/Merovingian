@@ -18,7 +18,9 @@ Fixes the two HIGH findings from security audit run-1 (2026-10-20).
   signature verifies. A local key-resolution overload is retryable (503 / `main_overloaded`),
   never a verdict. Any listed authorising-server key may verify the event (up to four are tried),
   because a relaying server can add key IDs to the unsigned `signatures` object; backfill stops
-  starting candidate lookups at its deadline. The helper
+  starting candidate lookups at its deadline. A `join_authorised_via_users_server` that is not
+  a user ID names no homeserver, so the join is refused rather than treated as if the key were
+  absent. The helper
   applies the rule to `m.room.member` events only, as the spec
   says; the previous `/send` code also applied it to other event types (ADR-0171).
 - **SECURITY (one sliding-sync request could stall the server):** `by_recency` and `by_name`

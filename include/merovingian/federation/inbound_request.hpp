@@ -482,7 +482,10 @@ inline constexpr std::size_t max_authorising_signature_keys{4U};
 // checked with: the homeserver of content.join_authorised_via_users_server and
 // the first max_authorising_signature_keys key IDs the event lists under it,
 // in the event's own order (empty when it lists none). std::nullopt when the
-// rule does not apply (not an m.room.member event, or no such field). Callers
+// rule does not apply (not an m.room.member event, or no such field). A field
+// whose value is not a user ID yields an empty server_name: it denotes no
+// homeserver, so the event cannot be validly signed and the verifier refuses
+// it (a 403), never treating it as absent. Callers
 // that resolve keys ahead of verification (the send_join state path) use this
 // so they fetch exactly the keys the verifier will ask for.
 struct AuthorisingSignatureKey final
