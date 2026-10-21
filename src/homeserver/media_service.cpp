@@ -198,6 +198,14 @@ namespace
                         value = value.substr(0U, end);
                     }
                 }
+                // RFC 2046 §5.1.1: "boundary := 0*69<bchars> bcharsnospace",
+                // 1 to 70 characters. The remote chooses it, so a longer one
+                // is refused rather than searched for.
+                auto constexpr max_boundary_length = std::size_t{70U};
+                if (value.size() > max_boundary_length)
+                {
+                    return {};
+                }
                 return std::string{value};
             }
             pos = eq + 1U;
@@ -274,78 +282,79 @@ namespace
         return part;
     }
 
-    // Returns true when `body` has a delimiter boundary at `offset`. RFC 2046
-    // §5.1.1 requires the boundary delimiter line to appear on its own line:
-    // it must be preceded by a line break (or start of body) and followed
-    // immediately by either "--" (closing delimiter) or a line break
+    // Returns true when the delimiter "--{boundary}" that occupies `body` from
+    // `offset` stands on its own line. RFC 2046 §5.1.1 requires the boundary
+    // delimiter line to be preceded by a line break (or start of body) and
+    // followed immediately by either "--" (closing delimiter) or a line break
     // (transport padding). Without both checks a boundary string appearing
     // literally inside media bytes would be misinterpreted as the end of the
-    // part.
-    [[nodiscard]] auto boundary_at(std::string_view body, std::string_view boundary, std::size_t offset) -> bool
+    // part. The caller has already matched the delimiter text, so every check
+    // here is constant time.
+    [[nodiscard]] auto delimiter_on_own_line(std::string_view body, std::size_t offset, std::size_t delimiter_size)
+        -> bool
     {
-        auto const after = offset + 2U + boundary.size();
-        if (after > body.size())
-        {
-            return false;
-        }
-        if (body.compare(offset, 2U, "--") != 0)
-        {
-            return false;
-        }
-        if (body.compare(offset + 2U, boundary.size(), boundary) != 0)
-        {
-            return false;
-        }
         // Preceded by start of body or a line break.
-        if (offset != 0U)
+        if (offset != 0U && body[offset - 1U] != '\n')
         {
-            if (offset >= 2U && body.compare(offset - 2U, 2U, "\r\n") == 0)
-            {
-                // fall through
-            }
-            else if (offset >= 1U && body[offset - 1U] == '\n')
-            {
-                // fall through
-            }
-            else
-            {
-                return false;
-            }
+            return false;
         }
-        // Followed by closing "--" or a line break.
+        // Followed by end of body, closing "--" or a line break.
+        auto const after = offset + delimiter_size;
         if (after == body.size())
         {
             return true;
         }
-        if (body.compare(after, 2U, "--") == 0)
-        {
-            return true;
-        }
-        if (body.compare(after, 2U, "\r\n") == 0)
-        {
-            return true;
-        }
-        return body[after] == '\n';
+        return body.compare(after, 2U, "--") == 0 || body.compare(after, 2U, "\r\n") == 0 || body[after] == '\n';
     }
 
-    // Finds the next real boundary delimiter at or after `start`, using
-    // boundary_at() so inner boundary-like byte sequences are ignored.
+    // Finds the next real boundary delimiter at or after `start`. The remote
+    // chooses both the boundary and the body, so the search is linear in the
+    // body (Knuth-Morris-Pratt over "--{boundary}") rather than a comparison
+    // restarted at every byte, which a self-overlapping boundary turns
+    // quadratic; matches that are not on their own line are skipped.
     [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary, std::size_t start)
         -> std::size_t
     {
-        auto const max = body.size();
-        if (start >= max)
+        auto const delimiter = "--" + std::string{boundary};
+        if (start >= body.size() || body.size() - start < delimiter.size())
         {
             return std::string_view::npos;
         }
-        auto pos = start;
-        while (pos < max)
+        // failure[i]: length of the longest proper prefix of delimiter[0..i]
+        // that is also its suffix.
+        auto failure = std::vector<std::size_t>(delimiter.size(), 0U);
+        for (auto i = std::size_t{1U}, k = std::size_t{0U}; i < delimiter.size(); ++i)
         {
-            if (boundary_at(body, boundary, pos))
+            while (k > 0U && delimiter[i] != delimiter[k])
             {
-                return pos;
+                k = failure[k - 1U];
             }
-            pos += 1U;
+            if (delimiter[i] == delimiter[k])
+            {
+                ++k;
+            }
+            failure[i] = k;
+        }
+        auto matched = std::size_t{0U};
+        for (auto pos = start; pos < body.size(); ++pos)
+        {
+            while (matched > 0U && body[pos] != delimiter[matched])
+            {
+                matched = failure[matched - 1U];
+            }
+            if (body[pos] == delimiter[matched])
+            {
+                ++matched;
+            }
+            if (matched == delimiter.size())
+            {
+                auto const offset = pos + 1U - delimiter.size();
+                if (delimiter_on_own_line(body, offset, delimiter.size()))
+                {
+                    return offset;
+                }
+                matched = failure[matched - 1U];
+            }
         }
         return std::string_view::npos;
     }

@@ -51,6 +51,11 @@ concurrency caps are in `homeserver/room_service.cpp`.
    `room_service.cpp`; any change to how push is invoked must preserve them.
 10. **No network call here runs under the caller's locks**, matching the project rule that
     `runtime.mutex` is never held across a blocking call.
+11. **Glob matching stays linear and never uses `std::regex`** (ADR-0175). Evaluation runs per
+    local recipient, per event, under `runtime.mutex`, on values the sender controls. Do not
+    allocate per character or try every substring pair. The `[push][security][sp01]` scenario
+    in `tests/unit/test_push_rules.cpp` checks the matchers against the old implementation on
+    seeded random cases; a change to the matchers must keep it passing.
 
 ## Testing
 

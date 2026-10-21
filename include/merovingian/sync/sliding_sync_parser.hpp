@@ -22,8 +22,9 @@ namespace merovingian::sync
     -> std::optional<SlidingSyncRequest>;
 
 // Describes the first request limit the parsed request exceeds (too many room_subscriptions,
-// or too many required_state entries on one list or subscription), or nullopt when the
-// request is within limits. The caller answers a violation with 400 M_INVALID_PARAM.
+// lists, sort keys or bump_event_types, too many required_state entries on one list or
+// subscription, or more rooms in the receipts or typing extension than room_subscriptions
+// allows), or nullopt when the request is within limits. The caller answers a violation with 400 M_INVALID_PARAM.
 [[nodiscard]] auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request)
     -> std::optional<std::string_view>;
 [[nodiscard]] auto sliding_sync_request_limit_violation(SlidingSyncRequest const& request, SlidingSyncLimits limits)

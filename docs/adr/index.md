@@ -172,6 +172,10 @@
 * [0170 - A user's own non-state event reads its own thread](0170-a-users-own-non-state-event-reads-its-thread.md)
 * [0171 - Every PDU ingestion path verifies a restricted join's authorising-server signature](0171-every-pdu-ingestion-path-verifies-the-authorising-servers-signature.md)
 * [0172 - Sliding-sync sort keys are computed once per request, and the shape of the lists is capped](0172-sliding-sync-sort-keys-are-computed-once-and-list-shape-is-capped.md)
+* [0173 - Cap a user's global account-data types; room account data stays bounded by membership](0173-cap-global-account-data-types-per-user.md)
+* [0174 - Sliding-sync extension room lists share the room_subscriptions cap and are classified through one index](0174-sliding-sync-extension-room-lists-share-the-room-subscriptions-cap.md)
+* [0175 - Push glob matching is a hand-written linear matcher, never std::regex](0175-push-glob-matching-is-linear-and-never-uses-std-regex.md)
+* [0176 - Federation media multipart is parsed under the lock, with a linear delimiter scan](0176-federation-media-multipart-is-parsed-under-the-lock-with-a-linear-scan.md)
 
 ## Proposed Records
 

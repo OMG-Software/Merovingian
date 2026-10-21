@@ -18,7 +18,7 @@ Spec authority:
 | `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |
 | `sliding_sync_room_builder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `sliding_sync_extensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
-| `room_access.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none |
+| `room_access.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none; `room_access_index()`: the same answer for all of a user's rooms in one pass |
 | `receipt_visibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
 | `receipt_content_builder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
 | `read_markers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
@@ -45,8 +45,9 @@ a delta (empty rooms, same pos) rather than re-sending the full initial sync.
 
 A sliding sync request names rooms in `room_subscriptions` and in the `receipts`/`typing`
 `rooms` arrays. None of those names is proof of entitlement: a user needs to join a room to
-view events in it (C-S API, "Room history visibility"). Classify every client-named room with
-`room_access_for()` before reading anything about it:
+view events in it (C-S API, "Room history visibility"). Classify every client-named room before
+reading anything about it: `room_access_for()` for a single room, `room_access_index()` for a
+request that names many:
 
 - `joined`: serve in full.
 - `invited`: stripped invite state only (`invite_state`), no timeline, no `required_state`.
@@ -61,7 +62,15 @@ joined. `parse_sliding_sync_request` clamps `timeline_limit` to
 `compute_room_list` sorts while the runtime lock is held. Every sort key is computed once per
 room before `std::stable_sort`, never inside the comparator, which runs O(N log N) times
 (ADR-0172). Every new
-extension that takes a client-named room list must gate on `room_access_for()` too.
+extension that takes a client-named room list must gate on room access too.
+
+When a request names many rooms, classify them through `room_access_index()`, built once per
+request, not `room_access_for()` per room: each `room_access_for()` call scans every membership
+row in the store, and this runs under the runtime lock. `build_extensions` builds one index for
+receipts and typing; the sliding-sync handler in `client_server.cpp` builds one for
+`room_subscriptions` and passes it to `build_extensions`, so a request scans the memberships once. The
+receipts and typing `rooms` arrays are de-duplicated by the parser and capped at
+`room_subscriptions` (ADR-0174). A new client-named room list gets the same cap.
 
 ## Receipt visibility
 

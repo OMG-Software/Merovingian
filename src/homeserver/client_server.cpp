@@ -78,6 +78,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -5465,11 +5466,22 @@ namespace
         // answered with its stripped invite state alone (below); every other membership is
         // omitted silently. Nothing about an omitted room may reach the response, so it must not
         // enter `response_room_ids`, which also scopes the account_data extension.
+        // The rooms are classified through one index over the caller's memberships rather than
+        // a scan of every membership row per subscription (security audit run-1, sp01). The same
+        // index is handed to the receipts and typing extensions below.
         auto invited_subscription_ids = std::vector<std::string>{};
+        auto const extensions_need_room_access =
+            ssreq.extensions.has_value() &&
+            ((ssreq.extensions->receipts.has_value() && ssreq.extensions->receipts->enabled) ||
+             (ssreq.extensions->typing.has_value() && ssreq.extensions->typing->enabled));
+        auto const room_access = ssreq.room_subscriptions.empty() && !extensions_need_room_access
+                                     ? std::map<std::string, sync::RoomAccess, std::less<>>{}
+                                     : sync::room_access_index(store, user);
         for (auto const& [room_id, sub_unused] : ssreq.room_subscriptions)
         {
             std::ignore = sub_unused;
-            switch (sync::room_access_for(store, room_id, user))
+            auto const found = room_access.find(room_id);
+            switch (found == room_access.end() ? sync::RoomAccess::none : found->second)
             {
             case sync::RoomAccess::joined:
                 if (seen_rooms.insert(room_id).second)
@@ -5606,9 +5618,9 @@ namespace
         auto ext_obj = canonicaljson::Object{};
         if (ssreq.extensions.has_value())
         {
-            extension_responses =
-                sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id,
-                                       store.next_sync_stream_id, store, response_room_ids, ignored_senders);
+            extension_responses = sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions,
+                                                         since_sync_stream_id, store.next_sync_stream_id, store,
+                                                         room_access, response_room_ids, ignored_senders);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
 
@@ -9934,6 +9946,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_one_time_keys_per_device = client_api.max_one_time_keys_per_device;
     rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
+    rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
@@ -15575,7 +15588,28 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         return dispatch_err(req, rt, 400U, "M_BAD_JSON", "account data body must not be empty");
                     }
-                    if (!set_account_data(rt, {path_user, std::string{}, type, req.body, 0U}))
+                    // Security audit run-1 (ADR-0173): each new global type is a row
+                    // that push fan-out and every /sync scan under runtime.mutex, so
+                    // new types stop at the per-user cap (M_TOO_LARGE, nothing stored
+                    // or evicted, as for the ADR-0118 caps). A type the user already
+                    // holds can always be updated. The cap check and the store share
+                    // one pass over the rows.
+                    auto const outcome = set_global_account_data_within_cap(
+                        rt, {path_user, std::string{}, type, req.body, 0U}, rt.limits.max_global_account_data_per_user);
+                    if (outcome == database::CappedAccountDataStore::over_cap)
+                    {
+                        log_diagnostic("account_data.rejected",
+                                       {
+                                           {"actor",  *user,                                 false},
+                                           {"type",   type,                                  false},
+                                           {"reason", "per-user account data limit reached", false}
+                        });
+                        return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                            "account data limit of " +
+                                                std::to_string(rt.limits.max_global_account_data_per_user) +
+                                                " types reached");
+                    }
+                    if (outcome != database::CappedAccountDataStore::stored)
                     {
                         log_diagnostic("account_data.rejected",
                                        {
@@ -15992,6 +16026,19 @@ auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountD
         std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
+}
+
+auto set_global_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
+                                        std::size_t max_global_types) -> database::CappedAccountDataStore
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const outcome = database::store_global_account_data_within_cap(runtime.homeserver.database.persistent_store,
+                                                                        std::move(data), max_global_types);
+    if (outcome == database::CappedAccountDataStore::stored)
+    {
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    return outcome;
 }
 
 auto run_client_server_flow(config::Config const& config) -> OperationResult

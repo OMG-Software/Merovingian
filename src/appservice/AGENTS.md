@@ -77,6 +77,12 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   swallow unrelated local users and block their registration.
 - A malformed operator-supplied regex must fail closed to "no match" — never
   crash the request path, and never degrade to "matches everything".
+- **Compile once.** `Namespace`'s constructor compiles the pattern and keeps it
+  in `compiled` (shared between copies; null for a malformed pattern).
+  `any_namespace_matches` and `any_exclusive_namespace_matches` match against
+  it. Namespace matching runs per member per event under `runtime.mutex`, so
+  never compile a pattern on a request path. `namespace_matches(pattern, value)`
+  compiles per call and is for one-off checks only.
 
 ## Security rules
 

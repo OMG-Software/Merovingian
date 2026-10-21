@@ -103,6 +103,8 @@ struct ClientApiLimits final
     std::uint32_t max_one_time_keys_per_device{1000U};
     std::uint32_t max_key_signatures_per_user{10000U};
     std::uint32_t max_filters_per_user{1000U};
+    // Security audit run-1 (ADR-0173): global account-data types per user.
+    std::uint32_t max_global_account_data_per_user{1000U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };
@@ -212,6 +214,10 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
     -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
+// set_account_data for a global row, refused past `max_global_types` distinct types (ADR-0173).
+[[nodiscard]] auto set_global_account_data_within_cap(ClientServerRuntime& runtime,
+                                                      database::PersistentAccountData data,
+                                                      std::size_t max_global_types) -> database::CappedAccountDataStore;
 
 struct ClientServerStartResult final
 {

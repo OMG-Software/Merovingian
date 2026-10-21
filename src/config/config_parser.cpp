@@ -161,6 +161,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.client_api.max_global_account_data_per_user")
+        {
+            if (!parse_u32_value(value, server.client_api.max_global_account_data_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.client_api.to_device_message_ttl_seconds")
         {
             if (!parse_u32_value(value, server.client_api.to_device_message_ttl_seconds))

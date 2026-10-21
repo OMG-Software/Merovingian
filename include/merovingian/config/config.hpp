@@ -259,9 +259,14 @@ struct ClientApiConfig final
     //   - max_key_signatures_per_user: cross-signing signatures a user has
     //     uploaded, counted per (target user, target key).
     //   - max_filters_per_user: stored sync filters per user.
+    //   - max_global_account_data_per_user: global (non-room) account-data
+    //     types per user; updating a type the user holds is always allowed.
+    //     Room account data is not counted: it is written only for rooms the
+    //     user is joined to (tags, read markers). ADR-0173.
     std::uint32_t max_one_time_keys_per_device{1000U};
     std::uint32_t max_key_signatures_per_user{10000U};
     std::uint32_t max_filters_per_user{1000U};
+    std::uint32_t max_global_account_data_per_user{1000U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
 };

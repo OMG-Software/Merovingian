@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -446,6 +447,105 @@ SCENARIO("sliding sync admission caps the number of lists, sort keys and bump ev
                 auto const violation = merovingian::sync::sliding_sync_request_limit_violation(request);
                 REQUIRE(violation.has_value());
                 REQUIRE(*violation == "too many bump_event_types in a list");
+            }
+        }
+    }
+}
+
+// Security audit run-1 (sp01.sliding-sync-extension-rooms-unbounded): every room named in the
+// receipts or typing extension's `rooms` array costs a membership lookup (and, for receipts, the
+// room's receipts) while the runtime lock is held. Each array is bounded like
+// room_subscriptions, the request's other list of client-named rooms, and a repeated room ID
+// counts once.
+SCENARIO("sliding sync bounds and de-duplicates the receipts and typing extension rooms arrays",
+         "[sliding-sync][limits][security][sp01]")
+{
+    auto const request_naming = [](std::size_t receipts, std::size_t typing) {
+        auto request = merovingian::sync::SlidingSyncRequest{};
+        auto extensions = merovingian::sync::SlidingSyncExtensionRequests{};
+        auto receipt_req = merovingian::sync::ExtReceiptsRequest{};
+        receipt_req.enabled = true;
+        for (auto i = std::size_t{0U}; i < receipts; ++i)
+        {
+            receipt_req.rooms.push_back("!r" + std::to_string(i) + ":example.org");
+        }
+        auto typing_req = merovingian::sync::ExtTypingRequest{};
+        typing_req.enabled = true;
+        for (auto i = std::size_t{0U}; i < typing; ++i)
+        {
+            typing_req.rooms.push_back("!t" + std::to_string(i) + ":example.org");
+        }
+        extensions.receipts = std::move(receipt_req);
+        extensions.typing = std::move(typing_req);
+        request.extensions = std::move(extensions);
+        return request;
+    };
+
+    GIVEN("a policy allowing 4 client-named rooms")
+    {
+        auto limits = merovingian::sync::SlidingSyncLimits{};
+        limits.room_subscriptions = 4U;
+
+        WHEN("each extension names exactly 4 rooms")
+        {
+            auto const violation =
+                merovingian::sync::sliding_sync_request_limit_violation(request_naming(4U, 4U), limits);
+
+            THEN("the request is admitted")
+            {
+                REQUIRE_FALSE(violation.has_value());
+            }
+        }
+
+        WHEN("the receipts extension names 5 rooms")
+        {
+            auto const violation =
+                merovingian::sync::sliding_sync_request_limit_violation(request_naming(5U, 0U), limits);
+
+            THEN("the receipts rooms array is reported as the violation")
+            {
+                REQUIRE(violation.has_value());
+                REQUIRE(*violation == "too many rooms in the receipts extension");
+            }
+        }
+
+        WHEN("the typing extension names 5 rooms")
+        {
+            auto const violation =
+                merovingian::sync::sliding_sync_request_limit_violation(request_naming(0U, 5U), limits);
+
+            THEN("the typing rooms array is reported as the violation")
+            {
+                REQUIRE(violation.has_value());
+                REQUIRE(*violation == "too many rooms in the typing extension");
+            }
+        }
+    }
+
+    GIVEN("a request body naming the same room many times in each extension")
+    {
+        auto rooms = std::string{};
+        for (auto i = 0; i < 50; ++i)
+        {
+            rooms += std::string{i == 0 ? "" : ","} + "\"!same:example.org\",\"!other:example.org\"";
+        }
+        auto const body = R"({"extensions":{"receipts":{"enabled":true,"rooms":[)" + rooms +
+                          R"(]},"typing":{"enabled":true,"rooms":[)" + rooms + R"(]}}})";
+
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::sync::parse_sliding_sync_request(body);
+
+            THEN("each room is kept once, in first-seen order, so the request is within any cap of 2")
+            {
+                REQUIRE(parsed.has_value());
+                REQUIRE(parsed->extensions.has_value());
+                auto const expected = std::vector<std::string>{"!same:example.org", "!other:example.org"};
+                REQUIRE(parsed->extensions->receipts->rooms == expected);
+                REQUIRE(parsed->extensions->typing->rooms == expected);
+                auto limits = merovingian::sync::SlidingSyncLimits{};
+                limits.room_subscriptions = 2U;
+                REQUIRE_FALSE(merovingian::sync::sliding_sync_request_limit_violation(*parsed, limits).has_value());
             }
         }
     }

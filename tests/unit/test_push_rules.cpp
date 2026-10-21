@@ -4,8 +4,14 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <random>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -929,6 +935,207 @@ SCENARIO("The default .m.rule.is_user_mention and .m.rule.is_room_mention rules 
             {
                 REQUIRE_FALSE(result.notify);
                 REQUIRE(result.matched_rule_id.empty());
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The matchers as they were before security audit run-1 (sp01.push-glob-dp-allocation-per-character),
+// kept here as the reference the faster ones must agree with: a full O(n*m) dynamic-programming
+// table per match, and for content.body every word-bounded substring tried in turn.
+[[nodiscard]] auto reference_lower(std::string_view value) -> std::string
+{
+    auto out = std::string{value};
+    std::ranges::transform(out, out.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return out;
+}
+
+[[nodiscard]] auto reference_glob_full(std::string_view value, std::string_view pattern) -> bool
+{
+    auto dp = std::vector<std::vector<bool>>(value.size() + 1U, std::vector<bool>(pattern.size() + 1U, false));
+    dp[0U][0U] = true;
+    for (auto j = std::size_t{0U}; j < pattern.size(); ++j)
+    {
+        if (pattern[j] == '*')
+        {
+            dp[0U][j + 1U] = dp[0U][j];
+        }
+    }
+    for (auto i = std::size_t{0U}; i < value.size(); ++i)
+    {
+        for (auto j = std::size_t{0U}; j < pattern.size(); ++j)
+        {
+            if (pattern[j] == '*')
+            {
+                dp[i + 1U][j + 1U] = dp[i][j + 1U] || dp[i + 1U][j];
+            }
+            else if (pattern[j] == '?' || pattern[j] == value[i])
+            {
+                dp[i + 1U][j + 1U] = dp[i][j];
+            }
+        }
+    }
+    return dp[value.size()][pattern.size()];
+}
+
+[[nodiscard]] auto reference_is_word(char character) -> bool
+{
+    return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+           (character >= '0' && character <= '9') || character == '_';
+}
+
+[[nodiscard]] auto reference_word_substring(std::string_view value, std::string_view pattern) -> bool
+{
+    auto const lowered = reference_lower(value);
+    auto const lowered_pattern = reference_lower(pattern);
+    for (auto start = std::size_t{0U}; start <= lowered.size(); ++start)
+    {
+        if (start != 0U && reference_is_word(lowered[start - 1U]))
+        {
+            continue;
+        }
+        for (auto end = start; end <= lowered.size(); ++end)
+        {
+            if (end != lowered.size() && reference_is_word(lowered[end]))
+            {
+                continue;
+            }
+            if (reference_glob_full(std::string_view{lowered}.substr(start, end - start), lowered_pattern))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] auto random_text(std::mt19937& rng, std::string_view alphabet, std::size_t max_length) -> std::string
+{
+    auto length = std::uniform_int_distribution<std::size_t>{0U, max_length}(rng);
+    auto pick = std::uniform_int_distribution<std::size_t>{0U, alphabet.size() - 1U};
+    auto out = std::string{};
+    while (length-- > 0U)
+    {
+        out.push_back(alphabet[pick(rng)]);
+    }
+    return out;
+}
+
+} // namespace
+
+// Security audit run-1 (sp01.push-glob-dp-allocation-per-character): push evaluation runs per
+// local recipient, per stored event, while the runtime lock is held, on values the sender
+// controls. The matchers must not allocate per character or try every substring pair, and must
+// still give the spec's answer (appendices.md "Glob-style matching"; content.body matches any
+// substring that starts and ends at a word boundary).
+SCENARIO("Push glob matching agrees with the reference matcher without its per-character cost",
+         "[push][security][sp01]")
+{
+    GIVEN("thousands of seeded random values and glob patterns over a small alphabet")
+    {
+        auto rng = std::mt19937{0x5eedU};
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+
+        WHEN("each is evaluated as a whole-value event_match and as a content.body match")
+        {
+            auto disagreements = std::vector<std::string>{};
+            for (auto i = 0; i < 3000; ++i)
+            {
+                auto const value = random_text(rng, "abAB _-.*?", 14U);
+                auto const pattern = random_text(rng, "abAB*?_ ", 6U);
+
+                auto full_object = Object{};
+                full_object.push_back(make_member(
+                    "override", Value{Array{make_rule("full", true, Array{cond_event_match("content.msgtype", pattern)},
+                                                      Array{action_notify()})}}));
+                auto const full_ruleset = merovingian::push::parse_push_ruleset(full_object);
+                auto const full_event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                                   Object{str_member("msgtype", value)});
+                auto const full = merovingian::push::evaluate_push_rules(full_ruleset, full_event, context).notify;
+                if (full != reference_glob_full(reference_lower(value), reference_lower(pattern)))
+                {
+                    disagreements.push_back("full: value='" + value + "' pattern='" + pattern + "'");
+                }
+
+                auto body_object = Object{};
+                body_object.push_back(make_member(
+                    "content", Value{Array{make_content_rule("body", true, pattern, Array{action_notify()})}}));
+                auto const body_ruleset = merovingian::push::parse_push_ruleset(body_object);
+                auto const body_event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                                   Object{str_member("body", value)});
+                auto const body = merovingian::push::evaluate_push_rules(body_ruleset, body_event, context).notify;
+                // A content rule with an empty pattern never matches (rule_matches_content guards
+                // it before any glob matching), so the reference answer is false for it.
+                if (body != (!pattern.empty() && reference_word_substring(value, pattern)))
+                {
+                    disagreements.push_back("body: value='" + value + "' pattern='" + pattern + "'");
+                }
+            }
+
+            THEN("every answer matches the reference")
+            {
+                INFO(disagreements.size()
+                     << " disagreements; first: " << (disagreements.empty() ? std::string{} : disagreements.front()));
+                REQUIRE(disagreements.empty());
+            }
+        }
+    }
+
+    GIVEN("a 64 KiB message body made of thousands of one-letter words, and a content rule")
+    {
+        auto body = std::string{};
+        while (body.size() < 64U * 1024U)
+        {
+            body += "a ";
+        }
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(
+            make_member("content", Value{Array{make_content_rule("keyword", true, "x*y", Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const event =
+            make_event("m.room.message", "@sender:example.org", "!room:example.org", Object{str_member("body", body)});
+
+        WHEN("it is evaluated")
+        {
+            auto const result = merovingian::push::evaluate_push_rules(
+                ruleset, event, merovingian::push::PushEvaluationContext{"@receiver:example.org"});
+
+            THEN("it finishes (one pass over the body, not every word pair) and does not match")
+            {
+                REQUIRE_FALSE(result.notify);
+            }
+        }
+    }
+}
+
+// Regression for the linear whole-value matcher (security audit run-1, sp01): a value may itself
+// contain '*'. The pattern's '*' is still a wildcard there; matching it literally against the
+// value's '*' and then failing on the rest gave the wrong answer.
+SCENARIO("A glob '*' stays a wildcard when the value itself contains '*'", "[push][security][sp01]")
+{
+    GIVEN("an override rule matching content.msgtype against the glob 'b*'")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(make_member(
+            "override", Value{Array{make_rule("star", true, Array{cond_event_match("content.msgtype", "b*")},
+                                              Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto const context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+
+        WHEN("the event's msgtype is 'b*.*'")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("msgtype", "b*.*")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the rule matches, as 'b' followed by anything")
+            {
+                REQUIRE(result.notify);
             }
         }
     }

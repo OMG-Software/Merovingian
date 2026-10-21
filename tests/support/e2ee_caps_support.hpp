@@ -20,8 +20,8 @@
 namespace merovingian::tests
 {
 
-[[nodiscard]] inline auto caps_config(std::uint32_t one_time_keys, std::uint32_t key_signatures, std::uint32_t filters)
-    -> merovingian::config::Config
+[[nodiscard]] inline auto caps_config(std::uint32_t one_time_keys, std::uint32_t key_signatures, std::uint32_t filters,
+                                      std::uint32_t global_account_data = 1000U) -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
@@ -30,6 +30,7 @@ namespace merovingian::tests
     server.client_api.max_one_time_keys_per_device = one_time_keys;
     server.client_api.max_key_signatures_per_user = key_signatures;
     server.client_api.max_filters_per_user = filters;
+    server.client_api.max_global_account_data_per_user = global_account_data;
     return {
         server,   merovingian::config::ListenersConfig{},        merovingian::tests::in_memory_database_config(),
         security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},

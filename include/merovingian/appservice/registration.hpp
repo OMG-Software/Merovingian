@@ -6,7 +6,9 @@
 #include "merovingian/core/secret_buffer.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,13 +18,33 @@ namespace merovingian::appservice
 
 // One entry of a `namespaces.{users,aliases,rooms}` array (Matrix v1.19
 // Application Service API §Registration). `regex` is a POSIX regular
-// expression, matched with `namespace_matches()` below. `exclusive` marks
+// expression, matched over the whole identifier as `namespace_matches()`
+// below describes, but through the compiled form held here. `exclusive` marks
 // this namespace as reserved for this appservice: no other appservice or
 // human user may create/delete entities matching it.
-struct Namespace final
+//
+// The pattern is compiled once, when the namespace is built (registration
+// load), and every copy shares that compiled form: the interest check runs per
+// event, per registration and per room member while runtime.mutex is held, so
+// compiling per match is not an option (security audit run-1). `compiled` is
+// null when the pattern does not compile; such a namespace matches nothing.
+// The pattern is private and set only by the constructor, so it can never
+// drift from its compiled form.
+class Namespace final
 {
+public:
+    Namespace() = default;
+    Namespace(bool exclusive_value, std::string regex_value);
+
+    [[nodiscard]] auto regex() const noexcept -> std::string const&;
+    [[nodiscard]] auto compiled() const noexcept
+        -> std::shared_ptr<std::regex const> const&; // SHARED_PTR: reviewed — immutable; shared by namespace copies
+
     bool exclusive{false};
-    std::string regex{};
+
+private:
+    std::string m_regex{};
+    std::shared_ptr<std::regex const> m_compiled{}; // SHARED_PTR: reviewed — immutable; shared by namespace copies
 };
 
 struct Namespaces final
@@ -111,11 +133,11 @@ struct AppserviceRegistrationParseResult final
 [[nodiscard]] auto load_registration_file(std::string_view path) -> AppserviceRegistrationParseResult;
 
 // Matches `value` against `pattern` as a POSIX extended regular expression
-// (spec: "namespace ... regex: A POSIX regular expression"). Unanchored
-// (equivalent to a substring search), matching common appservice-bridge
-// registration conventions where the pattern itself supplies `^`/`$` when a
-// full-string match is intended. An invalid `pattern` never throws — it is
-// treated as matching nothing.
+// (spec: "namespace ... regex: A POSIX regular expression"), over the whole
+// identifier (std::regex_match): an unanchored search would let `@_irc_.*`
+// also claim `@evil@_irc_bob:example.org`. An invalid `pattern` never throws —
+// it is treated as matching nothing. This compiles `pattern` on every call;
+// request paths match through a Namespace, whose pattern is compiled once.
 [[nodiscard]] auto namespace_matches(std::string_view pattern, std::string_view value) noexcept -> bool;
 
 // True when `value` matches at least one namespace entry in `namespaces`.

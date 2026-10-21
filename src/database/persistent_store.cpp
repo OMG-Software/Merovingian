@@ -3773,32 +3773,44 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     return true;
 }
 
+namespace
+{
+
+    // Allocates the row's sync stream position and commits it. The in-memory mirror is left to
+    // the caller, which already knows whether the row exists.
+    [[nodiscard]] auto persist_account_data_row(PersistentStore& store, PersistentAccountData& data) -> bool
+    {
+        data.stream_id = allocate_sync_stream_id(store);
+        // Per-room rows go to the dedicated `room_account_data` table whose
+        // primary key includes room_id. Global rows continue to use the
+        // legacy `account_data` table whose PK is (user_id, event_type).
+        auto const statement =
+            data.room_id.empty()
+                ? record_statement(
+                      "upsert_account_data",
+                      "INSERT INTO account_data (user_id, event_type, json, stream_id) VALUES ($1, $2, $3, $4) "
+                      "ON CONFLICT (user_id, event_type) DO UPDATE SET json = $3, stream_id = $4",
+                      {public_value(data.user_id), public_value(data.event_type), sensitive_value(data.content_json),
+                       public_value(std::to_string(data.stream_id))})
+                : record_statement(
+                      "upsert_room_account_data",
+                      "INSERT INTO room_account_data (user_id, room_id, event_type, stream_id, json) VALUES ($1, "
+                      "$2, $3, $4, $5) ON CONFLICT (user_id, room_id, event_type) DO UPDATE SET stream_id = $4, "
+                      "json = $5",
+                      {public_value(data.user_id), public_value(data.room_id), public_value(data.event_type),
+                       public_value(std::to_string(data.stream_id)), sensitive_value(data.content_json)});
+        return record_and_persist(store, statement);
+    }
+
+} // namespace
+
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool
 {
     if (data.user_id.empty() || data.event_type.empty())
     {
         return false;
     }
-    data.stream_id = allocate_sync_stream_id(store);
-    // Per-room rows go to the dedicated `room_account_data` table whose
-    // primary key includes room_id. Global rows continue to use the
-    // legacy `account_data` table whose PK is (user_id, event_type).
-    auto const statement =
-        data.room_id.empty()
-            ? record_statement(
-                  "upsert_account_data",
-                  "INSERT INTO account_data (user_id, event_type, json, stream_id) VALUES ($1, $2, $3, $4) "
-                  "ON CONFLICT (user_id, event_type) DO UPDATE SET json = $3, stream_id = $4",
-                  {public_value(data.user_id), public_value(data.event_type), sensitive_value(data.content_json),
-                   public_value(std::to_string(data.stream_id))})
-            : record_statement(
-                  "upsert_room_account_data",
-                  "INSERT INTO room_account_data (user_id, room_id, event_type, stream_id, json) VALUES ($1, "
-                  "$2, $3, $4, $5) ON CONFLICT (user_id, room_id, event_type) DO UPDATE SET stream_id = $4, "
-                  "json = $5",
-                  {public_value(data.user_id), public_value(data.room_id), public_value(data.event_type),
-                   public_value(std::to_string(data.stream_id)), sensitive_value(data.content_json)});
-    if (!record_and_persist(store, statement))
+    if (!persist_account_data_row(store, data))
     {
         return false;
     }
@@ -3813,6 +3825,47 @@ auto remember_audit_event(PersistentStore& store, PersistentAuditEvent event) ->
     }
     store.account_data.push_back(std::move(data));
     return true;
+}
+
+[[nodiscard]] auto store_global_account_data_within_cap(PersistentStore& store, PersistentAccountData data,
+                                                        std::size_t max_global_types) -> CappedAccountDataStore
+{
+    if (data.user_id.empty() || data.event_type.empty() || !data.room_id.empty())
+    {
+        return CappedAccountDataStore::failed;
+    }
+    auto held_types = std::size_t{0U};
+    auto existing = std::optional<std::size_t>{};
+    for (auto index = std::size_t{0U}; index < store.account_data.size(); ++index)
+    {
+        auto const& row = store.account_data[index];
+        if (row.user_id != data.user_id || !row.room_id.empty())
+        {
+            continue;
+        }
+        ++held_types;
+        if (row.event_type == data.event_type)
+        {
+            existing = index;
+        }
+    }
+    if (!existing.has_value() && held_types >= max_global_types)
+    {
+        return CappedAccountDataStore::over_cap;
+    }
+    if (!persist_account_data_row(store, data))
+    {
+        return CappedAccountDataStore::failed;
+    }
+    if (existing.has_value())
+    {
+        store.account_data[*existing] = std::move(data);
+    }
+    else
+    {
+        store.account_data.push_back(std::move(data));
+    }
+    return CappedAccountDataStore::stored;
 }
 
 namespace

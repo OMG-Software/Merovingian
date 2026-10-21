@@ -15,8 +15,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -225,52 +227,70 @@ namespace
         return is_all_subscribed ? response_rooms : ext_rooms;
     }
 
-    // ── receipts extension ────────────────────────────────────────────────────
-
-    [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
-                                      std::string_view user, std::uint64_t since_sync_stream_id,
-                                      std::vector<std::string> const& ext_rooms,
-                                      std::vector<std::string> const& response_room_ids,
-                                      std::unordered_set<std::string> const& ignored_senders) -> ExtReceiptsResponse
+    // The requested rooms (after effective_rooms) that the caller has joined, each once.
+    //
+    // CSAZ-1: `rooms` is client-supplied, so only a room the caller has joined may be named.
+    // The rooms are classified through one index over the caller's memberships, built once per
+    // request, rather than one scan of every membership row per named room: this runs under
+    // the runtime lock (security audit run-1, sp01.sliding-sync-extension-rooms-unbounded).
+    [[nodiscard]] auto joined_rooms_among(std::vector<std::string> const& rooms,
+                                          std::map<std::string, RoomAccess, std::less<>> const& access)
+        -> std::set<std::string_view, std::less<>>
     {
-        auto const& rooms = effective_rooms(ext_rooms, response_room_ids);
-        auto resp = ExtReceiptsResponse{};
-
+        auto joined = std::set<std::string_view, std::less<>>{};
         for (auto const& room_id : rooms)
         {
-            // CSAZ-1: `rooms` is client-supplied. Only a room the caller has joined may be named.
-            if (room_access_for(store, room_id, user) != RoomAccess::joined)
+            if (auto const found = access.find(room_id); found != access.end() && found->second == RoomAccess::joined)
+            {
+                joined.insert(room_id);
+            }
+        }
+        return joined;
+    }
+
+    // ── receipts extension ────────────────────────────────────────────────────
+
+    [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, std::string_view user,
+                                      std::uint64_t since_sync_stream_id,
+                                      std::set<std::string_view, std::less<>> const& joined_rooms,
+                                      std::unordered_set<std::string> const& ignored_senders) -> ExtReceiptsResponse
+    {
+        auto resp = ExtReceiptsResponse{};
+        if (joined_rooms.empty())
+        {
+            return resp;
+        }
+
+        // One pass over the stored receipts, each kept for its room if that room was asked for.
+        auto by_room = std::map<std::string_view, ReceiptContentBuilder, std::less<>>{};
+        for (auto const& receipt : rt.database.persistent_store.receipts)
+        {
+            if (receipt.stream_id <= since_sync_stream_id || !joined_rooms.contains(receipt.room_id))
             {
                 continue;
             }
-            auto receipts = ReceiptContentBuilder{};
-
-            for (auto const& receipt : rt.database.persistent_store.receipts)
+            // CSAZ-4: m.read.private is for its sender alone and m.fully_read is never an
+            // m.receipt (same rule as /sync).
+            if (!receipt_visible_to(receipt.receipt_type, receipt.user_id, user))
             {
-                if (receipt.room_id != room_id || receipt.stream_id <= since_sync_stream_id)
-                {
-                    continue;
-                }
-                // CSAZ-4: m.read.private is for its sender alone and m.fully_read is never an
-                // m.receipt (same rule as /sync).
-                if (!receipt_visible_to(receipt.receipt_type, receipt.user_id, user))
-                {
-                    continue;
-                }
-                // Ignoring Users: a read receipt is an event sent by its
-                // `user_id`, not a state event, so it is withheld the same
-                // way a timeline message from an ignored sender would be.
-                if (trust_safety::is_delivery_suppressed(ignored_senders, receipt.user_id, /*is_state_event=*/false))
-                {
-                    continue;
-                }
-                receipts.add(receipt);
+                continue;
             }
+            // Ignoring Users: a read receipt is an event sent by its
+            // `user_id`, not a state event, so it is withheld the same
+            // way a timeline message from an ignored sender would be.
+            if (trust_safety::is_delivery_suppressed(ignored_senders, receipt.user_id, /*is_state_event=*/false))
+            {
+                continue;
+            }
+            by_room[receipt.room_id].add(receipt);
+        }
+
+        for (auto& [room_id, receipts] : by_room)
+        {
             if (receipts.empty())
             {
                 continue;
             }
-
             // m.receipt content: {event_id: {receipt_type: {user_id: {ts: N, thread_id: T}}}}
             auto content = receipts.build();
             // m.receipt is an EphemeralRoom-kind event (ruma's SyncReceiptEvent):
@@ -283,50 +303,57 @@ namespace
             auto event = canonicaljson::Object{};
             event.push_back(canonicaljson::make_member("type", jstr("m.receipt")));
             event.push_back(canonicaljson::make_member("content", jobj(std::move(content))));
-            resp.rooms_json.emplace(room_id, jserialize(jobj(std::move(event))));
+            resp.rooms_json.emplace(std::string{room_id}, jserialize(jobj(std::move(event))));
         }
         return resp;
     }
 
     // ── typing extension ──────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
-                                    std::string_view user, std::uint64_t since_sync_stream_id,
-                                    std::vector<std::string> const& ext_rooms,
-                                    std::vector<std::string> const& response_room_ids,
+    [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
+                                    std::set<std::string_view, std::less<>> const& joined_rooms,
                                     std::unordered_set<std::string> const& ignored_senders) -> ExtTypingResponse
     {
-        auto const& rooms = effective_rooms(ext_rooms, response_room_ids);
         auto resp = ExtTypingResponse{};
 
-        for (auto const& room_id : rooms)
+        // Only rooms whose typing list changed since the caller's position are reported.
+        auto user_ids_by_room = std::map<std::string_view, canonicaljson::Array, std::less<>>{};
+        for (auto const room_id : joined_rooms)
         {
-            // CSAZ-1: `rooms` is client-supplied. Only a room the caller has joined may be named.
-            if (room_access_for(store, room_id, user) != RoomAccess::joined)
+            if (homeserver::room_typing_stream_id_for(rt, room_id) > since_sync_stream_id)
+            {
+                user_ids_by_room.try_emplace(room_id);
+            }
+        }
+        if (user_ids_by_room.empty())
+        {
+            return resp;
+        }
+
+        // One pass over the typing table, each entry kept for its room if that room is reported.
+        for (auto const& entry : rt.typing_users)
+        {
+            if (!entry.typing)
             {
                 continue;
             }
-            auto const room_typing_id = homeserver::room_typing_stream_id_for(rt, room_id);
-            if (room_typing_id <= since_sync_stream_id)
+            auto const found = user_ids_by_room.find(entry.room_id);
+            if (found == user_ids_by_room.end())
             {
                 continue;
             }
-            auto user_ids = canonicaljson::Array{};
-            for (auto const& entry : rt.typing_users)
+            // Ignoring Users: typing is not a state event, so it is
+            // withheld the same way a timeline message would be — see
+            // build_receipts above for the identical reasoning.
+            if (trust_safety::is_delivery_suppressed(ignored_senders, entry.user_id, /*is_state_event=*/false))
             {
-                if (entry.room_id != room_id || !entry.typing)
-                {
-                    continue;
-                }
-                // Ignoring Users: typing is not a state event, so it is
-                // withheld the same way a timeline message would be — see
-                // build_receipts above for the identical reasoning.
-                if (trust_safety::is_delivery_suppressed(ignored_senders, entry.user_id, /*is_state_event=*/false))
-                {
-                    continue;
-                }
-                user_ids.push_back(jstr(entry.user_id));
+                continue;
             }
+            found->second.push_back(jstr(entry.user_id));
+        }
+
+        for (auto& [room_id, user_ids] : user_ids_by_room)
+        {
             // Suppress empty typing lists on the first sync (since == 0); for
             // every subsequent position emit the current list even when empty so
             // clients can clear stale indicators.
@@ -345,7 +372,7 @@ namespace
             auto event = canonicaljson::Object{};
             event.push_back(canonicaljson::make_member("type", jstr("m.typing")));
             event.push_back(canonicaljson::make_member("content", jobj(std::move(content))));
-            resp.rooms_json.emplace(room_id, jserialize(jobj(std::move(event))));
+            resp.rooms_json.emplace(std::string{room_id}, jserialize(jobj(std::move(event))));
         }
         return resp;
     }
@@ -357,6 +384,22 @@ namespace
 auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
                       SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
+                      std::vector<std::string> const& response_room_ids,
+                      std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncExtensionResponses
+{
+    // Only receipts and typing classify rooms; skip the membership pass when neither is on.
+    auto const needs_access = (ext_req.receipts.has_value() && ext_req.receipts->enabled) ||
+                              (ext_req.typing.has_value() && ext_req.typing->enabled);
+    auto const room_access =
+        needs_access ? room_access_index(store, user) : std::map<std::string, RoomAccess, std::less<>>{};
+    return build_extensions(rt, user, device_id, ext_req, since_sync_stream_id, current_sync_stream_id, store,
+                            room_access, response_room_ids, ignored_senders);
+}
+
+auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
+                      SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
+                      std::uint64_t current_sync_stream_id, database::PersistentStore& store,
+                      std::map<std::string, RoomAccess, std::less<>> const& room_access,
                       std::vector<std::string> const& response_room_ids,
                       std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncExtensionResponses
 {
@@ -377,16 +420,23 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
         resp.account_data = build_account_data(store, user, since_sync_stream_id, response_room_ids);
     }
 
-    if (ext_req.receipts.has_value() && ext_req.receipts->enabled)
+    auto const wants_receipts = ext_req.receipts.has_value() && ext_req.receipts->enabled;
+    auto const wants_typing = ext_req.typing.has_value() && ext_req.typing->enabled;
+    // One room-access index per request, shared by both extensions (and, from the handler, by the
+    // room_subscriptions classification).
+    if (wants_receipts)
     {
-        resp.receipts = build_receipts(rt, store, user, since_sync_stream_id, ext_req.receipts->rooms,
-                                       response_room_ids, ignored_senders);
+        resp.receipts =
+            build_receipts(rt, user, since_sync_stream_id,
+                           joined_rooms_among(effective_rooms(ext_req.receipts->rooms, response_room_ids), room_access),
+                           ignored_senders);
     }
-
-    if (ext_req.typing.has_value() && ext_req.typing->enabled)
+    if (wants_typing)
     {
-        resp.typing = build_typing(rt, store, user, since_sync_stream_id, ext_req.typing->rooms, response_room_ids,
-                                   ignored_senders);
+        resp.typing =
+            build_typing(rt, since_sync_stream_id,
+                         joined_rooms_among(effective_rooms(ext_req.typing->rooms, response_room_ids), room_access),
+                         ignored_senders);
     }
 
     return resp;
