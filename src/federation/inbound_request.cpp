@@ -2376,8 +2376,8 @@ auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::o
     {
         return std::nullopt;
     }
-    // The first key the event lists under the authorising server, in the
-    // event's own (canonical) order.
+    // The key IDs the event lists under the authorising server, in the event's
+    // own (canonical) order, up to max_authorising_signature_keys.
     auto const* signatures = find_canonical_member(*root, "signatures");
     auto const* signatures_obj =
         signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&signatures->storage());
@@ -2385,9 +2385,19 @@ auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::o
         signatures_obj == nullptr ? nullptr : find_canonical_member(*signatures_obj, key.server_name);
     auto const* server_signatures_obj =
         server_signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&server_signatures->storage());
-    if (server_signatures_obj != nullptr && !server_signatures_obj->empty())
+    if (server_signatures_obj != nullptr)
     {
-        key.key_id = server_signatures_obj->front().key;
+        for (auto const& member : *server_signatures_obj)
+        {
+            if (key.key_ids.size() == max_authorising_signature_keys)
+            {
+                break;
+            }
+            if (!member.key.empty())
+            {
+                key.key_ids.push_back(member.key);
+            }
+        }
     }
     return key;
 }
@@ -2403,8 +2413,7 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
         return make_decision(true, 200U, {});
     }
     auto const& authorising_server = signature_key->server_name;
-    auto const& authorising_key_id = signature_key->key_id;
-    if (authorising_key_id.empty())
+    if (signature_key->key_ids.empty())
     {
         return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");
     }
@@ -2413,21 +2422,42 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
     {
         return make_decision(false, 403U, "could not resolve authorising user's server signing key");
     }
-    auto const resolved = resolve_key(authorising_server, authorising_key_id);
-    if (resolved.locally_denied)
+    // Any one of the authorising server's keys satisfies the rule, so try each
+    // listed key (at most max_authorising_signature_keys) until one verifies.
+    // A local admission denial on any candidate leaves the outcome unknown, so
+    // it wins over a refusal: the caller retries rather than rejects.
+    auto locally_denied = false;
+    auto refusal = std::string{"could not resolve authorising user's server signing key"};
+    for (auto const& authorising_key_id : signature_key->key_ids)
+    {
+        auto const resolved = resolve_key(authorising_server, authorising_key_id);
+        if (resolved.locally_denied)
+        {
+            locally_denied = true;
+            continue;
+        }
+        if (!resolved.key.has_value())
+        {
+            continue;
+        }
+        if (resolved.key->server_name != authorising_server)
+        {
+            refusal = "resolved authorising key does not match expected server";
+            continue;
+        }
+        auto decision =
+            verify_event_signature_for_server(event, room_version, authorising_server, *resolved.key, provider);
+        if (decision.accepted)
+        {
+            return decision;
+        }
+        refusal = std::move(decision.reason);
+    }
+    if (locally_denied)
     {
         return make_decision(false, 503U, "local signing-key resolution admission unavailable");
     }
-    if (!resolved.key.has_value())
-    {
-        return make_decision(false, 403U, "could not resolve authorising user's server signing key");
-    }
-    if (resolved.key->server_name != authorising_server)
-    {
-        return make_decision(false, 403U, "resolved authorising key does not match expected server");
-    }
-
-    return verify_event_signature_for_server(event, room_version, authorising_server, *resolved.key, provider);
+    return make_decision(false, 403U, refusal);
 }
 
 auto verify_join_authorising_server_signature(canonicaljson::Value const& event,

@@ -3655,14 +3655,18 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                 continue;
             }
             // A restricted join's authorising server is verified below too
-            // (ADR-0171); fetch its key in the same parallel pass.
+            // (ADR-0171); fetch every key the verifier may try (at most
+            // max_authorising_signature_keys) in the same parallel pass.
             if (auto const authorising = federation::join_authorising_signature_key(entry);
-                authorising.has_value() && !authorising->key_id.empty() && authorising->server_name != our_server)
+                authorising.has_value() && authorising->server_name != our_server)
             {
-                auto key = std::make_pair(authorising->server_name, authorising->key_id);
-                if (seen.insert(key).second)
+                for (auto const& authorising_key_id : authorising->key_ids)
                 {
-                    distinct_pairs.push_back(std::move(key));
+                    auto key = std::make_pair(authorising->server_name, authorising_key_id);
+                    if (seen.insert(key).second)
+                    {
+                        distinct_pairs.push_back(std::move(key));
+                    }
                 }
             }
             auto const dom = sender_domain_from_user_id(parsed.event.sender);

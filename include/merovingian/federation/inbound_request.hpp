@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -471,16 +472,23 @@ struct VerificationKeyResolution final
                                             std::string_view server_name, std::string_view key_id)
     -> VerificationKeyResolution;
 
-// The server and key a restricted join's authorising-server signature must be
+// How many of the key IDs an event lists under its authorising server are
+// tried. Any one valid signature satisfies the rule, but the signatures object
+// is not itself signed, so a relaying server can add key IDs, and each
+// candidate may cost a key fetch. A rotating server signs with one or two keys.
+inline constexpr std::size_t max_authorising_signature_keys{4U};
+
+// The server and keys a restricted join's authorising-server signature may be
 // checked with: the homeserver of content.join_authorised_via_users_server and
-// the first key the event lists under it (key_id empty when it lists none).
-// std::nullopt when the rule does not apply (not an m.room.member event, or no
-// such field). Callers that resolve keys ahead of verification (the send_join
-// state path) use this so they fetch the key the verifier will ask for.
+// the first max_authorising_signature_keys key IDs the event lists under it,
+// in the event's own order (empty when it lists none). std::nullopt when the
+// rule does not apply (not an m.room.member event, or no such field). Callers
+// that resolve keys ahead of verification (the send_join state path) use this
+// so they fetch exactly the keys the verifier will ask for.
 struct AuthorisingSignatureKey final
 {
     std::string server_name{};
-    std::string key_id{};
+    std::vector<std::string> key_ids{};
 };
 [[nodiscard]] auto join_authorising_signature_key(canonicaljson::Value const& event)
     -> std::optional<AuthorisingSignatureKey>;

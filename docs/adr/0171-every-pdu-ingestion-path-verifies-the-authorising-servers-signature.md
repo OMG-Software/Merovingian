@@ -51,6 +51,13 @@ it joins a remote room (`filter_verified_send_join_events`) call it directly. Th
 was added in review: it is the one path where this server is the joiner, and its state and auth
 chain enter the event graph like any other received event.
 
+Any one valid signature from the authorising server satisfies the rule, and the signatures
+object is not itself signed, so a relaying server can add key IDs ahead of the genuine one. The
+helper therefore tries each listed key in order until one verifies, but no more than
+`max_authorising_signature_keys` (4): every candidate may cost a key fetch, and an unbounded list
+would let one event amplify key fetches. A local overload on any candidate, with none verified,
+is a retryable 503.
+
 The helper checks only `m.room.member` events, as the rule says. The earlier `/send`-only code
 also checked other event types that carried the field; that was stricter than the spec and is
 dropped.

@@ -463,10 +463,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   signed by that user's server (rooms/v10.md rule 4.2.1); the auth rules only see that the
   signature is present. `/send` and `send_join` do it through the resolver overload of
   `authorize_federation_pdu`, worker relay, backfill and `filter_verified_send_join_events` (the
-  state a resident returns when this server joins) call it directly.
+  state a resident returns when this server joins) call it directly. Any one valid signature
+  from the authorising server satisfies the rule, so each listed key is tried, up to
+  `max_authorising_signature_keys`: the signatures object is not itself signed, so a relaying
+  server can add key IDs.
   Why: until 0.12.31 only `/send` and `send_join` checked it, so a compromised worker, or any
   remote server answering a history fetch, could get a forged restricted join stored
-  (security audit run-1, ADR-0171).
+  (CWE-347 Improper Verification of Cryptographic Signature; security audit run-1, ADR-0171).
   Source: `src/federation/AGENTS.md`.
 
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
@@ -992,7 +995,8 @@ media-fetch-pool task.
   `bump_event_types` per list; 400 `M_INVALID_PARAM` beyond).**
   Why: the sort runs while the runtime lock is held. Until 0.12.31 `by_recency` and `by_name`
   rescanned the event store on every comparison, with nothing bounding the lists, so one
-  authenticated request could stall the whole server (security audit run-1, ADR-0172).
+  authenticated request could stall the whole server (CWE-407 Inefficient Algorithmic
+  Complexity; security audit run-1, ADR-0172).
   Source: `src/sync/AGENTS.md`.
 
 ## Trust and safety

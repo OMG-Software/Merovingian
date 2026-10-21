@@ -16,7 +16,9 @@ Fixes the two HIGH findings from security audit run-1 (2026-10-20).
   `federation::verify_join_authorising_server_signature`. It resolves the authorising
   server's key through the caller's admitted lookup and refuses the event unless the
   signature verifies. A local key-resolution overload is retryable (503 / `main_overloaded`),
-  never a verdict. The helper applies the rule to `m.room.member` events only, as the spec
+  never a verdict. Any listed authorising-server key may verify the event (up to four are tried),
+  because a relaying server can add key IDs to the unsigned `signatures` object. The helper
+  applies the rule to `m.room.member` events only, as the spec
   says; the previous `/send` code also applied it to other event types (ADR-0171).
 - **SECURITY (one sliding-sync request could stall the server):** `by_recency` and `by_name`
   were computed inside the sort comparator, rescanning the event store on every one of

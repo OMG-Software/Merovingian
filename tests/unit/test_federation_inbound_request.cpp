@@ -2742,6 +2742,157 @@ SCENARIO("A restricted join must be cryptographically signed by the authorising 
     }
 }
 
+// rooms/v10.md rule 4.2.1 asks whether the event is validly signed by the authorising user's
+// homeserver: any one of that server's keys will do. The signatures object is not covered by the
+// signature, so whoever relays the event can add key IDs under the authorising server; a junk ID
+// listed first must not hide the genuine signature. Each candidate may cost a key fetch, so only
+// the first max_authorising_signature_keys are tried.
+SCENARIO("A restricted join is accepted when any listed authorising-server key verifies",
+         "[federation][inbound][security][evt1]")
+{
+    GIVEN("a v10 join signed by its sender and by the authorising server's genuine key")
+    {
+        auto const origin = std::string{"joining.example.org"};
+        auto const authoriser = std::string{"authoriser.example.org"};
+        auto const key_id = std::string{"ed25519:test"};
+        auto const seed = std::string{"evt1-authorising-key"};
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto const sign_with = [&](merovingian::canonicaljson::Value const& event, std::string const& server) {
+            auto store = FederationTestSigningStore{
+                merovingian::crypto::SigningKeyRecord{
+                                                      server, key_id,
+                                                      merovingian::crypto::Ed25519PublicKey{
+                        remote_for(server, key_id, seed).signing_key.public_key_bytes},
+                                                      true}
+            };
+            auto provider = FederationTestEd25519Provider{seed};
+            auto const signed_event =
+                merovingian::events::sign_event_for_server(event, *policy, store, provider, server);
+            REQUIRE(signed_event.error.empty());
+            return parse_auth_json(signed_event.event_json);
+        };
+        auto const member_json =
+            std::string{"{\"auth_events\":[],\"content\":{\"membership\":\"join\","
+                        "\"join_authorised_via_users_server\":\"@admin:authoriser.example.org\"},\"depth\":1,"
+                        "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\","
+                        "\"sender\":\"@alice:joining.example.org\",\"state_key\":\"@alice:joining.example.org\","
+                        "\"type\":\"m.room.member\"}"};
+        auto const join_by_both =
+            sign_with(sign_with(with_correct_content_hash(parse_auth_json(member_json)), origin), authoriser);
+        // Lists `junk_key_ids` under the authorising server ahead of the genuine
+        // key, each with a well-formed base64 value that signs nothing.
+        auto const with_junk_keys_first = [&](std::vector<std::string> const& junk_key_ids) {
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(join_by_both);
+            REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+            auto text = serialized.output;
+            auto const marker = "\"" + authoriser + "\":{";
+            auto const at = text.find(marker);
+            REQUIRE(at != std::string::npos);
+            auto junk = std::string{};
+            for (auto const& junk_key_id : junk_key_ids)
+            {
+                junk += "\"" + junk_key_id + "\":\"" + std::string(86U, 'A') + "\",";
+            }
+            text.insert(at + marker.size(), junk);
+            auto event = parse_auth_json(text);
+            auto const first = merovingian::federation::join_authorising_signature_key(event);
+            REQUIRE(first.has_value());
+            REQUIRE_FALSE(first->key_ids.empty());
+            REQUIRE(first->key_ids.front() == junk_key_ids.front());
+            return event;
+        };
+        auto const genuine_key = remote_for(authoriser, key_id, seed).signing_key;
+        auto const resolvable_wrong_key = remote_for(authoriser, "ed25519:aaa_rotated", "a-different-seed").signing_key;
+        auto verifier = FederationTestVerifyingProvider{};
+        auto resolver_calls = std::size_t{};
+        // Knows the genuine key and, optionally, one key that verifies nothing;
+        // `denied_key_id` answers with a local admission denial.
+        auto const resolver = [&](bool knows_wrong_key, std::string denied_key_id = {}) {
+            return merovingian::federation::AuthorisingKeyResolver{
+                [&, knows_wrong_key, denied_key_id](std::string_view server, std::string_view id) {
+                    ++resolver_calls;
+                    if (server != authoriser)
+                    {
+                        return merovingian::federation::VerificationKeyResolution{};
+                    }
+                    if (id == denied_key_id)
+                    {
+                        return merovingian::federation::VerificationKeyResolution{std::nullopt, true};
+                    }
+                    if (id == key_id)
+                    {
+                        return merovingian::federation::VerificationKeyResolution{genuine_key};
+                    }
+                    if (knows_wrong_key && id == resolvable_wrong_key.key_id)
+                    {
+                        return merovingian::federation::VerificationKeyResolution{resolvable_wrong_key};
+                    }
+                    return merovingian::federation::VerificationKeyResolution{};
+                }};
+        };
+
+        WHEN("an unknown key ID is listed before the genuine one")
+        {
+            auto const event = with_junk_keys_first({"ed25519:aaa_unknown"});
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver(false), verifier);
+
+            THEN("the genuine signature is found and the join is accepted")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+            }
+        }
+
+        WHEN("a key that resolves but does not verify is listed before the genuine one")
+        {
+            auto const event = with_junk_keys_first({resolvable_wrong_key.key_id});
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver(true), verifier);
+
+            THEN("the join is still accepted on the genuine key")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+            }
+        }
+
+        WHEN("more junk key IDs than the candidate limit are listed before the genuine one")
+        {
+            auto junk = std::vector<std::string>{};
+            for (auto i = std::size_t{0U}; i < merovingian::federation::max_authorising_signature_keys; ++i)
+            {
+                junk.push_back("ed25519:aaa_junk" + std::to_string(i));
+            }
+            auto const event = with_junk_keys_first(junk);
+            resolver_calls = 0U;
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver(false), verifier);
+
+            THEN("the join is refused and no more than the limit of keys is looked up")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 403U);
+                CHECK(resolver_calls <= merovingian::federation::max_authorising_signature_keys);
+            }
+        }
+
+        WHEN("the only key that could verify is refused by local admission")
+        {
+            auto const event = with_junk_keys_first({"ed25519:aaa_unknown"});
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver(false, key_id), verifier);
+
+            THEN("the refusal is a retryable 503, not a verdict on the signature")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 503U);
+            }
+        }
+    }
+}
+
 SCENARIO("Mixed negative-cache failure and local overload preserve genuine trust penalties and defer EDUs",
          "[federation][inbound][fed10][fed10-mixed-edu]")
 {
