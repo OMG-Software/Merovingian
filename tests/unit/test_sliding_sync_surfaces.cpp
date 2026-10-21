@@ -3,6 +3,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/sync/room_access.hpp"
 #include "merovingian/sync/sliding_sync_extensions.hpp"
 #include "merovingian/sync/sliding_sync_room_list.hpp"
 
@@ -15,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -828,6 +830,97 @@ SCENARIO("Sliding sync room list ordering is fixed by the sort keys, not by the 
                 {
                     REQUIRE(sorted_rooms(store.get(), {}, {}) == sort_fixture_rooms("abcdefgh"));
                 }
+            }
+        }
+    }
+}
+
+// Security audit run-1 (sp01.sliding-sync-extension-rooms-unbounded): receipts and typing are now
+// read in one pass over their tables, grouped by the joined rooms that were asked for. Each room
+// must still get exactly its own entries, with the since-position, ignored-sender and typing
+// rules applied as before, and the handler's shared-index overload must give the same answer.
+SCENARIO("Sliding sync receipts and typing group one pass of their tables into the right rooms",
+         "[sync][sliding-sync][extensions][security][sp01]")
+{
+    GIVEN("alice joined to two rooms whose receipts and typing entries are interleaved in storage")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        runtime.database.persistent_store.receipts = {
+            {"!a:example.org", "m.read", "@bob:example.org",     "$a-bob",     10U, 5U},
+            {"!b:example.org", "m.read", "@carol:example.org",   "$b-carol",   11U, 6U},
+            {"!a:example.org", "m.read", "@carol:example.org",   "$a-carol",   12U, 7U},
+            {"!b:example.org", "m.read", "@bob:example.org",     "$b-old",     13U, 2U},
+            {"!a:example.org", "m.read", "@mallory:example.org", "$a-ignored", 14U, 8U},
+        };
+        runtime.typing_users = {
+            {"!b:example.org", "@carol:example.org",   true,  0U},
+            {"!a:example.org", "@bob:example.org",     true,  0U},
+            {"!a:example.org", "@dave:example.org",    false, 0U},
+            {"!a:example.org", "@mallory:example.org", true,  0U},
+        };
+        runtime.room_typing_stream_id = {
+            {"!a:example.org", 9U},
+            {"!b:example.org", 3U},
+        };
+        auto store = merovingian::database::PersistentStore{};
+        store.memberships = {
+            {"!a:example.org", "@alice:example.org", "join", 1U},
+            {"!b:example.org", "@alice:example.org", "join", 2U},
+        };
+        auto const ignored = std::unordered_set<std::string>{"@mallory:example.org"};
+
+        auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
+        requests.receipts = merovingian::sync::ExtReceiptsRequest{
+            true, {"!a:example.org", "!b:example.org"}
+        };
+        requests.typing = merovingian::sync::ExtTypingRequest{
+            true, {"!a:example.org", "!b:example.org"}
+        };
+
+        WHEN("the extensions are built from position 4")
+        {
+            auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
+                                                                       4U, 10U, store, {}, ignored);
+
+            THEN("each room's receipts are its own, newer than the position, and not from the ignored user")
+            {
+                REQUIRE(responses.receipts.has_value());
+                REQUIRE(responses.receipts->rooms_json.size() == 2U);
+                auto const a = parse_object(responses.receipts->rooms_json.at("!a:example.org"));
+                auto const* a_content = object_member(a, "content");
+                REQUIRE(a_content != nullptr);
+                REQUIRE(a_content->size() == 2U);
+                REQUIRE(object_member(*a_content, "$a-bob") != nullptr);
+                REQUIRE(object_member(*a_content, "$a-carol") != nullptr);
+                auto const b = parse_object(responses.receipts->rooms_json.at("!b:example.org"));
+                auto const* b_content = object_member(b, "content");
+                REQUIRE(b_content != nullptr);
+                REQUIRE(b_content->size() == 1U);
+                REQUIRE(object_member(*b_content, "$b-carol") != nullptr);
+            }
+
+            THEN("only the room whose typing changed after the position is reported, with its typing users")
+            {
+                REQUIRE(responses.typing.has_value());
+                REQUIRE(responses.typing->rooms_json.size() == 1U);
+                auto const a = parse_object(responses.typing->rooms_json.at("!a:example.org"));
+                auto const* content = object_member(a, "content");
+                REQUIRE(content != nullptr);
+                auto const* user_ids = array_member(*content, "user_ids");
+                REQUIRE(user_ids != nullptr);
+                REQUIRE(user_ids->size() == 1U);
+                REQUIRE(std::get<std::string>(user_ids->front().storage()) == "@bob:example.org");
+            }
+
+            THEN("the overload taking the handler's room-access index gives the same responses")
+            {
+                auto const index = merovingian::sync::room_access_index(store, "@alice:example.org");
+                auto const shared = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE",
+                                                                        requests, 4U, 10U, store, index, {}, ignored);
+                REQUIRE(shared.receipts.has_value());
+                REQUIRE(shared.typing.has_value());
+                REQUIRE(shared.receipts->rooms_json == responses.receipts->rooms_json);
+                REQUIRE(shared.typing->rooms_json == responses.typing->rooms_json);
             }
         }
     }

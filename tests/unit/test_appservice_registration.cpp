@@ -695,7 +695,7 @@ SCENARIO("parsing the spec's own YAML registration example", "[appservice][regis
                 REQUIRE(result.value.has_value());
                 REQUIRE(result.value->namespaces.users.size() == 1U);
                 REQUIRE(result.value->namespaces.users.front().exclusive);
-                REQUIRE(result.value->namespaces.users.front().regex == "@_irc_bridge_.*");
+                REQUIRE(result.value->namespaces.users.front().regex() == "@_irc_bridge_.*");
                 REQUIRE(result.value->namespaces.aliases.size() == 1U);
                 REQUIRE_FALSE(result.value->namespaces.aliases.front().exclusive);
                 REQUIRE(result.value->namespaces.rooms.empty());
@@ -991,7 +991,7 @@ SCENARIO("a namespace compiles its pattern once, when it is built", "[appservice
 
         THEN("its compiled form exists and matches whole identifiers only")
         {
-            REQUIRE(ns.compiled != nullptr);
+            REQUIRE(ns.compiled() != nullptr);
             auto const namespaces = std::vector<merovingian::appservice::Namespace>{ns};
             REQUIRE(merovingian::appservice::any_namespace_matches(namespaces, "@_irc_bob:example.org"));
             REQUIRE_FALSE(merovingian::appservice::any_namespace_matches(namespaces, "@evil@_irc_bob:example.org"));
@@ -1004,7 +1004,7 @@ SCENARIO("a namespace compiles its pattern once, when it is built", "[appservice
 
             THEN("the copy shares the one compiled pattern instead of compiling again")
             {
-                REQUIRE(copy.compiled == ns.compiled);
+                REQUIRE(copy.compiled() == ns.compiled());
             }
         }
     }
@@ -1015,7 +1015,7 @@ SCENARIO("a namespace compiles its pattern once, when it is built", "[appservice
 
         THEN("it has no compiled form and matches nothing")
         {
-            REQUIRE(ns.compiled == nullptr);
+            REQUIRE(ns.compiled() == nullptr);
             auto const namespaces = std::vector<merovingian::appservice::Namespace>{ns};
             REQUIRE_FALSE(merovingian::appservice::any_namespace_matches(namespaces, "(unclosed"));
             REQUIRE_FALSE(merovingian::appservice::any_namespace_matches(namespaces, "@anyone:example.org"));
@@ -1041,7 +1041,7 @@ SCENARIO("a namespace compiles its pattern once, when it is built", "[appservice
         {
             REQUIRE(parsed.value.has_value());
             REQUIRE_FALSE(parsed.value->namespaces.users.empty());
-            REQUIRE(parsed.value->namespaces.users.front().compiled != nullptr);
+            REQUIRE(parsed.value->namespaces.users.front().compiled() != nullptr);
         }
     }
 }

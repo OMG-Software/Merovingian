@@ -4,9 +4,12 @@
 
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/sync/room_access.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -34,6 +37,18 @@ namespace merovingian::sync
                                     std::string_view device_id, SlidingSyncExtensionRequests const& ext_req,
                                     std::uint64_t since_sync_stream_id, std::uint64_t current_sync_stream_id,
                                     database::PersistentStore& store, std::vector<std::string> const& response_room_ids,
+                                    std::unordered_set<std::string> const& ignored_senders = {})
+    -> SlidingSyncExtensionResponses;
+
+// As above, with the caller's `room_access_index(store, user)` for the same request, so a handler
+// that has already built one (to classify room_subscriptions) does not scan the memberships again
+// under the runtime lock. `room_access` must come from the same store and user.
+[[nodiscard]] auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user,
+                                    std::string_view device_id, SlidingSyncExtensionRequests const& ext_req,
+                                    std::uint64_t since_sync_stream_id, std::uint64_t current_sync_stream_id,
+                                    database::PersistentStore& store,
+                                    std::map<std::string, RoomAccess, std::less<>> const& room_access,
+                                    std::vector<std::string> const& response_room_ids,
                                     std::unordered_set<std::string> const& ignored_senders = {})
     -> SlidingSyncExtensionResponses;
 

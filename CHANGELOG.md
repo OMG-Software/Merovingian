@@ -9,8 +9,9 @@ make the server do work, sized by its own input, while the server-wide runtime l
   receipt). Each array is now capped at the `room_subscriptions` limit (default 256,
   `400 M_INVALID_PARAM` beyond), repeated room IDs are kept once, and the rooms are
   classified through `sync::room_access_index`, one pass over the caller's memberships built
-  once per request. Receipts and typing then make one pass over their tables. The
-  `room_subscriptions` classification uses the same index (ADR-0174).
+  once per request. Receipts and typing then make one pass over their tables. The handler
+  builds one index for `room_subscriptions` and passes it to `build_extensions`, so a request
+  scans the memberships once (ADR-0174).
 - **SECURITY (push glob matching, `sp01.push-glob-dp-allocation-per-character`):**
   `event_match` allocated a full (value × pattern) table per match, and the `content.body`
   matcher tried every pair of word boundaries. Whole-value matching now compares exactly when
@@ -27,7 +28,8 @@ make the server do work, sized by its own input, while the server-wide runtime l
 - **SECURITY (appservice namespaces, `sp02.appservice-regex-compile-under-mutex`):** each
   namespace regex was compiled on every match, once per member per event, under the lock.
   `appservice::Namespace` now compiles its pattern once, when it is built, and shares the
-  compiled form between copies. A malformed pattern still matches nothing.
+  compiled form between copies. The pattern is private (`regex()`), so it cannot drift from the
+  compiled form. A malformed pattern still matches nothing.
 - **SECURITY (federation media multipart, `med01.federation-multipart-quadratic-boundary-scan`):**
   the delimiter search compared the boundary at every offset of a body a remote server controls,
   which a long, repetitive boundary made O(body × boundary) under the lock. A boundary longer
@@ -36,7 +38,8 @@ make the server do work, sized by its own input, while the server-wide runtime l
 - **TESTS:** new `[security][sp01]`, `[security][sp02]` and `[security][med01]` scenarios cover
   each fix: the push matchers are checked against the old implementation on 3000 seeded cases,
   `room_access_index` against `room_access_for`, and the multipart parser against a
-  pathological all-dash boundary and 1 MB of dashes. New `tests/unit/test_account_data_cap.cpp`.
+  pathological all-dash boundary and 1 MB of dashes. The receipts and typing grouping is checked
+  across interleaved rooms. New `tests/unit/test_account_data_cap.cpp`.
 - **DOCS:** ADR-0173 to ADR-0176; `docs/threat-model.md`, `docs/security-coding-rules.md`,
   `docs/user-manual.md`, `docs/media-repository.md`, and the `src/sync`, `src/push`,
   `src/appservice` and `src/homeserver` `AGENTS.md` files.

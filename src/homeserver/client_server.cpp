@@ -5467,16 +5467,21 @@ namespace
         // omitted silently. Nothing about an omitted room may reach the response, so it must not
         // enter `response_room_ids`, which also scopes the account_data extension.
         // The rooms are classified through one index over the caller's memberships rather than
-        // a scan of every membership row per subscription (security audit run-1, sp01).
+        // a scan of every membership row per subscription (security audit run-1, sp01). The same
+        // index is handed to the receipts and typing extensions below.
         auto invited_subscription_ids = std::vector<std::string>{};
-        auto const subscription_access = ssreq.room_subscriptions.empty()
-                                             ? std::map<std::string, sync::RoomAccess, std::less<>>{}
-                                             : sync::room_access_index(store, user);
+        auto const extensions_need_room_access =
+            ssreq.extensions.has_value() &&
+            ((ssreq.extensions->receipts.has_value() && ssreq.extensions->receipts->enabled) ||
+             (ssreq.extensions->typing.has_value() && ssreq.extensions->typing->enabled));
+        auto const room_access = ssreq.room_subscriptions.empty() && !extensions_need_room_access
+                                     ? std::map<std::string, sync::RoomAccess, std::less<>>{}
+                                     : sync::room_access_index(store, user);
         for (auto const& [room_id, sub_unused] : ssreq.room_subscriptions)
         {
             std::ignore = sub_unused;
-            auto const found = subscription_access.find(room_id);
-            switch (found == subscription_access.end() ? sync::RoomAccess::none : found->second)
+            auto const found = room_access.find(room_id);
+            switch (found == room_access.end() ? sync::RoomAccess::none : found->second)
             {
             case sync::RoomAccess::joined:
                 if (seen_rooms.insert(room_id).second)
@@ -5613,9 +5618,9 @@ namespace
         auto ext_obj = canonicaljson::Object{};
         if (ssreq.extensions.has_value())
         {
-            extension_responses =
-                sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id,
-                                       store.next_sync_stream_id, store, response_room_ids, ignored_senders);
+            extension_responses = sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions,
+                                                         since_sync_stream_id, store.next_sync_stream_id, store,
+                                                         room_access, response_room_ids, ignored_senders);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
 

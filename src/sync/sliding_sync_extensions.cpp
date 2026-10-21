@@ -387,6 +387,22 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
                       std::vector<std::string> const& response_room_ids,
                       std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncExtensionResponses
 {
+    // Only receipts and typing classify rooms; skip the membership pass when neither is on.
+    auto const needs_access = (ext_req.receipts.has_value() && ext_req.receipts->enabled) ||
+                              (ext_req.typing.has_value() && ext_req.typing->enabled);
+    auto const room_access =
+        needs_access ? room_access_index(store, user) : std::map<std::string, RoomAccess, std::less<>>{};
+    return build_extensions(rt, user, device_id, ext_req, since_sync_stream_id, current_sync_stream_id, store,
+                            room_access, response_room_ids, ignored_senders);
+}
+
+auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
+                      SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
+                      std::uint64_t current_sync_stream_id, database::PersistentStore& store,
+                      std::map<std::string, RoomAccess, std::less<>> const& room_access,
+                      std::vector<std::string> const& response_room_ids,
+                      std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncExtensionResponses
+{
     auto resp = SlidingSyncExtensionResponses{};
 
     if (ext_req.to_device.has_value() && ext_req.to_device->enabled)
@@ -406,23 +422,21 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
 
     auto const wants_receipts = ext_req.receipts.has_value() && ext_req.receipts->enabled;
     auto const wants_typing = ext_req.typing.has_value() && ext_req.typing->enabled;
-    if (wants_receipts || wants_typing)
+    // One room-access index per request, shared by both extensions (and, from the handler, by the
+    // room_subscriptions classification).
+    if (wants_receipts)
     {
-        // Built once and shared by both extensions.
-        auto const access = room_access_index(store, user);
-        if (wants_receipts)
-        {
-            resp.receipts =
-                build_receipts(rt, user, since_sync_stream_id,
-                               joined_rooms_among(effective_rooms(ext_req.receipts->rooms, response_room_ids), access),
-                               ignored_senders);
-        }
-        if (wants_typing)
-        {
-            resp.typing = build_typing(
-                rt, since_sync_stream_id,
-                joined_rooms_among(effective_rooms(ext_req.typing->rooms, response_room_ids), access), ignored_senders);
-        }
+        resp.receipts =
+            build_receipts(rt, user, since_sync_stream_id,
+                           joined_rooms_among(effective_rooms(ext_req.receipts->rooms, response_room_ids), room_access),
+                           ignored_senders);
+    }
+    if (wants_typing)
+    {
+        resp.typing =
+            build_typing(rt, since_sync_stream_id,
+                         joined_rooms_among(effective_rooms(ext_req.typing->rooms, response_room_ids), room_access),
+                         ignored_senders);
     }
 
     return resp;

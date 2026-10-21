@@ -132,18 +132,28 @@ auto namespace_matches(std::string_view pattern, std::string_view value) noexcep
 
 Namespace::Namespace(bool exclusive_value, std::string regex_value)
     : exclusive{exclusive_value}
-    , regex{std::move(regex_value)}
+    , m_regex{std::move(regex_value)}
 {
     try
     {
-        compiled = std::make_shared<std::regex const>(regex.begin(), regex.end(), std::regex::extended);
+        m_compiled = std::make_shared<std::regex const>(m_regex.begin(), m_regex.end(), std::regex::extended);
     }
     catch (std::regex_error const&)
     {
         // Matches nothing (fail closed); validate_registrations() reports the
         // malformed pattern at startup.
-        compiled = nullptr;
+        m_compiled = nullptr;
     }
+}
+
+auto Namespace::regex() const noexcept -> std::string const&
+{
+    return m_regex;
+}
+
+auto Namespace::compiled() const noexcept -> std::shared_ptr<std::regex const> const& // SHARED_PTR: reviewed — immutable
+{
+    return m_compiled;
 }
 
 namespace
@@ -154,13 +164,13 @@ namespace
     // regex_match, not regex_search).
     [[nodiscard]] auto compiled_namespace_matches(Namespace const& ns, std::string_view value) noexcept -> bool
     {
-        if (ns.compiled == nullptr)
+        if (ns.compiled() == nullptr)
         {
             return false;
         }
         try
         {
-            return std::regex_match(value.begin(), value.end(), *ns.compiled);
+            return std::regex_match(value.begin(), value.end(), *ns.compiled());
         }
         catch (std::regex_error const&)
         {
@@ -491,10 +501,10 @@ namespace
     {
         for (auto const& entry : entries)
         {
-            if (!regex_is_valid(entry.regex))
+            if (!regex_is_valid(entry.regex()))
             {
                 findings.push_back({std::string{registration_id}, "invalid POSIX regular expression in namespaces." +
-                                                                      std::string{kind} + ": " + entry.regex});
+                                                                      std::string{kind} + ": " + entry.regex()});
             }
         }
     }
@@ -523,7 +533,7 @@ namespace
         {
             for (auto const& right : second)
             {
-                if (left.regex != right.regex)
+                if (left.regex() != right.regex())
                 {
                     continue;
                 }
@@ -534,7 +544,7 @@ namespace
                     continue;
                 }
                 findings.push_back({std::string{second_id}, "namespaces." + std::string{kind} + " pattern '" +
-                                                                left.regex + "' conflicts with appservice '" +
+                                                                left.regex() + "' conflicts with appservice '" +
                                                                 std::string{first_id} +
                                                                 "', which claims it exclusively"});
             }

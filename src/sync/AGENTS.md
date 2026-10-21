@@ -45,8 +45,9 @@ a delta (empty rooms, same pos) rather than re-sending the full initial sync.
 
 A sliding sync request names rooms in `room_subscriptions` and in the `receipts`/`typing`
 `rooms` arrays. None of those names is proof of entitlement: a user needs to join a room to
-view events in it (C-S API, "Room history visibility"). Classify every client-named room with
-`room_access_for()` before reading anything about it:
+view events in it (C-S API, "Room history visibility"). Classify every client-named room before
+reading anything about it: `room_access_for()` for a single room, `room_access_index()` for a
+request that names many:
 
 - `joined`: serve in full.
 - `invited`: stripped invite state only (`invite_state`), no timeline, no `required_state`.
@@ -66,7 +67,8 @@ extension that takes a client-named room list must gate on room access too.
 When a request names many rooms, classify them through `room_access_index()`, built once per
 request, not `room_access_for()` per room: each `room_access_for()` call scans every membership
 row in the store, and this runs under the runtime lock. `build_extensions` builds one index for
-receipts and typing, and the `room_subscriptions` loop in `client_server.cpp` uses one too. The
+receipts and typing; the sliding-sync handler in `client_server.cpp` builds one for
+`room_subscriptions` and passes it to `build_extensions`, so a request scans the memberships once. The
 receipts and typing `rooms` arrays are de-duplicated by the parser and capped at
 `room_subscriptions` (ADR-0174). A new client-named room list gets the same cap.
 

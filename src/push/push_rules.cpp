@@ -259,7 +259,9 @@ namespace
             {
                 return false;
             }
-            std::ranges::fill(next, false);
+            // Not std::ranges::fill: vector<bool>'s proxy iterator is not an output_range for
+            // clang with older libstdc++ (NetBSD), so the ranges form does not compile there.
+            next.assign(next.size(), false);
             for (auto j = std::size_t{0U}; j < pattern_length; ++j)
             {
                 if (!active[j])
