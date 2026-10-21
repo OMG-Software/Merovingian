@@ -1399,3 +1399,74 @@ SCENARIO("local join to a room with remote members broadcasts m.device_list_upda
         homeserver.dispatch_worker->join();
     }
 }
+
+// Security audit run-1 (fed.outbound-fanout-rfind-colon-port-server-name): a member's server name
+// is everything after the FIRST ':' of their user ID (server_name = hostname [ ":" port ]). The
+// fan-out split on the last ':', so a member on "remote.example.org:8448" was addressed as "8448"
+// and never received the room's events.
+SCENARIO("send_event addresses members on a port-suffixed server name by the full server name",
+         "[homeserver][outbound-dispatch][send-event][security]")
+{
+    GIVEN("a room with members on a port-suffixed server and on a bare server, and a recording worker")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto queue_store = merovingian::database::PersistentStore{};
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &queue_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org:8448");
+        local_room->members.push_back("@carol:other.example.org");
+        queue_store.federation_transactions.clear();
+
+        WHEN("a local user sends a message event to the room")
+        {
+            auto const message = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                          R"({"type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}})"});
+
+            THEN("one transaction is queued per server, addressed to the full server names")
+            {
+                REQUIRE(message.response.status == 200U);
+                auto destinations = std::vector<std::string>{};
+                for (auto const& transaction : queue_store.federation_transactions)
+                {
+                    destinations.push_back(transaction.server_name);
+                }
+                std::ranges::sort(destinations);
+                REQUIRE(destinations == std::vector<std::string>{"other.example.org", "remote.example.org:8448"});
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}

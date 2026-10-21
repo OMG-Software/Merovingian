@@ -110,6 +110,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    verification. The set is bounded (100 per room, 1000, 16 MiB; 24 hours, 10 retries):
    keep every new write behind `upsert_deferred_pdu`.
 
+12. **Each outbound destination holds a bounded share of the dispatch queue (ADR-0177).**
+   `DispatchWorker::enqueue` refuses a transaction once its destination holds
+   `effective_max_pending_per_destination` queued ones, or the queue is full, and counts it in
+   `summary().rejected`. Every insertion into or removal from `queue_` goes through
+   `push_queue_locked` / `note_dequeued_locked` under `mutex_`, so the counts stay exact; a new
+   path that touches `queue_` uses them. Never discard `enqueue`'s result: log a refusal. Give
+   every destination its own transaction ID: it is the durable `federation_transactions` key.
+
 ## Key files
 
 | File | Responsibility |

@@ -123,6 +123,19 @@ auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
                                                    {"queue_depth",    std::to_string(queue_.size()), false},
                                                    {"reason",         "queue depth limit reached",   false}
             });
+            ++summary_.rejected;
+            return false;
+        }
+        if (auto const held = queued_per_destination_.find(transaction.destination);
+            held != queued_per_destination_.end() && held->second >= effective_max_pending_per_destination(config_))
+        {
+            log_diagnostic("enqueue.rejected", {
+                                                   {"transaction_id", transaction.transaction_id,        false},
+                                                   {"destination",    transaction.destination,           false},
+                                                   {"queued",         std::to_string(held->second),      false},
+                                                   {"reason",         "destination queue share reached", false}
+            });
+            ++summary_.rejected;
             return false;
         }
         if (persistent_store_ != nullptr &&
@@ -135,12 +148,42 @@ auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
             });
             return false;
         }
-        queue_.push_back(std::move(transaction));
+        push_queue_locked(std::move(transaction));
         ++summary_.enqueued;
         ++summary_.pending;
     }
     cv_.notify_one();
     return true;
+}
+
+auto effective_max_pending_per_destination(DispatchWorkerConfig const& config) noexcept -> std::size_t
+{
+    if (config.max_pending_per_destination != 0U)
+    {
+        return config.max_pending_per_destination;
+    }
+    return std::max<std::size_t>(16U, config.max_queue_depth / 16U);
+}
+
+auto DispatchWorker::push_queue_locked(OutboundTransaction transaction) -> void
+{
+    ++queued_per_destination_[transaction.destination];
+    queue_.push_back(std::move(transaction));
+}
+
+auto DispatchWorker::note_dequeued_locked(std::string const& destination) -> void
+{
+    auto const held = queued_per_destination_.find(destination);
+    if (held == queued_per_destination_.end())
+    {
+        return;
+    }
+    if (held->second <= 1U)
+    {
+        queued_per_destination_.erase(held);
+        return;
+    }
+    --held->second;
 }
 
 auto DispatchWorker::start() -> void
@@ -199,6 +242,7 @@ auto DispatchWorker::take_next(OutboundTransaction& out) -> bool
     }
     out = std::move(*ready);
     queue_.erase(ready);
+    note_dequeued_locked(out.destination);
     // Removing an entry frees a slot under max_queue_depth — top up the
     // active queue from any replay overflow that was parked at startup.
     std::ignore = top_up_replay_locked();
@@ -267,7 +311,7 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
             ++summary_.failed;
             return;
         }
-        queue_.push_back(std::move(transaction));
+        push_queue_locked(std::move(transaction));
         ++summary_.pending;
     }
     cv_.notify_one();
@@ -404,7 +448,7 @@ auto DispatchWorker::run_once() -> bool
                 ++summary_.failed;
                 return true;
             }
-            queue_.push_back(std::move(transaction));
+            push_queue_locked(std::move(transaction));
             ++summary_.pending;
         }
         cv_.notify_one();
@@ -423,7 +467,7 @@ auto DispatchWorker::top_up_replay_locked() -> std::size_t
         {
             break;
         }
-        queue_.push_back(std::move(pending_replay_.front()));
+        push_queue_locked(std::move(pending_replay_.front()));
         pending_replay_.pop_front();
         ++summary_.enqueued;
         ++summary_.pending;
@@ -469,7 +513,7 @@ auto DispatchWorker::replay_pending() -> std::size_t
                 pending_replay_.push_back(std::move(outbound));
                 continue;
             }
-            queue_.push_back(std::move(outbound));
+            push_queue_locked(std::move(outbound));
             ++summary_.enqueued;
             ++summary_.pending;
             ++replayed;

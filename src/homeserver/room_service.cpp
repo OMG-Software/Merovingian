@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/room_service.hpp"
 
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -38,6 +39,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -323,20 +325,17 @@ namespace
         });
     }
 
-    // Extract the server name from a Matrix room ID. Room IDs have the form
-    // !opaque:server_name — the server name is everything after the last ':'.
+    // Extract the server name from a Matrix room ID (!opaque:server_name): everything after the
+    // FIRST ':', since the server name may carry a port. Empty for a room ID with no domain.
     [[nodiscard]] auto server_name_from_room_id(std::string_view room_id) -> std::string_view
     {
-        auto const pos = room_id.rfind(':');
-        return pos == std::string_view::npos ? std::string_view{} : room_id.substr(pos + 1);
+        return auth::identifier_server_name(room_id);
     }
 
     // Extract the home server domain from a Matrix user ID (@localpart:domain).
-    // Mirrors the equivalent local helper in src/federation/inbound_request.cpp.
     [[nodiscard]] auto sender_domain_from_user_id(std::string_view sender) noexcept -> std::string_view
     {
-        auto const pos = sender.rfind(':');
-        return pos == std::string_view::npos || pos + 1U >= sender.size() ? std::string_view{} : sender.substr(pos + 1);
+        return auth::user_id_server_name(sender);
     }
 
     // Load the operator-supplied master key material from the configured file,
@@ -1368,39 +1367,14 @@ namespace
 
     // Returns the room_version string from the room's m.room.create event, or "10"
     // as a safe fallback for rooms that pre-date initial-state generation.
+    // The room's version, from its m.room.create through the one accessor
+    // (stored_room_version). A room with no stored create falls back to "12",
+    // the createRoom and capabilities default; a create without room_version is
+    // room version 1, which has no policy, so nothing is composed in that room.
     [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store, std::string_view room_id)
         -> std::string
     {
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
-            {
-                continue;
-            }
-            auto const evt = find_event_json(store, state.event_id);
-            auto const* obj = std::get_if<canonicaljson::Object>(&evt.storage());
-            if (obj == nullptr)
-            {
-                break;
-            }
-            auto const* content_val = object_member(*obj, "content");
-            if (content_val == nullptr)
-            {
-                break;
-            }
-            auto const* content_obj = std::get_if<canonicaljson::Object>(&content_val->storage());
-            if (content_obj == nullptr)
-            {
-                break;
-            }
-            auto const* rv = string_member(*content_obj, "room_version");
-            if (rv != nullptr && !rv->empty())
-            {
-                return *rv;
-            }
-            break;
-        }
-        return "12"; // Latest stable version — matches the createRoom and capabilities defaults.
+        return stored_room_version(store, room_id).value_or("12");
     }
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
@@ -1456,11 +1430,7 @@ namespace
         auto room_version = std::string{};
         if (event_type == "m.room.create")
         {
-            auto const* content_value = object_member(*input, "content");
-            auto const* content_obj =
-                content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
-            auto const* rv = content_obj == nullptr ? nullptr : string_member(*content_obj, "room_version");
-            room_version = rv != nullptr && !rv->empty() ? *rv : std::string{"12"};
+            room_version = declared_room_version(*input);
         }
         else
         {
@@ -4356,6 +4326,35 @@ namespace
         // resident server's response wholesale. Unverifiable events are
         // silently dropped, not persisted.
         auto verified_critical_state = filter_verified_send_join_events(runtime, critical_state, *policy, our_server);
+        // A room's version is the one its m.room.create declares; one without room_version is
+        // room version 1 (ADR-0076). The make_join answer only names it. Joining under a version
+        // the create event does not declare would let each component judge the room by a
+        // different rule set, so refuse before anything is stored (security audit run-1).
+        for (auto const& entry : verified_critical_state)
+        {
+            auto const* event = std::get_if<canonicaljson::Object>(&entry.storage());
+            auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+            auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+            if (type == nullptr || *type != "m.room.create" || state_key == nullptr || !state_key->empty())
+            {
+                continue;
+            }
+            if (auto const declared = declared_room_version(*event); declared != room_version)
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",           user_id,                                      false},
+                                   {"room_id",         std::string{room_id},                         false},
+                                   {"status",          "502",                                        false},
+                                   {"make_join",       room_version,                                 false},
+                                   {"create_declares", declared,                                     false},
+                                   {"reason",          "create event and make_join versions differ", false}
+                },
+                               observability::LogEventSeverity::warning);
+                return federated_join_failure("the room's create event does not declare the make_join room version",
+                                              502U);
+            }
+        }
         auto const auth_arr_member = std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) {
             return m.key == "auth_chain";
         });
@@ -6733,12 +6732,11 @@ namespace
         auto remote_servers = std::vector<std::string>{};
         for (auto const& member : room->members)
         {
-            auto const colon = member.rfind(':');
-            if (colon == std::string::npos)
+            auto const member_server = std::string{auth::user_id_server_name(member)};
+            if (member_server.empty())
             {
                 continue;
             }
-            auto const member_server = member.substr(colon + 1);
             if (member_server != server_name &&
                 std::ranges::find(remote_servers, member_server) == remote_servers.end())
             {
@@ -6758,20 +6756,45 @@ namespace
             tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{canonicaljson::Array{}}));
             auto const tx_body_result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
             auto const& tx_body = tx_body_result.output;
-            auto const tx_id = federation::make_federation_transaction_id();
+            // One transaction ID per destination: it is the durable queue row's key, so a shared ID
+            // left one row for the whole fan-out and the first delivery deleted the others' row.
+            auto refused = std::vector<std::string>{};
             for (auto const& destination : remote_servers)
             {
+                auto const tx_id = federation::make_federation_transaction_id();
                 auto target = "/_matrix/federation/v1/send/" + tx_id;
                 auto transaction =
                     federation::make_outbound_transaction(destination, "PUT", target, server_name, tx_body);
                 transaction.transaction_id = tx_id;
-                std::ignore = runtime.dispatch_worker->enqueue(std::move(transaction));
+                if (!runtime.dispatch_worker->enqueue(std::move(transaction)))
+                {
+                    refused.push_back(destination);
+                }
+            }
+            if (!refused.empty())
+            {
+                // The worker refused these (its queue, or the destination's share of it, is full).
+                // They are not retried; each peer recovers the event itself through prev_events
+                // once it is reachable (security audit run-1).
+                auto names = std::string{};
+                for (auto const& name : refused)
+                {
+                    names += names.empty() ? name : "," + name;
+                }
+                log_diagnostic("room.event.dispatch_refused",
+                               {
+                                   {"room_id",      std::string{room_id},           false},
+                                   {"event_id",     composed->event_id,             false},
+                                   {"refused",      std::to_string(refused.size()), false},
+                                   {"destinations", names,                          false}
+                },
+                               observability::LogEventSeverity::warning);
             }
             log_diagnostic("room.event.dispatched",
                            {
-                               {"room_id",      std::string{room_id},                  false},
-                               {"event_id",     composed->event_id,                    false},
-                               {"destinations", std::to_string(remote_servers.size()), false}
+                               {"room_id",      std::string{room_id},                                   false},
+                               {"event_id",     composed->event_id,                                     false},
+                               {"destinations", std::to_string(remote_servers.size() - refused.size()), false}
             });
         }
     }

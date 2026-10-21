@@ -360,20 +360,30 @@ auto user_id_is_valid_federated(std::string_view user_id) noexcept -> bool
     return localpart_is_valid_federated(localpart) && server_name_is_valid(server_name);
 }
 
+auto localpart_is_reserved(std::string_view localpart) noexcept -> bool
+{
+    return localpart == "remote-media";
+}
+
 auto user_id_server_name(std::string_view user_id) noexcept -> std::string_view
 {
-    if (user_id.size() < 2U || user_id.front() != '@')
+    return user_id.starts_with('@') ? identifier_server_name(user_id) : std::string_view{};
+}
+
+auto identifier_server_name(std::string_view identifier) noexcept -> std::string_view
+{
+    if (identifier.size() < 2U || std::string_view{"@!#"}.find(identifier.front()) == std::string_view::npos)
     {
         return {};
     }
     // The localpart cannot contain ':', so the server name — which may itself
     // be host:port — is everything after the FIRST colon.
-    auto const separator = user_id.find(':');
-    if (separator == std::string_view::npos || separator + 1U >= user_id.size())
+    auto const separator = identifier.find(':');
+    if (separator == std::string_view::npos || separator + 1U >= identifier.size())
     {
         return {};
     }
-    return user_id.substr(separator + 1U);
+    return identifier.substr(separator + 1U);
 }
 
 auto device_id_is_valid(std::string_view device_id) noexcept -> bool

@@ -422,6 +422,13 @@ quickly finding everything a given `AGENTS.md` file contributed.
   ADR-0149).
   Source: `src/homeserver/AGENTS.md`.
 
+- **Split a user ID, room ID or room alias on its FIRST `:`, through
+  `auth::user_id_server_name` / `auth::identifier_server_name`; never `rfind(':')`.**
+  Why: no localpart contains `:`, while a server name may (`host:port`). Splitting on the last
+  `:` addressed members on ported servers to the port, so they never received events (security
+  audit run-1).
+  Source: `src/auth/AGENTS.md`.
+
 ## Federation (the highest-risk surface — all input comes from untrusted remote servers)
 
 - **Authenticate every inbound request with X-Matrix auth before touching any body data.**
@@ -558,6 +565,20 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: each process kept its own ring, so a retry that reached main after the worker completed
   it (a room whose reload failed) was processed again and its EDUs delivered twice (OpenBSD CI,
   ADR-0160).
+  Source: `src/federation/AGENTS.md`.
+
+- **A room's version is read only through `homeserver::stored_room_version` /
+  `stored_room_version_policy` (or `declared_room_version` for a create event in hand), and a
+  federated join is refused unless the create event declares the make_join version.** A create
+  without `room_version` is version 1, which has no policy; never substitute a default.
+  Why: components each derived the version with their own default, so a resident server could
+  seat a local user in a room judged under different rule sets by different components (ADR-0179).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **Every outbound destination holds a bounded share of the dispatch queue, and every queued
+  transaction has its own transaction ID. Never discard `DispatchWorker::enqueue`'s result.**
+  Why: one dead or hostile peer filled the shared queue and starved every other peer; a shared
+  transaction ID collapsed a fan-out into one durable row (CWE-400; ADR-0177).
   Source: `src/federation/AGENTS.md`.
 
 ## Application Service API
@@ -721,7 +742,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: releasing the runtime mutex frees the mutex, not the thread; `publicRooms?server=`, a
   remote alias lookup and remote media are reachable without authentication, and a peer that
   never answers pinned all 8 request-pool threads (audit HTTP-2, OUT-7; ADR-0079). The caps are
-  half of `server.http.request_threads`, never a separate setting.
+  half of `server.http.request_threads`, never a separate setting. The `/thirdparty/*` lookups
+  take the slot too, whenever they will call an appservice, but keep each appservice's own timeout
+  rather than one shared deadline (ADR-0181).
   Source: `src/homeserver/AGENTS.md`.
 
 - **Nothing may put a TLS client socket back into blocking mode after the handshake, and
@@ -766,6 +789,12 @@ media-fetch-pool task.
   Why: account-data reads scan every row under the lock, so one user adding types without bound
   slowed every request that reads them (CWE-770; security audit run-1, ADR-0173).
   Source: `src/homeserver/AGENTS.md`.
+
+- **The outbound client refuses a header name that is not an RFC 9110 token, or a value with a
+  control character other than HTAB, before any network I/O (`OutboundError::invalid_header`).**
+  Why: header values carry client-supplied data, and libcurl writes header lines verbatim, so
+  CR/LF added header lines (CWE-113; ADR-0180).
+  Source: `src/http/AGENTS.md`.
 
 ## Database
 
@@ -898,6 +927,12 @@ media-fetch-pool task.
   O(body × boundary) (CWE-407; security audit run-1, ADR-0176). RFC 2046 §5.1.1 limits a
   boundary to 70 characters.
   Source: `src/homeserver/AGENTS.md`.
+
+- **The localpart `remote-media` is the server's own (`auth::localpart_is_reserved`), and remote
+  media is told apart by `LocalMediaRecord::from_remote_fetch`, never by its owner string.**
+  Why: a local account with that name imitated the remote media owner and escaped local quotas
+  (ADR-0178).
+  Source: `src/media/AGENTS.md`.
 
 ## Platform hardening
 

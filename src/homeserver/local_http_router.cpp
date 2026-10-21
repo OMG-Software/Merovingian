@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/local_http_router.hpp"
 
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -35,6 +36,7 @@
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/client_address.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -625,8 +627,7 @@ namespace
 
     [[nodiscard]] auto server_name_from_user_id(std::string_view user_id) -> std::string_view
     {
-        auto const colon = user_id.rfind(':');
-        return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
+        return auth::user_id_server_name(user_id);
     }
 
     [[nodiscard]] auto local_user_exists(LocalDatabase const& database, std::string_view user_id) noexcept -> bool
@@ -722,49 +723,14 @@ namespace
         }
     }
 
-    // Returns the room_version string from the room's m.room.create state event,
-    // falling back to "10" for rooms that pre-date version tracking.
+    // The room's version, from its m.room.create through the one accessor
+    // (stored_room_version). A room with no stored create (unknown here) falls
+    // back to "10", the oldest version this server advertises; a create without
+    // room_version is room version 1, which has no policy and is refused.
     [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store, std::string_view room_id)
         -> std::string
     {
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
-            {
-                continue;
-            }
-            for (auto const& evt : store.events)
-            {
-                if (evt.event_id != state.event_id)
-                {
-                    continue;
-                }
-                auto const parsed = canonicaljson::parse_lossless(evt.json);
-                auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                if (obj == nullptr)
-                {
-                    break;
-                }
-                auto const* content = object_member(*obj, "content");
-                if (content == nullptr)
-                {
-                    break;
-                }
-                auto const* content_obj = std::get_if<canonicaljson::Object>(&content->storage());
-                if (content_obj == nullptr)
-                {
-                    break;
-                }
-                auto const* rv = string_member(*content_obj, "room_version");
-                if (rv != nullptr && !rv->empty())
-                {
-                    return *rv;
-                }
-                break;
-            }
-            break;
-        }
-        return "10"; // Oldest advertised version; safe fallback for legacy rooms.
+        return stored_room_version(store, room_id).value_or("10");
     }
 
     [[nodiscard]] auto membership_for_endpoint(federation::FederationEndpoint endpoint) -> std::string_view
@@ -2276,14 +2242,6 @@ namespace
                 // the envelope claims: the sender does not get to choose which
                 // rule set its own event is judged by.
                 auto room_version = room_version_from_store(store, room_id);
-                if (room_version.empty())
-                {
-                    room_version = envelope.room_version;
-                }
-                if (room_version.empty())
-                {
-                    room_version = "12";
-                }
                 room_policy = rooms::find_room_version_policy(room_version);
                 if (room_policy == nullptr)
                 {

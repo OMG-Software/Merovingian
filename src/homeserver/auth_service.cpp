@@ -696,6 +696,12 @@ namespace
         {
             return make_operation_result(false, {}, "password rejected");
         }
+        // Backstop for every creation path (registration, appservice registration, bootstrap
+        // admin): the server's own localparts are never accounts (security audit run-1).
+        if (auth::localpart_is_reserved(localpart))
+        {
+            return make_operation_result(false, {}, "user already exists");
+        }
         if (find_user(runtime.database, user_id) != nullptr)
         {
             return make_operation_result(false, {}, "user already exists");

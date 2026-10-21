@@ -809,10 +809,12 @@ namespace
             return {};
         }
 
-        // 1.3 — a room_version this server does not recognise cannot be authorised.
-        if (auto const* room_version = string_member(*content, "room_version"); room_version != nullptr)
+        // 1.3 — "If content.room_version is present and is not a recognised version, reject."
+        // A value that is not a string is present and not a recognised version.
+        if (auto const* room_version_value = object_member(*content, "room_version"); room_version_value != nullptr)
         {
-            if (!rooms::room_version_is_supported(*room_version))
+            auto const* room_version = std::get_if<std::string>(&room_version_value->storage());
+            if (room_version == nullptr || !rooms::room_version_is_supported(*room_version))
             {
                 return "create event declares an unrecognised room_version";
             }

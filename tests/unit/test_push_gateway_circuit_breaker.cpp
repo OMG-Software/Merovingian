@@ -160,8 +160,9 @@ SCENARIO("only a gateway that could not be reached counts toward opening its cir
                 {
                     CHECK(failed(error) == GatewayCircuitOutcome::transport_failure);
                 }
-                for (auto const error : {OutboundError::invalid_url, OutboundError::https_required,
-                                         OutboundError::redirect_rejected, OutboundError::response_too_large})
+                for (auto const error :
+                     {OutboundError::invalid_url, OutboundError::https_required, OutboundError::redirect_rejected,
+                      OutboundError::response_too_large, OutboundError::invalid_header})
                 {
                     CHECK(failed(error) == GatewayCircuitOutcome::not_attempted);
                 }

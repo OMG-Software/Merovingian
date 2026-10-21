@@ -176,6 +176,11 @@
 * [0174 - Sliding-sync extension room lists share the room_subscriptions cap and are classified through one index](0174-sliding-sync-extension-room-lists-share-the-room-subscriptions-cap.md)
 * [0175 - Push glob matching is a hand-written linear matcher, never std::regex](0175-push-glob-matching-is-linear-and-never-uses-std-regex.md)
 * [0176 - Federation media multipart is parsed under the lock, with a linear delimiter scan](0176-federation-media-multipart-is-parsed-under-the-lock-with-a-linear-scan.md)
+* [0177 - Each outbound destination holds a bounded share of the dispatch queue, and every transaction has its own ID](0177-each-outbound-destination-holds-a-bounded-share-of-the-dispatch-queue.md)
+* [0178 - Remote media cache membership is recorded on the record, not inferred from the owner string](0178-remote-media-cache-membership-is-recorded-not-inferred-from-the-owner.md)
+* [0179 - A room's stored version is resolved through one accessor, and a join must match the create event](0179-a-rooms-stored-version-is-resolved-through-one-accessor.md)
+* [0180 - The outbound client refuses header fields that are not valid HTTP](0180-the-outbound-client-refuses-invalid-header-fields.md)
+* [0181 - Third-party lookups take a client outbound proxy slot and keep per-appservice timeouts](0181-third-party-lookups-take-a-client-outbound-proxy-slot.md)
 
 ## Proposed Records
 

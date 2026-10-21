@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::federation
@@ -60,6 +61,12 @@ struct DispatchWorkerConfig final
     // Bound on the in-memory enqueue list. Enforced fail-closed: enqueue
     // returns false once the limit is hit. Zero disables the bound for tests.
     std::size_t max_queue_depth{1024U};
+    // Bound on how many queued transactions one destination may hold, so a dead or hostile peer
+    // whose circuit stays open cannot fill the queue every other peer shares (security audit
+    // run-1). Past it enqueue refuses the transaction and counts it in `rejected`; the peer
+    // fetches what it missed itself once it is reachable (prev_events, /get_missing_events).
+    // Zero derives it from max_queue_depth: see effective_max_pending_per_destination.
+    std::size_t max_pending_per_destination{0U};
     // Maximum number of retry attempts before a transaction is dropped and
     // recorded as terminally failed. Matches the federation backoff curve.
     std::uint32_t max_retries{8U};
@@ -75,7 +82,14 @@ struct DispatchWorkerSummary final
     std::size_t failed{0U};
     std::size_t dropped{0U};
     std::size_t pending{0U};
+    // Transactions refused at enqueue because the queue, or the destination's share of it, was
+    // full. A malformed transaction or one offered during shutdown is not counted.
+    std::size_t rejected{0U};
 };
+
+// The per-destination bound a worker with `config` enforces: max_pending_per_destination when set,
+// otherwise a sixteenth of max_queue_depth and never below 16 (256 for the default 4096).
+[[nodiscard]] auto effective_max_pending_per_destination(DispatchWorkerConfig const& config) noexcept -> std::size_t;
 
 // Federation outbound dispatch worker.
 //
@@ -146,6 +160,10 @@ private:
     // Promote replay-overflow rows into the active queue while capacity allows.
     // Caller must hold mutex_. Returns the number of rows promoted.
     auto top_up_replay_locked() -> std::size_t;
+    // Every insertion into and removal from queue_ goes through these two, so the per-destination
+    // counts stay exact. Caller must hold mutex_.
+    auto push_queue_locked(OutboundTransaction transaction) -> void;
+    auto note_dequeued_locked(std::string const& destination) -> void;
 
     DispatchWorkerConfig config_{};
     http::OutboundClient& client_;
@@ -161,6 +179,8 @@ private:
     // Drained into queue_ as in-flight work completes so backlog larger than
     // the in-memory cap is not stranded until the next restart.
     std::deque<OutboundTransaction> pending_replay_{};
+    // Transactions in queue_ per destination (not pending_replay_), guarded by mutex_.
+    std::unordered_map<std::string, std::size_t> queued_per_destination_{};
     std::vector<DispatchDestinationSnapshot> destinations_{};
     DispatchWorkerSummary summary_{};
 

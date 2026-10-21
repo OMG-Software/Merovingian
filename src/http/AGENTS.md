@@ -30,6 +30,11 @@ implementation and no users. The listening server lives in `homeserver/http_serv
   them with `CURLOPT_RESOLVE`, so the SSRF policy in `federation::security` stays the single
   source of truth. Resolve server names through `federation/server_discovery.cpp` first, then
   call `outbound_client.hpp`; do not make ad-hoc HTTP calls from other modules.
+- **`outbound_client` refuses invalid header fields before any I/O (ADR-0180).** A name must be an
+  RFC 9110 token and a value must hold no control character other than HTAB; anything else is
+  `OutboundError::invalid_header`. Header values carry client input (an identity server access
+  token), and libcurl writes header lines verbatim. Keep the check in both
+  `validate_outbound_request` and `perform`.
 - Body size limits are per-endpoint; see `homeserver/AGENTS.md` for the media upload exception.
 - **Per-client limits share one key.** `client_address_key` is the key for the per-IP connection
   cap (ADR-0072), the per-client worker share (ADR-0077) and the rate limiter. The first two use the

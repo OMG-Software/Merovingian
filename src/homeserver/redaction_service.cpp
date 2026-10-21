@@ -8,6 +8,7 @@
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/redaction.hpp"
 #include "merovingian/events/redaction_validity.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
@@ -82,15 +83,7 @@ namespace
     [[nodiscard]] auto policy_of(database::PersistentStore const& store, std::string_view room_id)
         -> rooms::RoomVersionPolicy const*
     {
-        auto const* create = create_event_of(store, room_id);
-        if (create == nullptr)
-        {
-            return nullptr;
-        }
-        auto const parsed = parse_event(create->json);
-        auto const* content = parsed.has_value() ? member_of(*parsed, "content") : nullptr;
-        auto const version = content == nullptr ? std::nullopt : string_of(*content, "room_version");
-        return rooms::find_room_version_policy(version.value_or("1"));
+        return stored_room_version_policy(store, room_id);
     }
 
     // What the redaction was authorized against: the power levels among its own auth_events (the

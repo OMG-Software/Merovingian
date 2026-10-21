@@ -65,6 +65,19 @@ struct LoginPolicyDecision final
 // when the input does not have the `@localpart:server_name` shape.
 [[nodiscard]] auto user_id_server_name(std::string_view user_id) noexcept -> std::string_view;
 
+// Whether a localpart belongs to the server itself and must never be given to an
+// account: "remote-media", the owner of cached remote media (ADR-0120). A local
+// account with that name would look like the remote media cache (security audit
+// run-1). Account creation answers it as a name already taken.
+[[nodiscard]] auto localpart_is_reserved(std::string_view localpart) noexcept -> bool;
+
+// Extracts the server_name from any sigilled identifier with a domain: a user ID
+// (`@`), a room ID (`!`) or a room alias (`#`). No localpart may contain ':' while a
+// server name may (`host:port`, `[v6]:port`), so the split is on the FIRST colon.
+// Returns an empty view for anything else, including a room ID with no domain (room
+// version 12). Never split one of these identifiers on its last colon.
+[[nodiscard]] auto identifier_server_name(std::string_view identifier) noexcept -> std::string_view;
+
 [[nodiscard]] auto device_id_is_valid(std::string_view device_id) noexcept -> bool;
 [[nodiscard]] auto password_is_acceptable(std::string_view password) noexcept -> bool;
 [[nodiscard]] auto login_policy(UserIdentity const& user) -> LoginPolicyDecision;

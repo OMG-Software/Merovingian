@@ -134,6 +134,7 @@ shell = find_program('sh')
       'unit/test_main.cpp',
       'unit/test_redaction_validity.cpp',
       'unit/test_room_power.cpp',
+      'unit/test_stored_room_version.cpp',
       'unit/test_appservice_client.cpp',
       'unit/test_periodic_job.cpp',
       'unit/test_appservice_masquerade_token.cpp',

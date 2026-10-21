@@ -106,8 +106,9 @@ blocking network calls".
 
 ## Client requests that call another server
 
-`publicRooms?server=` (GET and POST), a remote room-alias lookup and remote media download or
-thumbnail make this server call a peer it does not control, and the spec lets clients make them
+`publicRooms?server=` (GET and POST), a remote room-alias lookup, remote media download or
+thumbnail, and the `/thirdparty/*` lookups that call an appservice (ADR-0181) make this server
+call a peer it does not control, and the spec lets clients make them
 without authentication. `RuntimeLockRelease` frees the mutex, not the thread, so each holds one of
 the main pool's threads for the round trip. Every such call therefore:
 
@@ -203,6 +204,15 @@ client, sender or remote server controls, and per-user rows that requests scan m
   type the user already holds (ADR-0173). Room account data is bounded by membership.
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
   (ADR-0174).
+
+## A room's version comes from its create event, through one accessor (ADR-0179)
+
+Read a stored room's version only through `stored_room_version` / `stored_room_version_policy`
+(`stored_room_version.hpp`), or `declared_room_version` for a create event in hand. A create event
+without `room_version` is version 1, which has no policy: refuse the room on `nullptr`, never
+substitute a default. Only a room with no stored create (unknown here) may take a caller-chosen
+fallback, written as `value_or(...)` at the call site. A federated join is refused unless the
+verified `m.room.create` declares the make_join version.
 
 ## Media upload boundary
 
