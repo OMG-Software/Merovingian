@@ -22,9 +22,10 @@ SITE_HOOKS = REPO_ROOT / "scripts" / "mkdocs_site_hooks.py"
 # (DOM XSS in search suggestions via a query parameter).
 FIRST_SAFE_MATERIAL_VERSION = (9, 7, 7)
 
-# The first certifi release without the emSign root CAs whose intermediate CA
-# keys were compromised (GHSA-6q48-6c7w-9gw2). certifi reaches the docs
-# toolchain transitively, through requests.
+# certifi before 2026.10.18 bundles emSign root CAs whose intermediate CA keys
+# were compromised (GHSA-6q48-6c7w-9gw2). The advisory's version range names
+# 2026.10.19 as the first patched release, and scanners enforce that range, so
+# this is the floor. certifi reaches the docs toolchain through requests.
 FIRST_SAFE_CERTIFI_VERSION = (2026, 10, 19)
 
 # Architecture Decision Records are reached from the ADR index rather than
