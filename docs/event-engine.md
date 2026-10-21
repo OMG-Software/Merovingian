@@ -190,7 +190,8 @@ Implemented now:
   authorising server's signature is present (they have no key resolver); every
   path that admits a remote PDU verifies it cryptographically with
   `federation::verify_join_authorising_server_signature` first: `/send`,
-  `send_join`, worker relay and backfill ingestion (0.12.31, ADR-0171)
+  `send_join`, worker relay, backfill ingestion, and the `send_join` state this
+  server stores when it joins a remote room (0.12.31, ADR-0171)
 - each join rule is recognised only in the room versions that define it
   (`RoomVersionPolicy::knock_join_rule` v7+, `restricted_join_rule` v8+,
   `knock_restricted_join_rule` v10+). From v10, `knock_restricted` joins

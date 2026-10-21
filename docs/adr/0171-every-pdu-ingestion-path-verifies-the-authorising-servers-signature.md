@@ -46,7 +46,10 @@ its budget's `key_resolution_locally_denied`.
 The rule for future code: **a new path that puts a remote PDU into the event graph calls
 `verify_join_authorising_server_signature` after the sender-signature check, and refuses the
 event unless it accepts.** The `/send` path does this through the resolver overload of
-`authorize_federation_pdu`; relay and backfill call it directly.
+`authorize_federation_pdu`; relay, backfill and the `send_join` state this server stores when
+it joins a remote room (`filter_verified_send_join_events`) call it directly. The last of these
+was added in review: it is the one path where this server is the joiner, and its state and auth
+chain enter the event graph like any other received event.
 
 The helper checks only `m.room.member` events, as the rule says. The earlier `/send`-only code
 also checked other event types that carried the field; that was stricter than the spec and is
@@ -54,7 +57,7 @@ dropped.
 
 ### Positive Consequences
 
-* One implementation of the rule, with one set of tests, shared by all three paths.
+* One implementation of the rule, with one set of tests, shared by every ingestion path.
 * The structural check in the auth rules remains as a second line: an event with no signature
   entry at all is rejected there too.
 

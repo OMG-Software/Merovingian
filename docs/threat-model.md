@@ -2320,6 +2320,9 @@ Security audit run-1 (2026-10-20) found two HIGH issues, both fixed in 0.12.31.
   lists, sort keys and `bump_event_types` were uncapped. One authenticated request could hold
   the lock for minutes. **Mitigation:** every sort key is computed once per room before the
   sort, and requests over 32 lists, 3 sort keys or 64 `bump_event_types` per list are refused
-  with 400 `M_INVALID_PARAM` (ADR-0172). Residual risk: each list still costs one pass over
-  the store under the lock. The audit's other runtime-lock findings (extension rooms arrays,
-  push glob matching, account-data scans) are not addressed by this change.
+  with 400 `M_INVALID_PARAM` (ADR-0172). Residual risk: `by_recency` and `by_name` cost one
+  pass over the store per list, but `by_notification_count` (one walk per room), the
+  joined-room enumeration and the list filters still do per-room store work under the lock, so
+  a list's cost still grows with the user's joined-room count; the 32-list cap bounds how often
+  a request repeats it. The audit's other runtime-lock findings (extension rooms arrays, push
+  glob matching, account-data scans) are not addressed by this change.

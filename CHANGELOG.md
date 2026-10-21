@@ -11,7 +11,8 @@ Fixes the two HIGH findings from security audit run-1 (2026-10-20).
   those paths' auth maps never carry the authorising user's membership, so they refuse every
   non-invited restricted join anyway (a separate bug, not fixed here). In a room with any
   other join rule, a join carrying a forged authorising signature was accepted, which rule
-  4.2.1 forbids. All four paths now call one helper,
+  4.2.1 forbids. All four paths, and the `send_join` state this server stores when it joins a
+  remote room, now call one helper,
   `federation::verify_join_authorising_server_signature`. It resolves the authorising
   server's key through the caller's admitted lookup and refuses the event unless the
   signature verifies. A local key-resolution overload is retryable (503 / `main_overloaded`),
@@ -26,7 +27,7 @@ Fixes the two HIGH findings from security audit run-1 (2026-10-20).
   refused with 400 `M_INVALID_PARAM` (ADR-0172).
 - **TESTS:** branch coverage for `verify_join_authorising_server_signature`; forged and valid
   authorising signatures on the worker-relay (`pdu_ingest`, `membership_ingest`) and backfill
-  paths; the sliding-sync ordering contract over ascending, descending and shuffled stores;
+  paths, and in the `send_join` state this server keeps when it joins (forged, absent, genuine); the sliding-sync ordering contract over ascending, descending and shuffled stores;
   and the new request caps at and over each limit.
 - **DOCS:** ADR-0171 and ADR-0172; rules added to `src/federation/AGENTS.md`,
   `src/homeserver/AGENTS.md`, `src/sync/AGENTS.md` and `docs/security-coding-rules.md`;

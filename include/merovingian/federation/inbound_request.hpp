@@ -471,6 +471,20 @@ struct VerificationKeyResolution final
                                             std::string_view server_name, std::string_view key_id)
     -> VerificationKeyResolution;
 
+// The server and key a restricted join's authorising-server signature must be
+// checked with: the homeserver of content.join_authorised_via_users_server and
+// the first key the event lists under it (key_id empty when it lists none).
+// std::nullopt when the rule does not apply (not an m.room.member event, or no
+// such field). Callers that resolve keys ahead of verification (the send_join
+// state path) use this so they fetch the key the verifier will ask for.
+struct AuthorisingSignatureKey final
+{
+    std::string server_name{};
+    std::string key_id{};
+};
+[[nodiscard]] auto join_authorising_signature_key(canonicaljson::Value const& event)
+    -> std::optional<AuthorisingSignatureKey>;
+
 // Resolves the authorising server's signing key for a restricted join through
 // the caller's own admitted key path (resolve_verification_key, or an adapter
 // over a RemoteKeyResolver).
@@ -484,8 +498,9 @@ using AuthorisingKeyResolver =
 // signature is present, so every path that admits a PDU
 // into the event graph calls this after verifying the sender's signature: the
 // /send and send_join path (through the resolver overload of
-// authorize_federation_pdu), worker relay re-verification and backfill
-// ingestion. An event without the field is accepted unchanged. A local
+// authorize_federation_pdu), worker relay re-verification, backfill
+// ingestion, and the send_join state this server stores when it joins
+// (filter_verified_send_join_events). An event without the field is accepted unchanged. A local
 // admission denial from `resolve_key` is a retryable 503, never a verdict on
 // the signature; every other failure is a 403.
 [[nodiscard]] auto verify_join_authorising_server_signature(canonicaljson::Value const& event,

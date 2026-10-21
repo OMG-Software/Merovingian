@@ -25,10 +25,13 @@ HIGH). 0.12.30 had already precomputed `by_notification_count` for the same reas
 
 Chosen option: "compute every sort key once per room, cap the shape with fixed limits", because
 caps alone leave each comparison a store scan, and precomputation alone leaves a request free to
-multiply its cost by thousands of lists. Each key is now one pass over the store per list:
-`by_recency` walks `store.events` newest first and does not parse an event that cannot beat its
-room's current maximum; `by_name` makes one pass over `store.state` and one over `store.events`.
-The comparator only looks keys up.
+multiply its cost by thousands of lists. The two keys this decision moves out of the comparator
+now cost one pass over the store per list: `by_recency` walks `store.events` newest first and
+does not parse an event that cannot beat its room's current maximum; `by_name` makes one pass
+over `store.state` and one over `store.events`. `by_notification_count` was already computed once
+per room (0.12.30), but each room's count is still its own walk over the store, and enumerating
+the joined rooms and applying the list's filters also do per-room work. The comparator only looks
+keys up.
 
 The rule for future code: **a sliding-sync sort key is computed before the sort, never inside the
 comparator.**
@@ -44,10 +47,15 @@ bound.
 
 ### Positive Consequences
 
-* A list's sort costs one pass over the store regardless of how many rooms are compared.
-* The request's total sort cost is bounded by 32 lists.
+* The sort itself no longer multiplies store work by the number of comparisons:
+  `by_recency` and `by_name` cost one pass over the store per list, whatever the room count.
+* The 32-list cap bounds how many times a request repeats the per-list work.
 
 ### Negative Consequences
 
 * A client sending more than 32 lists or 64 bump types gets 400 `M_INVALID_PARAM` instead of
   being served.
+* Per-room store work remains under the runtime lock: `by_notification_count` (one walk per
+  room), the joined-room enumeration and the list filters. A list's cost still grows with the
+  user's joined-room count times the store size for those parts; this decision bounds the
+  comparator, not them.

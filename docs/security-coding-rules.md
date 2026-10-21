@@ -462,7 +462,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
   check.** An `m.room.member` event carrying `join_authorised_via_users_server` must be validly
   signed by that user's server (rooms/v10.md rule 4.2.1); the auth rules only see that the
   signature is present. `/send` and `send_join` do it through the resolver overload of
-  `authorize_federation_pdu`, worker relay and backfill call it directly.
+  `authorize_federation_pdu`, worker relay, backfill and `filter_verified_send_join_events` (the
+  state a resident returns when this server joins) call it directly.
   Why: until 0.12.31 only `/send` and `send_join` checked it, so a compromised worker, or any
   remote server answering a history fetch, could get a forged restricted join stored
   (security audit run-1, ADR-0171).

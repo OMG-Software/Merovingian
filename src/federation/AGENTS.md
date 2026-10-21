@@ -23,7 +23,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    (rooms/v10.md rule 4.2.1), and the auth rules can only see that such a signature is
    present. Every path that admits a remote PDU calls `verify_join_authorising_server_signature`
    after the sender check and refuses the event unless it accepts: `/send` and `send_join`
-   through the resolver overload of `authorize_federation_pdu`, worker relay and backfill
+   through the resolver overload of `authorize_federation_pdu`, worker relay, backfill and the
+   `send_join` state this server stores when it joins (`filter_verified_send_join_events`)
    directly (ADR-0171). A new ingestion path does the same.
 
    A failed signature is NEVER charged to the claimed origin's `RemoteTrustState`: the origin

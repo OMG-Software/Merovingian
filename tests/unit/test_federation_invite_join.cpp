@@ -1924,6 +1924,147 @@ SCENARIO("filter_verified_send_join_events drops an event with an invalid signat
     }
 }
 
+namespace
+{
+
+auto constexpr authoriser_server = "authoriser.example.org";
+auto constexpr authoriser_key_id = "ed25519:auth";
+auto constexpr authoriser_key_seed = "send-join-authoriser-seed";
+
+enum class AuthoriserSignature
+{
+    absent,
+    wrong_key,
+    genuine,
+};
+
+// Signs the event's signing payload with the keypair from `seed`, attached
+// under `{server, key_id}`.
+[[nodiscard]] auto with_signature(merovingian::canonicaljson::Value const& event, std::string const& server,
+                                  std::string const& key_id, std::string const& seed,
+                                  merovingian::rooms::RoomVersionPolicy const& policy)
+    -> merovingian::canonicaljson::Value
+{
+    auto const payload = merovingian::events::make_event_signing_payload(event, policy);
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const kp = merovingian::federation::test::keypair_from_seed(seed);
+    auto sig = std::array<unsigned char, crypto_sign_BYTES>{};
+    crypto_sign_detached(sig.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
+                         payload.output.size(), reinterpret_cast<unsigned char const*>(kp.secret_key.data()));
+    auto const sig_b64 =
+        merovingian::events::matrix_base64_from_bytes({reinterpret_cast<char const*>(sig.data()), crypto_sign_BYTES});
+    auto const attached = merovingian::events::attach_event_signature(event, {server, key_id}, sig_b64);
+    REQUIRE(attached.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const reparsed = merovingian::canonicaljson::parse_lossless(attached.output);
+    REQUIRE(reparsed.error == merovingian::canonicaljson::ParseError::none);
+    return reparsed.value;
+}
+
+// A restricted join by `user_id` naming a user on authoriser_server, validly
+// signed by the sender's server; `kind` is the authorising server's signature.
+[[nodiscard]] auto authorised_member_event(std::string const& room_id, std::string const& user_id,
+                                           AuthoriserSignature kind,
+                                           merovingian::rooms::RoomVersionPolicy const& policy)
+    -> merovingian::canonicaljson::Value
+{
+    auto raw = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""};
+    raw += user_id;
+    raw += "\",\"room_id\":\"";
+    raw += room_id;
+    raw += "\",\"sender\":\"";
+    raw += user_id;
+    raw += "\",\"depth\":5,\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[],";
+    raw += "\"hashes\":{\"sha256\":\"aGFzaA\"},\"content\":{\"membership\":\"join\",";
+    raw += "\"join_authorised_via_users_server\":\"@admin:";
+    raw += authoriser_server;
+    raw += "\"}}";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(raw);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto event = with_signature(parsed.value, remote_origin, remote_key_id, remote_key_seed, policy);
+    if (kind == AuthoriserSignature::wrong_key)
+    {
+        event = with_signature(event, authoriser_server, authoriser_key_id, "not-the-authoriser-seed", policy);
+    }
+    else if (kind == AuthoriserSignature::genuine)
+    {
+        event = with_signature(event, authoriser_server, authoriser_key_id, authoriser_key_seed, policy);
+    }
+    return event;
+}
+
+} // namespace
+
+// Spec: rooms/v10.md auth rule 4.2.1, "If content has a join_authorised_via_users_server key: If the
+// event is not validly signed by the homeserver of the user ID denoted by the key, reject." The
+// state a resident returns in send_join enters the event graph like any other received event, so
+// it gets the same check as /send, worker relay and backfill (ADR-0171).
+SCENARIO("filter_verified_send_join_events drops a restricted join whose authorising server signature is not valid",
+         "[homeserver][federation][send_join][security][evt1]")
+{
+    GIVEN("a resolver that knows both the joining member's server and the authorising server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name == remote_origin && key_id == remote_key_id)
+            {
+                return remote_for_test();
+            }
+            if (server_name == authoriser_server && key_id == authoriser_key_id)
+            {
+                return remote_for(authoriser_server, authoriser_key_id, authoriser_key_seed);
+            }
+            return std::nullopt;
+        };
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+
+        WHEN("the state carries the join with an authorising signature made with another key")
+        {
+            auto array = merovingian::canonicaljson::Array{};
+            array.push_back(authorised_member_event(room_id, bob, AuthoriserSignature::wrong_key, policy));
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the join is dropped")
+            {
+                REQUIRE(filtered.empty());
+            }
+        }
+
+        WHEN("the state carries the join with no signature from the authorising server")
+        {
+            auto array = merovingian::canonicaljson::Array{};
+            array.push_back(authorised_member_event(room_id, bob, AuthoriserSignature::absent, policy));
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the join is dropped")
+            {
+                REQUIRE(filtered.empty());
+            }
+        }
+
+        WHEN("the state carries the join validly signed by the authorising server")
+        {
+            auto array = merovingian::canonicaljson::Array{};
+            array.push_back(authorised_member_event(room_id, bob, AuthoriserSignature::genuine, policy));
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the join is kept")
+            {
+                REQUIRE(filtered.size() == 1U);
+            }
+        }
+    }
+}
+
 // Spec: rooms/v5.md "Signing key validity period" (unchanged through v12):
 // "When validating event signatures, servers MUST enforce the valid_until_ts
 // property from a key request is at least as large as the origin_server_ts for

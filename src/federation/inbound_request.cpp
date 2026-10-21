@@ -2362,38 +2362,48 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     return make_decision(true, 200U, {});
 }
 
-auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
-                                              rooms::RoomVersionPolicy const& room_version,
-                                              AuthorisingKeyResolver const& resolve_key,
-                                              crypto::Ed25519Provider& provider) -> FederationDecision
+auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::optional<AuthorisingSignatureKey>
 {
     auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
     auto const* type = root == nullptr ? nullptr : find_canonical_member(*root, "type");
     auto const* type_text = type == nullptr ? nullptr : std::get_if<std::string>(&type->storage());
     if (type_text == nullptr || *type_text != "m.room.member")
     {
-        return make_decision(true, 200U, {});
+        return std::nullopt;
     }
-    auto const authorising_server = join_authorising_user_server(event);
-    if (authorising_server.empty())
+    auto key = AuthorisingSignatureKey{join_authorising_user_server(event), {}};
+    if (key.server_name.empty())
     {
-        return make_decision(true, 200U, {});
+        return std::nullopt;
     }
-
     // The first key the event lists under the authorising server, in the
     // event's own (canonical) order.
-    auto authorising_key_id = std::string{};
     auto const* signatures = find_canonical_member(*root, "signatures");
     auto const* signatures_obj =
         signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&signatures->storage());
     auto const* server_signatures =
-        signatures_obj == nullptr ? nullptr : find_canonical_member(*signatures_obj, authorising_server);
+        signatures_obj == nullptr ? nullptr : find_canonical_member(*signatures_obj, key.server_name);
     auto const* server_signatures_obj =
         server_signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&server_signatures->storage());
     if (server_signatures_obj != nullptr && !server_signatures_obj->empty())
     {
-        authorising_key_id = server_signatures_obj->front().key;
+        key.key_id = server_signatures_obj->front().key;
     }
+    return key;
+}
+
+auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
+                                              rooms::RoomVersionPolicy const& room_version,
+                                              AuthorisingKeyResolver const& resolve_key,
+                                              crypto::Ed25519Provider& provider) -> FederationDecision
+{
+    auto const signature_key = join_authorising_signature_key(event);
+    if (!signature_key.has_value())
+    {
+        return make_decision(true, 200U, {});
+    }
+    auto const& authorising_server = signature_key->server_name;
+    auto const& authorising_key_id = signature_key->key_id;
     if (authorising_key_id.empty())
     {
         return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");
