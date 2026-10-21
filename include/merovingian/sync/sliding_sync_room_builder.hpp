@@ -5,9 +5,12 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/history_visibility.hpp"
+#include "merovingian/sync/read_markers.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -71,25 +74,50 @@ namespace merovingian::sync
 [[nodiscard]] auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscription const& sub)
     -> SlidingSyncRoomSubscription;
 
-// Stream ordering of the event named by the user's most recent read receipt
-// (m.read or m.read.private) in the room, or 0 when the user has never sent
-// one. notification_count / highlight_count and the by_notification_count
-// room-list sort count events strictly after this baseline — "events the user
-// has not read", not "events the client has not synced" (#417).
-[[nodiscard]] auto read_receipt_ordering(homeserver::HomeserverRuntime const& rt,
-                                         database::PersistentStore const& store, std::string_view room_id,
-                                         std::string_view user) -> std::uint64_t;
+// Where the user has read up to in the room, from their m.read and
+// m.read.private receipts (unthreaded and per thread). notification_count /
+// highlight_count and the by_notification_count room-list sort count the
+// events these markers do not cover — "events the user has not read", not
+// "events the client has not synced" (#417).
+[[nodiscard]] auto read_receipt_markers(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+                                        std::string_view room_id, std::string_view user) -> ReadMarkers;
 
-// Number of `m.room.message` / `m.room.encrypted` events in the room strictly
-// after `read_ordering`, excluding the user's own events. Used for both
+// Unread counts of one thread, or of a whole room.
+struct NotificationCounts final
+{
+    std::uint64_t notification_count{0U};
+    std::uint64_t highlight_count{0U};
+};
+
+// A room's unread counts split by thread: `main` for the main timeline, a
+// thread root's event ID for each thread. A thread with nothing unread has no
+// entry.
+struct ThreadNotificationCounts final
+{
+    std::map<std::string, NotificationCounts, std::less<>> threads{};
+
+    [[nodiscard]] auto total() const noexcept -> NotificationCounts;
+};
+
+// The room's unread counts per thread: the `m.room.message` /
+// `m.room.encrypted` events (notifications) and the events whose m.mentions
+// names `user` (highlights) that `markers` do not cover, excluding the user's
+// own events. `/sync` reports them split by thread when the filter sets
+// `unread_thread_notifications`, and summed otherwise.
+[[nodiscard]] auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id,
+                                          std::string_view user, ReadMarkers const& markers)
+    -> ThreadNotificationCounts;
+
+// Number of `m.room.message` / `m.room.encrypted` events in the room that
+// `markers` do not cover, excluding the user's own events. Used for both
 // sliding sync and the legacy /sync `unread_notifications.notification_count`.
 [[nodiscard]] auto count_notifications(database::PersistentStore const& store, std::string_view room_id,
-                                       std::string_view user, std::uint64_t read_ordering) noexcept -> std::uint64_t;
+                                       std::string_view user, ReadMarkers const& markers) -> std::uint64_t;
 
 // Subset of count_notifications() whose content mentions `user` via
 // `m.mentions.user_ids` (MSC3952 / Matrix v1.7+). Used for both sliding sync
 // and the legacy /sync `unread_notifications.highlight_count`.
 [[nodiscard]] auto count_highlights(database::PersistentStore const& store, std::string_view room_id,
-                                    std::string_view user, std::uint64_t read_ordering) noexcept -> std::uint64_t;
+                                    std::string_view user, ReadMarkers const& markers) -> std::uint64_t;
 
 } // namespace merovingian::sync

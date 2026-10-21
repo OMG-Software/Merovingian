@@ -31,6 +31,9 @@ struct EventTypeFilter final
     // otherwise permits across repeat calls.
     bool lazy_load_members{false};
     bool include_redundant_members{false};
+    // RoomEventFilter: "If true, enables per-thread notification counts. Only
+    // applies to the /sync endpoint." Read from room.timeline.
+    bool unread_thread_notifications{false};
 };
 
 struct RoomFilter final

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.29
+Version:        0.12.30
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Oct 19 2026 James Chapman <claude@ping.me.uk> - 0.12.30-1
+- Send a display name or avatar change to every joined room as an m.room.member join.
+- Keep read receipts in the database and honour threaded receipts in unread counts.
+
 * Sun Oct 18 2026 James Chapman <claude@ping.me.uk> - 0.12.29-1
 - Reconcile documentation with implementation; document backup and restore procedures.
 

@@ -168,6 +168,8 @@
 * [0166 - Derive to-device message IDs per sender and record them only after the messages commit](0166-derive-to-device-message-ids-per-sender.md)
 * [0167 - Use std::thread and StopFlag, never std::jthread or std::stop_token](0167-no-jthread-or-stop-token-use-std-thread-and-stop-flag.md)
 * [0168 - Refuse an unlocked master key](0168-refuse-an-unlocked-master-key.md)
+* [0169 - Read receipts are durable, and a peer's flood never evicts a local user's receipt](0169-read-receipts-are-durable-and-a-peer-flood-never-evicts-a-local-users-receipt.md)
+* [0170 - A user's own non-state event reads its own thread](0170-a-users-own-non-state-event-reads-its-thread.md)
 
 ## Proposed Records
 

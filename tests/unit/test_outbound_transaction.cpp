@@ -120,6 +120,21 @@ SCENARIO("receipt EDU content follows Matrix spec nested structure", "[federatio
                     R"({"!room:server":{"m.read.private":{"@user:server":{"data":{"ts":9000},"event_ids":["$event:server"]}}}})");
             }
         }
+
+        WHEN("build_receipt_edu_content is called for a threaded receipt")
+        {
+            auto const content = merovingian::federation::build_receipt_edu_content(
+                "!room:server", "m.read", "@user:server", "$event:server", std::int64_t{9000}, "$root:server");
+
+            // Spec: the user entry's data is "<content (ts & thread_id, currently)>".
+            THEN("the receipt data carries the thread_id beside ts")
+            {
+                REQUIRE(content.has_value());
+                REQUIRE(
+                    *content ==
+                    R"({"!room:server":{"m.read":{"@user:server":{"data":{"thread_id":"$root:server","ts":9000},"event_ids":["$event:server"]}}}})");
+            }
+        }
     }
 }
 

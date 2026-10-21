@@ -200,7 +200,7 @@ struct SignedMembershipPdu final
 [[nodiscard]] auto has_receipt_for(merovingian::homeserver::HomeserverRuntime const& runtime,
                                    std::string const& room_id, std::string const& user_id) -> bool
 {
-    return std::ranges::any_of(runtime.receipts, [&](auto const& r) {
+    return std::ranges::any_of(runtime.database.persistent_store.receipts, [&](auto const& r) {
         return r.room_id == room_id && r.user_id == user_id;
     });
 }
@@ -512,7 +512,8 @@ SCENARIO("receipt EDU from a server denied by room ACL is not stored", "[securit
                                                                 {id, receipt_user, "join", 1U}) ==
                         merovingian::database::MembershipStoreResult::stored);
             }
-            runtime.receipts.push_back({room_id, "m.read", receipt_user, "$original", 1U, 2U});
+            runtime.database.persistent_store.receipts.push_back(
+                {room_id, "m.read", receipt_user, "$original", 1U, 2U});
             auto const content = std::string{"{\""} + room_id + "\":{\"m.read\":{\"" + receipt_user +
                                  "\":{\"event_ids\":[\"$denied-new\"],\"data\":{\"ts\":1234}}}},\"" + allowed.value +
                                  "\":{\"m.read\":{\"" + receipt_user +
@@ -538,18 +539,20 @@ SCENARIO("receipt EDU from a server denied by room ACL is not stored", "[securit
 
             THEN("the denied receipt is unchanged and the allowed receipt is stored")
             {
-                REQUIRE(runtime.receipts.size() == 2U);
-                auto const denied_receipt = std::ranges::find_if(runtime.receipts, [&](auto const& receipt) {
-                    return receipt.room_id == room_id;
-                });
-                REQUIRE(denied_receipt != runtime.receipts.end());
+                REQUIRE(runtime.database.persistent_store.receipts.size() == 2U);
+                auto const denied_receipt =
+                    std::ranges::find_if(runtime.database.persistent_store.receipts, [&](auto const& receipt) {
+                        return receipt.room_id == room_id;
+                    });
+                REQUIRE(denied_receipt != runtime.database.persistent_store.receipts.end());
                 REQUIRE(denied_receipt->event_id == "$original");
                 REQUIRE(denied_receipt->ts == 1U);
                 REQUIRE(denied_receipt->stream_id == 2U);
-                auto const allowed_receipt = std::ranges::find_if(runtime.receipts, [&](auto const& receipt) {
-                    return receipt.room_id == allowed.value;
-                });
-                REQUIRE(allowed_receipt != runtime.receipts.end());
+                auto const allowed_receipt =
+                    std::ranges::find_if(runtime.database.persistent_store.receipts, [&](auto const& receipt) {
+                        return receipt.room_id == allowed.value;
+                    });
+                REQUIRE(allowed_receipt != runtime.database.persistent_store.receipts.end());
                 REQUIRE(allowed_receipt->event_id == "$allowed-new");
                 REQUIRE(allowed_receipt->ts == 1234U);
             }

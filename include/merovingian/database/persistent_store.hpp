@@ -529,6 +529,26 @@ struct PersistentAccountData final
     std::uint64_t stream_id{0U};
 };
 
+// A read receipt (Client-Server API, "Receipts"): the event `user_id` has read
+// up to in `room_id`. One row per (room_id, receipt_type, user_id, thread_id):
+// spec, "Each user_id, receipt_type, and categorisation (unthreaded, or
+// thread_id) tuple must be associated with only a single event_id".
+// `thread_id` is empty for an unthreaded receipt, `main` for the main
+// timeline, or a thread root's event ID. `stream_id` is the sync stream
+// position at which the receipt was last set. Persisted in `receipts`, because
+// unread counts are computed from these rows and losing them on a restart
+// marks every room unread again.
+struct PersistentReceipt final
+{
+    std::string room_id{};
+    std::string receipt_type{"m.read"};
+    std::string user_id{};
+    std::string event_id{};
+    std::uint64_t ts{0U};
+    std::uint64_t stream_id{0U};
+    std::string thread_id{};
+};
+
 // Pending to-device message. Sender pushes the row at send time; the
 // recipient's /sync drain advances `stream_id` past the row and the row
 // is then removed. `stream_id` is monotonic across the server and reused
@@ -932,6 +952,7 @@ struct PersistentStore final
         , admin_actions{other.admin_actions}
         , policy_rules{other.policy_rules}
         , account_data{other.account_data}
+        , receipts{other.receipts}
         , to_device_messages{other.to_device_messages}
         , device_list_changes{other.device_list_changes}
         , presence_states{other.presence_states}
@@ -1014,6 +1035,7 @@ struct PersistentStore final
         admin_actions = other.admin_actions;
         policy_rules = other.policy_rules;
         account_data = other.account_data;
+        receipts = other.receipts;
         to_device_messages = other.to_device_messages;
         device_list_changes = other.device_list_changes;
         presence_states = other.presence_states;
@@ -1117,6 +1139,9 @@ struct PersistentStore final
     std::vector<PersistentAdminAction> admin_actions{};
     std::vector<PersistentPolicyRule> policy_rules{};
     std::vector<PersistentAccountData> account_data{};
+    // Read receipts, local and federated. Write through store_receipt and
+    // remove_receipt so the database row and this mirror stay in step.
+    std::vector<PersistentReceipt> receipts{};
     std::vector<PersistentToDeviceMessage> to_device_messages{};
     std::vector<PersistentDeviceListChange> device_list_changes{};
     std::vector<PersistentPresence> presence_states{};
@@ -1615,6 +1640,17 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
+// Sets the receipt `receipt` names by (room_id, receipt_type, user_id,
+// thread_id) to its event_id and ts, at a newly allocated sync stream
+// position written back into the stored row. The row is committed before the
+// in-memory mirror changes. An optional eviction is deleted in the same
+// transaction as the upsert. Returns false on a backend failure or an empty
+// key field, without changing the mirror; allocated stream IDs are never reused.
+[[nodiscard]] auto store_receipt(PersistentStore& store, PersistentReceipt receipt,
+                                 std::optional<PersistentReceipt> evicted = std::nullopt) -> bool;
+// Removes the receipt with `receipt`'s key. False if there was none or the
+// delete could not be committed.
+[[nodiscard]] auto remove_receipt(PersistentStore& store, PersistentReceipt const& receipt) -> bool;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
 // Queues every message, with the per-recipient age and count evictions of
 // `enqueue_to_device_message`, in ONE backend transaction: either all of them

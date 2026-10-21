@@ -422,7 +422,6 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , crypto_provider_overridden(other.crypto_provider_overridden)
     , sync_notifier(std::exchange(other.sync_notifier, nullptr))
     , typing_users(std::move(other.typing_users))
-    , receipts(std::move(other.receipts))
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
     , last_create_event_ts_ms(other.last_create_event_ts_ms)
     , client_outbound_budget(std::move(other.client_outbound_budget))
@@ -475,7 +474,6 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     other.crypto_provider = nullptr;
     sync_notifier = std::exchange(other.sync_notifier, nullptr);
     typing_users = std::move(other.typing_users);
-    receipts = std::move(other.receipts);
     room_typing_stream_id = std::move(other.room_typing_stream_id);
     last_create_event_ts_ms = other.last_create_event_ts_ms;
     client_outbound_budget = std::move(other.client_outbound_budget);

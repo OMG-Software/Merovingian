@@ -271,6 +271,64 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
     }
 }
 
+SCENARIO("Sliding sync room lists sort by threaded unread notifications and break ties by room ID",
+         "[sync][sliding-sync][room-list][receipts]")
+{
+    GIVEN("joined rooms with different unread counts, including a thread receipt that leaves the main event unread")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+        auto const room_ids = std::vector<std::string>{
+            "!alpha:example.org",
+            "!beta:example.org",
+            "!delta:example.org",
+            "!gamma:example.org",
+        };
+        for (std::size_t i = 0U; i < room_ids.size(); ++i)
+        {
+            store.rooms.push_back({room_ids[i], "@alice:example.org"});
+            store.memberships.push_back({room_ids[i], "@alice:example.org", "join", i + 1U});
+        }
+
+        append_event_from(store, "@bob:example.org", "$alpha-root", room_ids[0],
+                          R"({"type":"m.room.message","content":{"body":"root"}})", 10U);
+        append_event_from(
+            store, "@bob:example.org", "$alpha-reply", room_ids[0],
+            R"({"type":"m.room.message","content":{"body":"reply","m.relates_to":{"rel_type":"m.thread","event_id":"$alpha-root"}}})",
+            11U);
+        runtime.database.persistent_store.receipts.push_back(
+            {room_ids[0], "m.read", "@alice:example.org", "$alpha-reply", 0U, 1U, "$alpha-root"});
+
+        append_event_from(store, "@bob:example.org", "$beta-one", room_ids[1],
+                          R"({"type":"m.room.message","content":{"body":"one"}})", 20U);
+        append_event_from(store, "@bob:example.org", "$beta-two", room_ids[1],
+                          R"({"type":"m.room.message","content":{"body":"two"}})", 21U);
+        append_event_from(store, "@bob:example.org", "$delta-one", room_ids[2],
+                          R"({"type":"m.room.message","content":{"body":"one"}})", 30U);
+
+        auto list = merovingian::sync::SlidingSyncList{};
+        list.ranges = {
+            {0U, 3U}
+        };
+        list.sort = {"by_notification_count"};
+
+        WHEN("the room list is sorted by unread notification count")
+        {
+            auto const result = merovingian::sync::compute_room_list(runtime, "@alice:example.org", list, {}, store);
+
+            THEN("thread unread counts are respected and equal counts use lexical room ID order")
+            {
+                REQUIRE(result.windowed_room_ids == std::vector<std::string>{
+                                                        "!beta:example.org",
+                                                        "!alpha:example.org",
+                                                        "!delta:example.org",
+                                                        "!gamma:example.org",
+                                                    });
+            }
+        }
+    }
+}
+
 SCENARIO("Sliding sync room list uses the persistent store as the source of truth, not the runtime cache",
          "[sync][sliding-sync][room-list]")
 {
@@ -319,7 +377,7 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
     GIVEN("pending extension data across multiple sync surfaces")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
-        runtime.receipts = {
+        runtime.database.persistent_store.receipts = {
             {"!room-a:example.org", "m.read", "@alice:example.org", "$event-a",   111U, 3U},
             {"!room-b:example.org", "m.read", "@bob:example.org",   "$event-b",   222U, 4U},
             {"!room-a:example.org", "m.read", "@carol:example.org", "$event-old", 99U,  1U},
@@ -448,7 +506,7 @@ SCENARIO("Sliding sync receipts and typing extensions serve only joined rooms an
     GIVEN("alice joined to one room, an outsider room she is not in, and receipts from bob and alice")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
-        runtime.receipts = {
+        runtime.database.persistent_store.receipts = {
             {"!joined:example.org",  "m.read",         "@bob:example.org",   "$bob-public",    10U, 5U},
             {"!joined:example.org",  "m.read.private", "@bob:example.org",   "$bob-private",   11U, 6U},
             {"!joined:example.org",  "m.fully_read",   "@bob:example.org",   "$bob-fully",     12U, 7U},

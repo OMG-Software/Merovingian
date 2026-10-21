@@ -1,3 +1,97 @@
+## 0.12.30
+
+- **FIXED (resident-supplied profile signed as ours):** a federated join kept a `displayname`
+  or `avatar_url` from the resident server's `make_join` template whenever the joining user had
+  not set that field locally, and this server then hashed and signed it as the user's profile.
+  The template's profile fields are now dropped before the local profile is added. The live
+  federated join scenario covers no profile, an empty profile, and display-name-only and
+  avatar-only profiles against a template carrying forged values.
+- **TESTS:** give the thread-root `thread_id` receipt conformance scenario the required
+  `// Endpoint / Section:` citation.
+- **TESTS:** the self-signed certificates in the join, outbound-federation and listener flow
+  tests are backdated an hour. They were valid from the instant of creation, so a backward
+  clock step under WSL made one "not yet valid" mid-scenario (`tls_verification_failed`).
+- **DOCS:** include `receipts` in the worker table inventory and correct the
+  worker-never-read total to 46 tables, matching the schema classification test.
+- **CI / REVIEW:** use an explicit string view for the notification-sort lookup
+  so GCC 16 can compile it; align the profile propagation definition's
+  `[[nodiscard]]` annotation and the threaded-receipt scenario's spec citation.
+- **FIXED:** commit inbound receipt eviction and replacement in one transaction.
+  A failed delete or insert preserves the old receipt in memory and on disk.
+  Add SQLite failure-injection and restart checks; correct the push unread-count
+  documentation to describe thread-partitioned read markers.
+- **MERGE:** integrate the 0.12.29 documentation and startup-example corrections,
+  retaining the 0.12.30 versions and thread-aware receipt documentation.
+- **REVIEW FIXES:** serialize inbound receipt callbacks with runtime readers;
+  cache notification counts once per room before sorting sliding-sync lists;
+  reject a thread reply supplied as a receipt's thread root; and report incomplete
+  room or presence propagation with HTTP 500. Repeating the same profile update
+  repairs missing updates without duplicating membership events already current.
+  Add failure/retry, receipt-locking, thread-root, and notification-ordering regressions,
+  and clarify the conformance assertions' specification rationale.
+
+Two user-reported defects: a changed display name was never seen in any room, and rooms marked
+read came back unread.
+
+- **FIXED (display name and avatar never reached any room):** `PUT /profile/{userId}/displayname`
+  and `/avatar_url` updated only the profile row. Clients show members by the `displayname` and
+  `avatar_url` of their `m.room.member` events, so neither the user nor anyone else saw the change.
+  Spec, "Events on Change of Profile Information": "an m.room.member event (with a join
+  membership) is sent to every room the user is a member of". `homeserver::propagate_profile_change`
+  now sends that join, carrying the current display name and avatar URL, through `send_event` to
+  every joined room whose membership does not already carry it. It is federated, pushed and
+  delivered to appservices like any other event. A room that refuses the event is skipped and
+  logged. The section's second mechanism, "an m.presence presence status update ... containing
+  the new values of the displayname and avatar_url keys, in addition to the required presence
+  key", is sent too: the user's current presence (offline if never set) is stored again at a new
+  sync stream position, and every `m.presence` in `/sync` now carries the sender's display name
+  and avatar URL when this server holds their profile. Presence is not federated by this server,
+  so remote peers learn the change from the member events. A failed profile write now answers
+  500 instead of 200, as does incomplete room or presence propagation. The profile
+  itself may already be saved; retrying the identical request repairs pending room
+  updates while skipping rooms already current. The spec also says that
+  membership events a server emits for its own users "should include the display name and avatar
+  URL fields": local joins, the creator's join in `createRoom` and the join sent over federation
+  after `make_join` now carry them. Scenarios tagged `[profile-propagation]`.
+- **FIXED (rooms marked read came back unread):** read receipts lived only in
+  `HomeserverRuntime::receipts`, in memory. Every unread count is computed from them, so a server
+  restart reset every room to unread. They are now kept in a `receipts` table (migration `024`,
+  schema version 24), mirrored in `PersistentStore::receipts` and written through
+  `database::store_receipt` / `remove_receipt`. `HomeserverRuntime::receipts` and `InboundReceipt`
+  are gone. The inbound federation cap no longer evicts a local user's receipt, only the oldest
+  receipt of a remote user (ADR-0169). Scenarios tagged `[receipt-persistence]`.
+- **FIXED (threaded receipts):** `thread_id` was ignored. A receipt in a thread replaced the
+  user's main-timeline receipt of the same type, which could move the read position back and
+  mark the room unread again. Receipts are now keyed by `(room, type, user, thread_id)`. Spec:
+  "Each user_id, receipt_type, and categorisation (unthreaded, or thread_id) tuple must be
+  associated with only a single event_id". `POST /receipt` answers 400 `M_INVALID_PARAM` for a
+  `thread_id` that is not a string, is empty, is sent with `m.fully_read`, or is neither `main`
+  nor the ID of an event in the room (so a client cannot create a receipt row per invented
+  thread). An inbound federated `thread_id` over 255 bytes rejects the EDU. `m.receipt` in
+  `/sync` and the sliding sync receipts extension carry `thread_id` (one shared
+  `sync::ReceiptContentBuilder`). Federated receipts carry it both ways in `data.thread_id`.
+- **FIXED (unread counts ignored threads):** counts are partitioned by thread as the spec
+  requires. An unthreaded receipt covers every earlier event. A threaded receipt covers only its
+  own thread (`main` or a root's event ID), resolved through up to 3 relation hops
+  (`sync::ReadMarkers`, `sync::read_markers_for`, `sync::event_thread_id`).
+  `sync::read_receipt_ordering` is replaced by `sync::read_receipt_markers`, and
+  `count_notifications` / `count_highlights` take `ReadMarkers`. This applies to `/sync`, sliding
+  sync, the room-list `by_notification_count` sort, the push-gateway badge and
+  `GET /notifications` `read`. Scenarios tagged `[threaded-receipts]` and `[read-markers]`.
+- **NEW (per-thread unread counts):** `/sync` honours the RoomEventFilter flag
+  `unread_thread_notifications` (read from `room.timeline`). With it set, `unread_notifications`
+  counts only the main timeline and `unread_thread_notifications` holds the counts of each thread
+  that has any, keyed by root event ID; without it the counts are summed as before.
+  `sync::count_unread_by_thread` is the one count walk; `count_notifications` and
+  `count_highlights` sum it. A highlight is now counted once per event rather than once per
+  matching `m.mentions` entry. Scenarios tagged `[thread-notifications]`.
+- **FIXED (sending a message did not mark earlier messages read):** spec, "When the user updates
+  their read receipt (either by using the API or by sending an event), notifications prior to and
+  including that event MUST be marked as read". A non-state event the user sends now reads its own
+  thread up to itself (`sync::read_markers_for`). State events do not count, so the membership
+  update a profile change sends to every room marks nothing read. The position is not stored or
+  sent as a receipt (ADR-0170). Scenarios tagged `[own-event-read]`.
+
 ## 0.12.29
 
 - **DOCS:** reconcile security guarantees, master-key lock failure policy and its

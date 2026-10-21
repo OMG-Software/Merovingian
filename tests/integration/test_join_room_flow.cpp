@@ -198,7 +198,9 @@ struct FileDeleter final
     auto certificate = std::unique_ptr<X509, X509Deleter>{X509_new()};
     REQUIRE(certificate != nullptr);
     REQUIRE(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1L) == 1);
-    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0L) != nullptr);
+    // Backdated so a small backward clock step (seen under WSL) cannot make the fresh
+    // certificate "not yet valid" between the handshakes of one scenario.
+    REQUIRE(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -3600L) != nullptr);
     REQUIRE(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600L) != nullptr);
     REQUIRE(X509_set_pubkey(certificate.get(), key.get()) == 1);
 
@@ -542,6 +544,7 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
     {
         REQUIRE(sodium_init() >= 0);
         auto const template_has_hashes = GENERATE(false, true);
+        auto const profile_mode = GENERATE(as<std::string>{}, "absent", "empty", "display-only", "avatar-only");
         // Declared before `started`/`runtime` so it destructs AFTER them:
         // HomeserverRuntime's destructor blocks until every orphaned
         // background future (see orphan_futures_) has finished draining, and
@@ -565,6 +568,19 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
         auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
         auto const alice = reg.value;
+        if (profile_mode != "absent")
+        {
+            auto profile = merovingian::database::PersistentProfile{alice, {}, {}};
+            if (profile_mode == "display-only")
+            {
+                profile.displayname = "Alice Local";
+            }
+            else if (profile_mode == "avatar-only")
+            {
+                profile.avatar_url = "mxc://example.org/alice-local";
+            }
+            REQUIRE(merovingian::database::store_profile(runtime.database.persistent_store, std::move(profile)));
+        }
 
         auto const certificate = write_test_tls_certificate();
         auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
@@ -610,7 +626,8 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                                      R"(","depth":6,"origin_server_ts":1000,)"
                                      R"("prev_events":[],"auth_events":[],)" +
                                      (template_has_hashes ? R"("hashes":{"sha256":"stale"},)" : "") +
-                                     R"("content":{"membership":"join"}})";
+                                     R"("content":{"membership":"join","displayname":"Resident Supplied",)"
+                                     R"("avatar_url":"mxc://resident.example.org/forged"}})";
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
         // --- send_join response: critical state (create/power_levels/our own
@@ -681,13 +698,46 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
 
             THEN("the join succeeds immediately with critical room state already persisted")
             {
-                CAPTURE(template_has_hashes, result.reason);
+                CAPTURE(template_has_hashes, profile_mode, result.reason);
                 REQUIRE(result.ok);
                 REQUIRE(result.status == 200U);
                 REQUIRE(result.value == room_id);
                 REQUIRE(captured_requests.size() == 2U);
                 auto const join_event = event_from_send_request(captured_requests[1]);
                 require_membership_event_integrity(runtime, join_event, policy);
+                auto const* join_object = std::get_if<merovingian::canonicaljson::Object>(&join_event.storage());
+                REQUIRE(join_object != nullptr);
+                auto const* join_content_value = merovingian::tests::object_member(*join_object, "content");
+                REQUIRE(join_content_value != nullptr);
+                auto const* join_content =
+                    std::get_if<merovingian::canonicaljson::Object>(&join_content_value->storage());
+                REQUIRE(join_content != nullptr);
+                // The resident template supplies join membership. It must remain in the locally signed event.
+                auto const* membership = merovingian::tests::string_member(*join_content, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "join");
+                // Local profile fields replace resident values independently. Missing or empty local fields
+                // must not inherit a value supplied by the resident server.
+                auto const* displayname = merovingian::tests::string_member(*join_content, "displayname");
+                if (profile_mode == "display-only")
+                {
+                    REQUIRE(displayname != nullptr);
+                    REQUIRE(*displayname == "Alice Local");
+                }
+                else
+                {
+                    REQUIRE(displayname == nullptr);
+                }
+                auto const* avatar_url = merovingian::tests::string_member(*join_content, "avatar_url");
+                if (profile_mode == "avatar-only")
+                {
+                    REQUIRE(avatar_url != nullptr);
+                    REQUIRE(*avatar_url == "mxc://example.org/alice-local");
+                }
+                else
+                {
+                    REQUIRE(avatar_url == nullptr);
+                }
 
                 // The background member-fill task (see HomeserverRuntime::orphan_futures_)
                 // is still running at this point and writes to persistent_store under

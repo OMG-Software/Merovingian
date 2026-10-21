@@ -2284,3 +2284,15 @@ Presence disclosure is restricted to current joined peers. Invite, departed, ban
 Normal client/federation admission, cache sizes, recovery, push and application-service budgets can be tuned within validated finite ranges. Increasing them trades memory, threads and remote-call work for headroom; no user-count capacity is implied. Larger state-ID lists still use shared per-PDU total calls/deadline, and signature/hash/authorization checks remain mandatory. Requests admitted by HTTP must fit the derived IPC request budget even when the join-response cap is smaller. Both processes derive the same frame ceiling at startup.
 
 Fixed authentication, cryptographic, parser/decoder and sandbox boundaries remain in place. Ordinary PDUs whose missing history cannot be recovered are currently neither applied nor durably retained: larger budgets reduce one failure cause but do not substitute for a persistent retry design. See [operator budgets](user-manual.md#operational-budgets) and [ADR-0109](adr/0109-configure-operational-budgets-with-shared-recovery-bounds.md).
+
+### A peer could reset a local user's unread state (0.12.30)
+
+Read receipts are now durable rows (`receipts` table, ADR-0169) and are the only record of
+where a local user has read up to. The inbound federation receipt cap
+(`max_inbound_receipt_entries`) used to evict the oldest receipt of any user, so a peer
+flooding a large room it is a member of could remove local users' receipts and mark rooms
+unread for them. At the cap it now evicts only the oldest receipt of a remote user; a local
+user's receipt is never evicted. Inbound `data.thread_id` must be a non-empty string or the
+EDU is rejected. Residual risk: the membership check is still the bound on remote receipts, and
+local users' receipts are bounded by rooms, members, receipt types and threads rather than by a
+fixed number.

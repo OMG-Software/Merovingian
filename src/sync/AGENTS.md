@@ -20,6 +20,8 @@ Spec authority:
 | `sliding_sync_extensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
 | `room_access.cpp` | `room_access_for()`: classifies a user's current membership of a room as joined / invited / none |
 | `receipt_visibility.cpp` | `receipt_visible_to()`: the one rule deciding which viewers may see a stored receipt |
+| `receipt_content_builder.cpp` | `ReceiptContentBuilder`: the one builder of an `m.receipt` event's content (with `thread_id`), shared by `/sync` and sliding sync |
+| `read_markers.cpp` | `ReadMarkers`, `read_markers_for()`, `event_thread_id()`: where a user has read up to, unthreaded and per thread |
 | `history_visibility.cpp` | `HistoryVisibility`: the one per-request filter deciding which room events a user may see (Room History Visibility rules, state at the event, fail closed) |
 | `room_read_access.cpp` | `room_read_access_for()` / `room_state_event_ids()`: the one predicate deciding which room state a user may read (current, as of departure, or none) |
 | `sliding_sync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
@@ -62,7 +64,26 @@ extension that takes a client-named room list must gate on `room_access_for()` t
 receipt through `receipt_visible_to()` and nothing else: `m.read` is public, `m.read.private`
 is visible only to the user who sent it, `m.fully_read` never appears in `m.receipt` (it is
 the owner's room account data), and an unknown type is withheld. Do not index
-`rt.receipts` by type without going through it.
+`database.persistent_store.receipts` by type without going through it.
+
+Receipts are durable rows (`database::store_receipt`, ADR-0169), keyed by
+`(room, type, user, thread_id)`. Build `m.receipt` content with
+`ReceiptContentBuilder`, which carries `thread_id`.
+
+## Unread counts
+
+Every unread count (`/sync` `unread_notifications`, sliding sync, the
+`by_notification_count` sort, the push badge, `GET /notifications` `read`) is
+computed from `read_receipt_markers()` with `count_notifications()` /
+`count_highlights()`. Spec: "the server is to partition the notification count
+to each thread". An unthreaded receipt covers every earlier event; a threaded one
+covers only its own thread (`main` or the root), found by `event_thread_id()`
+through up to 3 relation hops. Do not compare an event's stream ordering with a
+single receipt position: that is the bug a threaded receipt used to cause.
+`count_unread_by_thread()` is the one walk; `/sync` reports its split when the
+filter sets `unread_thread_notifications`. A non-state event the user sent also
+reads its own thread (`read_markers_for`, ADR-0170); never let a state event do
+so, or a profile change would mark every room read.
 
 ## History visibility and room read access
 

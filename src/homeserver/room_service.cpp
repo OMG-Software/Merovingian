@@ -500,6 +500,42 @@ namespace
         return serialize_canonical_string(canonicaljson::Value{std::move(event)});
     }
 
+    // Spec (Client-Server API, "Events on Change of Profile Information"): "when homeservers emit
+    // room membership events for their own users, they should include the display name and avatar
+    // URL fields in these events so that clients already have these details to hand". A field the
+    // user has not set is left out rather than sent empty.
+    auto add_member_profile(canonicaljson::Object& content, std::optional<database::PersistentProfile> const& profile)
+        -> void
+    {
+        if (!profile.has_value())
+        {
+            return;
+        }
+        if (!profile->displayname.empty())
+        {
+            replace_or_add_member(content, "displayname", canonicaljson::Value{profile->displayname});
+        }
+        if (!profile->avatar_url.empty())
+        {
+            replace_or_add_member(content, "avatar_url", canonicaljson::Value{profile->avatar_url});
+        }
+    }
+
+    // The m.room.member join this server sends for its own user `user_id`, carrying their profile.
+    [[nodiscard]] auto serialize_own_join_event_json(database::PersistentStore const& store, std::string_view user_id)
+        -> std::optional<std::string>
+    {
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
+        add_member_profile(content, database::find_profile(store, user_id));
+
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{user_id}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        return serialize_canonical_string(canonicaljson::Value{std::move(event)});
+    }
+
     // Builds the client-supplied `m.room.third_party_invite` event JSON. The
     // state_key is the opaque invite token, and the content carries the Ed25519
     // public key used later to validate `third_party_signed` joins.
@@ -3103,6 +3139,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
 
     auto creator_member = canonicaljson::Object{};
     creator_member.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
+    add_member_profile(creator_member, database::find_profile(runtime.database.persistent_store, *user_id));
 
     // In room v12 the create event was composed up-front to derive the room ID, so
     // persist that exact event; earlier versions compose and persist it here.
@@ -3908,7 +3945,8 @@ namespace
                                               std::vector<std::string> candidates,
                                               std::vector<std::string> const& supported_versions,
                                               std::optional<database::PersistentServerSigningKey> const& signing_key,
-                                              std::string_view key_id, core::SecretBuffer secret_key)
+                                              std::string_view key_id, core::SecretBuffer secret_key,
+                                              std::optional<database::PersistentProfile> const& profile)
         -> FederatedJoinOutcome
     {
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
@@ -4098,6 +4136,20 @@ namespace
         }
         auto const room_version = validated.room_version;
         auto event_object = validated.event;
+        // The resident server's template carries the membership; the joining user's display name
+        // and avatar URL are this server's to add, before the content hash and signature. Any the
+        // template supplies are dropped first: add_member_profile leaves an unset local field out,
+        // so a resident value would otherwise be signed as this user's profile.
+        if (auto const* template_content = object_member_as_object(event_object, "content");
+            template_content != nullptr)
+        {
+            auto content = *template_content;
+            std::erase_if(content, [](canonicaljson::ObjectMember const& member) {
+                return member.key == "displayname" || member.key == "avatar_url";
+            });
+            add_member_profile(content, profile);
+            replace_or_add_member(event_object, "content", canonicaljson::Value{std::move(content)});
+        }
         // Compute and attach the content hash (hashes.sha256) before signing.
         // The Matrix spec requires every PDU to carry this field (room versions >= 2).
         // Without it, Synapse rejects send_join with:
@@ -4441,6 +4493,8 @@ namespace
         // holding the mutex (the client-server dispatcher, the local router)
         // does not leave it locked across the round trip; the destructor
         // restores exactly what it released, on the throwing path too.
+        // Read under the lock: the profile goes into the join event the released region signs.
+        auto const joining_profile = database::find_profile(runtime.database.persistent_store, *user_id);
         auto pending_join = PendingJoinLease{runtime, room_id};
         if (!pending_join.acquired())
         {
@@ -4450,7 +4504,8 @@ namespace
             auto const released = RuntimeLockRelease{guard};
             std::ignore = released;
             return perform_federated_join(runtime, room_id, *user_id, our_server, std::move(candidates),
-                                          supported_versions, signing_key, key_id, std::move(secret_key));
+                                          supported_versions, signing_key, key_id, std::move(secret_key),
+                                          joining_profile);
         }();
         if (joined.failure.has_value())
         {
@@ -4906,7 +4961,7 @@ namespace
             room->events.push_back(composed_invite->json);
         }
 
-        auto const join_event_json = serialize_membership_event_json(*user_id, "join");
+        auto const join_event_json = serialize_own_join_event_json(runtime.database.persistent_store, *user_id);
         if (!join_event_json.has_value())
         {
             log_diagnostic("room.join.rejected", {
@@ -5859,8 +5914,8 @@ namespace
             {
                 continue;
             }
-            auto const read_ordering = sync::read_receipt_ordering(runtime, store, membership.room_id, user_id);
-            total += sync::count_notifications(store, membership.room_id, user_id, read_ordering);
+            auto const read_markers = sync::read_receipt_markers(runtime, store, membership.room_id, user_id);
+            total += sync::count_notifications(store, membership.room_id, user_id, read_markers);
         }
         return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
     }
@@ -6693,6 +6748,124 @@ namespace
     return make_operation_result(true, composed->event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
+
+namespace
+{
+
+    // True when `user_id`'s current m.room.member event in the room is a join that already
+    // carries `profile`'s display name and avatar URL (an unset field matching an absent one).
+    [[nodiscard]] auto membership_carries_profile(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::string_view user_id,
+                                                  std::optional<database::PersistentProfile> const& profile) -> bool
+    {
+        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
+        });
+        if (state_it == store.state.end())
+        {
+            return false;
+        }
+        auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+            return event.event_id == state_it->event_id;
+        });
+        if (event_it == store.events.end())
+        {
+            return false;
+        }
+        auto const parsed = canonicaljson::parse_lossless(event_it->json);
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* content = root != nullptr ? object_member_as_object(*root, "content") : nullptr;
+        if (parsed.error != canonicaljson::ParseError::none || content == nullptr)
+        {
+            return false;
+        }
+        auto const field = [content](std::string_view key) {
+            auto const* value = string_member(*content, key);
+            return value != nullptr ? *value : std::string{};
+        };
+        auto const wanted_displayname = profile.has_value() ? profile->displayname : std::string{};
+        auto const wanted_avatar_url = profile.has_value() ? profile->avatar_url : std::string{};
+        return field("membership") == "join" && field("displayname") == wanted_displayname &&
+               field("avatar_url") == wanted_avatar_url;
+    }
+
+} // namespace
+
+[[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
+    -> OperationResult
+{
+    auto const guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "profile propagation requires authentication", 401U);
+    }
+    auto const& store = runtime.database.persistent_store;
+    auto const profile = database::find_profile(store, *user_id);
+    auto const event_json = serialize_own_join_event_json(store, *user_id);
+    if (!event_json.has_value())
+    {
+        return make_operation_result(false, {}, "profile saved but membership serialization failed", 500U);
+    }
+    // Copied first: send_event appends to each room's events while this walks the rooms.
+    auto joined_rooms = std::vector<std::string>{};
+    for (auto const& room : runtime.database.rooms)
+    {
+        if (room_has_member(room, *user_id))
+        {
+            joined_rooms.push_back(room.room_id);
+        }
+    }
+    auto sent = std::size_t{0U};
+    auto failed = std::size_t{0U};
+    for (auto const& room_id : joined_rooms)
+    {
+        if (membership_carries_profile(store, room_id, *user_id, profile))
+        {
+            continue;
+        }
+        auto const result = send_event(runtime, access_token, room_id, *event_json);
+        if (result.ok)
+        {
+            ++sent;
+            continue;
+        }
+        ++failed;
+        log_diagnostic("profile.propagation.skipped", {
+                                                          {"actor",   *user_id,                      false},
+                                                          {"room_id", room_id,                       false},
+                                                          {"status",  std::to_string(result.status), false},
+                                                          {"reason",  result.reason,                 false}
+        });
+    }
+    // The second mechanism: "an m.presence presence status update is sent, again containing the
+    // new values of the displayname and avatar_url keys, in addition to the required presence key
+    // containing the current presence state of the user". Storing the user's presence again gives
+    // it a new sync stream position, so every peer's next /sync carries it; /sync adds the profile.
+    // A user who has never set a presence is offline.
+    auto& mutable_store = runtime.database.persistent_store;
+    auto const current = std::ranges::find_if(mutable_store.presence_states, [&](auto const& state) {
+        return state.user_id == *user_id;
+    });
+    auto presence = current != mutable_store.presence_states.end() ? *current : database::PersistentPresence{};
+    presence.user_id = *user_id;
+    auto const presence_sent = database::upsert_presence(mutable_store, std::move(presence));
+    if (presence_sent && runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, mutable_store.next_sync_stream_id);
+    }
+    log_diagnostic("profile.propagation.completed", {
+                                                        {"actor",    *user_id,                          false},
+                                                        {"rooms",    std::to_string(sent),              false},
+                                                        {"presence", presence_sent ? "sent" : "failed", false}
+    });
+    if (failed != 0U || !presence_sent)
+    {
+        return make_operation_result(false, {}, "profile saved but propagation incomplete; retry the profile update",
+                                     500U);
+    }
+    return make_operation_result(true, {});
+}
 
 // See the doc comment in room_service.hpp. Builds a ComposedEvent-shaped
 // view of `envelope` (federation ingestion never produces a real ComposedEvent

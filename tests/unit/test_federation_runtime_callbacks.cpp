@@ -22,6 +22,7 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -185,8 +186,7 @@ struct SignedJsonPdu final
 };
 
 [[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id, std::string const& token,
-                                          std::string const& membership = "join")
-    -> SignedJsonPdu
+                                   std::string const& membership = "join") -> SignedJsonPdu
 {
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -194,7 +194,8 @@ struct SignedJsonPdu final
     // No hashes field: make_content_hash strips it anyway before computing, so
     // omitting it here gives the same result as including a placeholder.
     auto const event_json =
-        "{\"auth_events\":[],\"content\":{\"membership\":\"" + membership + "\"},\"depth\":1,"
+        "{\"auth_events\":[],\"content\":{\"membership\":\"" + membership +
+        "\"},\"depth\":1,"
         "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
         origin + "\",\"state_key\":\"@alice:" + origin + "\",\"type\":\"m.room.member\"}";
     auto const base_parsed = merovingian::canonicaljson::parse_lossless(event_json);
@@ -1057,8 +1058,8 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
         auto const good_pdu = signed_json_pdu(origin, key_id, good_seed);
         auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
         // Wrap both PDUs in a proper transaction body
-        auto const body = std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + good_pdu.json +
-                          "," + bad_pdu.json + "]}";
+        auto const body = std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" +
+                          good_pdu.json + "," + bad_pdu.json + "]}";
         auto const request =
             signed_put_request(origin, key_id, good_seed, "/_matrix/federation/v1/send/txn-mixed-001", body);
 
@@ -1394,8 +1395,8 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
         auto const join_pdu = signed_json_pdu(origin, key_id, token);
 
         runtime.membership_acceptor = [join_pdu](merovingian::federation::FederationEndpoint /*endpoint*/,
-                                                        std::string_view /*room_id*/, std::string_view /*event_id*/,
-                                                        merovingian::federation::InboundPduEnvelope const& /*envelope*/)
+                                                 std::string_view /*room_id*/, std::string_view /*event_id*/,
+                                                 merovingian::federation::InboundPduEnvelope const& /*envelope*/)
             -> merovingian::federation::MembershipAcceptResult {
             auto result = merovingian::federation::MembershipAcceptResult{};
             result.accepted = true;
@@ -1439,10 +1440,9 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
 
         auto const leave_pdu = signed_json_pdu(origin, key_id, token, "leave");
 
-        runtime.membership_acceptor =
-            [leave_pdu](merovingian::federation::FederationEndpoint /*endpoint*/, std::string_view /*room_id*/,
-                               std::string_view /*event_id*/,
-                               merovingian::federation::InboundPduEnvelope const& /*envelope*/)
+        runtime.membership_acceptor = [leave_pdu](merovingian::federation::FederationEndpoint /*endpoint*/,
+                                                  std::string_view /*room_id*/, std::string_view /*event_id*/,
+                                                  merovingian::federation::InboundPduEnvelope const& /*envelope*/)
             -> merovingian::federation::MembershipAcceptResult {
             auto result = merovingian::federation::MembershipAcceptResult{};
             result.accepted = true;
@@ -1639,9 +1639,9 @@ SCENARIO("A receipt EDU skips rooms this server is not in without discarding the
             THEN("only the known room's receipt is stored")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(runtime->receipts.size() == 1U);
-                REQUIRE(runtime->receipts.front().room_id == "!known:matrix.example.org");
-                REQUIRE(runtime->receipts.front().user_id == "@b:matrix.example.org");
+                REQUIRE(runtime->database.persistent_store.receipts.size() == 1U);
+                REQUIRE(runtime->database.persistent_store.receipts.front().room_id == "!known:matrix.example.org");
+                REQUIRE(runtime->database.persistent_store.receipts.front().user_id == "@b:matrix.example.org");
             }
 
             THEN("the unknown room did not cause the whole EDU to be discarded")
@@ -1649,7 +1649,60 @@ SCENARIO("A receipt EDU skips rooms this server is not in without discarding the
                 // A receipt transaction legitimately batches several rooms, so
                 // one stale room id must not throw away the others.
                 REQUIRE(response.status == 200U);
-                REQUIRE_FALSE(runtime->receipts.empty());
+                REQUIRE_FALSE(runtime->database.persistent_store.receipts.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Receipt callbacks serialize with runtime readers and permit an already-held recursive lock",
+         "[homeserver][federation][receipt][receipt-locking]")
+{
+    GIVEN("a joined remote user and a wired receipt callback")
+    {
+        auto runtime =
+            edu_runtime("matrix.example.org", "ed25519:auto", "receipt-lock-seed", {"!known:matrix.example.org"});
+        runtime->database.persistent_store.memberships.push_back(
+            {"!known:matrix.example.org", "@b:matrix.example.org", "join", 2U});
+        merovingian::homeserver::wire_federation_callbacks(*runtime);
+        auto const envelope = merovingian::federation::InboundEduEnvelope{
+            merovingian::federation::EduType::receipt, "m.receipt",
+            R"({"!known:matrix.example.org":{"m.read":{"@b:matrix.example.org":{"event_ids":["$y:matrix.example.org"],"data":{"ts":2}}}}})",
+            "matrix.example.org"};
+
+        WHEN("a runtime reader holds the lock while another thread delivers a receipt")
+        {
+            auto guard = std::unique_lock{runtime->mutex};
+            auto entered = std::promise<void>{};
+            auto entered_future = entered.get_future();
+            auto delivered = std::async(std::launch::async, [&] {
+                entered.set_value();
+                return runtime->federation.edu_sink(envelope);
+            });
+            entered_future.wait();
+            auto const completed_while_locked =
+                delivered.wait_for(std::chrono::milliseconds{100}) == std::future_status::ready;
+            guard.unlock();
+            auto const result = delivered.get();
+
+            THEN("the receipt waits until the reader releases the lock and is then stored")
+            {
+                REQUIRE_FALSE(completed_while_locked);
+                REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(runtime->database.persistent_store.receipts.size() == 1U);
+                REQUIRE(runtime->database.persistent_store.receipts.front().event_id == "$y:matrix.example.org");
+            }
+        }
+
+        WHEN("the relay already holds the runtime lock on this thread")
+        {
+            auto const guard = std::unique_lock{runtime->mutex};
+            auto const result = runtime->federation.edu_sink(envelope);
+
+            THEN("the recursive callback completes and stores the receipt")
+            {
+                REQUIRE(result.status == merovingian::federation::EduDispositionStatus::accepted);
+                REQUIRE(runtime->database.persistent_store.receipts.size() == 1U);
             }
         }
     }
@@ -1666,11 +1719,11 @@ SCENARIO("Receipt state stays bounded when a peer floods a room it is legitimate
 
         for (auto index = std::size_t{0U}; index < merovingian::homeserver::max_inbound_receipt_entries; ++index)
         {
-            runtime->receipts.push_back({"!busy:matrix.example.org", "m.read",
-                                         "@user" + std::to_string(index) + ":matrix.example.org",
-                                         "$e:matrix.example.org", 1U, 0U});
+            runtime->database.persistent_store.receipts.push_back(
+                {"!busy:matrix.example.org", "m.read", "@user" + std::to_string(index) + ":matrix.example.org",
+                 "$e:matrix.example.org", 1U, 0U});
         }
-        auto const oldest = runtime->receipts.front().user_id;
+        auto const oldest = runtime->database.persistent_store.receipts.front().user_id;
 
         WHEN("one more distinct user sends a read receipt")
         {
@@ -1687,16 +1740,108 @@ SCENARIO("Receipt state stays bounded when a peer floods a room it is legitimate
             THEN("the transaction is accepted and memory stays bounded")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(runtime->receipts.size() == merovingian::homeserver::max_inbound_receipt_entries);
+                REQUIRE(runtime->database.persistent_store.receipts.size() ==
+                        merovingian::homeserver::max_inbound_receipt_entries);
             }
 
             THEN("the oldest entry was evicted and the newest is present")
             {
-                auto const still_has_oldest = std::ranges::any_of(runtime->receipts, [&oldest](auto const& entry) {
-                    return entry.user_id == oldest;
-                });
+                auto const still_has_oldest =
+                    std::ranges::any_of(runtime->database.persistent_store.receipts, [&oldest](auto const& entry) {
+                        return entry.user_id == oldest;
+                    });
                 REQUIRE_FALSE(still_has_oldest);
-                REQUIRE(runtime->receipts.back().user_id == "@overflow:matrix.example.org");
+                REQUIRE(runtime->database.persistent_store.receipts.back().user_id == "@overflow:matrix.example.org");
+            }
+        }
+    }
+}
+
+// ADR-0169: a local user's receipt is their unread state, so a peer flooding a room must not be
+// able to evict it.
+SCENARIO("A peer flood at the receipt cap never evicts a local user's receipt",
+         "[homeserver][federation][receipt][security][receipt-persistence]")
+{
+    GIVEN("a server at the receipt cap whose oldest receipt belongs to a local user")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "receipt-local-cap-seed", {"!busy:matrix.example.org"});
+        auto& receipts = runtime->database.persistent_store.receipts;
+        receipts.push_back(
+            {"!busy:matrix.example.org", "m.read", "@local:example.org", "$e:matrix.example.org", 1U, 0U});
+        for (auto index = std::size_t{1U}; index < merovingian::homeserver::max_inbound_receipt_entries; ++index)
+        {
+            receipts.push_back({"!busy:matrix.example.org", "m.read",
+                                "@user" + std::to_string(index) + ":matrix.example.org", "$e:matrix.example.org", 1U,
+                                index});
+        }
+
+        WHEN("one more remote user sends a read receipt")
+        {
+            runtime->database.persistent_store.memberships.push_back(
+                {"!busy:matrix.example.org", "@overflow:matrix.example.org", "join", 2U});
+            auto const content =
+                std::string{R"({"!busy:matrix.example.org":{"m.read":{"@overflow:matrix.example.org":)"} +
+                R"({"event_ids":["$z:matrix.example.org"],"data":{"ts":3}}}}})";
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-local-cap", "m.receipt", content));
+
+            THEN("the local user's receipt survives and the oldest remote receipt is evicted instead")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(receipts.size() == merovingian::homeserver::max_inbound_receipt_entries);
+                REQUIRE(std::ranges::any_of(receipts, [](auto const& entry) {
+                    return entry.user_id == "@local:example.org";
+                }));
+                REQUIRE_FALSE(std::ranges::any_of(receipts, [](auto const& entry) {
+                    return entry.user_id == "@user1:matrix.example.org";
+                }));
+            }
+        }
+    }
+}
+
+// Spec (S-S API, Receipts): a federated receipt's data is "<content (ts & thread_id, currently)>".
+SCENARIO("An inbound threaded receipt keeps its thread_id and a malformed one is refused",
+         "[homeserver][federation][receipt][threaded-receipts]")
+{
+    GIVEN("a trusted remote whose user is joined to a room this server is in")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "receipt-thread-seed", {"!known:matrix.example.org"});
+        runtime->database.persistent_store.memberships.push_back(
+            {"!known:matrix.example.org", "@b:matrix.example.org", "join", 2U});
+        auto const receipt_with = [](std::string const& data) {
+            return std::string{R"({"!known:matrix.example.org":{"m.read":{"@b:matrix.example.org":)"} +
+                   R"({"event_ids":["$y:matrix.example.org"],"data":)" + data + "}}}}";
+        };
+
+        WHEN("the receipt names a thread")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-thread", "m.receipt",
+                                      receipt_with(R"({"ts":2,"thread_id":"$root:matrix.example.org"})")));
+
+            THEN("it is stored as a receipt in that thread")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->database.persistent_store.receipts.size() == 1U);
+                REQUIRE(runtime->database.persistent_store.receipts.front().thread_id == "$root:matrix.example.org");
+            }
+        }
+
+        WHEN("the thread_id is longer than an event ID can be")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-long-thread", "m.receipt",
+                                      receipt_with(R"({"ts":2,"thread_id":"$)" + std::string(300U, 'a') + R"("})")));
+
+            THEN("no receipt is stored")
+            {
+                std::ignore = response;
+                REQUIRE(runtime->database.persistent_store.receipts.empty());
             }
         }
     }

@@ -176,7 +176,7 @@ value. Test fixtures that do not exercise persistence select it through
   prevents the monotonic sync stream counter from rolling back across restarts.
 - `database::restore_sync_stream_id()` writes the highest `sync_stream_id` found
   in durable rows (account data, to-device messages, device-list changes,
-  presence) into the watermark on startup, so fresh upgrades start from the
+  presence, read receipts) into the watermark on startup, so fresh upgrades start from the
   maximum persisted value rather than the table default.
 - `device_list_changes` holds at most one row per `(observer_user_id,
   subject_user_id)`. `database::record_device_list_change()` and
@@ -312,9 +312,10 @@ value. Test fixtures that do not exercise persistence select it through
   (building a `PendingPushDelivery` and dispatching it) stays gated on
   `push.enabled` + a registered pusher. The `read` field the endpoint reports
   is *not* stored on the row — it is computed at request time from
-  `sync::read_receipt_ordering()` against the caller's current `m.read`/
-  `m.read.private` receipt in that room, so it always reflects the latest
-  receipt without a write-side update on every receipt change.
+  `sync::read_receipt_markers()` against the caller's current `m.read`/
+  `m.read.private` receipts in that room (unthreaded, or the one for the
+  event's thread), so it always reflects the latest receipt without a
+  write-side update on every receipt change.
   **Retention:** `store_notification` prunes the oldest rows for that
   `user_id` beyond `server.client_api.max_notifications_retained_per_user`
   (default 1,000, valid range 1..100,000), after every insert. The same policy
@@ -454,6 +455,28 @@ value. Test fixtures that do not exercise persistence select it through
   restart every retained PDU is due at once. Main only: the table is not in
   `federation_worker_table_allowlist`, because the worker relays every PDU to
   main and never reads or writes it.
+- `receipts` table (schema version `24`, migration `migrations/024_receipts.sql`,
+  ADR-0169) holds read receipts, local and federated: one row per
+  `(room_id, receipt_type, user_id, thread_id)` (the primary key), naming
+  `event_id`, its `ts` and the `stream_id` it was last set at. `thread_id` is
+  `''` for an unthreaded receipt, `main` for the main timeline, or a thread
+  root's event ID. Every unread count is computed from these rows, so before
+  this table a restart marked every room unread. `PersistentReceipt`,
+  `PersistentStore::receipts` and `store_receipt`/`remove_receipt`
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  are implemented for both SQLite and PostgreSQL and hydrated on backend open;
+  `store_receipt` allocates the sync stream position and commits the row before
+  the mirror changes. At the inbound cap, it deletes the selected victim and
+  upserts the incoming receipt in one transaction. A failed delete or upsert
+  preserves the previous receipts in both the database and the mirror.
+  The inbound receipt callback takes `HomeserverRuntime::mutex`
+  before checking membership or reading/updating the receipt mirror, including on
+  direct federation requests; worker relays can re-enter this recursive lock.
+  Only `m.read` and `m.read.private` are stored here:
+  `m.fully_read` is room account data. Inbound federated receipts are capped by
+  `homeserver::max_inbound_receipt_entries`; at the cap the oldest receipt of a
+  *remote* user is removed, never a local user's. Main only: the table is not in
+  `federation_worker_table_allowlist`.
 - `users.deactivated` column (schema version `14`, migration
   `migrations/014_user_deactivation.sql`) is a `TEXT NOT NULL DEFAULT
   'false'` column added to the existing `users` table (no new table), set by
@@ -1132,7 +1155,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (44 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (46 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1142,7 +1165,8 @@ migration's table cannot go unclassified:
   `room_account_data`, `to_device_messages`, `device_list_changes`,
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
-  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`, plus six tables `schema.cpp`
+  `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
+  `receipts`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from

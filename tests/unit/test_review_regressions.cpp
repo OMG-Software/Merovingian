@@ -542,10 +542,11 @@ SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id 
             THEN("the stored receipt uses the first event_ids entry as required by the Matrix shape")
             {
                 REQUIRE(response.status == 200U);
-                auto const receipt = std::ranges::find_if(runtime.homeserver.receipts, [](auto const& candidate) {
-                    return candidate.user_id == "@alice:remote.example.org";
-                });
-                REQUIRE(receipt != runtime.homeserver.receipts.end());
+                auto const receipt = std::ranges::find_if(runtime.homeserver.database.persistent_store.receipts,
+                                                          [](auto const& candidate) {
+                                                              return candidate.user_id == "@alice:remote.example.org";
+                                                          });
+                REQUIRE(receipt != runtime.homeserver.database.persistent_store.receipts.end());
                 REQUIRE(receipt->event_id == "$event:remote.example.org");
                 REQUIRE(receipt->receipt_type == "m.read");
             }
@@ -596,8 +597,8 @@ SCENARIO("Inbound receipt EDUs keep only m.read receipts", "[homeserver][federat
             THEN("only the m.read receipt is stored")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(runtime.homeserver.receipts.size() == 1U);
-                REQUIRE(runtime.homeserver.receipts.front().receipt_type == "m.read");
+                REQUIRE(runtime.homeserver.database.persistent_store.receipts.size() == 1U);
+                REQUIRE(runtime.homeserver.database.persistent_store.receipts.front().receipt_type == "m.read");
             }
         }
     }

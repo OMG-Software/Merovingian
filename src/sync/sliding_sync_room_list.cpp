@@ -13,6 +13,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -310,43 +311,14 @@ namespace
     }
 
     // Total number of unread m.room.message / m.room.encrypted events in the
-    // room since the user's last read receipt (#417). Without the receipt
+    // room, relative to the user's read receipts (#417). Without the receipt
     // baseline this sort key degenerates to "total message count" and every
-    // room sorts identically regardless of read state.
+    // room sorts identically regardless of read state. The same count as the
+    // room's notification_count.
     [[nodiscard]] auto notification_key(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
                                         std::string_view room_id, std::string_view user) -> std::uint64_t
     {
-        auto const read_ordering = read_receipt_ordering(rt, store, room_id, user);
-
-        auto count = std::uint64_t{0U};
-        for (auto const& ev : store.events)
-        {
-            if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
-            {
-                continue;
-            }
-            auto const parsed = canonicaljson::parse_lossless(ev.json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            auto const* type_val = find_member(*root, "type");
-            auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
-            if (type_s == nullptr)
-            {
-                continue;
-            }
-            if (*type_s == "m.room.message" || *type_s == "m.room.encrypted")
-            {
-                ++count;
-            }
-        }
-        return count;
+        return count_notifications(store, room_id, user, read_receipt_markers(rt, store, room_id, user));
     }
 
     [[nodiscard]] auto room_display_name(database::PersistentStore const& store, std::string_view room_id)
@@ -471,6 +443,18 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
 
     auto const total_count = static_cast<std::uint64_t>(joined_room_ids.size());
 
+    // Compute this store-wide scan once per room. The sort comparator may run
+    // O(N log N) times while the caller holds the runtime lock.
+    auto notification_keys = std::unordered_map<std::string, std::uint64_t>{};
+    if (std::ranges::find(list.sort, std::string_view{"by_notification_count"}) != list.sort.end())
+    {
+        notification_keys.reserve(joined_room_ids.size());
+        for (auto const& room_id : joined_room_ids)
+        {
+            notification_keys.emplace(room_id, notification_key(rt, store, room_id, user));
+        }
+    }
+
     // Step 3 — sort.
     // Sort keys are applied left-to-right; ties fall through to the next key.
     std::stable_sort(joined_room_ids.begin(), joined_room_ids.end(), [&](std::string const& a, std::string const& b) {
@@ -478,8 +462,8 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
         {
             if (key == "by_notification_count")
             {
-                auto const na = notification_key(rt, store, a, user);
-                auto const nb = notification_key(rt, store, b, user);
+                auto const na = notification_keys.at(a);
+                auto const nb = notification_keys.at(b);
                 if (na != nb)
                 {
                     return na > nb; // descending
