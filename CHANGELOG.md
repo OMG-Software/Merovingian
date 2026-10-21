@@ -29,6 +29,13 @@ Fixes the two HIGH findings from security audit run-1 (2026-10-20).
   authorising signatures on the worker-relay (`pdu_ingest`, `membership_ingest`) and backfill
   paths, and in the `send_join` state this server keeps when it joins (forged, absent, genuine); the sliding-sync ordering contract over ascending, descending and shuffled stores;
   and the new request caps at and over each limit.
+- **DEPENDENCIES (docs toolchain):** `certifi` 2026.7.22 → 2026.10.19 in `requirements-docs.txt`
+  for GHSA-6q48-6c7w-9gw2 (critical, published 2026-10-20). Earlier releases bundle emSign
+  root CAs whose intermediate CA keys were compromised. `certifi` reaches only the MkDocs site
+  build (through `requests`); the server does not use it. `requirements-docs.in` floors it at
+  2026.10.19, and `tests/tooling/test_docs_site.py` refuses a lock below that. The advisory
+  also broke the dependency-triage job: Grype reported the docs-lock package with an empty
+  location, and Code Scanning rejected the SARIF upload.
 - **DOCS:** ADR-0171 and ADR-0172; rules added to `src/federation/AGENTS.md`,
   `src/homeserver/AGENTS.md`, `src/sync/AGENTS.md` and `docs/security-coding-rules.md`;
   threat-model entry; `docs/event-engine.md`; a correction to the EVT-1 residual note in
