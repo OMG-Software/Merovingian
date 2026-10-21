@@ -2912,7 +2912,10 @@ SCENARIO("A restricted join is accepted when any listed authorising-server key v
         {
             auto const event = with_junk_keys_first({"ed25519:aaa_unknown"});
             resolver_calls = 0U;
-            auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
+            // Wide enough that the verifier reliably reaches its first deadline
+            // check in time on a slow or sanitizer CI runner; the first lookup
+            // then sleeps past it, so only the second is cut off.
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
             auto const slow_first = merovingian::federation::AuthorisingKeyResolver{
                 [&, inner = resolver(false)](std::string_view server, std::string_view id) {
                     if (resolver_calls == 0U)
