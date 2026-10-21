@@ -56,7 +56,9 @@ object is not itself signed, so a relaying server can add key IDs ahead of the g
 helper therefore tries each listed key in order until one verifies, but no more than
 `max_authorising_signature_keys` (4): every candidate may cost a key fetch, and an unbounded list
 would let one event amplify key fetches. A local overload on any candidate, with none verified,
-is a retryable 503.
+is a retryable 503. A caller with a wall-clock budget passes its deadline, and no candidate
+lookup starts after it (a 504, again no verdict); backfill does, so several uncached candidates
+cannot hold recovery past its deadline by more than the one lookup already in progress.
 
 The helper checks only `m.room.member` events, as the rule says. The earlier `/send`-only code
 also checked other event types that carried the field; that was stricter than the spec and is

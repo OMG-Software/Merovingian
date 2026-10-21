@@ -3635,13 +3635,18 @@ namespace
         // EVT-1: a fetched event reaches the structural auth rules below, which
         // only see that a restricted join's authorising-server signature is
         // present. Verify it with a key this server resolves, as /send does.
-        // Several candidate keys may be tried, so the budget's overload flag is
-        // taken from the decision (503: a candidate was locally denied and none
-        // verified), not from whichever lookup happened to run last.
+        // Several candidate keys may be tried, each possibly a remote fetch, so
+        // none starts after the backfill deadline (504: the event stays
+        // unresolved and is retried like any other deadline expiry). The
+        // budget's overload flag is taken from the decision (503: a candidate
+        // was locally denied and none verified), not from whichever lookup
+        // happened to run last.
         auto const authorising = federation::verify_join_authorising_server_signature(
-            parsed.value, policy, [&runtime](std::string_view server_name, std::string_view authorising_key_id) {
+            parsed.value, policy,
+            [&runtime](std::string_view server_name, std::string_view authorising_key_id) {
                 return federation::resolve_verification_key(runtime.federation, {}, server_name, authorising_key_id);
-            });
+            },
+            budget.deadline);
         if (!authorising.accepted)
         {
             budget.key_resolution_locally_denied = authorising.status == 503U;

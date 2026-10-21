@@ -511,14 +511,21 @@ using AuthorisingKeyResolver =
 // (filter_verified_send_join_events). An event without the field is accepted unchanged. A local
 // admission denial from `resolve_key` is a retryable 503, never a verdict on
 // the signature; every other failure is a 403.
-[[nodiscard]] auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
-                                                            rooms::RoomVersionPolicy const& room_version,
-                                                            AuthorisingKeyResolver const& resolve_key,
-                                                            crypto::Ed25519Provider& provider) -> FederationDecision;
+//
+// Each candidate key may be a remote fetch, so a caller with a wall-clock
+// budget passes `deadline`: no candidate lookup starts once it has passed
+// (one already in progress runs to the resolver's own timeout). Stopping for
+// the deadline with nothing verified is a 504, again never a verdict.
+[[nodiscard]] auto verify_join_authorising_server_signature(
+    canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
+    AuthorisingKeyResolver const& resolve_key, crypto::Ed25519Provider& provider,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
+    -> FederationDecision;
 // As above, verifying with libsodium directly (no signing provider involved).
-[[nodiscard]] auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
-                                                            rooms::RoomVersionPolicy const& room_version,
-                                                            AuthorisingKeyResolver const& resolve_key)
+[[nodiscard]] auto verify_join_authorising_server_signature(
+    canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
+    AuthorisingKeyResolver const& resolve_key,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
     -> FederationDecision;
 
 // FED-10, ADR-0155: the key of `server_name`/`key_id` for verifying the state of

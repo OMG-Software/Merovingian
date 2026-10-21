@@ -2890,6 +2890,60 @@ SCENARIO("A restricted join is accepted when any listed authorising-server key v
                 CHECK(decision.status == 503U);
             }
         }
+
+        // A caller with a wall-clock budget (backfill) passes its deadline: each
+        // candidate may be a remote key fetch, and none may start once it has passed.
+        WHEN("the caller's deadline has already passed")
+        {
+            auto const event = with_junk_keys_first({"ed25519:aaa_unknown"});
+            resolver_calls = 0U;
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver(false), verifier, std::chrono::steady_clock::now());
+
+            THEN("no key is looked up and the outcome is a deadline 504, not a verdict on the signature")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 504U);
+                CHECK(resolver_calls == 0U);
+            }
+        }
+
+        WHEN("the deadline passes while the first candidate is being looked up")
+        {
+            auto const event = with_junk_keys_first({"ed25519:aaa_unknown"});
+            resolver_calls = 0U;
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
+            auto const slow_first = merovingian::federation::AuthorisingKeyResolver{
+                [&, inner = resolver(false)](std::string_view server, std::string_view id) {
+                    if (resolver_calls == 0U)
+                    {
+                        std::this_thread::sleep_until(deadline + std::chrono::milliseconds{20});
+                    }
+                    return inner(server, id);
+                }};
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, slow_first, verifier, deadline);
+
+            THEN("the genuine key listed next is not looked up and the outcome is a deadline 504")
+            {
+                CHECK_FALSE(decision.accepted);
+                CHECK(decision.status == 504U);
+                CHECK(resolver_calls == 1U);
+            }
+        }
+
+        WHEN("the deadline is still ahead")
+        {
+            auto const event = with_junk_keys_first({"ed25519:aaa_unknown"});
+            auto const decision = merovingian::federation::verify_join_authorising_server_signature(
+                event, *policy, resolver(false), verifier, std::chrono::steady_clock::now() + std::chrono::minutes{1});
+
+            THEN("every candidate is tried and the genuine key verifies")
+            {
+                CHECK(decision.accepted);
+                CHECK(decision.status == 200U);
+            }
+        }
     }
 }
 

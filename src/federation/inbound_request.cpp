@@ -2405,7 +2405,8 @@ auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::o
 auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
                                               rooms::RoomVersionPolicy const& room_version,
                                               AuthorisingKeyResolver const& resolve_key,
-                                              crypto::Ed25519Provider& provider) -> FederationDecision
+                                              crypto::Ed25519Provider& provider,
+                                              std::chrono::steady_clock::time_point deadline) -> FederationDecision
 {
     auto const signature_key = join_authorising_signature_key(event);
     if (!signature_key.has_value())
@@ -2425,11 +2426,18 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
     // Any one of the authorising server's keys satisfies the rule, so try each
     // listed key (at most max_authorising_signature_keys) until one verifies.
     // A local admission denial on any candidate leaves the outcome unknown, so
-    // it wins over a refusal: the caller retries rather than rejects.
+    // it wins over a refusal: the caller retries rather than rejects. So does
+    // running out of the caller's time before every candidate was tried.
     auto locally_denied = false;
+    auto out_of_time = false;
     auto refusal = std::string{"could not resolve authorising user's server signing key"};
     for (auto const& authorising_key_id : signature_key->key_ids)
     {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            out_of_time = true;
+            break;
+        }
         auto const resolved = resolve_key(authorising_server, authorising_key_id);
         if (resolved.locally_denied)
         {
@@ -2457,15 +2465,20 @@ auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
     {
         return make_decision(false, 503U, "local signing-key resolution admission unavailable");
     }
+    if (out_of_time)
+    {
+        return make_decision(false, 504U, "authorising-server key resolution exceeded the caller's deadline");
+    }
     return make_decision(false, 403U, refusal);
 }
 
 auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
                                               rooms::RoomVersionPolicy const& room_version,
-                                              AuthorisingKeyResolver const& resolve_key) -> FederationDecision
+                                              AuthorisingKeyResolver const& resolve_key,
+                                              std::chrono::steady_clock::time_point deadline) -> FederationDecision
 {
     auto verifier = FederationEd25519Verifier{};
-    return verify_join_authorising_server_signature(event, room_version, resolve_key, verifier);
+    return verify_join_authorising_server_signature(event, room_version, resolve_key, verifier, deadline);
 }
 
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
