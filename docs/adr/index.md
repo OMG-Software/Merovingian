@@ -170,6 +170,8 @@
 * [0168 - Refuse an unlocked master key](0168-refuse-an-unlocked-master-key.md)
 * [0169 - Read receipts are durable, and a peer's flood never evicts a local user's receipt](0169-read-receipts-are-durable-and-a-peer-flood-never-evicts-a-local-users-receipt.md)
 * [0170 - A user's own non-state event reads its own thread](0170-a-users-own-non-state-event-reads-its-thread.md)
+* [0171 - Every PDU ingestion path verifies a restricted join's authorising-server signature](0171-every-pdu-ingestion-path-verifies-the-authorising-servers-signature.md)
+* [0172 - Sliding-sync sort keys are computed once per request, and the shape of the lists is capped](0172-sliding-sync-sort-keys-are-computed-once-and-list-shape-is-capped.md)
 
 ## Proposed Records
 

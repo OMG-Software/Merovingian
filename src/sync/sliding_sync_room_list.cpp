@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -259,55 +260,58 @@ namespace
 
     // ── Sort key helpers ───────────────────────────────────────────────────
 
-    // Maximum stream_ordering among events in the room whose type is in
-    // bump_types (or all events when bump_types is empty).
-    [[nodiscard]] auto recency_key(database::PersistentStore const& store, std::string_view room_id,
-                                   std::vector<std::string> const& bump_types) noexcept -> std::uint64_t
+    // Every sort key is computed once per room before the sort, never inside
+    // the comparator: the comparator runs O(N log N) times while the caller
+    // holds the runtime lock, and each key is a scan of the store (ADR-0172).
+
+    [[nodiscard]] auto event_type_is_one_of(std::string_view event_json, std::vector<std::string> const& types) -> bool
     {
-        auto max = std::uint64_t{0U};
-        for (auto const& ev : store.events)
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
-            if (ev.room_id != room_id)
+            return false;
+        }
+        auto const* root = as_object(parsed.value);
+        auto const* type_val = root == nullptr ? nullptr : find_member(*root, "type");
+        auto const* type_s = type_val == nullptr ? nullptr : as_string(*type_val);
+        if (type_s == nullptr)
+        {
+            return false;
+        }
+        return std::ranges::any_of(types, [&](std::string const& t) {
+            return t == *type_s;
+        });
+    }
+
+    // For each room in `room_ids`: the maximum stream_ordering among its events
+    // whose type is in bump_types (all events when bump_types is empty), 0 when
+    // there is none. One pass over store.events, newest first, so an event that
+    // cannot beat its room's current maximum is skipped without being parsed;
+    // the result does not depend on the order of store.events.
+    [[nodiscard]] auto recency_keys(database::PersistentStore const& store, std::vector<std::string> const& room_ids,
+                                    std::vector<std::string> const& bump_types)
+        -> std::unordered_map<std::string, std::uint64_t>
+    {
+        auto keys = std::unordered_map<std::string, std::uint64_t>{};
+        keys.reserve(room_ids.size());
+        for (auto const& room_id : room_ids)
+        {
+            keys.emplace(room_id, std::uint64_t{0U});
+        }
+        for (auto const& ev : std::views::reverse(store.events))
+        {
+            auto const found = keys.find(ev.room_id);
+            if (found == keys.end() || ev.stream_ordering <= found->second)
             {
                 continue;
             }
-            if (!bump_types.empty())
+            if (!bump_types.empty() && !event_type_is_one_of(ev.json, bump_types))
             {
-                // Only bump on types the client asked for — requires parsing the event type.
-                auto const parsed = canonicaljson::parse_lossless(ev.json);
-                if (parsed.error != canonicaljson::ParseError::none)
-                {
-                    continue;
-                }
-                auto const* root = as_object(parsed.value);
-                if (root == nullptr)
-                {
-                    continue;
-                }
-                auto const* type_val = find_member(*root, "type");
-                if (type_val == nullptr)
-                {
-                    continue;
-                }
-                auto const* type_s = as_string(*type_val);
-                if (type_s == nullptr)
-                {
-                    continue;
-                }
-                auto const bumps = std::ranges::any_of(bump_types, [&](std::string const& t) {
-                    return t == *type_s;
-                });
-                if (!bumps)
-                {
-                    continue;
-                }
+                continue;
             }
-            if (ev.stream_ordering > max)
-            {
-                max = ev.stream_ordering;
-            }
+            found->second = ev.stream_ordering;
         }
-        return max;
+        return keys;
     }
 
     // Total number of unread m.room.message / m.room.encrypted events in the
@@ -321,51 +325,73 @@ namespace
         return count_notifications(store, room_id, user, read_receipt_markers(rt, store, room_id, user));
     }
 
-    [[nodiscard]] auto room_display_name(database::PersistentStore const& store, std::string_view room_id)
-        -> std::string
+    // content.name of an m.room.name event, or empty when it has none.
+    [[nodiscard]] auto room_name_from_event(std::string_view event_json) -> std::string
     {
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* root = as_object(parsed.value);
+        auto const* content_val = root == nullptr ? nullptr : find_member(*root, "content");
+        auto const* content = content_val == nullptr ? nullptr : as_object(*content_val);
+        auto const* name_val = content == nullptr ? nullptr : find_member(*content, "name");
+        auto const* s = name_val == nullptr ? nullptr : as_string(*name_val);
+        return s != nullptr ? *s : std::string{};
+    }
+
+    // For each room in `room_ids`: the name from the first m.room.name state
+    // entry (in store.state order) whose event the store holds, or empty. One
+    // pass over store.state and one over store.events.
+    [[nodiscard]] auto display_name_keys(database::PersistentStore const& store,
+                                         std::vector<std::string> const& room_ids)
+        -> std::unordered_map<std::string, std::string>
+    {
+        auto candidates = std::unordered_map<std::string, std::vector<std::string>>{};
+        candidates.reserve(room_ids.size());
+        for (auto const& room_id : room_ids)
+        {
+            candidates.emplace(room_id, std::vector<std::string>{});
+        }
+        auto event_index = std::unordered_map<std::string, std::size_t>{};
         for (auto const& se : store.state)
         {
-            if (se.room_id != room_id || se.event_type != "m.room.name")
+            if (se.event_type != "m.room.name")
             {
                 continue;
             }
-            for (auto const& ev : store.events)
+            if (auto const found = candidates.find(se.room_id); found != candidates.end())
             {
-                if (ev.event_id != se.event_id)
-                {
-                    continue;
-                }
-                auto const parsed = canonicaljson::parse_lossless(ev.json);
-                if (parsed.error != canonicaljson::ParseError::none)
-                {
-                    return {};
-                }
-                auto const* root = as_object(parsed.value);
-                if (root == nullptr)
-                {
-                    return {};
-                }
-                auto const* content_val = find_member(*root, "content");
-                if (content_val == nullptr)
-                {
-                    return {};
-                }
-                auto const* content = as_object(*content_val);
-                if (content == nullptr)
-                {
-                    return {};
-                }
-                auto const* name_val = find_member(*content, "name");
-                if (name_val == nullptr)
-                {
-                    return {};
-                }
-                auto const* s = as_string(*name_val);
-                return s != nullptr ? *s : std::string{};
+                found->second.push_back(se.event_id);
+                event_index.emplace(se.event_id, std::numeric_limits<std::size_t>::max());
             }
         }
-        return {};
+        for (auto i = std::size_t{0U}; i < store.events.size(); ++i)
+        {
+            auto const found = event_index.find(store.events[i].event_id);
+            if (found != event_index.end() && found->second == std::numeric_limits<std::size_t>::max())
+            {
+                found->second = i;
+            }
+        }
+        auto names = std::unordered_map<std::string, std::string>{};
+        names.reserve(room_ids.size());
+        for (auto const& [room_id, event_ids] : candidates)
+        {
+            auto name = std::string{};
+            for (auto const& event_id : event_ids)
+            {
+                auto const index = event_index.at(event_id);
+                if (index != std::numeric_limits<std::size_t>::max())
+                {
+                    name = room_name_from_event(store.events[index].json);
+                    break;
+                }
+            }
+            names.emplace(room_id, std::move(name));
+        }
+        return names;
     }
 
     // ── Ops generation ─────────────────────────────────────────────────────
@@ -443,10 +469,14 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
 
     auto const total_count = static_cast<std::uint64_t>(joined_room_ids.size());
 
-    // Compute this store-wide scan once per room. The sort comparator may run
-    // O(N log N) times while the caller holds the runtime lock.
+    // Compute each requested sort key once per room. The sort comparator may
+    // run O(N log N) times while the caller holds the runtime lock, so it only
+    // looks keys up (ADR-0172).
+    auto const sorts_by = [&list](std::string_view key) {
+        return std::ranges::find(list.sort, key) != list.sort.end();
+    };
     auto notification_keys = std::unordered_map<std::string, std::uint64_t>{};
-    if (std::ranges::find(list.sort, std::string_view{"by_notification_count"}) != list.sort.end())
+    if (sorts_by("by_notification_count"))
     {
         notification_keys.reserve(joined_room_ids.size());
         for (auto const& room_id : joined_room_ids)
@@ -454,6 +484,10 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
             notification_keys.emplace(room_id, notification_key(rt, store, room_id, user));
         }
     }
+    auto const recency = sorts_by("by_recency") ? recency_keys(store, joined_room_ids, list.bump_event_types)
+                                                : std::unordered_map<std::string, std::uint64_t>{};
+    auto const names = sorts_by("by_name") ? display_name_keys(store, joined_room_ids)
+                                           : std::unordered_map<std::string, std::string>{};
 
     // Step 3 — sort.
     // Sort keys are applied left-to-right; ties fall through to the next key.
@@ -471,8 +505,8 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
             }
             else if (key == "by_recency")
             {
-                auto const ra = recency_key(store, a, list.bump_event_types);
-                auto const rb = recency_key(store, b, list.bump_event_types);
+                auto const ra = recency.at(a);
+                auto const rb = recency.at(b);
                 if (ra != rb)
                 {
                     return ra > rb; // most-recent first
@@ -480,8 +514,8 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
             }
             else if (key == "by_name")
             {
-                auto const na = room_display_name(store, a);
-                auto const nb = room_display_name(store, b);
+                auto const& na = names.at(a);
+                auto const& nb = names.at(b);
                 // Unnamed rooms sort last.
                 if (na.empty() != nb.empty())
                 {

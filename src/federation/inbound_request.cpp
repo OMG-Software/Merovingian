@@ -527,14 +527,18 @@ namespace
                                                          std::optional<FederationKeyRecord> const& key)
         -> FederationDecision
     {
-        auto failure = std::optional<KeyResolutionFailureKind>{};
+        // Several authorising-server keys may be tried. As in
+        // verify_join_authorising_server_signature, a local denial on any of
+        // them is sticky (a later failure must not turn it into a refusal) and
+        // counts only when nothing verified (it must not override an accept).
+        auto locally_denied = false;
         auto const resolver = [&runtime, &request,
-                               &failure](std::string_view server_name,
-                                         std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+                               &locally_denied](std::string_view server_name,
+                                                std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
             auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
             if (!resolved.key.has_value())
             {
-                failure = resolved.failure;
+                locally_denied = locally_denied || resolved.failure == KeyResolutionFailureKind::local_resource_denial;
                 return std::nullopt;
             }
             auto remote = FederationRemoteRuntime{};
@@ -544,7 +548,7 @@ namespace
         };
         auto verifier = FederationEd25519Verifier{};
         auto const decision = authorize_federation_pdu(pdu, request.origin, key, resolver, verifier);
-        if (failure == KeyResolutionFailureKind::local_resource_denial)
+        if (!decision.accepted && locally_denied)
         {
             return make_decision(false, 503U, "local signing-key resolution admission unavailable");
         }
@@ -2308,41 +2312,6 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     return make_decision(true, 200U, {});
 }
 
-[[nodiscard]] auto join_authorising_user_server(canonicaljson::Value const& event) noexcept -> std::string
-{
-    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
-    if (root == nullptr)
-    {
-        return {};
-    }
-    auto const* content = find_canonical_member(*root, "content");
-    if (content == nullptr)
-    {
-        return {};
-    }
-    auto const* content_obj = std::get_if<canonicaljson::Object>(&content->storage());
-    if (content_obj == nullptr)
-    {
-        return {};
-    }
-    auto const* auth_user = find_canonical_member(*content_obj, "join_authorised_via_users_server");
-    if (auth_user == nullptr)
-    {
-        return {};
-    }
-    auto const* auth_user_text = std::get_if<std::string>(&auth_user->storage());
-    if (auth_user_text == nullptr)
-    {
-        return {};
-    }
-    auto const colon = auth_user_text->find(':');
-    if (colon == std::string::npos)
-    {
-        return {};
-    }
-    return auth_user_text->substr(colon + 1);
-}
-
 [[nodiscard]] auto verify_event_signature_for_server(canonicaljson::Value const& event,
                                                      rooms::RoomVersionPolicy const& room_version,
                                                      std::string_view server_name, FederationKeyRecord const& key,
@@ -2360,6 +2329,145 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
         return make_decision(false, 403U, verified.error);
     }
     return make_decision(true, 200U, {});
+}
+
+auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::optional<AuthorisingSignatureKey>
+{
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    auto const* type = root == nullptr ? nullptr : find_canonical_member(*root, "type");
+    auto const* type_text = type == nullptr ? nullptr : std::get_if<std::string>(&type->storage());
+    if (type_text == nullptr || *type_text != "m.room.member")
+    {
+        return std::nullopt;
+    }
+    // The rule applies when content HAS the key (rule 4.2). A value that is
+    // not a user ID denotes no homeserver: report it with an empty
+    // server_name, which the verifier refuses, rather than as an absent key.
+    auto const* content = find_canonical_member(*root, "content");
+    auto const* content_obj = content == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content->storage());
+    auto const* authorised =
+        content_obj == nullptr ? nullptr : find_canonical_member(*content_obj, "join_authorised_via_users_server");
+    if (authorised == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* authorised_user = std::get_if<std::string>(&authorised->storage());
+    if (authorised_user == nullptr || !auth::user_id_is_valid_federated(*authorised_user))
+    {
+        return AuthorisingSignatureKey{};
+    }
+    auto key = AuthorisingSignatureKey{std::string{auth::user_id_server_name(*authorised_user)}, {}};
+    if (key.server_name.empty())
+    {
+        return AuthorisingSignatureKey{};
+    }
+    // The key IDs the event lists under the authorising server, in the event's
+    // own (canonical) order, up to max_authorising_signature_keys.
+    auto const* signatures = find_canonical_member(*root, "signatures");
+    auto const* signatures_obj =
+        signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&signatures->storage());
+    auto const* server_signatures =
+        signatures_obj == nullptr ? nullptr : find_canonical_member(*signatures_obj, key.server_name);
+    auto const* server_signatures_obj =
+        server_signatures == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&server_signatures->storage());
+    if (server_signatures_obj != nullptr)
+    {
+        for (auto const& member : *server_signatures_obj)
+        {
+            if (key.key_ids.size() == max_authorising_signature_keys)
+            {
+                break;
+            }
+            if (!member.key.empty())
+            {
+                key.key_ids.push_back(member.key);
+            }
+        }
+    }
+    return key;
+}
+
+auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
+                                              rooms::RoomVersionPolicy const& room_version,
+                                              AuthorisingKeyResolver const& resolve_key,
+                                              crypto::Ed25519Provider& provider,
+                                              std::chrono::steady_clock::time_point deadline) -> FederationDecision
+{
+    auto const signature_key = join_authorising_signature_key(event);
+    if (!signature_key.has_value())
+    {
+        return make_decision(true, 200U, {});
+    }
+    auto const& authorising_server = signature_key->server_name;
+    if (authorising_server.empty())
+    {
+        return make_decision(false, 403U, "join_authorised_via_users_server is not a user ID");
+    }
+    if (signature_key->key_ids.empty())
+    {
+        return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");
+    }
+
+    if (!resolve_key)
+    {
+        return make_decision(false, 403U, "could not resolve authorising user's server signing key");
+    }
+    // Any one of the authorising server's keys satisfies the rule, so try each
+    // listed key (at most max_authorising_signature_keys) until one verifies.
+    // A local admission denial on any candidate leaves the outcome unknown, so
+    // it wins over a refusal: the caller retries rather than rejects. So does
+    // running out of the caller's time before every candidate was tried.
+    auto locally_denied = false;
+    auto out_of_time = false;
+    auto refusal = std::string{"could not resolve authorising user's server signing key"};
+    for (auto const& authorising_key_id : signature_key->key_ids)
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            out_of_time = true;
+            break;
+        }
+        auto const resolved = resolve_key(authorising_server, authorising_key_id);
+        if (resolved.locally_denied)
+        {
+            locally_denied = true;
+            continue;
+        }
+        if (!resolved.key.has_value())
+        {
+            continue;
+        }
+        if (resolved.key->server_name != authorising_server)
+        {
+            refusal = "resolved authorising key does not match expected server";
+            continue;
+        }
+        auto decision =
+            verify_event_signature_for_server(event, room_version, authorising_server, *resolved.key, provider);
+        if (decision.accepted)
+        {
+            return decision;
+        }
+        refusal = std::move(decision.reason);
+    }
+    if (locally_denied)
+    {
+        return make_decision(false, 503U, "local signing-key resolution admission unavailable");
+    }
+    if (out_of_time)
+    {
+        return make_decision(false, 504U, "authorising-server key resolution exceeded the caller's deadline");
+    }
+    return make_decision(false, 403U, refusal);
+}
+
+auto verify_join_authorising_server_signature(canonicaljson::Value const& event,
+                                              rooms::RoomVersionPolicy const& room_version,
+                                              AuthorisingKeyResolver const& resolve_key,
+                                              std::chrono::steady_clock::time_point deadline) -> FederationDecision
+{
+    auto verifier = FederationEd25519Verifier{};
+    return verify_join_authorising_server_signature(event, room_version, resolve_key, verifier, deadline);
 }
 
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
@@ -2386,40 +2494,23 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
         return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
     }
 
-    auto const authorising_server = join_authorising_user_server(parsed.value);
-    if (authorising_server.empty())
-    {
-        return make_decision(true, 200U, {});
-    }
-
-    // EVT-1: restricted/knock-restricted joins must be signed by the authorising
-    // user's homeserver. Resolve that server's key and verify the signature.
-    auto authorising_key_id = std::string{};
-    for (auto const& sig : pdu.signatures)
-    {
-        if (sig.server_name == authorising_server)
+    // The caller (authorize_admitted_federation_pdu) turns a local admission
+    // denial inside remote_key_resolver into its own 503, so a failed lookup
+    // here is reported as unresolved.
+    auto const resolve_key = [&remote_key_resolver](std::string_view server_name,
+                                                    std::string_view key_id) -> VerificationKeyResolution {
+        if (!remote_key_resolver)
         {
-            authorising_key_id = sig.key_id;
-            break;
+            return {};
         }
-    }
-    if (authorising_key_id.empty())
-    {
-        return make_decision(false, 403U, "restricted join PDU lacks a signature from the authorising user's server");
-    }
-
-    auto const resolved = remote_key_resolver(authorising_server, authorising_key_id);
-    if (!resolved.has_value())
-    {
-        return make_decision(false, 403U, "could not resolve authorising user's server signing key");
-    }
-    auto const auth_key = resolved->signing_key;
-    if (auth_key.server_name != authorising_server)
-    {
-        return make_decision(false, 403U, "resolved authorising key does not match expected server");
-    }
-
-    return verify_event_signature_for_server(parsed.value, *room_version, authorising_server, auth_key, provider);
+        auto resolved = remote_key_resolver(server_name, key_id);
+        if (!resolved.has_value())
+        {
+            return {};
+        }
+        return {std::move(resolved->signing_key)};
+    };
+    return verify_join_authorising_server_signature(parsed.value, *room_version, resolve_key, provider);
 }
 
 auto check_signing_key_valid_for_event(FederationKeyRecord const& key, canonicaljson::Value const& event,

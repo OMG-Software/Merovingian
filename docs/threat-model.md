@@ -2296,3 +2296,33 @@ user's receipt is never evicted. Inbound `data.thread_id` must be a non-empty st
 EDU is rejected. Residual risk: the membership check is still the bound on remote receipts, and
 local users' receipts are bounded by rooms, members, receipt types and threads rather than by a
 fixed number.
+
+### Forged restricted joins via relay or backfill; one sliding-sync request could stall the server (0.12.31)
+
+Security audit run-1 (2026-10-20) found two HIGH issues, both fixed in 0.12.31.
+
+- **A restricted join's authorising-server signature was only checked on `/send` and
+  `send_join`.** The auth rules see only that the signature is present. Main's re-verification
+  of PDUs relayed by the federation worker, and backfill / missing-history ingestion, verified
+  the sender's signature but not the authorising server's. In a restricted room the gap was
+  latent, because those paths' auth maps never carry the authorising user's membership and so
+  refuse every non-invited restricted join first. That separate bug is not fixed here, and
+  fixing it before this one would have let a compromised worker, or any remote server
+  answering a history fetch, get a join stored that no resident server authorised. In other
+  rooms a join carrying a forged authorising signature was accepted, against rule 4.2.1.
+  **Mitigation:** every path that admits a remote PDU calls
+  `federation::verify_join_authorising_server_signature` after the sender check and refuses
+  the event unless it accepts. A local key-resolution overload is retryable, never a verdict
+  (ADR-0171). Residual risk: a future ingestion path that skips the helper reopens the gap.
+  `src/federation/AGENTS.md` rule 2 states the requirement.
+- **Sliding-sync sorting rescanned the store on every comparison.** `by_recency` and `by_name`
+  were computed inside the `std::stable_sort` comparator while the runtime lock was held, and
+  lists, sort keys and `bump_event_types` were uncapped. One authenticated request could hold
+  the lock for minutes. **Mitigation:** every sort key is computed once per room before the
+  sort, and requests over 32 lists, 3 sort keys or 64 `bump_event_types` per list are refused
+  with 400 `M_INVALID_PARAM` (ADR-0172). Residual risk: `by_recency` and `by_name` cost one
+  pass over the store per list, but `by_notification_count` (one walk per room), the
+  joined-room enumeration and the list filters still do per-room store work under the lock, so
+  a list's cost still grows with the user's joined-room count; the 32-list cap bounds how often
+  a request repeats it. The audit's other runtime-lock findings (extension rooms arrays, push
+  glob matching, account-data scans) are not addressed by this change.

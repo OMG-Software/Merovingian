@@ -188,6 +188,11 @@ Residual notes on fixed findings:
   ingestion verifies the signature for every PDU carrying the key
   (`src/federation/inbound_request.cpp`), so remote events are covered, but the auth rule
   is not ordered as the spec orders it and the cryptographic path has no test.
+  **Correction (21 October 2026):** "every PDU" was untrue. Only `/send` and `send_join`
+  verified it; worker relay re-verification and backfill ingestion did not (security audit
+  run-1, HIGH). Since 0.12.31 all four, and the `send_join` state stored when this server joins, call
+  `verify_join_authorising_server_signature`,
+  with tests on each path (ADR-0171).
 - **AUTH-1:** fixed by rate-capping unauthenticated audit rows. Since 0.12.23
   `login.rejected` and `login.throttled` are capped too.
 - **AUTH-4:** since 0.12.23 every client-reachable Argon2id call (`/register`, password

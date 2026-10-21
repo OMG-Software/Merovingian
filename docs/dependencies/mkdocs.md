@@ -24,8 +24,14 @@ search, admonitions and Mermaid diagram rendering.
   exact version with SHA-256 hashes, and CI installs it with
   `pip --require-hashes`.
 - `tests/tooling/test_docs_site.py` fails if any locked requirement lacks an
-  exact pin or a hash, or if `mkdocs-material` is pinned below 9.7.7, the first
-  release fixing the search-suggestion DOM XSS GHSA-xvg9-69gf-fjrf.
+  exact pin or a hash, if `mkdocs-material` is pinned below 9.7.7, the first
+  release fixing the search-suggestion DOM XSS GHSA-xvg9-69gf-fjrf, or if
+  `certifi` (transitive, via `requests`) is pinned below 2026.10.19.
+  GHSA-6q48-6c7w-9gw2: releases before 2026.10.18 bundle emSign root CAs whose
+  intermediate CA keys were compromised; the advisory's version range names
+  2026.10.19 as the first patched release, and dependency scanners enforce
+  that range, so 2026.10.19 is the floor. `requirements-docs.in` floors `certifi`
+  so a regenerated lock cannot resolve back to a vulnerable release.
 - The site build job runs with `contents: read` only. The Pages deploy job
   holds `pages: write` and `id-token: write`, runs only for `main`, and
   executes no third-party Python.

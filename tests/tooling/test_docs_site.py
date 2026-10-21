@@ -22,6 +22,12 @@ SITE_HOOKS = REPO_ROOT / "scripts" / "mkdocs_site_hooks.py"
 # (DOM XSS in search suggestions via a query parameter).
 FIRST_SAFE_MATERIAL_VERSION = (9, 7, 7)
 
+# certifi before 2026.10.18 bundles emSign root CAs whose intermediate CA keys
+# were compromised (GHSA-6q48-6c7w-9gw2). The advisory's version range names
+# 2026.10.19 as the first patched release, and scanners enforce that range, so
+# this is the floor. certifi reaches the docs toolchain through requests.
+FIRST_SAFE_CERTIFI_VERSION = (2026, 10, 19)
+
 # Architecture Decision Records are reached from the ADR index rather than
 # listed one by one in the navigation.
 ADR_RECORD = re.compile(r"^adr/\d{4}-.+\.md$")
@@ -143,6 +149,19 @@ class DocumentationDependencyTests(unittest.TestCase):
 
         # THEN it includes the fix for GHSA-xvg9-69gf-fjrf.
         self.assertGreaterEqual(version, FIRST_SAFE_MATERIAL_VERSION)
+
+    def test_certifi_does_not_bundle_the_compromised_emsign_roots(self) -> None:
+        # GIVEN the documentation dependency lock file.
+        lock = DOCS_REQUIREMENTS.read_text(encoding="utf-8")
+
+        # WHEN the pinned certifi version is read.
+        match = re.search(r"^certifi==(\d+)\.(\d+)\.(\d+)", lock, re.MULTILINE)
+        self.assertIsNotNone(match, "certifi is not pinned")
+        assert match is not None
+        version = tuple(int(part) for part in match.groups())
+
+        # THEN it no longer trusts the emSign roots of GHSA-6q48-6c7w-9gw2.
+        self.assertGreaterEqual(version, FIRST_SAFE_CERTIFI_VERSION)
 
 
 class SiteNavigationTests(unittest.TestCase):

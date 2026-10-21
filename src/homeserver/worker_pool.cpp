@@ -20,6 +20,7 @@
 #include "merovingian/net/thread_pool.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/file_metadata.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -677,6 +678,31 @@ namespace
         if (!decision.accepted)
         {
             return {{}, "relayed event failed signature verification: " + decision.reason};
+        }
+
+        // EVT-1: the sender's signature says nothing about a restricted join's
+        // authorising server. events::authorize_event_against_auth_events only
+        // sees that its signature is present, so verify it here, with a key main
+        // resolves itself, before pdu_sink or the membership acceptor runs.
+        auto const* policy = rooms::find_room_version_policy(room_version);
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        if (policy == nullptr || parsed.error != canonicaljson::ParseError::none)
+        {
+            return {{}, "relayed event could not be checked for an authorising server"};
+        }
+        auto const authorising = federation::verify_join_authorising_server_signature(
+            parsed.value, *policy, [&runtime](std::string_view server_name, std::string_view key_id) {
+                auto const unlocked = RuntimeLockRelease{};
+                std::ignore = unlocked;
+                return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
+            });
+        if (authorising.status == 503U)
+        {
+            return {{}, "main key-resolution admission overloaded", true};
+        }
+        if (!authorising.accepted)
+        {
+            return {{}, "relayed event failed authorising-server verification: " + authorising.reason};
         }
         return {pdu.event_id, {}};
     }

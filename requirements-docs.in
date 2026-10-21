@@ -3,3 +3,8 @@
 #   uv pip compile requirements-docs.in --universal --python-version 3.13 --generate-hashes -o requirements-docs.txt
 mkdocs==1.6.1
 mkdocs-material==9.7.7
+# Transitive (via requests), floored for GHSA-6q48-6c7w-9gw2: releases before
+# 2026.10.18 bundle emSign root CAs with compromised intermediate CA keys.
+# The advisory's version range names 2026.10.19 as the first patched release,
+# and dependency scanners enforce that range, so the floor is 2026.10.19.
+certifi>=2026.10.19

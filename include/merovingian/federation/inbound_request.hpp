@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -470,6 +471,65 @@ struct VerificationKeyResolution final
 [[nodiscard]] auto resolve_verification_key(FederationRuntimeState& runtime, std::string_view source,
                                             std::string_view server_name, std::string_view key_id)
     -> VerificationKeyResolution;
+
+// How many of the key IDs an event lists under its authorising server are
+// tried. Any one valid signature satisfies the rule, but the signatures object
+// is not itself signed, so a relaying server can add key IDs, and each
+// candidate may cost a key fetch. A rotating server signs with one or two keys.
+inline constexpr std::size_t max_authorising_signature_keys{4U};
+
+// The server and keys a restricted join's authorising-server signature may be
+// checked with: the homeserver of content.join_authorised_via_users_server and
+// the first max_authorising_signature_keys key IDs the event lists under it,
+// in the event's own order (empty when it lists none). std::nullopt when the
+// rule does not apply (not an m.room.member event, or no such field). A field
+// whose value is not a user ID yields an empty server_name: it denotes no
+// homeserver, so the event cannot be validly signed and the verifier refuses
+// it (a 403), never treating it as absent. Callers
+// that resolve keys ahead of verification (the send_join state path) use this
+// so they fetch exactly the keys the verifier will ask for.
+struct AuthorisingSignatureKey final
+{
+    std::string server_name{};
+    std::vector<std::string> key_ids{};
+};
+[[nodiscard]] auto join_authorising_signature_key(canonicaljson::Value const& event)
+    -> std::optional<AuthorisingSignatureKey>;
+
+// Resolves the authorising server's signing key for a restricted join through
+// the caller's own admitted key path (resolve_verification_key, or an adapter
+// over a RemoteKeyResolver).
+using AuthorisingKeyResolver =
+    std::function<VerificationKeyResolution(std::string_view server_name, std::string_view key_id)>;
+
+// EVT-1 (rooms/v8.md and v10.md auth rule 4.2.1; v12.md rule 5.2.1): an
+// m.room.member event whose content carries join_authorised_via_users_server
+// MUST be validly signed by that user's homeserver, whatever the join rule.
+// events::authorize_event_against_auth_events only checks that such a
+// signature is present, so every path that admits a PDU
+// into the event graph calls this after verifying the sender's signature: the
+// /send and send_join path (through the resolver overload of
+// authorize_federation_pdu), worker relay re-verification, backfill
+// ingestion, and the send_join state this server stores when it joins
+// (filter_verified_send_join_events). An event without the field is accepted unchanged. A local
+// admission denial from `resolve_key` is a retryable 503, never a verdict on
+// the signature; every other failure is a 403.
+//
+// Each candidate key may be a remote fetch, so a caller with a wall-clock
+// budget passes `deadline`: no candidate lookup starts once it has passed
+// (one already in progress runs to the resolver's own timeout). Stopping for
+// the deadline with nothing verified is a 504, again never a verdict.
+[[nodiscard]] auto verify_join_authorising_server_signature(
+    canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
+    AuthorisingKeyResolver const& resolve_key, crypto::Ed25519Provider& provider,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
+    -> FederationDecision;
+// As above, verifying with libsodium directly (no signing provider involved).
+[[nodiscard]] auto verify_join_authorising_server_signature(
+    canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
+    AuthorisingKeyResolver const& resolve_key,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
+    -> FederationDecision;
 
 // FED-10, ADR-0155: the key of `server_name`/`key_id` for verifying the state of
 // a room this server is joining. A network-free cached key is used when there

@@ -272,3 +272,181 @@ SCENARIO("sliding sync position parsing remains independent of resource policy",
         }
     }
 }
+
+SCENARIO("sliding sync admission caps the number of lists, sort keys and bump event types",
+         "[sliding-sync][limits][security][sp01]")
+{
+    GIVEN("the default sliding sync policy")
+    {
+        auto const limits = merovingian::sync::SlidingSyncLimits{};
+
+        WHEN("the list-shape caps are read")
+        {
+            THEN("they are 32 lists, 3 sort keys per list and 64 bump event types per list")
+            {
+                REQUIRE(limits.lists == 32U);
+                REQUIRE(limits.sort_keys == 3U);
+                REQUIRE(limits.bump_event_types == 64U);
+            }
+        }
+    }
+
+    GIVEN("a request with exactly as many lists as the policy allows")
+    {
+        auto limits = merovingian::sync::SlidingSyncLimits{};
+        limits.lists = 4U;
+        auto request = merovingian::sync::SlidingSyncRequest{};
+        for (auto i = std::size_t{0U}; i < limits.lists; ++i)
+        {
+            request.lists.emplace("list" + std::to_string(i), merovingian::sync::SlidingSyncList{});
+        }
+
+        WHEN("the request is checked against the policy")
+        {
+            auto const at_cap = merovingian::sync::sliding_sync_request_limit_violation(request, limits);
+
+            THEN("it is admitted")
+            {
+                REQUIRE_FALSE(at_cap.has_value());
+            }
+        }
+
+        WHEN("one more list is added and the request is checked")
+        {
+            request.lists.emplace("one-too-many", merovingian::sync::SlidingSyncList{});
+            auto const over_cap = merovingian::sync::sliding_sync_request_limit_violation(request, limits);
+
+            THEN("the list count is reported as the violation")
+            {
+                REQUIRE(over_cap.has_value());
+                REQUIRE(*over_cap == "too many lists");
+            }
+        }
+    }
+
+    GIVEN("a list with exactly as many sort keys as the policy allows")
+    {
+        auto limits = merovingian::sync::SlidingSyncLimits{};
+        limits.sort_keys = 3U;
+        auto list = merovingian::sync::SlidingSyncList{};
+        list.sort = {"by_recency", "by_name", "by_notification_count"};
+        auto request = merovingian::sync::SlidingSyncRequest{};
+
+        WHEN("the request is checked against the policy")
+        {
+            request.lists.emplace("a", list);
+            auto const at_cap = merovingian::sync::sliding_sync_request_limit_violation(request, limits);
+
+            THEN("it is admitted")
+            {
+                REQUIRE_FALSE(at_cap.has_value());
+            }
+        }
+
+        WHEN("the list repeats a sort key so that it has one more than the policy allows")
+        {
+            list.sort.emplace_back("by_recency");
+            request.lists.emplace("a", list);
+            auto const over_cap = merovingian::sync::sliding_sync_request_limit_violation(request, limits);
+
+            THEN("the sort key count is reported as the violation")
+            {
+                REQUIRE(over_cap.has_value());
+                REQUIRE(*over_cap == "too many sort keys in a list");
+            }
+        }
+    }
+
+    GIVEN("a list with exactly as many bump event types as the policy allows")
+    {
+        auto limits = merovingian::sync::SlidingSyncLimits{};
+        limits.bump_event_types = 5U;
+        auto list = merovingian::sync::SlidingSyncList{};
+        for (auto i = std::size_t{0U}; i < limits.bump_event_types; ++i)
+        {
+            list.bump_event_types.push_back("m.test.type" + std::to_string(i));
+        }
+        auto request = merovingian::sync::SlidingSyncRequest{};
+
+        WHEN("the request is checked against the policy")
+        {
+            request.lists.emplace("a", list);
+            auto const at_cap = merovingian::sync::sliding_sync_request_limit_violation(request, limits);
+
+            THEN("it is admitted")
+            {
+                REQUIRE_FALSE(at_cap.has_value());
+            }
+        }
+
+        WHEN("one more bump event type is added and the request is checked")
+        {
+            list.bump_event_types.emplace_back("m.test.one-too-many");
+            request.lists.emplace("a", list);
+            auto const over_cap = merovingian::sync::sliding_sync_request_limit_violation(request, limits);
+
+            THEN("the bump event type count is reported as the violation")
+            {
+                REQUIRE(over_cap.has_value());
+                REQUIRE(*over_cap == "too many bump_event_types in a list");
+            }
+        }
+    }
+
+    GIVEN("a request that exceeds the default list, sort key and bump event type caps")
+    {
+        auto const limits = merovingian::sync::SlidingSyncLimits{};
+
+        WHEN("33 lists are sent")
+        {
+            auto request = merovingian::sync::SlidingSyncRequest{};
+            for (auto i = std::size_t{0U}; i < 33U; ++i)
+            {
+                request.lists.emplace("list" + std::to_string(i), merovingian::sync::SlidingSyncList{});
+            }
+
+            THEN("both the explicit defaults and the default-argument overload reject it")
+            {
+                auto const explicit_default = merovingian::sync::sliding_sync_request_limit_violation(request, limits);
+                auto const implicit_default = merovingian::sync::sliding_sync_request_limit_violation(request);
+                REQUIRE(explicit_default.has_value());
+                REQUIRE(*explicit_default == "too many lists");
+                REQUIRE(implicit_default.has_value());
+                REQUIRE(*implicit_default == "too many lists");
+            }
+        }
+
+        WHEN("a list with 4 sort keys is sent")
+        {
+            auto list = merovingian::sync::SlidingSyncList{};
+            list.sort = {"by_recency", "by_name", "by_recency", "by_name"};
+            auto request = merovingian::sync::SlidingSyncRequest{};
+            request.lists.emplace("a", list);
+
+            THEN("the default policy rejects it")
+            {
+                auto const violation = merovingian::sync::sliding_sync_request_limit_violation(request);
+                REQUIRE(violation.has_value());
+                REQUIRE(*violation == "too many sort keys in a list");
+            }
+        }
+
+        WHEN("a list with 65 bump event types is sent")
+        {
+            auto list = merovingian::sync::SlidingSyncList{};
+            for (auto i = std::size_t{0U}; i < 65U; ++i)
+            {
+                list.bump_event_types.push_back("m.test.type" + std::to_string(i));
+            }
+            auto request = merovingian::sync::SlidingSyncRequest{};
+            request.lists.emplace("a", list);
+
+            THEN("the default policy rejects it")
+            {
+                auto const violation = merovingian::sync::sliding_sync_request_limit_violation(request);
+                REQUIRE(violation.has_value());
+                REQUIRE(*violation == "too many bump_event_types in a list");
+            }
+        }
+    }
+}

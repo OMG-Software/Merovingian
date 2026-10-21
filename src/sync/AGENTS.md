@@ -54,8 +54,13 @@ view events in it (C-S API, "Room history visibility"). Classify every client-na
 
 `world_readable` is not permission to subscribe. The extensions drop rooms the caller has not
 joined. `parse_sliding_sync_request` clamps `timeline_limit` to
-`sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions
-and `required_state` pairs (the handler answers a violation 400 `M_INVALID_PARAM`). Every new
+`sliding_sync_max_timeline_limit`; `sliding_sync_request_limit_violation` caps subscriptions,
+`required_state` pairs, lists (32), sort keys per list (3) and `bump_event_types` per list (64)
+(the handler answers a violation 400 `M_INVALID_PARAM`).
+
+`compute_room_list` sorts while the runtime lock is held. Every sort key is computed once per
+room before `std::stable_sort`, never inside the comparator, which runs O(N log N) times
+(ADR-0172). Every new
 extension that takes a client-named room list must gate on `room_access_for()` too.
 
 ## Receipt visibility

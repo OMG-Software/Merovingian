@@ -1,3 +1,53 @@
+## 0.12.31
+
+Fixes the two HIGH findings from security audit run-1 (2026-10-20).
+
+- **SECURITY (forged restricted joins via worker relay or backfill):** an `m.room.member`
+  event carrying `join_authorised_via_users_server` must be validly signed by that user's
+  server (rooms/v10.md rule 4.2.1). Only `/send` and `send_join` verified that signature.
+  Main's re-verification of PDUs relayed by the federation worker, and backfill /
+  missing-history ingestion, checked only the sender's signature, so the structural auth rule
+  accepted any non-empty authorising-server signature. In a restricted room this was latent:
+  those paths' auth maps never carry the authorising user's membership, so they refuse every
+  non-invited restricted join anyway (a separate bug, not fixed here). In a room with any
+  other join rule, a join carrying a forged authorising signature was accepted, which rule
+  4.2.1 forbids. All four paths, and the `send_join` state this server stores when it joins a
+  remote room, now call one helper,
+  `federation::verify_join_authorising_server_signature`. It resolves the authorising
+  server's key through the caller's admitted lookup and refuses the event unless the
+  signature verifies. A local key-resolution overload is retryable (503 / `main_overloaded`),
+  never a verdict. Any listed authorising-server key may verify the event (up to four are tried),
+  because a relaying server can add key IDs to the unsigned `signatures` object; backfill stops
+  starting candidate lookups at its deadline. A `join_authorised_via_users_server` that is not
+  a user ID names no homeserver, so the join is refused rather than treated as if the key were
+  absent. The helper
+  applies the rule to `m.room.member` events only, as the spec
+  says; the previous `/send` code also applied it to other event types (ADR-0171).
+- **SECURITY (one sliding-sync request could stall the server):** `by_recency` and `by_name`
+  were computed inside the sort comparator, rescanning the event store on every one of
+  O(N log N) comparisons while the runtime lock was held. Every sort key is now computed once
+  per room before the sort: `by_recency` in one newest-first pass that skips events that
+  cannot beat the room's current maximum, and `by_name` in one pass over state and one over
+  events. Requests over 32 lists, 3 sort keys per list or 64 `bump_event_types` per list are
+  refused with 400 `M_INVALID_PARAM` (ADR-0172).
+- **TESTS:** branch coverage for `verify_join_authorising_server_signature`; forged and valid
+  authorising signatures on the worker-relay (`pdu_ingest`, `membership_ingest`) and backfill
+  paths, and in the `send_join` state this server keeps when it joins (forged, absent, genuine); the sliding-sync ordering contract over ascending, descending and shuffled stores;
+  and the new request caps at and over each limit.
+- **DEPENDENCIES (docs toolchain):** `certifi` 2026.7.22 → 2026.10.19 in `requirements-docs.txt`
+  for GHSA-6q48-6c7w-9gw2 (critical, published 2026-10-20). Releases before 2026.10.18 bundle
+  emSign root CAs whose intermediate CA keys were compromised; the advisory's version range
+  names 2026.10.19 as the first patched release, which is what scanners enforce, so that is
+  the floor. `certifi` reaches only the MkDocs site
+  build (through `requests`); the server does not use it. `requirements-docs.in` floors it at
+  2026.10.19, and `tests/tooling/test_docs_site.py` refuses a lock below that. The advisory
+  also broke the dependency-triage job: Grype reported the docs-lock package with an empty
+  location, and Code Scanning rejected the SARIF upload.
+- **DOCS:** ADR-0171 and ADR-0172; rules added to `src/federation/AGENTS.md`,
+  `src/homeserver/AGENTS.md`, `src/sync/AGENTS.md` and `docs/security-coding-rules.md`;
+  threat-model entry; `docs/event-engine.md`; a correction to the EVT-1 residual note in
+  the 2026-09-29 audit report, which said every PDU path verified the signature.
+
 ## 0.12.30
 
 - **FIXED (resident-supplied profile signed as ours):** a federated join kept a `displayname`

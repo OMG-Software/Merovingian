@@ -457,6 +457,21 @@ quickly finding everything a given `AGENTS.md` file contributed.
   of any local room (FED-1, ADR-0083).
   Source: `src/federation/AGENTS.md`.
 
+- **Every path that admits a remote PDU also verifies a restricted join's authorising-server
+  signature, with `federation::verify_join_authorising_server_signature`, after the sender
+  check.** An `m.room.member` event carrying `join_authorised_via_users_server` must be validly
+  signed by that user's server (rooms/v10.md rule 4.2.1); the auth rules only see that the
+  signature is present. `/send` and `send_join` do it through the resolver overload of
+  `authorize_federation_pdu`, worker relay, backfill and `filter_verified_send_join_events` (the
+  state a resident returns when this server joins) call it directly. Any one valid signature
+  from the authorising server satisfies the rule, so each listed key is tried, up to
+  `max_authorising_signature_keys`: the signatures object is not itself signed, so a relaying
+  server can add key IDs.
+  Why: until 0.12.31 only `/send` and `send_join` checked it, so a compromised worker, or any
+  remote server answering a history fetch, could get a forged restricted join stored
+  (CWE-347 Improper Verification of Cryptographic Signature; security audit run-1, ADR-0171).
+  Source: `src/federation/AGENTS.md`.
+
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
   server supplies inline. The cache fetches from `/_matrix/key/v2/server` and trusts a key for
   at most 7 days after the fetch. From room v5 an event's signing key must be valid at the
@@ -974,6 +989,15 @@ media-fetch-pool task.
   banned or departed user read on (audit CSAZ-2, CSAZ-3). The filter fails closed: no recorded
   state at an event means not visible, never a fallback to current state.
   Source: `src/sync/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **A sliding-sync sort key is computed once per room before the sort, never inside the
+  comparator, and the shape of a request's lists is capped (32 lists, 3 sort keys and 64
+  `bump_event_types` per list; 400 `M_INVALID_PARAM` beyond).**
+  Why: the sort runs while the runtime lock is held. Until 0.12.31 `by_recency` and `by_name`
+  rescanned the event store on every comparison, with nothing bounding the lists, so one
+  authenticated request could stall the whole server (CWE-407 Inefficient Algorithmic
+  Complexity; security audit run-1, ADR-0172).
+  Source: `src/sync/AGENTS.md`.
 
 ## Trust and safety
 

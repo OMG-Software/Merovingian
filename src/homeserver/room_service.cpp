@@ -3654,6 +3654,21 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             {
                 continue;
             }
+            // A restricted join's authorising server is verified below too
+            // (ADR-0171); fetch every key the verifier may try (at most
+            // max_authorising_signature_keys) in the same parallel pass.
+            if (auto const authorising = federation::join_authorising_signature_key(entry);
+                authorising.has_value() && authorising->server_name != our_server)
+            {
+                for (auto const& authorising_key_id : authorising->key_ids)
+                {
+                    auto key = std::make_pair(authorising->server_name, authorising_key_id);
+                    if (seen.insert(key).second)
+                    {
+                        distinct_pairs.push_back(std::move(key));
+                    }
+                }
+            }
             auto const dom = sender_domain_from_user_id(parsed.event.sender);
             if (dom.empty() || dom == our_server)
             {
@@ -3819,6 +3834,32 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                            {
                                {"sender_domain", std::string{dom},   false},
                                {"reason",        verification.error, false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
+        // EVT-1, ADR-0171: a restricted join in the resident's state must also be
+        // validly signed by its authorising server, like on every other ingestion
+        // path. Its key was resolved in the pass above (or is one of ours).
+        auto const authorising = federation::verify_join_authorising_server_signature(
+            entry, policy,
+            [&](std::string_view server_name, std::string_view authorising_key_id) {
+                if (server_name == our_server)
+                {
+                    return federation::VerificationKeyResolution{own_signing_key(authorising_key_id)};
+                }
+                auto const map_it = sender_key_map.find(
+                    std::pair<std::string, std::string>{std::string{server_name}, std::string{authorising_key_id}});
+                return federation::VerificationKeyResolution{map_it != sender_key_map.end() ? map_it->second
+                                                                                            : std::nullopt};
+            },
+            *runtime.crypto_provider);
+        if (!authorising.accepted)
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom},   false},
+                               {"reason",        authorising.reason, false}
             },
                            observability::LogEventSeverity::warning);
             continue;
