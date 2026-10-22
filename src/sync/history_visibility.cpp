@@ -116,20 +116,6 @@ HistoryVisibility::HistoryVisibility(database::PersistentStore const& store, std
 {
 }
 
-auto HistoryVisibility::ensure_event_index() -> void
-{
-    if (event_index_built_)
-    {
-        return;
-    }
-    events_by_id_.reserve(store_.events.size());
-    for (auto const& event : store_.events)
-    {
-        events_by_id_.emplace(event.event_id, &event);
-    }
-    event_index_built_ = true;
-}
-
 auto HistoryVisibility::ensure_event_group_index() -> void
 {
     if (event_group_index_built_)
@@ -164,9 +150,8 @@ auto HistoryVisibility::ensure_group_index() -> void
 
 auto HistoryVisibility::find_event(std::string_view event_id) -> database::PersistentEvent const*
 {
-    ensure_event_index();
-    auto const found = events_by_id_.find(event_id);
-    return found == events_by_id_.end() ? nullptr : found->second;
+    auto const found = store_.events.find(event_id);
+    return found == store_.events.end() ? nullptr : &*found;
 }
 
 auto HistoryVisibility::state_group_of(std::string_view event_id) -> std::optional<std::string_view>

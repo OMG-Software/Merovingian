@@ -286,13 +286,6 @@ namespace
             }
         }
 
-        auto event_index = std::unordered_map<std::string_view, PersistentEvent const*>{};
-        event_index.reserve(store.events.size() * 2U);
-        for (auto const& event : store.events)
-        {
-            event_index[event.event_id] = &event;
-        }
-
         auto visited = std::unordered_set<std::string>{};
         auto queue = std::deque<std::string>{};
         for (auto const& id : prev_event_ids)
@@ -314,12 +307,11 @@ namespace
                 {
                     return std::string{id};
                 }
-                auto const iterator = event_index.find(id);
-                if (iterator == event_index.end())
+                auto const event = store.events.find(id);
+                if (event == store.events.end())
                 {
                     continue;
                 }
-                auto const* event = iterator->second;
                 for (auto const& parent : event->prev_event_ids)
                 {
                     if (visited.insert(parent).second)
