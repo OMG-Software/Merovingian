@@ -1,6 +1,5 @@
 Name:           merovingian
 Version:        0.12.38
-Version:        0.12.37
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +99,7 @@ fi
 %changelog
 * Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.38-1
 - Conformance audit wave 4: room account data, account data validation, generated usernames, typing expiry, search of left rooms.
+
 * Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.37-1
 - Send appservices invites to their virtual users, ephemeral data, and the events createRoom makes; add appservice ping and network directories.
 - Forward send_attempt to identity servers on requestToken.
