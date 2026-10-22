@@ -71,8 +71,8 @@ struct Reply final
     return *token;
 }
 
-[[nodiscard]] auto create_room(ClientServerRuntime& rt, std::string const& token,
-                               std::string const& body) -> std::string
+[[nodiscard]] auto create_room(ClientServerRuntime& rt, std::string const& token, std::string const& body)
+    -> std::string
 {
     auto const reply = call(rt, "POST", "/_matrix/client/v3/createRoom", token, body);
     REQUIRE(reply.status == 200U);

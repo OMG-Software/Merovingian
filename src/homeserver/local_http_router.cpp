@@ -209,6 +209,43 @@ namespace
         return authorised != nullptr ? *authorised : std::string{};
     }
 
+    // `event` without any signature filed under `server_name`. Before this
+    // server co-signs a restricted join (R04, ADR-0185) it drops whatever the
+    // joining server put under its name: the signatures object is covered by
+    // no signature, so such entries are unverified, and this server's
+    // signature on the event is only the one it adds itself.
+    [[nodiscard]] auto without_signatures_of(canonicaljson::Value const& event, std::string_view server_name)
+        -> canonicaljson::Value
+    {
+        auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
+        if (object == nullptr)
+        {
+            return event;
+        }
+        auto copy = canonicaljson::Object{};
+        copy.reserve(object->size());
+        for (auto const& member : *object)
+        {
+            auto const* signatures =
+                member.key == "signatures" ? std::get_if<canonicaljson::Object>(&member.value->storage()) : nullptr;
+            if (signatures == nullptr)
+            {
+                copy.push_back(canonicaljson::make_member(member.key, *member.value));
+                continue;
+            }
+            auto kept = canonicaljson::Object{};
+            for (auto const& entry : *signatures)
+            {
+                if (entry.key != server_name)
+                {
+                    kept.push_back(canonicaljson::make_member(entry.key, *entry.value));
+                }
+            }
+            copy.push_back(canonicaljson::make_member(member.key, canonicaljson::Value{std::move(kept)}));
+        }
+        return canonicaljson::Value{std::move(copy)};
+    }
+
     // Every (room_id-scoped) row of store.state as flat state-group-style
     // entries, so the current-state auth map (ADR-0064 phase B2 step 6) can
     // share build_auth_event_map_from_entries with the state-before (step 5)
@@ -2153,12 +2190,11 @@ namespace
             // that user's m.room.member event.
             if (endpoint == federation::FederationEndpoint::make_join)
             {
-                auto const decision =
-                    decide_restricted_join(store, room_id, user_id, rt->config.server().server_name);
+                auto const decision = decide_restricted_join(store, room_id, user_id, rt->config.server().server_name);
                 if (decision.verdict == RestrictedJoinVerdict::authorised)
                 {
-                    content_obj.push_back(canonicaljson::make_member(
-                        "join_authorised_via_users_server", canonicaljson::Value{decision.authorising_user}));
+                    content_obj.push_back(canonicaljson::make_member("join_authorised_via_users_server",
+                                                                     canonicaljson::Value{decision.authorising_user}));
                     if (std::ranges::find(tmpl.auth_events, decision.authorising_member_event_id) ==
                         tmpl.auth_events.end())
                     {
@@ -2347,22 +2383,21 @@ namespace
                             decide_restricted_join(store, room_id, envelope.sender, our_server, authoriser);
                         if (decision.verdict != RestrictedJoinVerdict::authorised)
                         {
-                            auto const refusing =
-                                decision.verdict == RestrictedJoinVerdict::not_restricted ||
-                                        decision.verdict == RestrictedJoinVerdict::already_permitted
-                                    ? RestrictedJoinVerdict::forbidden
-                                    : decision.verdict;
-                            auto const reason =
-                                refusing == decision.verdict
-                                    ? decision.reason
-                                    : std::string{"this join needs no authorisation from this server"};
+                            auto const refusing = decision.verdict == RestrictedJoinVerdict::not_restricted ||
+                                                          decision.verdict == RestrictedJoinVerdict::already_permitted
+                                                      ? RestrictedJoinVerdict::forbidden
+                                                      : decision.verdict;
+                            auto const reason = refusing == decision.verdict
+                                                    ? decision.reason
+                                                    : std::string{"this join needs no authorisation from this server"};
                             return {false,
                                     restricted_join_refusal_status(refusing),
                                     matrix_error(restricted_join_refusal_errcode(refusing), reason),
                                     {},
                                     {}};
                         }
-                        auto signed_join = sign_invite_event(*rt, effective_pdu, room_policy->id);
+                        auto signed_join =
+                            sign_invite_event(*rt, without_signatures_of(effective_pdu, our_server), room_policy->id);
                         if (!signed_join.has_value())
                         {
                             return {false, 500U, "failed to add this server's signature to the join", {}, {}};
@@ -2660,7 +2695,12 @@ namespace
             // accepted and stored — redacted after a hash mismatch (R06) and
             // carrying this server's signature when it authorised a
             // restricted join (R04) — never the raw request body.
-            return {true,   200U, {}, std::move(auth_chain), std::move(state_events), room_version_from_store(store, room_id),
+            return {true,
+                    200U,
+                    {},
+                    std::move(auth_chain),
+                    std::move(state_events),
+                    room_version_from_store(store, room_id),
                     stored_json};
         };
 
@@ -2685,7 +2725,7 @@ namespace
             // version where this server holds it, else the one the request
             // carries (handle_invite fills it for v1 too).
             auto const stored_room_version = room_version_from_store(rt->database.persistent_store, invite.room_id);
-            auto const signing_room_version = !stored_room_version.empty() ? stored_room_version
+            auto const signing_room_version = !stored_room_version.empty()   ? stored_room_version
                                               : !invite.room_version.empty() ? invite.room_version
                                                                              : std::string{"12"};
             // Audit R06. Spec "Checks performed on receipt of a PDU", step 3:

@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/worker_pool.hpp"
 
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/secret_buffer.hpp"
@@ -1018,16 +1019,19 @@ auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string
     return serialize_profile_query_ingest_result(profile);
 }
 
-auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
-    -> std::string
+auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
 {
     // The frame comes from the worker (ADR-0071: untrusted input). A template
-    // carries nothing secret (room state the worker's own snapshot already
-    // holds), so main only checks the frame is well formed; the worker has
-    // already checked the user is on the X-Matrix origin. The provider takes
+    // carries no secret, only event IDs of the room's current state. The
+    // worker checked the user against the X-Matrix origin, which main cannot
+    // see, so main checks what it can: a well-formed frame naming a federated
+    // user ID of ANOTHER server (make_join is how a remote server joins; a
+    // local user joins through the client API). The provider takes
     // runtime.mutex itself and makes no network call.
     auto const request = ipc::deserialize_membership_template_ingest(request_json);
-    if (!request.has_value() || !runtime.federation.membership_template_provider)
+    if (!request.has_value() || !runtime.federation.membership_template_provider ||
+        !auth::user_id_is_valid_federated(request->user_id) ||
+        auth::user_id_server_name(request->user_id) == runtime.config.server().server_name)
     {
         return ipc::serialize_membership_template_ingest_result(std::nullopt);
     }
@@ -1204,156 +1208,156 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         // the frame and enqueues the real work on handler_pool_. Each task
         // holds its own ref-counted channel snapshot and sends the response
         // from the pool, so a slow handler can never stall later queued frames.
-        supervisor->set_channel_request_handler([this, shard_index = i](
-                                                    std::shared_ptr< // SHARED_PTR: reviewed - queued receiver.
-                                                        ipc::IpcChannel> const& ch,
-                                                    std::uint64_t id, std::string json) {
-            auto const type = json_get_str(json, "type");
-            // The supervisor supplies the exact receiving channel. Capture it
-            // in each task: a later snapshot could be another worker generation
-            // with colliding channel-local parent IDs.
-            // ADR-0078: frames a worker must never send are refused first,
-            // inline, with no runtime lock, no handler-pool slot and no work.
-            if (ch && refuse_forbidden_worker_request(*ch, id, type))
-            {
-                return;
-            }
-            if (type == "pdu_ingest")
-            {
-                auto const room_id = json_get_str(json, "room_id");
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, room_id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        auto const result = handle_pdu_ingest_request(runtime_, json);
-                        if (result.status == federation::PduIngestionStatus::accepted)
-                        {
-                            // Push the just-committed event back down to whichever
-                            // shard owns this room — in practice the same worker that
-                            // made this exact pdu_ingest call, since shard_for() is a
-                            // pure function of room_id. Without this, a message
-                            // relayed from a worker is only ever visible in main's own
-                            // store: pdu_sink deliberately does not write to the
-                            // worker's own PersistentStore ("does NOT write events",
-                            // see worker_event_loop.cpp), and nothing else refreshes a
-                            // worker's room snapshot for ordinary (non-membership)
-                            // traffic. A later backfill/event/state query for this
-                            // room landing back on that shard would otherwise omit
-                            // this event. See docs/architecture.md, "Federation
-                            // worker room staleness".
-                            notify_room_changed(room_id);
-                        }
-                        ch->send_response(id, serialize_pdu_ingest_result(result));
-                    }))
+        supervisor->set_channel_request_handler(
+            [this, shard_index = i](std::shared_ptr< // SHARED_PTR: reviewed - queued receiver.
+                                        ipc::IpcChannel> const& ch,
+                                    std::uint64_t id, std::string json) {
+                auto const type = json_get_str(json, "type");
+                // The supervisor supplies the exact receiving channel. Capture it
+                // in each task: a later snapshot could be another worker generation
+                // with colliding channel-local parent IDs.
+                // ADR-0078: frames a worker must never send are refused first,
+                // inline, with no runtime lock, no handler-pool slot and no work.
+                if (ch && refuse_forbidden_worker_request(*ch, id, type))
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    return;
                 }
-            }
-            else if (type == "membership_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_membership_ingest_request(runtime_, json));
-                    }))
+                if (type == "pdu_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    auto const room_id = json_get_str(json, "room_id");
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, room_id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            auto const result = handle_pdu_ingest_request(runtime_, json);
+                            if (result.status == federation::PduIngestionStatus::accepted)
+                            {
+                                // Push the just-committed event back down to whichever
+                                // shard owns this room — in practice the same worker that
+                                // made this exact pdu_ingest call, since shard_for() is a
+                                // pure function of room_id. Without this, a message
+                                // relayed from a worker is only ever visible in main's own
+                                // store: pdu_sink deliberately does not write to the
+                                // worker's own PersistentStore ("does NOT write events",
+                                // see worker_event_loop.cpp), and nothing else refreshes a
+                                // worker's room snapshot for ordinary (non-membership)
+                                // traffic. A later backfill/event/state query for this
+                                // room landing back on that shard would otherwise omit
+                                // this event. See docs/architecture.md, "Federation
+                                // worker room staleness".
+                                notify_room_changed(room_id);
+                            }
+                            ch->send_response(id, serialize_pdu_ingest_result(result));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "edu_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_edu_ingest_request(runtime_, json, *ch));
-                    }))
+                else if (type == "membership_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_membership_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "invite_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_invite_ingest_request(runtime_, json));
-                    }))
+                else if (type == "edu_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_edu_ingest_request(runtime_, json, *ch));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "otk_claim_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json));
-                    }))
+                else if (type == "invite_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_invite_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "user_devices_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_user_devices_ingest_request(runtime_, json));
-                    }))
+                else if (type == "otk_claim_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "device_keys_query_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
-                    }))
+                else if (type == "user_devices_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_user_devices_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "profile_query_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
-                    }))
+                else if (type == "device_keys_query_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "membership_template_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_membership_template_ingest_request(runtime_, json));
-                    }))
+                else if (type == "profile_query_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "event_query_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_event_query_ingest_request(runtime_, json));
-                    }))
+                else if (type == "membership_template_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_membership_template_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "room_sync_result")
-            {
-                // Fire-and-forget notification from the worker reporting the
-                // outcome of an asynchronous room_sync reload.  No response is
-                // sent.  Handle it inline on the dispatch thread: it only
-                // updates an in-memory status map.
-                auto const result_room_id = json_get_str(json, "room_id");
-                auto const result_state = json_get_str(json, "state");
-                auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
-                record_room_sync_result(result_room_id, result_state, result_generation);
-            }
-            else
-            {
-                LOG_WARNING("WorkerPool shard " + std::to_string(shard_index) +
-                            ": unexpected IPC request type: " + type);
-            }
-        });
+                else if (type == "event_query_ingest")
+                {
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_event_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
+                }
+                else if (type == "room_sync_result")
+                {
+                    // Fire-and-forget notification from the worker reporting the
+                    // outcome of an asynchronous room_sync reload.  No response is
+                    // sent.  Handle it inline on the dispatch thread: it only
+                    // updates an in-memory status map.
+                    auto const result_room_id = json_get_str(json, "room_id");
+                    auto const result_state = json_get_str(json, "state");
+                    auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
+                    record_room_sync_result(result_room_id, result_state, result_generation);
+                }
+                else
+                {
+                    LOG_WARNING("WorkerPool shard " + std::to_string(shard_index) +
+                                ": unexpected IPC request type: " + type);
+                }
+            });
 
         supervisor->start();
         workers_.push_back(std::move(supervisor));

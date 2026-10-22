@@ -41,8 +41,8 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
-                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
+    -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -58,8 +58,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
-                                      std::string const& target,
-                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                      std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -146,8 +146,8 @@ struct MembershipRoute final
     return json;
 }
 
-[[nodiscard]] auto message_event_by(std::string const& server, std::string const& key_id,
-                                    std::string const& seed) -> std::string
+[[nodiscard]] auto message_event_by(std::string const& server, std::string const& key_id, std::string const& seed)
+    -> std::string
 {
     auto const unsigned_json = std::string{R"({"auth_events":[],"content":{"body":"hi","msgtype":"m.text"},"depth":3,)"
                                            R"("origin_server_ts":1000002,"prev_events":[],"room_id":"!room:)"} +
@@ -307,12 +307,16 @@ SCENARIO("The invite endpoints pass a hash-mismatched invite on for redaction an
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#validating-hashes-and-signatures-on-received-events
 // URL: ../../docs/matrix-v1.19-spec/appendices.md#checking-for-a-signature
 //
-// "If a signature is from an unknown or expired key, it is skipped." and
-// "Removes any signing key identifiers from the entry with algorithms it
-// doesn't understand." The signatures object is not covered by any signature,
-// so whoever relays an event can list extra key IDs: the check uses every key
-// ID listed for the sender's server, not only the first, and an attacker-made
-// list costs at most max_signature_keys_per_server lookups (audit R05, ADR-0183).
+// "If a signature is from an unknown or expired key, it is skipped." "If all
+// signatures from known unexpired keys from the originating server(s) are found
+// to be valid, the expected content hash is calculated." "Removes any signing
+// key identifiers from the entry with algorithms it doesn't understand." The
+// check therefore covers every key ID listed for the sender's server, not only
+// the first: unknown and expired keys are skipped, a known key's bad signature
+// refuses the event, and one valid signature is required. The signatures object
+// is covered by no signature, so a relay can list extra IDs; more than
+// max_signature_keys_per_server is refused before any lookup (audit R05,
+// ADR-0183).
 SCENARIO("The sender's signature is checked against every key ID listed for its server, within a bound",
          "[federation][conformance][signatures][r05]")
 {
@@ -322,6 +326,9 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
         auto const genuine_id = std::string{"ed25519:zz_genuine"};
         auto const genuine_key = remote_for(server, genuine_id, "alice-genuine").signing_key;
         auto const wrong_key = remote_for(server, "ed25519:ab_wrong", "alice-other").signing_key;
+        // Expired long before the event's origin_server_ts (1000002).
+        auto expired_key = remote_for(server, "ed25519:ac_expired", "alice-expired").signing_key;
+        expired_key.valid_until_ts = 1000U;
         auto const genuine = message_event_by(server, genuine_id, "alice-genuine");
         auto calls = std::size_t{0U};
         auto denied_id = std::string{};
@@ -344,6 +351,10 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
                 {
                     return merovingian::federation::VerificationKeyResolution{wrong_key};
                 }
+                if (key_id == expired_key.key_id)
+                {
+                    return merovingian::federation::VerificationKeyResolution{expired_key};
+                }
                 return merovingian::federation::VerificationKeyResolution{};
             }};
         auto const pdu_of = [](std::string const& json) {
@@ -352,21 +363,49 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
             return pdu;
         };
 
-        WHEN("an unknown key and a key that resolves but does not verify are listed first")
+        WHEN("an unknown key and an expired key are listed first")
         {
             auto const pdu =
-                pdu_of(with_junk_signatures_first(genuine, server, {"ed25519:aa_unknown", wrong_key.key_id}));
+                pdu_of(with_junk_signatures_first(genuine, server, {"ed25519:aa_unknown", expired_key.key_id}));
             auto const decision = merovingian::federation::authorize_federation_pdu_sender(pdu, std::nullopt, resolver);
 
-            THEN("the genuine signature listed after them is found and the event is accepted")
+            THEN("both are skipped, the genuine signature listed after them is found, and the event is accepted")
             {
-                // Spec: an unknown key is skipped; the check is not limited to the first key ID.
+                // Spec: "If a signature is from an unknown or expired key, it is skipped."
                 REQUIRE(decision.accepted);
                 REQUIRE(calls == 3U);
             }
         }
 
-        WHEN("more key IDs than the bound are listed ahead of the genuine one")
+        WHEN("a known, unexpired key whose signature does not verify is listed beside the genuine one")
+        {
+            auto const pdu = pdu_of(with_junk_signatures_first(genuine, server, {wrong_key.key_id}));
+            auto const decision = merovingian::federation::authorize_federation_pdu_sender(pdu, std::nullopt, resolver);
+
+            THEN("the event fails the signature check, whatever the genuine signature says")
+            {
+                // Spec: ALL signatures from known unexpired keys must be valid.
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.status == 403U);
+            }
+        }
+
+        WHEN("only unknown and expired keys are listed")
+        {
+            auto const only_junk = with_junk_signatures_first(
+                message_event_by(server, "ed25519:ad_unpublished", "alice-unpublished"), server, {expired_key.key_id});
+            auto const decision =
+                merovingian::federation::authorize_federation_pdu_sender(pdu_of(only_junk), std::nullopt, resolver);
+
+            THEN("there is no signature to verify and the event is refused")
+            {
+                // Appendices "Checking for a Signature", step 3: no verification key, the check fails.
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.status == 403U);
+            }
+        }
+
+        WHEN("more key IDs than the bound are listed")
         {
             auto junk = std::vector<std::string>{};
             for (auto i = std::size_t{0U}; i < merovingian::federation::max_signature_keys_per_server; ++i)
@@ -376,11 +415,11 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
             auto const pdu = pdu_of(with_junk_signatures_first(genuine, server, junk));
             auto const decision = merovingian::federation::authorize_federation_pdu_sender(pdu, std::nullopt, resolver);
 
-            THEN("the event is refused, fail-closed, after no more lookups than the bound")
+            THEN("the event is refused, fail-closed, before any lookup")
             {
                 REQUIRE_FALSE(decision.accepted);
                 REQUIRE(decision.status == 403U);
-                REQUIRE(calls <= merovingian::federation::max_signature_keys_per_server);
+                REQUIRE(calls == 0U);
             }
         }
 
@@ -404,23 +443,28 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
 
         WHEN("the genuine key is already in hand, as a direct request's X-Matrix key")
         {
+            auto const alone =
+                merovingian::federation::authorize_federation_pdu_sender(pdu_of(genuine), genuine_key, resolver);
+            auto const alone_calls = calls;
             auto const pdu = pdu_of(with_junk_signatures_first(genuine, server, {"ed25519:aa_unknown"}));
-            auto const decision = merovingian::federation::authorize_federation_pdu_sender(pdu, genuine_key, resolver);
+            auto const beside = merovingian::federation::authorize_federation_pdu_sender(pdu, genuine_key, resolver);
 
-            THEN("it is tried first and nothing is looked up")
+            THEN("it is used without a lookup; only the other listed key is looked up")
             {
-                REQUIRE(decision.accepted);
-                REQUIRE(calls == 0U);
+                REQUIRE(alone.accepted);
+                REQUIRE(alone_calls == 0U);
+                REQUIRE(beside.accepted);
+                REQUIRE(calls == 1U);
             }
         }
 
-        WHEN("the only key that could verify is refused by local admission")
+        WHEN("local admission refuses the lookup of a listed key, even though the genuine one verifies")
         {
-            denied_id = genuine_id;
-            auto const pdu = pdu_of(with_junk_signatures_first(genuine, server, {"ed25519:aa_unknown"}));
+            denied_id = "ed25519:aa_unknown";
+            auto const pdu = pdu_of(with_junk_signatures_first(genuine, server, {denied_id}));
             auto const decision = merovingian::federation::authorize_federation_pdu_sender(pdu, std::nullopt, resolver);
 
-            THEN("the outcome is a retryable 503, not a verdict on the signature")
+            THEN("the outcome is a retryable 503, not a verdict on the signatures")
             {
                 REQUIRE_FALSE(decision.accepted);
                 REQUIRE(decision.status == 503U);

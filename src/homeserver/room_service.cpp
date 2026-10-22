@@ -1343,7 +1343,8 @@ namespace
             return {};
         }
         auto const* content = obj == nullptr ? nullptr : object_member_as_object(*obj, "content");
-        auto const* authorising = content == nullptr ? nullptr : string_member(*content, "join_authorised_via_users_server");
+        auto const* authorising =
+            content == nullptr ? nullptr : string_member(*content, "join_authorised_via_users_server");
         return authorising == nullptr ? std::string{} : *authorising;
     }
 
@@ -1364,8 +1365,7 @@ namespace
             // Auth events selection: a join carrying
             // join_authorised_via_users_server also names that user's current
             // m.room.member event (R04).
-            if (state.event_type == "m.room.member" && !authorising_user.empty() &&
-                state.state_key == authorising_user)
+            if (state.event_type == "m.room.member" && !authorising_user.empty() && state.state_key == authorising_user)
             {
                 result.authorising_user_member = find_event_json(store, state.event_id);
             }
@@ -1506,16 +1506,15 @@ namespace
                 auto const& our_server = runtime.config.server().server_name;
                 if (sender_domain_from_user_id(authorising_user) == our_server)
                 {
-                    auto const decision = decide_restricted_join(runtime.database.persistent_store, room_id,
-                                                                 event_state_key.value_or(std::string{}), our_server,
-                                                                 authorising_user);
+                    auto const decision =
+                        decide_restricted_join(runtime.database.persistent_store, room_id,
+                                               event_state_key.value_or(std::string{}), our_server, authorising_user);
                     if (decision.verdict != RestrictedJoinVerdict::authorised)
                     {
-                        log_diagnostic("event.compose.rejected",
-                                       {
-                                           {"room_id", std::string{room_id}, false},
-                                           {"sender",  std::string{sender},  false},
-                                           {"reason",  decision.reason,      false}
+                        log_diagnostic("event.compose.rejected", {
+                                                                     {"room_id", std::string{room_id}, false},
+                                                                     {"sender",  std::string{sender},  false},
+                                                                     {"reason",  decision.reason,      false}
                         });
                         return ComposeResult{std::nullopt, ComposeFailure::rejected};
                     }
@@ -3807,8 +3806,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         {
             continue;
         }
-        auto const key_ids = federation::signature_key_ids_for_server(parsed.event.signatures, dom);
-        if (key_ids.empty())
+        if (federation::signature_key_ids_for_server(parsed.event.signatures, dom).empty())
         {
             log_diagnostic("room.join.state_event_rejected",
                            {
@@ -3822,12 +3820,13 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         {
             continue;
         }
-        // R05 (ADR-0183): any one listed key that verifies will do. Each is one
-        // of ours (never fetched) or was resolved in the pass above. ADR-0075:
-        // from room v5 the key must still be valid at the event's
-        // origin_server_ts, the same rule every received event is held to.
-        auto const verification = federation::verify_server_signature_with_any_listed_key(
-            entry, policy, dom, key_ids,
+        // R05 (ADR-0183): every listed key that is known and unexpired must
+        // verify, and at least one must. Each is one of ours (never fetched) or
+        // was resolved in the pass above. ADR-0075: from room v5 a key counts
+        // only if it was still valid at the event's origin_server_ts, the same
+        // rule every received event is held to.
+        auto const verification = federation::verify_server_signatures_on_event(
+            entry, policy, dom, parsed.event.signatures,
             [&](std::string_view server_name, std::string_view key_id) {
                 if (server_name == our_server)
                 {
@@ -3843,7 +3842,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         {
             log_diagnostic("room.join.state_event_rejected",
                            {
-                               {"sender_domain", std::string{dom},   false},
+                               {"sender_domain", std::string{dom},    false},
                                {"reason",        verification.reason, false}
             },
                            observability::LogEventSeverity::warning);

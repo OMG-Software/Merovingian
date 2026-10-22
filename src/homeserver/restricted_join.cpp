@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
@@ -23,8 +24,8 @@ namespace merovingian::homeserver
 namespace
 {
 
-    [[nodiscard]] auto member_of(canonicaljson::Object const& object,
-                                 std::string_view key) -> canonicaljson::Value const*
+    [[nodiscard]] auto member_of(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -83,11 +84,15 @@ namespace
     }
 
     // One m.room_membership allow condition (client-server-api.md "Conditions").
+    // It can be validated only from current state of its room, so only while
+    // this server is resident there: `known` (its m.room.create is stored)
+    // and a joined user of this server among `local_member_event_ids`.
     struct Condition final
     {
         std::string room_id{};
         bool known{false};
         std::string member_event_id{};
+        std::vector<std::string> local_member_event_ids{};
     };
 
     [[nodiscard]] auto parse_conditions(canonicaljson::Value const& join_rules) -> std::vector<Condition>
@@ -120,7 +125,7 @@ namespace
             {
                 continue;
             }
-            conditions.push_back({*room_text, false, {}});
+            conditions.push_back({*room_text, false, {}, {}});
         }
         return conditions;
     }
@@ -185,8 +190,10 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
         return found == room_events.end() ? canonicaljson::Value{} : found->second;
     };
     auto const create = event_or_null(create_id);
-    auto version = content_string(create, "room_version");
-    auto const* policy = rooms::find_room_version_policy(version.empty() ? std::string{"1"} : version);
+    // ADR-0179: the version a create event declares, through the one accessor.
+    auto const* create_object = std::get_if<canonicaljson::Object>(&create.storage());
+    auto const* policy = rooms::find_room_version_policy(
+        create_object == nullptr ? std::string{"1"} : declared_room_version(*create_object));
     if (policy == nullptr)
     {
         return refuse(RestrictedJoinVerdict::forbidden, "the room's version is not supported");
@@ -231,32 +238,52 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
             {
                 condition.known = true;
             }
-            else if (state.event_type == "m.room.member" && state.state_key == user_id)
+            else if (state.event_type == "m.room.member")
             {
-                condition.member_event_id = state.event_id;
+                if (state.state_key == user_id)
+                {
+                    condition.member_event_id = state.event_id;
+                }
+                if (server_of(state.state_key) == our_server)
+                {
+                    condition.local_member_event_ids.push_back(state.event_id);
+                }
             }
         }
     }
     auto condition_member_ids = std::unordered_set<std::string>{};
     for (auto const& condition : conditions)
     {
-        if (condition.known && !condition.member_event_id.empty())
+        if (!condition.known)
+        {
+            continue;
+        }
+        if (!condition.member_event_id.empty())
         {
             condition_member_ids.insert(condition.member_event_id);
         }
+        condition_member_ids.insert(condition.local_member_event_ids.begin(), condition.local_member_event_ids.end());
     }
     auto const condition_members = load_events(store, condition_member_ids);
+    auto const is_join = [&condition_members](std::string const& event_id) {
+        auto const member = condition_members.find(event_id);
+        return member != condition_members.end() && content_string(member->second, "membership") == "join";
+    };
     auto satisfied = false;
     auto any_unknown = false;
     for (auto const& condition : conditions)
     {
-        if (!condition.known)
+        // server-server-api.md "Restricted rooms": M_UNABLE_TO_AUTHORISE_JOIN
+        // when the resident "does not have state information about rooms
+        // required by the conditions". State kept after this server left a
+        // room is not current: the user may have left or been banned there
+        // since, so such a room cannot be validated either.
+        if (!condition.known || std::ranges::none_of(condition.local_member_event_ids, is_join))
         {
             any_unknown = true;
             continue;
         }
-        auto const member = condition_members.find(condition.member_event_id);
-        if (member != condition_members.end() && content_string(member->second, "membership") == "join")
+        if (!condition.member_event_id.empty() && is_join(condition.member_event_id))
         {
             satisfied = true;
             break;

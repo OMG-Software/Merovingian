@@ -550,14 +550,13 @@ namespace
                                                          PduSignatureChecks const& checks) -> FederationDecision
     {
         auto const resolve = [&runtime, &request, &checks](std::string_view server_name,
-                                                          std::string_view key_id) -> VerificationKeyResolution {
-            auto const prefetched =
-                checks.prefetched.find(std::pair<std::string, std::string>{server_name, key_id});
+                                                           std::string_view key_id) -> VerificationKeyResolution {
+            auto const prefetched = checks.prefetched.find(std::pair<std::string, std::string>{server_name, key_id});
             auto resolved = prefetched != checks.prefetched.end()
                                 ? prefetched->second
                                 : resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
-            return {std::move(resolved.key), resolved.failure == KeyResolutionFailureKind::local_resource_denial &&
-                                                 !resolved.key.has_value()};
+            return {std::move(resolved.key),
+                    resolved.failure == KeyResolutionFailureKind::local_resource_denial && !resolved.key.has_value()};
         };
         auto const sender_decision = authorize_federation_pdu_sender(pdu, known_key, resolve);
         if (!sender_decision.accepted)
@@ -2340,29 +2339,28 @@ namespace
         return key_id.size() > ed25519_prefix.size() && key_id.starts_with(ed25519_prefix);
     }
 
-    // The one loop every "is this event validly signed by that server" check
-    // runs (audit R05, ADR-0183): resolve each candidate key in turn, verify
-    // with it, stop at the first that verifies. A local admission denial and
-    // the deadline are reported as such only when nothing verified, so they
-    // never override an accept and are never mistaken for a bad signature.
-    // `verify_with_key` returns a 400 or 500 for a fault no key can cure (a
-    // malformed event, an unknown room version); that stops the loop at once.
-    template <typename VerifyWithKey>
-    [[nodiscard]] auto verify_with_any_listed_key(std::string_view server_name,
-                                                  std::vector<std::string> const& key_ids,
-                                                  SignatureKeyResolver const& resolve_key,
-                                                  VerifyWithKey const& verify_with_key,
-                                                  std::chrono::steady_clock::time_point deadline,
-                                                  std::string refusal) -> FederationDecision
+    // The sender-signature loop (audit R05, ADR-0183). server-server-api.md
+    // "Validating hashes and signatures on received events": "If a signature is
+    // from an unknown or expired key, it is skipped" and "If all signatures
+    // from known unexpired keys from the originating server(s) are found to be
+    // valid, the expected content hash is calculated". So every listed key that
+    // resolves and is valid at the event's origin_server_ts must verify, and at
+    // least one must (appendices.md "Checking for a Signature", step 3: no
+    // verification key, the check fails). A local admission denial or the
+    // deadline leaves a key's status unknown, so the outcome is a retryable
+    // 503 / 504 rather than a verdict, even when another key verified.
+    [[nodiscard]] auto verify_every_known_listed_key(
+        canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version, std::string_view server_name,
+        std::vector<std::string> const& key_ids, SignatureKeyResolver const& resolve_key,
+        crypto::Ed25519Provider& provider, std::chrono::steady_clock::time_point deadline) -> FederationDecision
     {
+        auto verified = std::size_t{0U};
         auto locally_denied = false;
-        auto out_of_time = false;
         for (auto const& key_id : key_ids)
         {
             if (std::chrono::steady_clock::now() >= deadline)
             {
-                out_of_time = true;
-                break;
+                return make_decision(false, 504U, "signing-key resolution exceeded the caller's deadline");
             }
             auto const resolved = resolve_key ? resolve_key(server_name, key_id) : VerificationKeyResolution{};
             if (resolved.locally_denied)
@@ -2370,31 +2368,40 @@ namespace
                 locally_denied = true;
                 continue;
             }
-            if (!resolved.key.has_value())
+            // Unknown: skipped. A key filed under another server is no key of
+            // this one, so it is unknown too.
+            if (!resolved.key.has_value() || resolved.key->server_name != server_name)
             {
                 continue;
             }
-            if (resolved.key->server_name != server_name)
+            auto const validity = check_signing_key_valid_for_event(*resolved.key, event, room_version);
+            if (!validity.accepted)
             {
-                refusal = "resolved signing key does not match the expected server";
+                if (validity.status == 400U)
+                {
+                    return validity;
+                }
+                // Expired before the event was sent: skipped.
                 continue;
             }
-            auto decision = verify_with_key(*resolved.key);
-            if (decision.accepted || decision.status == 400U || decision.status == 500U)
+            auto const signature =
+                events::verify_event_signature(event, room_version, {std::string{server_name}, key_id},
+                                               crypto::Ed25519PublicKey{resolved.key->public_key_bytes}, provider);
+            if (!signature.valid)
             {
-                return decision;
+                return make_decision(false, 403U, "signature by a known key does not verify: " + signature.error);
             }
-            refusal = std::move(decision.reason);
+            ++verified;
         }
         if (locally_denied)
         {
             return make_decision(false, 503U, "local signing-key resolution admission unavailable");
         }
-        if (out_of_time)
+        if (verified == 0U)
         {
-            return make_decision(false, 504U, "signing-key resolution exceeded the caller's deadline");
+            return make_decision(false, 403U, "no listed signing key of the server is known and unexpired");
         }
-        return make_decision(false, 403U, refusal);
+        return make_decision(true, 200U, {});
     }
 
 } // namespace
@@ -2419,58 +2426,86 @@ auto signature_key_ids_for_server(std::vector<events::EventSignature> const& sig
     return key_ids;
 }
 
-auto verify_server_signature_with_any_listed_key(canonicaljson::Value const& event,
-                                                 rooms::RoomVersionPolicy const& room_version,
-                                                 std::string_view server_name, std::vector<std::string> const& key_ids,
-                                                 SignatureKeyResolver const& resolve_key,
-                                                 crypto::Ed25519Provider& provider,
-                                                 std::chrono::steady_clock::time_point deadline) -> FederationDecision
+auto lists_too_many_signature_keys(std::vector<events::EventSignature> const& signatures, std::string_view server_name)
+    -> bool
 {
+    auto key_ids = std::vector<std::string_view>{};
+    for (auto const& signature : signatures)
+    {
+        if (signature.server_name != server_name || !signing_key_algorithm_is_supported(signature.key_id) ||
+            std::ranges::find(key_ids, std::string_view{signature.key_id}) != key_ids.end())
+        {
+            continue;
+        }
+        key_ids.push_back(signature.key_id);
+        if (key_ids.size() > max_signature_keys_per_server)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto verify_server_signatures_on_event(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
+                                       std::string_view server_name,
+                                       std::vector<events::EventSignature> const& signatures,
+                                       SignatureKeyResolver const& resolve_key, crypto::Ed25519Provider& provider,
+                                       std::chrono::steady_clock::time_point deadline) -> FederationDecision
+{
+    if (lists_too_many_signature_keys(signatures, server_name))
+    {
+        return make_decision(false, 403U, "event lists more signing keys for the server than are checked");
+    }
+    auto const key_ids = signature_key_ids_for_server(signatures, server_name);
     if (key_ids.empty())
     {
         return make_decision(false, 403U, "event carries no supported signature from the server");
     }
-    return verify_with_any_listed_key(
-        server_name, key_ids, resolve_key,
-        [&](FederationKeyRecord const& key) {
-            return verify_event_signature_for_server(event, room_version, server_name, key, provider);
-        },
-        deadline, "signing key of the server is unavailable");
+    return verify_every_known_listed_key(event, room_version, server_name, key_ids, resolve_key, provider, deadline);
 }
 
 auto authorize_federation_pdu_sender(FederationPdu const& pdu, std::optional<FederationKeyRecord> const& known_key,
                                      SignatureKeyResolver const& resolve_key,
                                      std::chrono::steady_clock::time_point deadline) -> FederationDecision
 {
+    if (pdu.event_id.empty() || pdu.room_id.empty() || pdu.event_type.empty() || pdu.sender.empty())
+    {
+        return make_decision(false, 400U, "PDU is missing required fields");
+    }
     auto const pdu_sender_domain = sender_domain(pdu.sender);
-    auto key_ids = signature_key_ids_for_server(pdu.signatures, pdu_sender_domain);
-    if (key_ids.empty())
+    auto const presence = verify_federation_event_signatures(pdu.signatures, pdu_sender_domain);
+    if (!presence.accepted)
     {
-        // Nothing to try: authorize_federation_pdu reports why (missing
-        // fields, no signature from the sender's server, no key).
-        return authorize_federation_pdu(pdu, pdu_sender_domain, std::nullopt);
+        return make_decision(false, 403U, presence.reason);
     }
-    auto const known_is_candidate = known_key.has_value() && known_key->server_name == pdu_sender_domain &&
-                                    std::ranges::find(key_ids, known_key->key_id) != key_ids.end();
-    if (known_is_candidate)
+    if (pdu.json.empty())
     {
-        // The key already in hand costs no lookup, so it goes first.
-        std::erase(key_ids, known_key->key_id);
-        key_ids.insert(key_ids.begin(), known_key->key_id);
+        return make_decision(false, 400U, "comma-delimited PDUs require JSON for cryptographic verification");
     }
+    auto const* room_version =
+        rooms::find_room_version_policy(pdu.room_version.empty() ? std::string{"12"} : pdu.room_version);
+    if (room_version == nullptr)
+    {
+        return make_decision(false, 500U, "room version policy is unavailable");
+    }
+    auto const parsed = canonicaljson::parse_lossless(pdu.json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+    }
+    // The key already in hand (a direct request's X-Matrix key) costs no
+    // lookup when it is one of the sender's listed keys.
+    auto const known_is_sender_key = known_key.has_value() && known_key->server_name == pdu_sender_domain;
     auto const resolve = [&](std::string_view server_name, std::string_view key_id) -> VerificationKeyResolution {
-        if (known_is_candidate && server_name == known_key->server_name && key_id == known_key->key_id)
+        if (known_is_sender_key && server_name == known_key->server_name && key_id == known_key->key_id)
         {
             return {known_key};
         }
         return resolve_key ? resolve_key(server_name, key_id) : VerificationKeyResolution{};
     };
-    return verify_with_any_listed_key(
-        pdu_sender_domain, key_ids, resolve,
-        [&](FederationKeyRecord const& key) {
-            return authorize_federation_pdu(pdu, pdu_sender_domain, key);
-        },
-        deadline, "sender domain signing key unavailable");
+    auto verifier = FederationEd25519Verifier{};
+    return verify_server_signatures_on_event(parsed.value, *room_version, pdu_sender_domain, pdu.signatures, resolve,
+                                             verifier, deadline);
 }
 
 auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::optional<AuthorisingSignatureKey>

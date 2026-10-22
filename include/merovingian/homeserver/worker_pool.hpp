@@ -125,8 +125,8 @@ struct HomeserverRuntime;
 // stale (audit R04, ADR-0185). Main builds the template from its own store
 // with its own membership_template_provider. A malformed frame is answered
 // with no template (404 to the requesting server).
-[[nodiscard]] auto handle_membership_template_ingest_request(HomeserverRuntime& runtime,
-                                                             std::string_view request_json) -> std::string;
+[[nodiscard]] auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
 
 // Handles an "event_query_ingest" IPC request (a worker relaying an inbound
 // GET /_matrix/federation/v1/event/{eventId}). Unlike user_devices_ingest/

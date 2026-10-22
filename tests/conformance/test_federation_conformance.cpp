@@ -63,8 +63,8 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
-                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
+    -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -97,8 +97,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
-                                      std::string const& target,
-                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                      std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -116,8 +116,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_post_request(std::string const& origin, std::string const& key_id,
-                                       std::string const& key_seed, std::string const& target,
-                                       std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                       std::string const& key_seed, std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "POST";
@@ -255,8 +255,8 @@ struct SignedMemberPdu final
 // verify_pdu_content_hash passes. The membership parameter selects
 // "join", "leave", or "knock".
 [[nodiscard]] auto make_signed_member_pdu(std::string const& room_id_arg, std::string const& sender,
-                                          std::string const& membership,
-                                          std::string_view room_ver = "12") -> SignedMemberPdu
+                                          std::string const& membership, std::string_view room_ver = "12")
+    -> SignedMemberPdu
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
@@ -275,8 +275,8 @@ struct SignedMemberPdu final
 // Build a properly signed v2 invite body wrapping a signed m.room.member
 // invite event from the remote server.
 [[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id_arg, std::string const& sender,
-                                              std::string const& state_key,
-                                              std::string_view room_ver = "12") -> std::string
+                                              std::string const& state_key, std::string_view room_ver = "12")
+    -> std::string
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
@@ -310,8 +310,8 @@ struct SignedMemberPdu final
 }
 
 // Navigate a JSON object and return a pointer to the Value for `key`.
-[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj,
-                            std::string const& key) -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
+    -> merovingian::canonicaljson::Value const*
 {
     for (auto const& m : obj)
         if (m.key == key)
@@ -1705,8 +1705,8 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
         WHEN("only the unset displayname field is requested")
         {
-            auto const target = std::string{
-                "/_matrix/federation/v1/query/profile?user_id=@bare:local.example.org&field=displayname"};
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@bare:local.example.org&field=displayname"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 

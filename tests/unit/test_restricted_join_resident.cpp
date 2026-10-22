@@ -97,7 +97,8 @@ struct StoreBuilder final
 
 // A v10 restricted room "!r:local.example.org" allowing members of "!a:local.example.org",
 // with the local admin joined at 100 and an invite level of 50. Bob is joined to the
-// allowed room; carol is not.
+// allowed room; carol is not. The admin is joined to the allowed room too, so this server
+// is resident there and its state for that room is current.
 [[nodiscard]] auto restricted_room_store() -> StoreBuilder
 {
     auto builder = StoreBuilder{};
@@ -109,6 +110,7 @@ struct StoreBuilder final
         R"({"allow":[{"room_id":"!a:local.example.org","type":"m.room_membership"}],"join_rule":"restricted"})");
     std::ignore = builder.member("!r:local.example.org", admin, "join");
     builder.room("!a:local.example.org", "10");
+    std::ignore = builder.member("!a:local.example.org", admin, "join");
     std::ignore = builder.member("!a:local.example.org", bob, "join");
     return builder;
 }
@@ -199,6 +201,19 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
             }
         }
 
+        WHEN("this server has left the allowed room, whose stale state still shows bob joined")
+        {
+            std::ignore = builder.member("!a:local.example.org", admin, "leave");
+            auto const decision = decide(bob);
+
+            THEN("the condition cannot be validated from current state: 400 M_UNABLE_TO_AUTHORISE_JOIN")
+            {
+                // server-server-api.md "Restricted rooms": the resident "does not have state
+                // information about rooms required by the conditions".
+                REQUIRE(decision.verdict == RestrictedJoinVerdict::unable_to_authorise);
+            }
+        }
+
         WHEN("no condition matches the required schema")
         {
             std::ignore = builder.state("!r:local.example.org", "m.room.join_rules", "",
@@ -218,6 +233,7 @@ SCENARIO("A resident decides a restricted join from the allow conditions and its
             for (auto i = std::size_t{0U}; i < merovingian::homeserver::max_restricted_join_conditions; ++i)
             {
                 builder.room("!filler" + std::to_string(i) + ":local.example.org", "10");
+                std::ignore = builder.member("!filler" + std::to_string(i) + ":local.example.org", admin, "join");
                 allow += R"({"room_id":"!filler)" + std::to_string(i) +
                          R"(:local.example.org","type":"m.room_membership"},)";
             }
@@ -444,8 +460,8 @@ struct SeededRoom final
     return envelope;
 }
 
-[[nodiscard]] auto member_of(merovingian::canonicaljson::Object const& object,
-                             std::string_view key) -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto member_of(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -545,6 +561,22 @@ SCENARIO("make_join for a restricted room names a local user who can invite, or 
             THEN("main answers with no template")
             {
                 REQUIRE_FALSE(merovingian::ipc::deserialize_membership_template_ingest_result(reply).has_value());
+            }
+        }
+
+        WHEN("a worker relays a make_join frame naming a user of this server, or a malformed user ID")
+        {
+            auto const local = merovingian::homeserver::handle_membership_template_ingest_request(
+                started.runtime, merovingian::ipc::serialize_membership_template_ingest(
+                                     {"!r:local.example.org", "@someone:local.example.org", {}}));
+            auto const malformed = merovingian::homeserver::handle_membership_template_ingest_request(
+                started.runtime,
+                merovingian::ipc::serialize_membership_template_ingest({"!r:local.example.org", "bob", {}}));
+
+            THEN("main answers with no template: make_join is how another server's user joins")
+            {
+                REQUIRE_FALSE(merovingian::ipc::deserialize_membership_template_ingest_result(local).has_value());
+                REQUIRE_FALSE(merovingian::ipc::deserialize_membership_template_ingest_result(malformed).has_value());
             }
         }
 
@@ -657,6 +689,46 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
                     return membership.room_id == "!r:local.example.org" && membership.user_id == bob &&
                            membership.membership == "join";
                 }));
+            }
+        }
+
+        WHEN("bob's join also carries a signature planted under this server's name")
+        {
+            namespace cj = merovingian::canonicaljson;
+            auto envelope = join_by(bob, "$bobplanted:remote.example.org");
+            auto parsed = cj::parse_lossless(envelope.json);
+            REQUIRE(parsed.error == cj::ParseError::none);
+            auto* object = std::get_if<cj::Object>(&parsed.value.storage());
+            REQUIRE(object != nullptr);
+            auto planted = cj::Object{};
+            planted.push_back(cj::make_member("ed25519:planted", cj::Value{std::string(86U, 'A')}));
+            auto signatures = cj::Object{};
+            signatures.push_back(cj::make_member(std::string{our_server}, cj::Value{std::move(planted)}));
+            object->push_back(cj::make_member("signatures", cj::Value{std::move(signatures)}));
+            auto const serialized = cj::serialize_canonical(parsed.value);
+            REQUIRE(serialized.error == cj::CanonicalJsonError::none);
+            envelope.json = serialized.output;
+            auto const result =
+                started.runtime.federation.membership_acceptor(merovingian::federation::FederationEndpoint::send_join,
+                                                               "!r:local.example.org", envelope.event_id, envelope);
+
+            THEN("the event it stores and returns carries only the signature this server added under its name")
+            {
+                REQUIRE(result.accepted);
+                auto const signed_event = cj::parse_lossless(result.signed_event_json);
+                REQUIRE(signed_event.error == cj::ParseError::none);
+                auto const* root = std::get_if<cj::Object>(&signed_event.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* all = member_of(*root, "signatures");
+                REQUIRE(all != nullptr);
+                auto const* by_server = std::get_if<cj::Object>(&all->storage());
+                REQUIRE(by_server != nullptr);
+                auto const* ours = member_of(*by_server, our_server);
+                REQUIRE(ours != nullptr);
+                auto const* our_keys = std::get_if<cj::Object>(&ours->storage());
+                REQUIRE(our_keys != nullptr);
+                REQUIRE(our_keys->size() == 1U);
+                REQUIRE(member_of(*our_keys, "ed25519:planted") == nullptr);
             }
         }
 

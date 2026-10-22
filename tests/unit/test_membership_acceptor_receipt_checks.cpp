@@ -175,8 +175,8 @@ auto seed_accepted_event(HomeserverRuntime& runtime, std::string const& room_id,
             auto const membership = events::extract_content_membership(parsed.value);
             if (!membership.empty())
             {
-                auto const existing = std::ranges::find_if(store.memberships,
-                    [&](database::PersistentMembership const& m) {
+                auto const existing =
+                    std::ranges::find_if(store.memberships, [&](database::PersistentMembership const& m) {
                         return m.room_id == room_id && m.user_id == *state_key;
                     });
                 if (existing != store.memberships.end())
@@ -568,15 +568,13 @@ SCENARIO("invite: an invite with a mismatched content hash is redacted before it
                 REQUIRE(root != nullptr);
                 auto const* content_value = object_member_value(*root, "content");
                 REQUIRE(content_value != nullptr);
-                auto const* content_object =
-                    std::get_if<merovingian::canonicaljson::Object>(&content_value->storage());
+                auto const* content_object = std::get_if<merovingian::canonicaljson::Object>(&content_value->storage());
                 REQUIRE(content_object != nullptr);
                 REQUIRE(object_member_value(*content_object, "displayname") == nullptr);
                 REQUIRE(object_member_value(*content_object, "membership") != nullptr);
                 auto const* signatures = object_member_value(*root, "signatures");
                 REQUIRE(signatures != nullptr);
-                auto const* signatures_object =
-                    std::get_if<merovingian::canonicaljson::Object>(&signatures->storage());
+                auto const* signatures_object = std::get_if<merovingian::canonicaljson::Object>(&signatures->storage());
                 REQUIRE(signatures_object != nullptr);
                 REQUIRE(object_member_value(*signatures_object, "local.example.org") != nullptr);
 
