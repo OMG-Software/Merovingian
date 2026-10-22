@@ -1649,8 +1649,9 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
             {
                 // Spec MUST: m.tz is a defined value of `field`, so it is not a bad request.
                 REQUIRE(response.status != 400U);
-                // Spec: 404 when "the queried field does not exist".
+                // Spec MUST: 404 when "the queried field does not exist".
                 REQUIRE(response.status == 404U);
+                // Spec MUST: the 404 is a Matrix error; M_NOT_FOUND names a missing resource.
                 REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
@@ -1664,9 +1665,10 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
             THEN("the response is 404 because the queried field does not exist")
             {
-                // Spec: servers MAY allow additional key/value pairs, so an unknown
+                // Spec MUST: servers MAY allow additional key/value pairs, so an unknown
                 // key is a field that does not exist (404), not a malformed request.
                 REQUIRE(response.status == 404U);
+                // Spec MUST: the 404 is a Matrix error; M_NOT_FOUND names a missing resource.
                 REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
@@ -1690,15 +1692,19 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
             THEN("the unset fields are left out rather than sent as empty strings")
             {
+                // Spec MUST: 200 with the user's public profile for a known user.
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                // Spec MUST: the 200 body is a JSON object.
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
                 auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                // Spec MUST: the 200 body is a JSON object.
                 REQUIRE(root != nullptr);
                 // Spec MUST: "If the user does not have a particular field set on their
                 // profile, the server MUST either exclude it from the response body or
                 // give it the value null."
                 REQUIRE(json_get(*root, std::string{"displayname"}) == nullptr);
+                // Spec MUST: an unset avatar_url is excluded or null, never "".
                 REQUIRE(json_get(*root, std::string{"avatar_url"}) == nullptr);
             }
         }
@@ -1712,8 +1718,9 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
             THEN("the response is 404 because the queried field does not exist")
             {
-                // Spec: 404 when "the queried field does not exist".
+                // Spec MUST: 404 when "the queried field does not exist".
                 REQUIRE(response.status == 404U);
+                // Spec MUST: the 404 is a Matrix error; M_NOT_FOUND names a missing resource.
                 REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }

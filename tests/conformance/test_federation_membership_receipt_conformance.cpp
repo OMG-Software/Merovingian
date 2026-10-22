@@ -96,14 +96,18 @@ struct HashMismatchedEvent final
                                R"(","sender":")" + sender + R"(","state_key":")" + state_key +
                                R"(","type":"m.room.member"})";
     auto json = merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, token, "12");
+    // Fixture: the event was signed.
     REQUIRE_FALSE(json.empty());
     auto const original_id = merovingian::federation::test::reference_hash_event_id(json, "12");
     auto const marker = std::string{R"("content":{"membership":)"};
     auto const at = json.find(marker);
+    // Fixture: the content object is where the extra key goes.
     REQUIRE(at != std::string::npos);
     json.insert(at + std::string_view{R"("content":{)"}.size(), R"("displayname":"Mallory",)");
     auto const parsed = merovingian::canonicaljson::parse_lossless(json);
+    // Fixture: the tampered event is still valid JSON.
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    // Fixture: the content hash no longer matches.
     REQUIRE_FALSE(merovingian::events::verify_pdu_content_hash(parsed.value));
     // The reference hash is taken over the redacted event, so the ID is unchanged.
     REQUIRE(merovingian::federation::test::reference_hash_event_id(json, "12") == original_id);
@@ -116,6 +120,7 @@ struct HashMismatchedEvent final
 {
     auto const marker = "\"" + key_id + "\":\"";
     auto const at = json.find(marker);
+    // Fixture: the event carries the signature to break.
     REQUIRE(at != std::string::npos);
     auto const value_at = at + marker.size();
     json[value_at] = json[value_at] == 'A' ? 'B' : 'A';
@@ -135,6 +140,7 @@ struct MembershipRoute final
 {
     auto const marker = "\"" + server + "\":{";
     auto const at = json.find(marker);
+    // Fixture: the event carries a signatures entry for the server.
     REQUIRE(at != std::string::npos);
     auto junk = std::string{};
     for (auto const& key_id : key_ids)
@@ -142,6 +148,7 @@ struct MembershipRoute final
         junk += "\"" + key_id + "\":\"" + std::string(86U, 'A') + "\",";
     }
     json.insert(at + marker.size(), junk);
+    // Fixture: the event with extra key IDs is still valid JSON.
     REQUIRE(merovingian::canonicaljson::parse_lossless(json).error == merovingian::canonicaljson::ParseError::none);
     return json;
 }
@@ -153,6 +160,7 @@ struct MembershipRoute final
                                            R"("origin_server_ts":1000002,"prev_events":[],"room_id":"!room:)"} +
                                server + R"(","sender":"@alice:)" + server + R"(","type":"m.room.message"})";
     auto json = merovingian::federation::test::make_signed_event_json(unsigned_json, server, key_id, seed, "12");
+    // Fixture: the event was signed.
     REQUIRE_FALSE(json.empty());
     return json;
 }
@@ -210,6 +218,7 @@ SCENARIO("Direct membership endpoints pass a hash-mismatched event on for redact
             {
                 // Spec MUST: a hash failure redacts, it does not reject.
                 REQUIRE(response.status == 200U);
+                // Spec MUST: the event is processed further, so the acceptor sees it.
                 REQUIRE(*calls == 1U);
             }
         }
@@ -223,7 +232,9 @@ SCENARIO("Direct membership endpoints pass a hash-mismatched event on for redact
             {
                 // Spec SHOULD: M_INVALID_PARAM when the event fails a signature check.
                 REQUIRE(response.status == 400U);
+                // Spec SHOULD: the errcode is M_INVALID_PARAM.
                 REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+                // Spec MUST: an event that fails its signature check is dropped, never accepted.
                 REQUIRE(*calls == 0U);
             }
         }
@@ -280,7 +291,9 @@ SCENARIO("The invite endpoints pass a hash-mismatched invite on for redaction an
             {
                 // Spec MUST: a hash failure redacts, it does not reject.
                 REQUIRE(response.status == 200U);
+                // Spec MUST: the invite is processed further, so the handler sees it.
                 REQUIRE(seen->size() == 1U);
+                // Spec MUST: it is redacted under the room version it was checked against (v2 `room_version`).
                 REQUIRE(seen->front().room_version == "12");
             }
         }
@@ -295,7 +308,9 @@ SCENARIO("The invite endpoints pass a hash-mismatched invite on for redaction an
             {
                 // Spec SHOULD: M_INVALID_PARAM when the invite fails a signature check.
                 REQUIRE(response.status == 400U);
+                // Spec SHOULD: the errcode is M_INVALID_PARAM.
                 REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+                // Spec MUST: an invite that fails its signature check is dropped, never processed.
                 REQUIRE(seen->empty());
             }
         }
@@ -359,6 +374,7 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
             }};
         auto const pdu_of = [](std::string const& json) {
             auto pdu = merovingian::federation::parse_federation_pdu(json);
+            // Fixture: the event parses as a PDU.
             REQUIRE_FALSE(pdu.event_id.empty());
             return pdu;
         };
@@ -373,6 +389,7 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
             {
                 // Spec: "If a signature is from an unknown or expired key, it is skipped."
                 REQUIRE(decision.accepted);
+                // Project policy (ADR-0183): each listed candidate is looked up once.
                 REQUIRE(calls == 3U);
             }
         }
@@ -384,8 +401,9 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
 
             THEN("the event fails the signature check, whatever the genuine signature says")
             {
-                // Spec: ALL signatures from known unexpired keys must be valid.
+                // Spec MUST: ALL signatures from known unexpired keys must be valid.
                 REQUIRE_FALSE(decision.accepted);
+                // Spec MUST: the event fails the signature check and is dropped.
                 REQUIRE(decision.status == 403U);
             }
         }
@@ -399,8 +417,9 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
 
             THEN("there is no signature to verify and the event is refused")
             {
-                // Appendices "Checking for a Signature", step 3: no verification key, the check fails.
+                // Spec MUST: Appendices "Checking for a Signature", step 3: no verification key, the check fails.
                 REQUIRE_FALSE(decision.accepted);
+                // Spec MUST: the event fails the signature check and is dropped.
                 REQUIRE(decision.status == 403U);
             }
         }
@@ -417,8 +436,11 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
 
             THEN("the event is refused, fail-closed, before any lookup")
             {
+                // Project policy (ADR-0183): more than four key IDs for the sender's server is refused.
                 REQUIRE_FALSE(decision.accepted);
+                // Project policy (ADR-0183): the refusal is a 403, like any failed signature check.
                 REQUIRE(decision.status == 403U);
+                // Project policy (ADR-0183): the refusal comes before any key lookup.
                 REQUIRE(calls == 0U);
             }
         }
@@ -437,6 +459,7 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
             {
                 // Spec: identifiers with algorithms the server doesn't understand are removed.
                 REQUIRE(decision.accepted);
+                // Project policy (ADR-0183): the removed identifiers cost no lookup.
                 REQUIRE(calls == 1U);
             }
         }
@@ -451,9 +474,13 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
 
             THEN("it is used without a lookup; only the other listed key is looked up")
             {
+                // Spec MUST: the X-Matrix key verifies the event's signature.
                 REQUIRE(alone.accepted);
+                // Project policy (ADR-0183): the key in hand needs no lookup.
                 REQUIRE(alone_calls == 0U);
+                // Spec MUST: an unknown key beside it is skipped and the event accepted.
                 REQUIRE(beside.accepted);
+                // Project policy (ADR-0183): only the other listed key is looked up.
                 REQUIRE(calls == 1U);
             }
         }
@@ -466,7 +493,9 @@ SCENARIO("The sender's signature is checked against every key ID listed for its 
 
             THEN("the outcome is a retryable 503, not a verdict on the signatures")
             {
+                // Project policy (ADR-0183): an unchecked key leaves no verdict.
                 REQUIRE_FALSE(decision.accepted);
+                // Project policy (ADR-0183): local overload is a retryable 503.
                 REQUIRE(decision.status == 503U);
             }
         }
@@ -521,9 +550,13 @@ SCENARIO("Inbound federation finds a sender's signature under any listed key ID"
 
             THEN("the PDU is verified with the genuine key and accepted")
             {
+                // Spec MUST: the transaction is answered 200.
                 REQUIRE(response.status == 200U);
+                // Spec MUST: the PDU, validly signed by its sender's server, is accepted.
                 REQUIRE(*accepted == 1U);
+                // Spec MUST: no per-PDU error is reported for an accepted PDU.
                 REQUIRE(response.body.find("\"error\"") == std::string::npos);
+                // Spec MUST: the signature is checked with the genuine key it lists.
                 REQUIRE(std::ranges::find(*lookups, genuine_id) != lookups->end());
             }
         }
@@ -562,6 +595,7 @@ SCENARIO("Inbound federation finds a sender's signature under any listed key ID"
                         R"("state_key":"@alice:remote.example.org","type":"m.room.member"})"};
         auto const join =
             merovingian::federation::test::make_signed_event_json(unsigned_join, origin, event_key_id, "r05-rotated");
+        // Fixture: the join was signed.
         REQUIRE_FALSE(join.empty());
         auto const event_id = merovingian::federation::test::reference_hash_event_id(join, "12");
 
@@ -574,7 +608,9 @@ SCENARIO("Inbound federation finds a sender's signature under any listed key ID"
 
             THEN("the signature is verified with the listed key and the join reaches the acceptor")
             {
+                // Spec MUST: a validly signed join is accepted.
                 REQUIRE(response.status == 200U);
+                // Spec MUST: the join reaches the acceptor.
                 REQUIRE(*calls == 1U);
             }
         }
@@ -620,6 +656,7 @@ SCENARIO("A restricted join naming this server's user is handed to the acceptor 
                 R"("sender":"@alice:remote.example.org","state_key":"@alice:remote.example.org",)"
                 R"("type":"m.room.member"})";
             auto json = merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, token);
+            // Fixture: the join was signed.
             REQUIRE_FALSE(json.empty());
             return std::pair{json, merovingian::federation::test::reference_hash_event_id(json, "12")};
         };
@@ -634,7 +671,9 @@ SCENARIO("A restricted join naming this server's user is handed to the acceptor 
 
             THEN("it reaches the acceptor, which decides and signs")
             {
+                // Spec MUST: the resident adds its signature, so the join is not refused for lacking it.
                 REQUIRE(response.status == 200U);
+                // Spec MUST: the acceptor, which signs, receives the join.
                 REQUIRE(*calls == 1U);
             }
         }
@@ -649,8 +688,9 @@ SCENARIO("A restricted join naming this server's user is handed to the acceptor 
 
             THEN("it is refused before the acceptor")
             {
-                // rooms/v10.md 4.2.1: not validly signed by the authorising user's server.
+                // Spec MUST: rooms/v10.md 4.2.1, not validly signed by the authorising user's server.
                 REQUIRE(response.status != 200U);
+                // Spec MUST: the refused join never reaches the acceptor.
                 REQUIRE(*calls == 0U);
             }
         }
@@ -665,7 +705,9 @@ SCENARIO("A restricted join naming this server's user is handed to the acceptor 
 
             THEN("it is refused: this server co-signs only joins")
             {
+                // Spec MUST: a knock carrying the field must still be signed by that user's server.
                 REQUIRE(response.status != 200U);
+                // Spec MUST: the refused knock never reaches the acceptor.
                 REQUIRE(*calls == 0U);
             }
         }
@@ -701,8 +743,9 @@ SCENARIO("A restricted join naming this server's user is handed to the acceptor 
 
             THEN("the refusal keeps its status and errcode")
             {
-                // Spec: "If the joining server fails all conditions then a 403 M_FORBIDDEN error is used".
+                // Spec MUST: "If the joining server fails all conditions then a 403 M_FORBIDDEN error is used".
                 REQUIRE(response.status == 403U);
+                // Spec MUST: the errcode is M_FORBIDDEN.
                 REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
