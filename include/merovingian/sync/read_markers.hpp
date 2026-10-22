@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -56,5 +57,10 @@ struct ReadMarkers final
 // `store`; a parent it does not hold ends the search in the main timeline.
 [[nodiscard]] auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event)
     -> std::string;
+
+// event_thread_id(), charging each store row a parent lookup visits to `rows_left` (ADR-0207); nullopt
+// when `rows_left` runs out before the thread is known.
+[[nodiscard]] auto event_thread_id_within(database::PersistentStore const& store, canonicaljson::Object const& event,
+                                          std::uint64_t& rows_left) -> std::optional<std::string>;
 
 } // namespace merovingian::sync

@@ -459,21 +459,11 @@ auto ThreadNotificationCounts::total() const noexcept -> NotificationCounts
 // unread. Whether an event is a notification or a highlight is the user's push
 // rules' decision (`unread`, R15, ADR-0205), and only events after the start of
 // the user's current join count.
+// Only accepted events count: a rejected or soft-failed event is never served to clients, so it
+// is never unread. The push badge counts the same way in one bounded pass of its own
+// (homeserver::count_push_badge, ADR-0207); a change to what counts here changes it there too.
 auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
                             ReadMarkers const& markers, UnreadEventClassifier const& unread) -> ThreadNotificationCounts
-{
-    auto unlimited =
-        UnreadScanBudget{std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
-    return count_unread_by_thread_within(store, room_id, user, markers, unread, unlimited);
-}
-
-// The one walk. Only accepted events count: a rejected or soft-failed event is never served to
-// clients, so it is never unread. `budget` bounds the work (ADR-0207): the walk stops before
-// parsing another event once it is exhausted.
-auto count_unread_by_thread_within(database::PersistentStore const& store, std::string_view room_id,
-                                   std::string_view user, ReadMarkers const& markers,
-                                   UnreadEventClassifier const& unread, UnreadScanBudget& budget)
-    -> ThreadNotificationCounts
 {
     auto counts = ThreadNotificationCounts{};
     auto const counted_after = unread.counted_after(room_id);
@@ -483,16 +473,11 @@ auto count_unread_by_thread_within(database::PersistentStore const& store, std::
     }
     for (auto const& ev : store.events)
     {
-        if (budget.exhausted())
-        {
-            break;
-        }
         if (ev.room_id != room_id || ev.status != "accepted" || ev.stream_ordering <= markers.unthreaded ||
             ev.stream_ordering <= *counted_after || ev.sender_user_id == user)
         {
             continue;
         }
-        --budget.examinations_left;
         // Counted only if the timeline would show it: a backfilled event stored after the join is
         // judged by the state at the event, as /sync's timeline judges it.
         if (!unread.visible(ev))
@@ -521,7 +506,6 @@ auto count_unread_by_thread_within(database::PersistentStore const& store, std::
         }
         auto& thread = counts.threads[std::move(thread_id)];
         ++thread.notification_count;
-        --budget.notifications_left;
         thread.highlight_count += outcome.highlight ? 1U : 0U;
     }
     return counts;
@@ -531,13 +515,6 @@ auto count_notifications(database::PersistentStore const& store, std::string_vie
                          ReadMarkers const& markers, UnreadEventClassifier const& unread) -> std::uint64_t
 {
     return count_unread_by_thread(store, room_id, user, markers, unread).total().notification_count;
-}
-
-auto count_notifications_within(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
-                                ReadMarkers const& markers, UnreadEventClassifier const& unread,
-                                UnreadScanBudget& budget) -> std::uint64_t
-{
-    return count_unread_by_thread_within(store, room_id, user, markers, unread, budget).total().notification_count;
 }
 
 auto count_highlights(database::PersistentStore const& store, std::string_view room_id, std::string_view user,

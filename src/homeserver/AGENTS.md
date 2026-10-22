@@ -26,6 +26,7 @@ This is the largest and most complex module — read this file carefully before 
 | `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
 | `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
+| `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one pass of at most 10000 store rows, exact while the store fits (ADR-0207) |
 | `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
 | `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206) |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -239,9 +240,10 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A user's push rules are evaluated for every event they receive. `PUT /pushrules/...` refuses a new
   rule past `max_push_rules_per_user` with `400 M_TOO_LARGE` and bounds each rule (ADR-0204);
   `m.push_rules` cannot be set through the account-data API (405).
-- Push delivery's badge count (`counts.unread`) runs per recipient per event. It saturates at
-  `push_badge_unread_cap` (1000) and examines at most `push_badge_unread_examined_cap` (4000)
-  unread events (ADR-0207); do not replace it with an unbounded count.
+- Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
+  It visits at most `push_badge_row_budget` (10000) store rows in one pass, charging every row
+  before any filter, and saturates at `push_badge_unread_cap` (1000) (ADR-0207); do not replace it
+  with a per-room or unbounded count.
 
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 

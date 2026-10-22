@@ -34,6 +34,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/push_badge_count.hpp"
 #include "merovingian/homeserver/push_retry.hpp"
 #include "merovingian/homeserver/push_room_facts.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"

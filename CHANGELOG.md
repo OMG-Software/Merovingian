@@ -49,11 +49,14 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   from when it failed, not from when the batch began; and the log-field and capability-gap docs
   match the code.
 - **SECURITY (PR #523 review, bounded work under the runtime lock):** the push badge
-  (`counts.unread`) recounted the recipient's whole unread backlog, applying their push rules to
-  each event, under `runtime.mutex` for every recipient of every event. It now saturates at 1000 and
-  examines at most 4000 unread events (ADR-0207). `/sync` unread counts stay exact. Rejected and
-  soft-failed events no longer count as unread, and a rejected leave no longer ends a user's join
-  for counting.
+  (`counts.unread`) re-ran the exact per-room unread walk for every joined room, each scanning the
+  whole store, under `runtime.mutex` for every recipient of every event. `count_push_badge` now makes
+  one pass of at most 10000 store rows, newest first, charging every row visited (thread-parent
+  lookups included) before any filter, and saturates at 1000 (ADR-0207). Within the budget it
+  equals the sum of `/sync`'s exact counts; past it, it is a lower bound that can miss recent unread
+  events until store indexes by stream ordering and event ID land. `/sync` unread counts stay
+  exact. Rejected and soft-failed events no longer count as unread, and a rejected leave no longer
+  ends a user's join for counting.
 - **FIXED (PR #523 review, spec rate limits):** the push-rule endpoints the spec documents as
   "Rate-limited: No" (all `GET`, `DELETE`, and `PUT .../enabled` and `.../actions`) could be answered
   429; they now bypass the rate limiter. `PUT /pushrules/global/{kind}/{ruleId}` ("Rate-limited:

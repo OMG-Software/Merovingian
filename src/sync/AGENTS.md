@@ -106,10 +106,13 @@ highlight from the event type or `m.mentions` here. Only `accepted` events the u
 see count: the walk asks `unread.visible()` (`HistoryVisibility::can_see`, the
 request's own filter for `/sync` and sliding sync) before it classifies, because
 a backfilled event from before the join is ordered after it.
-`count_unread_by_thread_within()` is the same walk with a `UnreadScanBudget`: the
-push badge (`homeserver::push_badge_unread_count`) saturates at 1000 and examines
-at most 4000 events, because it runs under `runtime.mutex` for every recipient
-of every event (ADR-0207). `/sync` and sliding sync stay exact. A non-state event the user sent also
+The push badge (`homeserver::count_push_badge`) does not use this walk: it runs
+under `runtime.mutex` for every recipient of every event, so it makes one pass of
+at most 10000 rows over the store and saturates at 1000 (ADR-0207). It applies
+the same rules through shared helpers (`member_transition`, `join_start_from`,
+`event_thread_id_within`, the classifier), and a test holds it equal to this walk
+when it visits every row. Change one, change both. `/sync` and sliding sync stay
+exact. A non-state event the user sent also
 reads its own thread (`read_markers_for`, ADR-0170); never let a state event do
 so, or a profile change would mark every room read.
 

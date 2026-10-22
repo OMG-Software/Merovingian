@@ -1140,68 +1140,6 @@ SCENARIO("MSC4186 multi-list fold is associative across three list windows",
     }
 }
 
-SCENARIO("A bounded unread walk stops at its notification budget", "[sync][receipts][r15][push-badge]")
-{
-    GIVEN("fifty unread messages")
-    {
-        auto store = merovingian::database::PersistentStore{};
-        append_bob_messages(store, 50U, 10U);
-        auto const classifier = StubClassifier{0U};
-
-        WHEN("they are counted with room for ten notifications")
-        {
-            auto budget = merovingian::sync::UnreadScanBudget{10U, 1000U};
-            auto const count = merovingian::sync::count_notifications_within(
-                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier,
-                budget);
-
-            THEN("the count saturates at ten and no later event is examined")
-            {
-                REQUIRE(count == 10U);
-                REQUIRE(classifier.calls() == 10U);
-                REQUIRE(budget.exhausted());
-            }
-        }
-    }
-}
-
-SCENARIO("A bounded unread walk stops at its examination budget", "[sync][receipts][r15][push-badge]")
-{
-    GIVEN("thirty unread name changes followed by thirty unread messages")
-    {
-        auto store = merovingian::database::PersistentStore{};
-        for (auto i = std::uint64_t{0U}; i < 30U; ++i)
-        {
-            store.events.push_back({"$n" + std::to_string(i),
-                                    "!room:example.org",
-                                    "@bob:example.org",
-                                    R"({"type":"m.room.name","sender":"@bob:example.org","content":{"name":"x"}})",
-                                    1U,
-                                    10U + i,
-                                    {},
-                                    {},
-                                    {}});
-        }
-        append_bob_messages(store, 30U, 100U);
-        auto const classifier = StubClassifier{0U};
-
-        WHEN("they are counted with room for twenty examinations")
-        {
-            auto budget = merovingian::sync::UnreadScanBudget{1000U, 20U};
-            auto const count = merovingian::sync::count_notifications_within(
-                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier,
-                budget);
-
-            THEN("the walk stops after twenty events, none of them notifications")
-            {
-                REQUIRE(count == 0U);
-                REQUIRE(classifier.calls() == 20U);
-                REQUIRE(budget.exhausted());
-            }
-        }
-    }
-}
-
 SCENARIO("Rejected and soft-failed events never count as unread", "[sync][receipts][r15]")
 {
     GIVEN("one accepted, one rejected and one soft-failed message")
@@ -1253,33 +1191,6 @@ SCENARIO("A rejected leave does not end the user's join for unread counting", "[
             {
                 REQUIRE(start.has_value());
                 REQUIRE(*start == 5U);
-            }
-        }
-    }
-}
-
-SCENARIO("The push badge's unread count saturates at its cap", "[push][receipts][r15][push-badge]")
-{
-    GIVEN("alice joined, with more unread messages than the badge cap")
-    {
-        auto runtime = merovingian::homeserver::HomeserverRuntime{};
-        auto& store = runtime.database.persistent_store;
-        store.memberships.push_back({"!room:example.org", "@alice:example.org", "join", 5U});
-        append_alice_join(store, 5U);
-        append_bob_messages(store, merovingian::homeserver::push_badge_unread_cap + 200U, 10U);
-        // Fixture: alice may read the room (CSAZ-3), so its events are hers to count.
-        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
-
-        auto const ruleset = merovingian::homeserver::load_push_ruleset(store, "@alice:example.org", 200U);
-
-        WHEN("the badge count for a push is computed")
-        {
-            auto const badge = merovingian::homeserver::push_badge_unread_count(runtime, "@alice:example.org", ruleset);
-
-            THEN("it reports the cap, not the full backlog")
-            {
-                // Project policy: counts.unread is a badge; it saturates (ADR-0207).
-                REQUIRE(badge == merovingian::homeserver::push_badge_unread_cap);
             }
         }
     }

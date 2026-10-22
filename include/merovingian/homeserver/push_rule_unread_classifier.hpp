@@ -15,25 +15,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace merovingian::homeserver
 {
-
-struct HomeserverRuntime;
-
-// The Push Gateway API's `counts.unread` saturates here (ADR-0207): "the number of unread messages
-// a user has across all of the rooms they are a member of" is a badge, and a client showing 1000 or
-// more shows "lots". The count runs under runtime.mutex for every recipient of every notifying
-// event, so its work must not grow with the recipient's backlog. At most
-// push_badge_unread_examined_cap unread events are parsed and classified; a count that runs out of
-// examinations first reports what it found.
-inline constexpr auto push_badge_unread_cap = std::uint32_t{1000U};
-inline constexpr auto push_badge_unread_examined_cap = std::uint64_t{4000U};
-
-// `user_id`'s badge count across their joined rooms, by `ruleset` (the rules delivery already
-// loaded for them), bounded as above. Call with runtime.mutex held.
-[[nodiscard]] auto push_badge_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,
-                                           push::PushRuleset const& ruleset) -> std::uint32_t;
 
 // Counts an unread event by `user`'s push rules (R15, ADR-0205). Spec ("Receiving notifications"):
 // "Notifications are determined by the push rules which apply to an event". The ruleset is
@@ -78,7 +64,6 @@ private:
     {
         PushRoomFacts push{};
         std::string display_name{};
-        std::optional<std::uint64_t> joined_after{};
     };
 
     [[nodiscard]] auto room(std::string_view room_id) const -> RoomFacts const&;
@@ -91,6 +76,8 @@ private:
     std::optional<sync::HistoryVisibility> owned_visibility_;
     std::reference_wrapper<sync::HistoryVisibility> visibility_;
     mutable std::map<std::string, RoomFacts, std::less<>> rooms_{};
+    // Computed only when counted_after() asks, so classify() never scans the store for it.
+    mutable std::map<std::string, std::optional<std::uint64_t>, std::less<>> join_starts_{};
 };
 
 // The stream position of the event that began `user`'s current join of `room_id`: the earliest
@@ -98,5 +85,17 @@ private:
 // joined. A profile change re-sends a join, which does not restart the span.
 [[nodiscard]] auto current_join_start(database::PersistentStore const& store, std::string_view room_id,
                                       std::string_view user) -> std::optional<std::uint64_t>;
+
+// One of `user`'s membership changes in `room_id`, as current_join_start reads it: the event's
+// stream ordering and whether it is a join, for an accepted m.room.member event whose state_key is
+// `user`; nullopt for any other row.
+[[nodiscard]] auto member_transition(database::PersistentEvent const& event, std::string_view room_id,
+                                     std::string_view user) -> std::optional<std::pair<std::uint64_t, bool>>;
+
+// The start of the current join from a set of member_transition()s, in any order: the earliest join
+// with no later non-join, or nullopt when the latest is not a join. current_join_start applies it to
+// every row; the push badge to the rows its bounded pass visited.
+[[nodiscard]] auto join_start_from(std::vector<std::pair<std::uint64_t, bool>> transitions)
+    -> std::optional<std::uint64_t>;
 
 } // namespace merovingian::homeserver

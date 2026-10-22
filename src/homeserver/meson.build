@@ -14,6 +14,7 @@ homeserver_sources = files(
   'local_services.cpp',
   'media_service.cpp',
   'periodic_job.cpp',
+  'push_badge_count.cpp',
   'push_retry.cpp',
   'push_room_facts.cpp',
   'push_rule_unread_classifier.cpp',
