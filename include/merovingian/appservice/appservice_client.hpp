@@ -264,8 +264,8 @@ public:
     // calling POST /_matrix/client/v1/appservice/{appserviceId}/ping. Sends the registration's
     // hs_token like every other call. Blocks for up to the configured total timeout, so a caller
     // must not hold runtime.mutex (RuntimeLockRelease) while it runs.
-    [[nodiscard]] auto ping(AppserviceRegistration const& registration,
-                            std::optional<std::string_view> transaction_id) -> AppservicePingResult;
+    [[nodiscard]] auto ping(AppserviceRegistration const& registration, std::optional<std::string_view> transaction_id)
+        -> AppservicePingResult;
 
     // GET /_matrix/app/v1/users/{userId} — spec: "The homeserver will only
     // query user IDs inside the application service's users namespace." The

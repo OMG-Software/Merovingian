@@ -307,7 +307,7 @@ namespace
         // v25 (ADR-0192): a room an appservice published to the directory of one of its networks.
         SchemaTableDefinition{"appservice_directory",
                               "appservice_id TEXT NOT NULL, network_id TEXT NOT NULL, room_id TEXT NOT NULL, "
-                              "PRIMARY KEY (appservice_id, network_id, room_id)"},
+                              "PRIMARY KEY (appservice_id, network_id, room_id)"                                                                                        },
     };
 
 } // namespace

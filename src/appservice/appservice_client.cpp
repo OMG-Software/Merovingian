@@ -607,8 +607,8 @@ auto AppserviceClient::send_transaction(AppserviceRegistration const& registrati
     return {result.response.status == 200U, false, result.response.status, http::OutboundError::none, {}};
 }
 
-auto AppserviceClient::ping(AppserviceRegistration const& registration,
-                            std::optional<std::string_view> transaction_id) -> AppservicePingResult
+auto AppserviceClient::ping(AppserviceRegistration const& registration, std::optional<std::string_view> transaction_id)
+    -> AppservicePingResult
 {
     auto ping_result = AppservicePingResult{};
     if (!registration.url.has_value())
