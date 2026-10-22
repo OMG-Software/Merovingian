@@ -26,15 +26,16 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R07 | P2 | Appservices miss invites to their own virtual users | Fixed 0.12.37 |
 | R08 | P2 | `receive_ephemeral` is parsed but no ephemeral data is sent | Fixed 0.12.37 (ADR-0190) |
 | R09 | P2 | Identity-server `requestToken` calls drop `send_attempt` | Fixed 0.12.37 |
-| R10 | P2 | Room-scoped account data GET/PUT are absent | Open — wave 4 |
-| R11 | P2 | Global account data accepts non-object and malformed JSON | Open — wave 4 |
-| R12 | P2 | Registration rejects an omitted username instead of generating one | Open — wave 4 |
-| R13 | P2 | Local typing never expires; non-boolean `typing` is treated as true | Open — wave 4 |
+| R10 | P2 | Room-scoped account data GET/PUT are absent | Fixed 0.12.38 (ADR-0197) |
+| R11 | P2 | Global account data accepts non-object and malformed JSON | Fixed 0.12.38 |
+| R12 | P2 | Registration rejects an omitted username instead of generating one | Fixed 0.12.38 (ADR-0198) |
+| R13 | P2 | Local typing never expires; non-boolean `typing` is treated as true | Fixed 0.12.38 (ADR-0199) |
 | R15 | P2 | Unread counts ignore push-rule notify/highlight actions | Open — wave 5 |
-| R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Open — wave 4 |
+| R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Open — media wave (0.12.40) |
 | R19 | P2 | Push-rule mutation APIs are absent; delivery uses read-only defaults | Open — wave 5 |
+| R20 | P2 | `POST /register` runs User-Interactive Authentication before the username checks | Open — unscheduled |
 | R14 | P3 | Failed push notifications are never retried (spec SHOULD) | Open — wave 5 |
-| R16 | P3 | `/search` omits visible history from rooms the user has left | Open — wave 4 |
+| R16 | P3 | `/search` omits visible history from rooms the user has left | Fixed 0.12.38 |
 | R18 | P3 | Federation profile queries reject `field=m.tz` | Fixed 0.12.36 |
 
 ### Triage notes
@@ -81,6 +82,18 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 - The m.presence a profile change sends was not offered to appservices.
 - The ping dropped an empty `transaction_id` instead of copying it.
 
+### Found while fixing wave 4 (open)
+
+- **R20:** `POST /register` runs User-Interactive Authentication before the username checks. The spec says
+  homeservers "MUST perform the relevant checks and return these codes before performing
+  User-Interactive Authentication" (`M_USER_IN_USE`, `M_INVALID_USERNAME`, `M_EXCLUSIVE`), so a
+  client without a registration token learns that its username is unusable only after the UIA
+  round. Not part of R12, which is about an omitted `username`; tracked as its own finding, not yet
+  scheduled.
+- "Servers must allow clients to read the above event types as normal" (Client Config): push
+  rules are not kept as `m.push_rules` account data, so `GET /user/{userId}/account_data/m.push_rules`
+  is 404. Belongs with R19 (wave 5).
+
 ## Additional endpoint and feature gaps
 
 All confirmed absent. Applicability varies; an optional feature that is absent is recorded as
@@ -121,6 +134,6 @@ branch CI run 39053180514 shows OpenBSD at 58 Ok, 0 Fail.
 | 1 | 0.12.28 | R01, R02, R03, to-device message IDs |
 | 2 | 0.12.36 | R04, R05, R06, R18 (federation) |
 | 3 | 0.12.37 | R07, R08, R09, appservice ping and network directory, `create_room` appservice delivery |
-| 4 | — | R10, R11, R12, R13, R16, R17 (client API) |
+| 4 | 0.12.38 | R10, R11, R12, R13, R16 (client API); R17 moved to the media wave (0.12.40); R20 found |
 | 5 | — | R19, then R15 and R14 (push rules, counts, retry) |
 | 6 | — | Optional endpoint gaps, after a decision on each |

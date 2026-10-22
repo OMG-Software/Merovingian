@@ -53,8 +53,8 @@ using namespace merovingian::tests;
     };
 }
 
-[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt,
-                                      std::string const& localpart) -> std::string
+[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt, std::string const& localpart)
+    -> std::string
 {
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 rt, {"POST",
@@ -81,8 +81,8 @@ using namespace merovingian::tests;
 // as `1` and parsed back as an integer. Asserting purely on the double
 // alternative would therefore fail for correct integral ranks. Returns nullopt
 // when the member is absent or not a number at all.
-[[nodiscard]] auto number_member(merovingian::canonicaljson::Object const& object,
-                                 std::string_view key) -> std::optional<double>
+[[nodiscard]] auto number_member(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> std::optional<double>
 {
     if (auto const* as_double = double_member(object, key); as_double != nullptr)
     {
@@ -117,8 +117,8 @@ using namespace merovingian::tests;
     return *room_id;
 }
 
-auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-               std::string const& room_id) -> void
+auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token, std::string const& room_id)
+    -> void
 {
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", token, "{}"})
@@ -126,8 +126,8 @@ auto join_room(merovingian::homeserver::ClientServerRuntime& rt, std::string con
 }
 
 [[nodiscard]] auto send_text_message(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                                     std::string const& room_id, std::string const& txn_id,
-                                     std::string const& body) -> std::string
+                                     std::string const& room_id, std::string const& txn_id, std::string const& body)
+    -> std::string
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
         rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn_id, token,
@@ -151,8 +151,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // POSTs /search and returns the raw DispatchResult, for scenarios that need
 // to inspect the status code themselves (unauthenticated / malformed body).
 [[nodiscard]] auto raw_search(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                              std::string const& request_body,
-                              std::string const& query = {}) -> merovingian::homeserver::DispatchResult
+                              std::string const& request_body, std::string const& query = {})
+    -> merovingian::homeserver::DispatchResult
 {
     return merovingian::homeserver::handle_client_server_request(
         rt, {"POST", "/_matrix/client/v3/search" + query, token, request_body});
@@ -161,8 +161,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // POSTs /search, requires 200, and returns the parsed
 // `search_categories.room_events` object.
 [[nodiscard]] auto search(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                          std::string const& request_body,
-                          std::string const& query = {}) -> merovingian::canonicaljson::Object
+                          std::string const& request_body, std::string const& query = {})
+    -> merovingian::canonicaljson::Object
 {
     auto const resp = raw_search(rt, token, request_body, query);
     REQUIRE(resp.response.status == 200U);
@@ -191,8 +191,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // `result.event_id` field, never a substring search over serialized JSON —
 // prev_events/auth_events on a *different*, legitimately-returned event can
 // quote a suppressed event's id verbatim.
-[[nodiscard]] auto results_contain_event(merovingian::canonicaljson::Array const& results,
-                                         std::string const& event_id) -> bool
+[[nodiscard]] auto results_contain_event(merovingian::canonicaljson::Array const& results, std::string const& event_id)
+    -> bool
 {
     return std::ranges::any_of(results, [&](merovingian::canonicaljson::Value const& entry) {
         auto const* entry_obj = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
@@ -202,8 +202,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
     });
 }
 
-[[nodiscard]] auto find_result(merovingian::canonicaljson::Array const& results,
-                               std::string const& event_id) -> merovingian::canonicaljson::Object const*
+[[nodiscard]] auto find_result(merovingian::canonicaljson::Array const& results, std::string const& event_id)
+    -> merovingian::canonicaljson::Object const*
 {
     for (auto const& entry : results)
     {
@@ -372,6 +372,180 @@ SCENARIO("search never returns an event from a room the caller is not a member o
                 REQUIRE(results != nullptr);
                 REQUIRE(results_contain_event(*results, alice_event)); // positive counterpart
                 REQUIRE_FALSE(results_contain_event(*results, bob_event));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Server Side Search
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search
+//
+// "The search API allows clients to perform full text search across events in all rooms that
+// the user has been in, including those that they have left. Only events that the user is
+// allowed to see will be searched, e.g. it won't include events in rooms that happened after you
+// left." Room History Visibility: "After a user has left a room, they may see any events which
+// they were allowed to see before they left the room, but no events received after they left."
+// Conformance audit R16.
+SCENARIO("search covers a room the caller has left, up to the point they left", "[search][conformance][security][r16]")
+{
+    GIVEN("bob joined alice's room, saw a message and a room name, and left before more of both")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        // Fixture: the homeserver must start.
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room = create_room(rt, alice, "public_chat");
+        join_room(rt, bob, room);
+        // Fixture: alice names the room before bob leaves.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.name/", alice,
+                         R"({"name":"Name bob saw"})"})
+                    .response.status == 200U);
+        auto const before_leave =
+            send_text_message(rt, alice, room, "txn-before-leave", "the lighthouseword before bob left");
+        // Fixture: bob must leave the room.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/leave", bob, "{}"})
+                    .response.status == 200U);
+        auto const after_leave =
+            send_text_message(rt, alice, room, "txn-after-leave", "the lighthouseword after bob left");
+        // Fixture: alice renames the room after bob left.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.name/", alice,
+                         R"({"name":"Name after bob left"})"})
+                    .response.status == 200U);
+
+        WHEN("bob searches for the term both messages share, asking for room state")
+        {
+            auto const room_events = search(rt, bob, body_for_term("lighthouseword", R"("include_state":true)"));
+
+            THEN("the message from before he left is found, the one from after is not")
+            {
+                auto const* results = object_member_as_array(room_events, "results");
+                // Spec MUST: room_events carries a results array.
+                REQUIRE(results != nullptr);
+                // Spec MUST: search covers "all rooms that the user has been in, including those that they have left".
+                REQUIRE(results_contain_event(*results, before_leave));
+                // Spec MUST: only visible events are searched, so nothing that "happened after you left".
+                REQUIRE_FALSE(results_contain_event(*results, after_leave));
+                auto const* count = int_member(room_events, "count");
+                // Spec MUST: room_events carries count, the number of results.
+                REQUIRE(count != nullptr);
+                // Spec MUST: only the event bob was allowed to see is counted.
+                REQUIRE(*count == 1);
+            }
+
+            THEN("the room state returned is the state as he left it, not the room's current state")
+            {
+                auto const* state = object_member_as_object(room_events, "state");
+                // Spec MUST: include_state returns a state object keyed by room ID.
+                REQUIRE(state != nullptr);
+                auto const* room_state = object_member_as_array(*state, room);
+                // Spec MUST: include_state covers the rooms in the results, including a left room.
+                REQUIRE(room_state != nullptr);
+                auto name = std::optional<std::string>{};
+                for (auto const& event : *room_state)
+                {
+                    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+                    auto const* type = object == nullptr ? nullptr : string_member(*object, "type");
+                    if (type == nullptr || *type != "m.room.name")
+                    {
+                        continue;
+                    }
+                    auto const* content = object_member_as_object(*object, "content");
+                    // Spec MUST: a state event carries content.
+                    REQUIRE(content != nullptr);
+                    auto const* value = string_member(*content, "name");
+                    // Spec MUST: m.room.name content carries name.
+                    REQUIRE(value != nullptr);
+                    name = *value;
+                }
+                // Spec MUST: a user who left "may see any events which they were allowed to see before they left", not
+                // later state.
+                REQUIRE(name == std::optional<std::string>{"Name bob saw"});
+            }
+        }
+
+        WHEN("bob forgets the room and searches again")
+        {
+            // Fixture: bob forgets the room he left.
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/forget", bob, "{}"})
+                        .response.status == 200U);
+            auto const room_events = search(rt, bob, body_for_term("lighthouseword"));
+            auto const alice_events = search(rt, alice, body_for_term("lighthouseword"));
+
+            THEN("nothing from the forgotten room is returned to him, while alice still finds both")
+            {
+                auto const* results = object_member_as_array(room_events, "results");
+                // Spec MUST: room_events carries a results array.
+                REQUIRE(results != nullptr);
+                // Spec MUST: after /forget the user "will no longer be able to retrieve history for this room".
+                REQUIRE(results->empty());
+                auto const* alice_results = object_member_as_array(alice_events, "results");
+                // Spec MUST: room_events carries a results array.
+                REQUIRE(alice_results != nullptr);
+                // Spec MUST: a joined member still finds the message sent before bob left.
+                REQUIRE(results_contain_event(*alice_results, before_leave));
+                // Spec MUST: a joined member still finds the message sent after bob left.
+                REQUIRE(results_contain_event(*alice_results, after_leave));
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Server Side Search; Room History Visibility, Server Behaviour
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility
+//
+// Search returns "Only events that the user is allowed to see". The server behaviour's first
+// rule is "If the history_visibility was set to world_readable, allow", for any user, joined or
+// not: "In all cases except world_readable, a user needs to join a room to view events". A user
+// who left a world_readable room is therefore allowed to see what was sent after, as anyone is,
+// and search must not hide it behind the departure boundary that applies to the other values
+// (ADR-0084: HistoryVisibility is the one rule; PR #522 review).
+SCENARIO("search of a left world_readable room follows the world_readable rule", "[search][conformance][security][r16]")
+{
+    GIVEN("bob joined alice's world_readable room and left it, and alice wrote after he left")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        // Fixture: the homeserver must start.
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room = create_room(rt, alice, "public_chat");
+        // Fixture: alice makes the room's history world_readable before bob joins.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.history_visibility/", alice,
+                         R"({"history_visibility":"world_readable"})"})
+                    .response.status == 200U);
+        join_room(rt, bob, room);
+        auto const before_leave = send_text_message(rt, alice, room, "txn-wr-before", "the beaconword before bob left");
+        // Fixture: bob must leave the room.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/leave", bob, "{}"})
+                    .response.status == 200U);
+        auto const after_leave = send_text_message(rt, alice, room, "txn-wr-after", "the beaconword after bob left");
+
+        WHEN("bob searches for the term both messages share")
+        {
+            auto const room_events = search(rt, bob, body_for_term("beaconword"));
+
+            THEN("both are returned, as world_readable allows anyone to see them")
+            {
+                auto const* results = object_member_as_array(room_events, "results");
+                // Spec MUST: room_events carries a results array.
+                REQUIRE(results != nullptr);
+                // Spec MUST: search covers rooms the user has left, so the earlier message is found.
+                REQUIRE(results_contain_event(*results, before_leave));
+                // Spec MUST: "If the history_visibility was set to world_readable, allow."
+                REQUIRE(results_contain_event(*results, after_leave));
             }
         }
     }

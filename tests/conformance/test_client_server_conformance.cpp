@@ -715,6 +715,129 @@ SCENARIO("POST /register with inhibit_login:true returns only user_id", "[confor
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: POST /_matrix/client/v3/register
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
+//
+// Request body, `username`: "The basis for the localpart of the desired Matrix ID. If omitted,
+// the homeserver MUST generate a Matrix ID local part." "Any user ID returned by this API must
+// conform to the grammar given in the Matrix specification." Conformance audit R12.
+SCENARIO("POST /register without a username generates a Matrix ID local part",
+         "[conformance][client-server][register][r12]")
+{
+    GIVEN("a running client-server with token-gated registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the homeserver must start.
+        REQUIRE(started.started);
+        auto const no_username_body = std::string{
+            R"({"password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"};
+
+        WHEN("two registrations omit username")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/register", {}, no_username_body});
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/register", {}, no_username_body});
+
+            THEN("each gets a distinct, grammatical user ID on this server and a working session")
+            {
+                // Spec MUST: "If omitted, the homeserver MUST generate a Matrix ID local part."
+                REQUIRE(first.response.status == 200U);
+                // Spec MUST: "If omitted, the homeserver MUST generate a Matrix ID local part."
+                REQUIRE(second.response.status == 200U);
+                auto const first_body = parse_object(first.response.body);
+                auto const second_body = parse_object(second.response.body);
+                auto const* first_user = string_member(first_body, "user_id");
+                auto const* second_user = string_member(second_body, "user_id");
+                // Spec MUST: the 200 response carries the registered user_id.
+                REQUIRE(first_user != nullptr);
+                // Spec MUST: the 200 response carries the registered user_id.
+                REQUIRE(second_user != nullptr);
+                // Spec MUST: each registration creates its own account, so the generated IDs differ.
+                REQUIRE(*first_user != *second_user);
+                for (auto const* user_id : {first_user, second_user})
+                {
+                    // Spec MUST: the returned user ID conforms to the user identifier grammar
+                    // ("@" sigil).
+                    REQUIRE(user_id->starts_with("@"));
+                    // Spec MUST: the user ID is on this homeserver's server name.
+                    REQUIRE(user_id->ends_with(":example.org"));
+                    auto const localpart =
+                        user_id->substr(1U, user_id->size() - 1U - std::string_view{":example.org"}.size());
+                    // Spec MUST: the generated localpart is not empty.
+                    REQUIRE(!localpart.empty());
+                    // Spec MUST: the localpart is drawn from a-z, 0-9, ".", "_", "=", "-", "/" and "+".
+                    REQUIRE(std::ranges::all_of(localpart, [](char c) {
+                        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '=' ||
+                               c == '-' || c == '/' || c == '+';
+                    }));
+                }
+                auto const* token = string_member(first_body, "access_token");
+                // Spec MUST: without inhibit_login the response carries an access_token.
+                REQUIRE(token != nullptr);
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", *token, {}});
+                // Spec MUST: the returned access token authenticates the new account.
+                REQUIRE(whoami.response.status == 200U);
+                auto const whoami_body = parse_object(whoami.response.body);
+                auto const* whoami_user = string_member(whoami_body, "user_id");
+                // Spec MUST: /whoami answers the user_id the token belongs to.
+                REQUIRE(whoami_user != nullptr);
+                // Spec MUST: the session belongs to the generated user ID.
+                REQUIRE(*whoami_user == *first_user);
+            }
+        }
+
+        WHEN("a registration names an empty username")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"username":"","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+
+            THEN("it is refused as an invalid user name, not treated as omitted")
+            {
+                // Spec MUST: 400 M_INVALID_USERNAME "The desired user ID is not a valid user name."
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                // Spec MUST: an error response carries errcode.
+                REQUIRE(errcode != nullptr);
+                // Spec MUST: an empty user name is M_INVALID_USERNAME.
+                REQUIRE(*errcode == "M_INVALID_USERNAME");
+            }
+        }
+
+        WHEN("a registration gives username as a number")
+        {
+            auto const users_before = started.runtime.homeserver.database.users.size();
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"username":123,"password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+
+            THEN("it is refused as malformed JSON, not treated as omitted, and no account is created")
+            {
+                // Spec MUST: `username` is a string, so a number is refused with 400.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                // Spec MUST: an error response carries errcode.
+                REQUIRE(errcode != nullptr);
+                // Spec MUST: valid JSON with an invalid value for a key is M_BAD_JSON.
+                REQUIRE(*errcode == "M_BAD_JSON");
+                // Spec MUST: a refused registration creates no account.
+                REQUIRE(started.runtime.homeserver.database.users.size() == users_before);
+            }
+        }
+    }
+}
+
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
 //
 // The device created by registration is a real session and MUST appear in
@@ -11721,73 +11844,7 @@ SCENARIO("PUT and GET /user/{userId}/account_data/m.image_pack.rooms round-trips
     }
 }
 
-// --- PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type} --
-// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridrooms roomidaccount_datatype
-// IMPLEMENTATION GAP: per-room account data not yet implemented.
-SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account-data]")
-{
-    GIVEN("a running client-server and a logged-in user with a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("PUT /user/@alice:example.org/rooms/{roomId}/account_data/m.test is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/m.test",
-                 token, R"({"key":"value"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: per-room account data not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-// --- GET /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type} --
-// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3useruseridrooms roomidaccount_datatype
-// IMPLEMENTATION GAP: per-room account data retrieval not yet implemented.
-SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account-data]")
-{
-    GIVEN("a running client-server and a logged-in user with a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("GET /user/@alice:example.org/rooms/{roomId}/account_data/m.test is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/m.test",
-                 token,
-                 {}});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: per-room account data retrieval not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
+// Room-scoped account data (R10) is covered in test_account_data_conformance.cpp.
 
 // =============================================================================
 // USER DATA — ROOM TAGS
@@ -13058,67 +13115,8 @@ SCENARIO("GET /user/{userId}/filter/{filterId} conformance")
 // ============================================================================
 // 14     User data — Account data
 // ============================================================================
-// Spec: Matrix v1.19 §14 PUT/GET per-room account data and tags
-//       IMPLEMENTATION GAP: room-level account data and tags not implemented.
-
-SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("PUT /user/@alice:example.org/rooms/{roomId}/account_data/{type} is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom",
-                 token, R"({"data":42})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("GET /user/@alice:example.org/rooms/{roomId}/account_data/{type} is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom",
-                 token,
-                 {}});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
+// Spec: Matrix v1.19 §14 room tags. Room-scoped account data (R10) is covered in
+//       test_account_data_conformance.cpp.
 
 SCENARIO("GET /user/{userId}/rooms/{roomId}/tags conformance")
 {

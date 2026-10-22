@@ -73,8 +73,8 @@ using namespace merovingian::tests;
 }
 
 // Create a private room owned by token; returns the room_id.
-[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& rt,
-                               std::string const& token) -> std::string
+[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token)
+    -> std::string
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
         rt, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
@@ -88,8 +88,8 @@ using namespace merovingian::tests;
 // Issue a sliding sync POST; returns the DispatchResult (can_wait = false so it
 // never blocks on a long-poll — tests always prime events first).
 [[nodiscard]] auto sliding_sync(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                                std::string const& body,
-                                std::string const& pos = {}) -> merovingian::homeserver::DispatchResult
+                                std::string const& body, std::string const& pos = {})
+    -> merovingian::homeserver::DispatchResult
 {
     auto const target = pos.empty() ? std::string{"/_matrix/client/unstable/org.matrix.msc4186/sync"}
                                     : "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos;
@@ -109,8 +109,8 @@ using namespace merovingian::tests;
 // Extract the ops array for a named list from a 200 response body.
 // Returns a copy: parse_object is local and destroyed on return, so the caller
 // must not hold raw pointers into the original parse tree.
-[[nodiscard]] auto list_ops(std::string const& response_body,
-                            std::string_view list_name) -> std::optional<merovingian::canonicaljson::Array>
+[[nodiscard]] auto list_ops(std::string const& response_body, std::string_view list_name)
+    -> std::optional<merovingian::canonicaljson::Array>
 {
     auto const obj = parse_object(response_body);
     auto const* lists = object_member_as_object(obj, "lists");
@@ -232,8 +232,8 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
 // the serialized timeline array would find an ignored sender's event_id even
 // when their event object was withheld. Checking the per-event top-level
 // field is the only sound way to assert "this event was/was not delivered".
-[[nodiscard]] auto array_has_event_id(merovingian::canonicaljson::Array const& events,
-                                      std::string const& event_id) -> bool
+[[nodiscard]] auto array_has_event_id(merovingian::canonicaljson::Array const& events, std::string const& event_id)
+    -> bool
 {
     return std::ranges::any_of(events, [&](merovingian::canonicaljson::Value const& value) {
         auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
@@ -1827,8 +1827,8 @@ namespace
 
 // Invite `invitee_localpart` (private rooms default to join_rule=invite) and have them join.
 auto invite_and_join(merovingian::homeserver::ClientServerRuntime& rt, std::string const& owner_token,
-                     std::string const& invitee_localpart, std::string const& invitee_token,
-                     std::string const& room_id) -> void
+                     std::string const& invitee_localpart, std::string const& invitee_token, std::string const& room_id)
+    -> void
 {
     std::ignore = post_expect_ok(rt, owner_token, "/_matrix/client/v3/rooms/" + room_id + "/invite",
                                  R"({"user_id":"@)" + invitee_localpart + R"(:example.org"})");
@@ -1836,8 +1836,8 @@ auto invite_and_join(merovingian::homeserver::ClientServerRuntime& rt, std::stri
 }
 
 // extensions.<name>.rooms as a copy; empty when the extension or its rooms are absent.
-[[nodiscard]] auto extension_rooms(std::string const& response_body,
-                                   std::string_view extension) -> merovingian::canonicaljson::Object
+[[nodiscard]] auto extension_rooms(std::string const& response_body, std::string_view extension)
+    -> merovingian::canonicaljson::Object
 {
     auto const body = parse_object(response_body);
     auto const* ext = object_member_as_object(body, "extensions");
@@ -1894,8 +1894,8 @@ struct ReceiptView final
 }
 
 // m.fully_read room account data delivered through extensions.account_data.rooms[room_id].
-[[nodiscard]] auto account_data_types_for_room(std::string const& response_body,
-                                               std::string const& room_id) -> std::vector<std::string>
+[[nodiscard]] auto account_data_types_for_room(std::string const& response_body, std::string const& room_id)
+    -> std::vector<std::string>
 {
     auto out = std::vector<std::string>{};
     auto const rooms = extension_rooms(response_body, "account_data");
@@ -2333,6 +2333,65 @@ SCENARIO("MSC4186 sliding sync timeline honours m.room.history_visibility",
                 {
                     REQUIRE(array_has_event_id(*timeline, before_join) == (std::string_view{visibility} == "shared"));
                 }
+            }
+        }
+    }
+}
+
+// Account data is never signed, so its content may hold fractional numbers: m.tag's `order` is
+// "A number in a range [0,1]" (client-server-api.md, Room Tagging). The order must reach the
+// client in the sliding-sync response itself, not only inside build_extensions (PR #522 review).
+SCENARIO("MSC4186 sliding sync delivers an m.tag order in the HTTP response",
+         "[homeserver][sliding-sync][integration][account-data][r10]")
+{
+    GIVEN("alice has tagged her room as a favourite with order 0.5")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_id = create_room(rt, alice_token);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/m.favourite",
+                         alice_token, R"({"order":0.5})"})
+                    .response.status == 200U);
+
+        WHEN("alice polls sliding sync with the account_data extension enabled")
+        {
+            auto const result = sliding_sync(rt, alice_token, element_x_room_list_body());
+
+            THEN("the room's m.tag arrives with its order")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const body = merovingian::tests::parse_object_json(result.response.body);
+                auto const* extensions = object_member_as_object(body, "extensions");
+                REQUIRE(extensions != nullptr);
+                auto const* account_data = object_member_as_object(*extensions, "account_data");
+                REQUIRE(account_data != nullptr);
+                auto const* rooms = object_member_as_object(*account_data, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* events = object_member_as_array(*rooms, room_id);
+                REQUIRE(events != nullptr);
+                auto order = std::optional<double>{};
+                for (auto const& event : *events)
+                {
+                    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+                    auto const* type = object == nullptr ? nullptr : string_member(*object, "type");
+                    if (type == nullptr || *type != "m.tag")
+                    {
+                        continue;
+                    }
+                    auto const* content = object_member_as_object(*object, "content");
+                    auto const* tags = content == nullptr ? nullptr : object_member_as_object(*content, "tags");
+                    auto const* favourite = tags == nullptr ? nullptr : object_member_as_object(*tags, "m.favourite");
+                    auto const* value = favourite == nullptr ? nullptr : double_member(*favourite, "order");
+                    if (value != nullptr)
+                    {
+                        order = *value;
+                    }
+                }
+                REQUIRE(order == std::optional<double>{0.5});
             }
         }
     }

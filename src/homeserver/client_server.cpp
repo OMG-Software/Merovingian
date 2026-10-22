@@ -512,6 +512,36 @@ namespace
         return id.value_or("merovingian-fallback-device-id");
     }
 
+    // A localpart for a registration that omitted `username` (R12, ADR-0198): 64 random bits
+    // as lowercase hex, which the user ID grammar accepts. A candidate that is reserved, held
+    // by an existing account, or inside an application service's namespace (exclusive, or its
+    // sender) is drawn again. Nullopt only when the random source fails or every draw collides.
+    [[nodiscard]] auto generate_registration_localpart(HomeserverRuntime const& runtime) -> std::optional<std::string>
+    {
+        auto constexpr max_draws = 8;
+        auto const& server_name = runtime.config.server().server_name;
+        for (auto draw = 0; draw < max_draws; ++draw)
+        {
+            auto candidate = crypto::secure_random_hex(8U);
+            if (!candidate.has_value())
+            {
+                return std::nullopt;
+            }
+            auto const user_id = "@" + *candidate + ":" + server_name;
+            auto const taken = std::ranges::any_of(runtime.database.users, [&user_id](auto const& user) {
+                return user.user_id == user_id;
+            });
+            if (taken || !auth::localpart_is_valid_new(*candidate) || auth::localpart_is_reserved(*candidate) ||
+                runtime.appservices.user_namespace_exclusively_owned_by_other(user_id, {}) ||
+                runtime.appservices.is_sender_user_id(user_id, server_name))
+            {
+                continue;
+            }
+            return candidate;
+        }
+        return std::nullopt;
+    }
+
     // Thin builder facade over the project's canonical JSON value model.
     // Response paths construct a Value tree and hand it to serialize_canonical
     // so escaping (including control characters as \u00XX) is handled by the
@@ -653,7 +683,9 @@ namespace
 
     struct MatrixRegisterBody final
     {
-        std::string localpart{};
+        // Absent when the client omitted `username`: the server then generates the
+        // localpart (R12). Present but empty is a client error, not an omission.
+        std::optional<std::string> localpart{};
         std::string password{};
         std::string registration_token{};
         std::string device_id{};
@@ -1545,15 +1577,26 @@ namespace
         }
         auto const* type = string_member(*object, "type");
         auto const is_appservice_registration = type != nullptr && *type == "m.login.application_service";
+        // Spec: `username` is a string. Only an absent one is an omission (the server then
+        // generates the localpart); one of another type is malformed, never "omitted".
+        if (object_member(*object, "username") != nullptr && string_member(*object, "username") == nullptr)
+        {
+            return std::nullopt;
+        }
         auto const* username = string_member(*object, "username");
         if (username == nullptr)
         {
+            if (object_member(*object, "user") != nullptr && string_member(*object, "user") == nullptr)
+            {
+                return std::nullopt;
+            }
             username = string_member(*object, "user");
         }
         auto const* password = string_member(*object, "password");
         // Application Service registrations are passwordless — see
-        // MatrixRegisterBody::is_appservice_registration.
-        if (username == nullptr || (password == nullptr && !is_appservice_registration))
+        // MatrixRegisterBody::is_appservice_registration. `username` is optional
+        // (spec: "If omitted, the homeserver MUST generate a Matrix ID local part").
+        if (password == nullptr && !is_appservice_registration)
         {
             return std::nullopt;
         }
@@ -1568,7 +1611,7 @@ namespace
         auto const* device_id = string_member(*object, "device_id");
         auto const* display_name = string_member(*object, "initial_device_display_name");
         auto const* inhibit_login = boolean_member(*object, "inhibit_login");
-        return MatrixRegisterBody{*username,
+        return MatrixRegisterBody{username == nullptr ? std::nullopt : std::optional<std::string>{*username},
                                   password == nullptr ? std::string{} : *password,
                                   token == nullptr ? std::string{} : *token,
                                   device_id == nullptr ? std::string{} : *device_id,
@@ -3683,6 +3726,32 @@ namespace
         });
     }
 
+    // Appendices, "Room IDs": `!opaque_id` or `!opaque_id:domain`, at most 255 bytes, with no
+    // NUL. Room IDs are opaque, so this checks only the sigil, the bounds and the NUL rule; it is
+    // the 400 M_INVALID_PARAM gate of the room account-data endpoints (R10).
+    [[nodiscard]] auto room_id_is_well_formed(std::string_view room_id) noexcept -> bool
+    {
+        return room_id.size() >= 2U && room_id.size() <= 255U && room_id.front() == '!' &&
+               room_id.find('\0') == std::string_view::npos;
+    }
+
+    // Client Config, Server Behaviour: "Currently, this only includes m.fully_read and
+    // m.push_rules." A client PUT of either is refused with 405 M_BAD_JSON.
+    [[nodiscard]] auto account_data_type_is_server_managed(std::string_view type) noexcept -> bool
+    {
+        return type == "m.fully_read" || type == "m.push_rules";
+    }
+
+    // True when the store holds a membership row of any kind (join, invite, knock, leave, ban)
+    // for the user in the room. Room account data is written only for such a room (ADR-0197).
+    [[nodiscard]] auto user_has_room_membership(database::PersistentStore const& store, std::string_view user_id,
+                                                std::string_view room_id) -> bool
+    {
+        return std::ranges::any_of(store.memberships, [user_id, room_id](database::PersistentMembership const& row) {
+            return row.user_id == user_id && row.room_id == room_id;
+        });
+    }
+
     // True when the persistent store records a "join" membership for the user in
     // the given room.  Used by handlers that only have a room_id, not a LocalRoom.
     [[nodiscard]] auto user_is_joined(database::PersistentStore const& store, std::string_view room_id,
@@ -5129,8 +5198,11 @@ namespace
 
     [[nodiscard]] auto sliding_sync_ext_to_value(sync::SlidingSyncExtensionResponses ext) -> canonicaljson::Object
     {
+        // The extensions carry account data and receipts, which are never signed and may hold
+        // fractional numbers (m.tag's `order` is "A number in a range [0,1]"), so the general
+        // parser reads them back; the canonical one would turn such an event into {}.
         auto parse_json = [](std::string const& json) -> canonicaljson::Value {
-            auto result = canonicaljson::parse_lossless(json);
+            auto result = canonicaljson::parse_json(json);
             return result.error == canonicaljson::ParseError::none ? std::move(result.value)
                                                                    : canonicaljson::Value{canonicaljson::Object{}};
         };
@@ -8049,13 +8121,14 @@ namespace
     // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search
     //
     // Searches `content.body` (m.room.message), `content.name` (m.room.name),
-    // and `content.topic` (m.room.topic) across rooms the caller is currently
-    // joined to. Encrypted rooms are never searched (spec: "The search will
+    // and `content.topic` (m.room.topic) across rooms the caller has been in,
+    // including rooms they have left (R16), each event subject to history
+    // visibility. Encrypted rooms are never searched (spec: "The search will
     // not include rooms that are end to end encrypted"). Matching is a
     // case-insensitive substring test, not stemmed/tokenised full text search
     // -- see docs/todos/capability-gaps.md for that and the other spec
-    // corners deliberately left out (rooms the caller has left; the MSC3765
-    // `content['m.topic']` extensible-topic representation).
+    // corner deliberately left out (the MSC3765 `content['m.topic']`
+    // extensible-topic representation).
 
     constexpr std::size_t kSearchDefaultPageLimit = 10U;
 
@@ -8383,11 +8456,11 @@ namespace
     // strictly before it), or nullopt for the first page.
     //
     // Bounding (see ClientApiLimits::max_search_events_scanned): candidate
-    // events -- the caller's joined, filter-allowed, unencrypted rooms -- are
-    // gathered and sorted newest-first once per request. That gather is
-    // O(k log k) where k is the caller's own visible event count: the same
-    // scope /messages already reads per room, just summed across every
-    // joined room, which is exactly the spec's defined search scope, and
+    // events -- in the filter-allowed, unencrypted rooms the caller has been
+    // in -- are gathered and sorted newest-first once per request. That gather
+    // is O(k log k) where k is the event count of those rooms: the same scope
+    // /messages already reads per room, just summed across every such room,
+    // which is exactly the spec's defined search scope, and
     // uses only cheap field comparisons (no JSON parsing). From the resume
     // point, at most `max_search_events_scanned` candidates are JSON-parsed
     // and text-matched per request -- the genuinely expensive step -- and the
@@ -8399,14 +8472,54 @@ namespace
     {
         auto const& store = rt.homeserver.database.persistent_store;
 
-        auto joined_rooms = std::unordered_set<std::string>{};
+        // Spec (Server Side Search): "all rooms that the user has been in, including those that
+        // they have left" (R16). room_read_access_for is the one predicate for that: `current`
+        // while joined, `as_of` after a leave, kick or ban that followed a join, `none` for a room
+        // never joined (an invite, a knock, a declined invite) or forgotten. One pass over the
+        // membership rows finds each room's current membership: a join is `current` at once, an
+        // invite or knock is never searched, and a leave or ban is judged by
+        // room_read_access_for only when one of its events would be returned, so the scans that
+        // call makes under runtime.mutex are bounded by the page, not by every room the user
+        // ever left.
+        auto latest_membership = std::unordered_map<std::string, database::PersistentMembership const*>{};
         for (auto const& membership : store.memberships)
         {
-            if (membership.user_id == user_id && membership.membership == "join")
+            if (membership.user_id != user_id)
             {
-                joined_rooms.insert(membership.room_id);
+                continue;
+            }
+            auto& latest = latest_membership[membership.room_id];
+            if (latest == nullptr || membership.stream_ordering >= latest->stream_ordering)
+            {
+                latest = &membership;
             }
         }
+        auto searchable_rooms = std::unordered_map<std::string, std::optional<sync::RoomReadAccess>>{};
+        for (auto const& [room_id, membership] : latest_membership)
+        {
+            if (membership->membership == "join")
+            {
+                searchable_rooms.emplace(room_id, sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U});
+            }
+            else if (membership->membership == "leave" || membership->membership == "ban")
+            {
+                searchable_rooms.emplace(room_id, std::nullopt);
+            }
+        }
+        // The room's access, judged on first use and kept for the request; nullptr when the
+        // caller may not search it.
+        auto const room_access = [&](std::string const& room_id) -> sync::RoomReadAccess const* {
+            auto const found = searchable_rooms.find(room_id);
+            if (found == searchable_rooms.end())
+            {
+                return nullptr;
+            }
+            if (!found->second.has_value())
+            {
+                found->second = sync::room_read_access_for(store, room_id, user_id);
+            }
+            return found->second->kind == sync::RoomReadKind::none ? nullptr : &*found->second;
+        };
 
         auto const state_index = build_state_index(store);
         auto encrypted_rooms_cache = std::unordered_map<std::string, bool>{};
@@ -8432,13 +8545,12 @@ namespace
         auto candidates = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            // Access control: never a room the caller is not currently joined
-            // to -- see the capability-gaps.md note on why this is join-only
-            // rather than the spec's full "including rooms you have left"
-            // scope. This is the single gate standing between this endpoint
-            // and a server-wide event disclosure, since unlike /messages the
-            // scan is not otherwise bounded to one room by the request path.
-            if (!joined_rooms.contains(event.room_id))
+            // Access control: never a room the caller has not been in. This is
+            // the gate standing between this endpoint and a server-wide event
+            // disclosure, since unlike /messages the scan is not otherwise
+            // bounded to one room by the request path. Within a room the caller
+            // has left, HistoryVisibility below withholds what was sent after.
+            if (!searchable_rooms.contains(event.room_id))
             {
                 continue;
             }
@@ -8533,8 +8645,9 @@ namespace
             {
                 continue;
             }
-            // Checked last: only an event that would be returned costs a visibility lookup.
-            if (!visibility.can_see(*candidate))
+            // Checked last: only an event that would be returned costs an access and a
+            // visibility lookup.
+            if (room_access(candidate->room_id) == nullptr || !visibility.can_see(*candidate))
             {
                 continue;
             }
@@ -8671,8 +8784,15 @@ namespace
             auto state = canonicaljson::Object{};
             for (auto const& room_id : rooms_in_page)
             {
+                // A room the caller has left gets its state as they left it, never
+                // later (R16): the same rule /messages applies.
+                auto const* access = room_access(room_id);
+                if (access == nullptr)
+                {
+                    continue;
+                }
                 state.push_back(json_member(
-                    room_id, json_arr(build_current_state_events_array(store, sync::EventTypeFilter{}, room_id))));
+                    room_id, json_arr(messages_state_events(store, sync::EventTypeFilter{}, room_id, *access))));
             }
             response.push_back(json_member("state", json_obj(std::move(state))));
         }
@@ -8782,7 +8902,9 @@ namespace
             {
                 continue;
             }
-            auto parsed = canonicaljson::parse_lossless(row.content_json);
+            // Account data is never signed: read it with the general parser, which keeps
+            // fractional numbers such as m.tag's `order`.
+            auto parsed = canonicaljson::parse_json(row.content_json);
             auto content = parsed.error == canonicaljson::ParseError::none
                                ? std::move(parsed.value)
                                : canonicaljson::Value{canonicaljson::Object{}};
@@ -10022,6 +10144,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;
+    rt.limits.max_room_account_data_per_room = client_api.max_room_account_data_per_room;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
@@ -10984,18 +11107,29 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
         }
-        auto const body = parse_register_body(req.body);
+        auto body = parse_register_body(req.body);
         if (!body.has_value())
         {
-            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must contain username and password");
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "registration body must contain a password, and username must be a string");
         }
-        if (!auth::localpart_is_valid_new(body->localpart))
+        // Spec (POST /register, `username`): "If omitted, the homeserver MUST generate a
+        // Matrix ID local part" (conformance audit R12, ADR-0198).
+        if (!body->localpart.has_value())
+        {
+            body->localpart = generate_registration_localpart(rt.homeserver);
+            if (!body->localpart.has_value())
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a user ID");
+            }
+        }
+        if (!auth::localpart_is_valid_new(*body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
         }
         // The server's own localparts (the remote media cache owner) are never given to an
         // account; answer as for a name already in use (security audit run-1).
-        if (auth::localpart_is_reserved(body->localpart))
+        if (auth::localpart_is_reserved(*body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
         }
@@ -11005,14 +11139,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // as exclusive." This path is reached only for an ordinary
         // (non-appservice) registration — the m.login.application_service
         // branch above already returned.
-        if (auto const desired_user_id = "@" + body->localpart + ":" + rt.homeserver.config.server().server_name;
+        if (auto const desired_user_id = "@" + *body->localpart + ":" + rt.homeserver.config.server().server_name;
             rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}) ||
             rt.homeserver.appservices.is_sender_user_id(desired_user_id, rt.homeserver.config.server().server_name))
         {
             return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
         }
         auto const result =
-            register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
+            register_local_user(rt.homeserver, *body->localpart, body->password, body->registration_token);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
@@ -14820,22 +14954,50 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
                 }
-                // Parse the request body for the typing bool (spec-required) and
-                // optional timeout.  Default to true when body is absent so legacy
-                // clients that omit it remain compatible, but honour the parsed
-                // value when present.
-                auto is_typing = true;
+                // Spec: `typing` is a required boolean and `timeout` an integer number of
+                // milliseconds. A body that is not a JSON object, a missing or non-boolean
+                // `typing`, or a timeout that is not a non-negative integer is refused and
+                // changes nothing (conformance audit R13).
+                // The general parser, not the canonical one: the body is never signed, and a
+                // fractional timeout is valid JSON (M_BAD_JSON below), not "not JSON".
+                auto const parsed_body = canonicaljson::parse_json(req.body);
+                if (parsed_body.error != canonicaljson::ParseError::none)
                 {
-                    auto const body_obj = parsed_json_object(req.body);
-                    if (body_obj.has_value())
-                    {
-                        auto const* typing_val = boolean_member(*body_obj, "typing");
-                        if (typing_val != nullptr)
-                        {
-                            is_typing = *typing_val;
-                        }
-                    }
+                    return dispatch_err(req, rt, 400U, "M_NOT_JSON", "typing body must be valid JSON");
                 }
+                auto const* body_obj = std::get_if<canonicaljson::Object>(&parsed_body.value.storage());
+                if (body_obj == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "typing body must be a JSON object");
+                }
+                auto const* typing_member = object_member(*body_obj, "typing");
+                if (typing_member == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "typing is required");
+                }
+                auto const* typing_val = std::get_if<bool>(&typing_member->storage());
+                if (typing_val == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "typing must be a boolean");
+                }
+                auto const is_typing = *typing_val;
+                // The typing lasts `timeout` ms, the default when it is absent, and never
+                // longer than max_typing_timeout (ADR-0199).
+                auto timeout = default_typing_timeout;
+                if (auto const* timeout_member = object_member(*body_obj, "timeout"); timeout_member != nullptr)
+                {
+                    auto const* timeout_val = integer_member(*body_obj, "timeout");
+                    if (timeout_val == nullptr)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "timeout must be an integer");
+                    }
+                    if (*timeout_val < 0)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "timeout must not be negative");
+                    }
+                    timeout = std::min(std::chrono::milliseconds{*timeout_val}, max_typing_timeout);
+                }
+                auto const expires_at = std::chrono::steady_clock::now() + timeout;
                 log_diagnostic("room.typing.accepted",
                                {
                                    {"actor",   *user,           false},
@@ -14873,11 +15035,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     if (existing != rt.homeserver.typing_users.end())
                     {
                         existing->typing = is_typing;
+                        existing->expires_at = expires_at;
                     }
                     else if (is_typing)
                     {
                         rt.homeserver.typing_users.push_back(
-                            {typing->room_id, std::string{*user}, true, std::uint64_t{0U}});
+                            {typing->room_id, std::string{*user}, true, std::uint64_t{0U}, expires_at});
+                    }
+                    if (is_typing)
+                    {
+                        wake_typing_expiry(rt.homeserver);
                     }
                     auto const room_stream_id =
                         update_room_typing_stream_id_if_changed(rt.homeserver, typing->room_id, previous_users);
@@ -15962,48 +16129,94 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_resp(req, rt, 200U, stored->json);
         }
 
-        // Global (non-room) account data. The userId path segment is
-        // percent-encoded and contains no '/', so a pre-marker segment that
-        // contains '/' is room-scoped and falls through to the 404 below
-        // until room-scoped account data is implemented.
+        // Account data (Client Config): global `{userId}/account_data/{type}` and
+        // room-scoped `{userId}/rooms/{roomId}/account_data/{type}`. The userId and
+        // roomId path segments are percent-encoded and contain no '/'.
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#client-config
         auto constexpr account_data_m = std::string_view{"/account_data/"};
-        if (auto const ad_pos = suffix.find(account_data_m); ad_pos != std::string_view::npos)
+        if (auto const ad_pos = suffix.find(account_data_m);
+            ad_pos != std::string_view::npos && (req.method == "PUT" || req.method == "GET"))
         {
-            auto const encoded_user = suffix.substr(0U, ad_pos);
+            auto const scope = suffix.substr(0U, ad_pos);
             auto const type = core::percent_decode_path_component(suffix.substr(ad_pos + account_data_m.size()));
-            if (encoded_user.find('/') == std::string_view::npos && !type.empty())
+            auto constexpr rooms_m = std::string_view{"/rooms/"};
+            auto const rooms_pos = scope.find(rooms_m);
+            auto const encoded_user = rooms_pos == std::string_view::npos ? scope : scope.substr(0U, rooms_pos);
+            auto const encoded_room =
+                rooms_pos == std::string_view::npos ? std::string_view{} : scope.substr(rooms_pos + rooms_m.size());
+            if (encoded_user.find('/') == std::string_view::npos && encoded_room.find('/') == std::string_view::npos &&
+                !type.empty())
             {
+                auto const room_scoped = rooms_pos != std::string_view::npos;
                 auto const path_user = core::percent_decode_path_component(encoded_user);
+                auto const path_room = core::percent_decode_path_component(encoded_room);
                 if (path_user != *user)
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot access account data for another user");
                 }
+                if (room_scoped && !room_id_is_well_formed(path_room))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room id is not a valid room ID");
+                }
                 if (req.method == "PUT")
                 {
-                    if (req.body.empty())
+                    // Spec (Client Config, Server Behaviour): "Servers MUST reject setting
+                    // account data for event types that the server manages by using a 405
+                    // error response", for global and room account data alike (R11).
+                    if (account_data_type_is_server_managed(type))
                     {
-                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "account data body must not be empty");
+                        return dispatch_err(req, rt, 405U, "M_BAD_JSON",
+                                            "cannot set " + type + " through the account data API");
                     }
-                    // Security audit run-1 (ADR-0173): each new global type is a row
-                    // that push fan-out and every /sync scan under runtime.mutex, so
-                    // new types stop at the per-user cap (M_TOO_LARGE, nothing stored
-                    // or evicted, as for the ADR-0118 caps). A type the user already
-                    // holds can always be updated. The cap check and the store share
-                    // one pass over the rows.
-                    auto const outcome = set_global_account_data_within_cap(
-                        rt, {path_user, std::string{}, type, req.body, 0U}, rt.limits.max_global_account_data_per_user);
+                    // Spec: 400 "The request body is not a JSON object", M_NOT_JSON when it
+                    // is not JSON at all, M_BAD_JSON when it is JSON of another kind (R11).
+                    // The general parser, not the canonical one: account data is never signed,
+                    // and any JSON object is valid content, fractional numbers included (m.tag's
+                    // `order` is "A number in a range [0,1]").
+                    auto const parsed_body = canonicaljson::parse_json(req.body);
+                    if (parsed_body.error != canonicaljson::ParseError::none)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_NOT_JSON", "account data body must be valid JSON");
+                    }
+                    if (std::get_if<canonicaljson::Object>(&parsed_body.value.storage()) == nullptr)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "account data body must be a JSON object");
+                    }
+                    // Conformance audit R10 (ADR-0197): room account data is written only for
+                    // a room the user holds a membership in, so the rooms a user can create
+                    // rows for are bounded by the rooms they have been part of.
+                    if (room_scoped &&
+                        !user_has_room_membership(rt.homeserver.database.persistent_store, path_user, path_room))
+                    {
+                        log_diagnostic("account_data.rejected", {
+                                                                    {"actor",   *user,           false},
+                                                                    {"room_id", path_room,       false},
+                                                                    {"type",    type,            false},
+                                                                    {"reason",  "no membership", false}
+                        });
+                        return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+                    }
+                    // Security audit run-1 (ADR-0173) and R10 (ADR-0197): each new type is a
+                    // row that push fan-out and every /sync scan under runtime.mutex, so new
+                    // types stop at the per-user cap (global) or per-room cap (room), with
+                    // M_TOO_LARGE, nothing stored or evicted, as for the ADR-0118 caps. A type
+                    // the user already holds can always be updated. The cap check and the
+                    // store share one pass over the rows.
+                    auto const cap = room_scoped ? rt.limits.max_room_account_data_per_room
+                                                 : rt.limits.max_global_account_data_per_user;
+                    auto row = database::PersistentAccountData{path_user, path_room, type, req.body, 0U};
+                    auto const outcome = room_scoped ? set_room_account_data_within_cap(rt, std::move(row), cap)
+                                                     : set_global_account_data_within_cap(rt, std::move(row), cap);
                     if (outcome == database::CappedAccountDataStore::over_cap)
                     {
                         log_diagnostic("account_data.rejected",
                                        {
-                                           {"actor",  *user,                                 false},
-                                           {"type",   type,                                  false},
-                                           {"reason", "per-user account data limit reached", false}
+                                           {"actor",  *user,                             false},
+                                           {"type",   type,                              false},
+                                           {"reason", "account data type limit reached", false}
                         });
                         return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
-                                            "account data limit of " +
-                                                std::to_string(rt.limits.max_global_account_data_per_user) +
-                                                " types reached");
+                                            "account data limit of " + std::to_string(cap) + " types reached");
                     }
                     if (outcome != database::CappedAccountDataStore::stored)
                     {
@@ -16023,10 +16236,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 if (req.method == "GET")
                 {
+                    // Spec (Client Config): "There is no inheritance mechanism here": a room
+                    // read never falls back to the global row of the same type, nor the reverse.
                     auto const& store = rt.homeserver.database.persistent_store;
                     auto const found = std::ranges::find_if(
-                        store.account_data, [&path_user, &type](database::PersistentAccountData const& d) {
-                            return d.user_id == path_user && d.room_id.empty() && d.event_type == type;
+                        store.account_data, [&path_user, &path_room, &type](database::PersistentAccountData const& d) {
+                            return d.user_id == path_user && d.room_id == path_room && d.event_type == type;
                         });
                     if (found == store.account_data.end())
                     {
@@ -16432,6 +16647,57 @@ auto set_global_account_data_within_cap(ClientServerRuntime& runtime, database::
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
     auto const outcome = database::store_global_account_data_within_cap(runtime.homeserver.database.persistent_store,
                                                                         std::move(data), max_global_types);
+    if (outcome == database::CappedAccountDataStore::stored)
+    {
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    return outcome;
+}
+
+auto expire_typing_notifications(ClientServerRuntime& runtime, std::chrono::steady_clock::time_point now)
+    -> std::chrono::milliseconds
+{
+    auto constexpr shortest_wait = std::chrono::milliseconds{250};
+    auto constexpr longest_wait = std::chrono::milliseconds{5000};
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const expiry = expire_typing(runtime.homeserver, now);
+    if (expiry.changed)
+    {
+        // Publishes the new typing stream position, waking /sync and sliding-sync waiters.
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    // Remote servers learnt of this typing from our EDU and have no timeout of their own for
+    // it, so they are told it stopped, as when the user sends typing:false.
+    for (auto const& entry : expiry.expired_local)
+    {
+        auto const room = std::ranges::find_if(runtime.homeserver.database.rooms, [&entry](LocalRoom const& r) {
+            return r.room_id == entry.room_id;
+        });
+        if (room == runtime.homeserver.database.rooms.end())
+        {
+            continue;
+        }
+        auto const edu_content = json_serialize(json_obj({
+            json_member("room_id", json_str(entry.room_id)),
+            json_member("user_id", json_str(entry.user_id)),
+            json_member("typing", canonicaljson::Value{false}),
+        }));
+        std::ignore = dispatch_outbound_edu(runtime.homeserver, *room, "m.typing", edu_content);
+    }
+    if (!expiry.next_expiry.has_value())
+    {
+        return longest_wait;
+    }
+    auto const until_next = std::chrono::duration_cast<std::chrono::milliseconds>(*expiry.next_expiry - now);
+    return std::clamp(until_next, shortest_wait, longest_wait);
+}
+
+auto set_room_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
+                                      std::size_t max_room_types) -> database::CappedAccountDataStore
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const outcome = database::store_room_account_data_within_cap(runtime.homeserver.database.persistent_store,
+                                                                      std::move(data), max_room_types);
     if (outcome == database::CappedAccountDataStore::stored)
     {
         std::ignore = ensure_sync_notifier(runtime);

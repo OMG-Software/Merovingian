@@ -84,7 +84,8 @@ namespace
                 continue;
             }
             // m.direct content: { "@user:server": ["!room:server", ...], ... }
-            auto const parsed = canonicaljson::parse_lossless(ad.content_json);
+            // Account data is never signed and may hold fractional numbers: general parser.
+            auto const parsed = canonicaljson::parse_json(ad.content_json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
                 continue;

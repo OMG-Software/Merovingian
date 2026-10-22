@@ -1,3 +1,61 @@
+## 0.12.38
+
+Conformance audit (2026-10-17) wave 4: the Client-Server API findings R10, R11, R12, R13 and R16.
+
+- **FIXED (R10):** `GET` and `PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type}`
+  were not routed. They now store and read room account data, which `/sync` and sliding sync
+  deliver in the room's `account_data` and which never falls back to the global type of the same
+  name. A malformed room ID is `400 M_INVALID_PARAM`. A `PUT` needs a membership row in the room
+  (`404 M_NOT_FOUND` otherwise), and a new type past the new
+  `server.client_api.max_room_account_data_per_room` (default 100) in that room is
+  `400 M_TOO_LARGE`; an update to a held type always succeeds (ADR-0197, refining ADR-0173).
+- **FIXED (R11):** both account-data `PUT`s stored any body. A body that is not JSON is now
+  `400 M_NOT_JSON`, JSON that is not an object `400 M_BAD_JSON`, and the server-managed
+  `m.fully_read` and `m.push_rules` `405 M_BAD_JSON`, globally and per room. Nothing is stored.
+- **FIXED (R12):** `POST /register` without `username` was `400 M_BAD_JSON`. The server now
+  generates the localpart, as the spec requires: 16 hex characters from the CSPRNG, redrawn if
+  reserved, taken or in an application service's namespace (ADR-0198).
+- **FIXED (R13):** typing never expired, and a `typing` that was not a boolean counted as true.
+  `PUT /rooms/{roomId}/typing/{userId}` now refuses a missing `typing` (`M_MISSING_PARAM`), a
+  non-boolean one or a non-integer `timeout` (`M_BAD_JSON`), a negative `timeout`
+  (`M_INVALID_PARAM`) and a body that is not JSON (`M_NOT_JSON`), changing nothing. Typing lasts
+  the client's `timeout` (30 s when omitted, at most 120 s) and, for a remote user, 60 s from
+  their server's latest EDU. A new "typing-expiry" background job removes expired typing, wakes
+  `/sync` and sliding-sync waiters with the room's new `m.typing`, and sends `typing: false` to
+  remote servers for local users (ADR-0199).
+- **FIXED (R16):** `/search` covered only rooms the user was joined to. It now covers every room
+  the user has been in, including rooms left, kicked or banned from after a join, each event still
+  judged by history visibility, so nothing sent after the user left is returned. `include_state`
+  gives a left room's state as of the leave. Forgotten rooms, invites and knocks are not searched.
+- **FIXED (data race, found in review):** the federated `m.typing` EDU sink, which the dispatcher
+  runs without `runtime.mutex`, read and wrote typing state unlocked, racing the client typing
+  route, `/sync` and the new typing-expiry job. It now takes the lock itself.
+- **R12 follow-up:** a `username` (or legacy `user`) that is present but not a string is now
+  `400 M_BAD_JSON`, not treated as omitted, so it no longer creates an account with a generated ID.
+- **R13 follow-up:** setting a user typing wakes the typing-expiry job, so a deadline shorter than
+  the job's current sleep (up to 5 s) is no longer missed.
+- **R20 (open):** `POST /register` runs User-Interactive Authentication before the username checks
+  the spec says must come first; recorded in the audit report, not yet scheduled.
+- **FIXED (found in review):** account-data and typing bodies were parsed with the canonical-JSON
+  parser, which refuses fractional numbers, so a valid body such as `{"order":0.5}` was
+  `400 M_NOT_JSON`. They now use the general parser (account data is never signed), and a
+  fractional typing `timeout` is `400 M_BAD_JSON`. The sliding-sync `account_data` extension also
+  read stored account data with the canonical parser and sent `{}` for an `m.tag` with an `order`;
+  it now delivers the content. The same canonical re-read was fixed where stored account data
+  reaches a client or is rewritten: the sliding-sync response assembly, room `initialSync`,
+  sliding sync's `is_dm` (`m.direct`), and `createRoom`'s `is_direct` update of `m.direct`, which
+  started from an empty mapping and destroyed the user's existing direct rooms when their
+  `m.direct` held a fractional number.
+- **R13 follow-up:** the typing-expiry pass no longer rescans the typing table for every expired
+  room while holding the runtime lock; it groups the table by room in a fixed number of passes.
+- **Tests:** new `tests/conformance/test_account_data_conformance.cpp` and
+  `tests/conformance/test_typing_conformance.cpp`; new scenarios for `/register` without
+  `username`, `/search` of a left and a forgotten room, the room account-data caps, the room
+  capped store, remote typing expiry and the new configuration key. The four conformance
+  scenarios that asserted `404 M_UNRECOGNIZED` for room account data are replaced by normative
+  ones. The ignoring-users scenario for a malformed `m.ignored_user_list` now writes the bad row
+  straight to the store, since the PUT API refuses it.
+
 ## 0.12.37
 
 Conformance audit wave 3: the Application Service and Identity Service findings R07, R08 and R09,

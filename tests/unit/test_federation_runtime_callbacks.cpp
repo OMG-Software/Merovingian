@@ -1611,6 +1611,200 @@ SCENARIO("Typing state stays bounded when a peer floods a room it is legitimatel
     }
 }
 
+// The EDU sink runs without runtime.mutex (the dispatcher releases it, see "a federation
+// transaction is blocked inside the sink" above), while the typing-expiry job and the client
+// typing route scan and erase typing_users under it. The typing case must therefore take the lock
+// itself for every read and write of typing state (R13, ADR-0199; PR #522 review).
+SCENARIO("A typing EDU waits for runtime.mutex before touching typing state",
+         "[homeserver][federation][typing][r13][concurrency]")
+{
+    GIVEN("a runtime whose federation callbacks are wired, and another thread holding runtime.mutex")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-lock-seed", {"!room:matrix.example.org"});
+        // A first transaction wires the federation callbacks, edu_sink among them.
+        REQUIRE(merovingian::homeserver::handle_federation_http_request(
+                    *runtime, edu_request(origin, key_id, "txn-typing-lock-wire", "m.typing",
+                                          typing_content("!room:matrix.example.org", "@first:matrix.example.org")))
+                    .status == 200U);                             // Fixture: wires the callbacks.
+        REQUIRE(static_cast<bool>(runtime->federation.edu_sink)); // Fixture: the sink is installed.
+        auto const envelope = merovingian::federation::InboundEduEnvelope{
+            merovingian::federation::EduType::typing, "m.typing",
+            typing_content("!room:matrix.example.org", "@second:matrix.example.org"), origin};
+
+        WHEN("a typing EDU is delivered to the sink while the lock is held, then the lock is released")
+        {
+            auto held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+            // RuntimeMutex reports no waiters, so the test cannot see the sink block on it
+            // without a production hook. It waits until the thread is running the sink, then
+            // gives it time it would need only to finish unlocked work. With the fix the sink
+            // cannot finish while the lock is held, so the timing can only miss a regression
+            // under extreme load, never fail a correct build.
+            auto entering = std::promise<void>{};
+            auto entered = entering.get_future();
+            auto delivered = std::async(std::launch::async, [&runtime, &envelope, &entering] {
+                entering.set_value();
+                return runtime->federation.edu_sink(envelope).status;
+            });
+            entered.wait();
+            auto const finished_while_locked =
+                delivered.wait_for(std::chrono::milliseconds{300}) == std::future_status::ready;
+            held.unlock();
+            auto const status = delivered.get();
+
+            THEN("the EDU completes only after the lock is released, and its typing is recorded")
+            {
+                REQUIRE_FALSE(
+                    finished_while_locked); // Project policy: typing state is read and written under runtime.mutex.
+                REQUIRE(status == merovingian::federation::EduDispositionStatus::accepted); // Fixture: a valid EDU.
+                auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
+                        std::vector<std::string>{"@first:matrix.example.org",
+                                                 "@second:matrix.example.org"}); // Fixture: both EDUs applied.
+            }
+        }
+    }
+}
+
+// R13 (ADR-0199): a typing EDU sets a deadline, so it wakes the typing-expiry job, which may be
+// sleeping for longer than federation_typing_timeout would allow after an earlier pass.
+SCENARIO("A typing EDU that sets a user typing wakes the typing-expiry job", "[homeserver][federation][typing][r13]")
+{
+    GIVEN("a runtime in a room, with a typing-expiry wake hook that counts its calls")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-wake-seed", {"!room:matrix.example.org"});
+        auto wakes = 0;
+        runtime->typing_expiry_wake = [&wakes]() {
+            ++wakes;
+        };
+
+        WHEN("a remote user starts typing")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-typing-wake", "m.typing",
+                                      typing_content("!room:matrix.example.org", "@remote:matrix.example.org")));
+
+            THEN("the job is woken once")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(wakes == 1);
+            }
+        }
+    }
+}
+
+// R13 (ADR-0199; PR #522 review). The expiry pass runs under runtime.mutex, so it groups the
+// typing table by room in a fixed number of passes rather than rescanning it per expired room.
+// Its result must be the same as handling each room on its own: every room that lost a typing
+// user advances its typing position once, a room that lost nobody keeps its position, and users
+// whose deadline has not passed stay typing.
+SCENARIO("Typing expiry handles many rooms in one grouped pass", "[homeserver][federation][typing][r13]")
+{
+    GIVEN("three rooms: one whose two typists both expired, one with one expired and one live typist, one live")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-group-seed",
+                                   {"!a:matrix.example.org", "!b:matrix.example.org", "!c:matrix.example.org"});
+        auto const now = std::chrono::steady_clock::now();
+        auto const past = now - std::chrono::seconds{1};
+        auto const future = now + std::chrono::minutes{1};
+        runtime->typing_users = {
+            {"!a:matrix.example.org", "@a1:matrix.example.org", true, 0U, past  },
+            {"!b:matrix.example.org", "@b1:matrix.example.org", true, 0U, past  },
+            {"!a:matrix.example.org", "@a2:matrix.example.org", true, 0U, past  },
+            {"!b:matrix.example.org", "@b2:matrix.example.org", true, 0U, future},
+            {"!c:matrix.example.org", "@c1:matrix.example.org", true, 0U, future},
+        };
+        auto const c_before = merovingian::homeserver::room_typing_stream_id_for(*runtime, "!c:matrix.example.org");
+        auto const stream_before = runtime->database.persistent_store.next_sync_stream_id;
+
+        WHEN("the expiry pass runs")
+        {
+            auto const expiry = merovingian::homeserver::expire_typing(*runtime, now);
+
+            THEN("each room that lost a typist advances once, the others keep their state, and live typists stay")
+            {
+                REQUIRE(expiry.changed);
+                REQUIRE(expiry.expired_local.empty());
+                REQUIRE(
+                    merovingian::homeserver::current_typing_users_in_room(*runtime, "!a:matrix.example.org").empty());
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!b:matrix.example.org") ==
+                        std::vector<std::string>{"@b2:matrix.example.org"});
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!c:matrix.example.org") ==
+                        std::vector<std::string>{"@c1:matrix.example.org"});
+                auto const a_after =
+                    merovingian::homeserver::room_typing_stream_id_for(*runtime, "!a:matrix.example.org");
+                auto const b_after =
+                    merovingian::homeserver::room_typing_stream_id_for(*runtime, "!b:matrix.example.org");
+                REQUIRE(a_after > stream_before);
+                REQUIRE(b_after > stream_before);
+                REQUIRE(a_after != b_after);
+                REQUIRE(runtime->database.persistent_store.next_sync_stream_id == stream_before + 2U);
+                REQUIRE(merovingian::homeserver::room_typing_stream_id_for(*runtime, "!c:matrix.example.org") ==
+                        c_before);
+                REQUIRE(expiry.next_expiry == std::optional<std::chrono::steady_clock::time_point>{future});
+            }
+        }
+    }
+}
+
+// Conformance audit R13 (ADR-0199). A typing EDU carries no timeout, so a remote user's typing
+// would stay forever if their server never sent typing:false. It expires after
+// federation_typing_timeout instead, and each later EDU refreshes it.
+SCENARIO("A remote user's typing expires when their server stops refreshing it",
+         "[homeserver][federation][typing][r13]")
+{
+    GIVEN("a remote user typing in a room this server is in")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-expiry-seed", {"!room:matrix.example.org"});
+        auto const response = merovingian::homeserver::handle_federation_http_request(
+            *runtime, edu_request(origin, key_id, "txn-typing-expiry", "m.typing",
+                                  typing_content("!room:matrix.example.org", "@remote:matrix.example.org")));
+        REQUIRE(response.status == 200U);
+        REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
+                std::vector<std::string>{"@remote:matrix.example.org"});
+        auto const stream_before =
+            merovingian::homeserver::room_typing_stream_id_for(*runtime, "!room:matrix.example.org");
+
+        WHEN("less than the federation typing timeout passes")
+        {
+            auto const expiry = merovingian::homeserver::expire_typing(
+                *runtime, std::chrono::steady_clock::now() + merovingian::homeserver::federation_typing_timeout -
+                              std::chrono::seconds{5});
+
+            THEN("the user is still typing")
+            {
+                REQUIRE_FALSE(expiry.changed);
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
+                        std::vector<std::string>{"@remote:matrix.example.org"});
+            }
+        }
+
+        WHEN("the federation typing timeout passes with no refresh")
+        {
+            auto const expiry = merovingian::homeserver::expire_typing(
+                *runtime, std::chrono::steady_clock::now() + merovingian::homeserver::federation_typing_timeout +
+                              std::chrono::seconds{1});
+
+            THEN("the user stops typing, the room's typing position advances, and no stop is sent for them")
+            {
+                REQUIRE(expiry.changed);
+                REQUIRE(expiry.expired_local.empty());
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org")
+                            .empty());
+                REQUIRE(merovingian::homeserver::room_typing_stream_id_for(*runtime, "!room:matrix.example.org") >
+                        stream_before);
+            }
+        }
+    }
+}
+
 SCENARIO("A receipt EDU skips rooms this server is not in without discarding the rest",
          "[homeserver][federation][receipt][security]")
 {

@@ -191,6 +191,11 @@ production-gated.
   `GET /_matrix/client/v1/register/m.login.registration_token/validity` endpoint verifies the
   candidate through the same Argon2id hash (`registration_token_matches`) rather than comparing
   plaintext, so the token material never sits on the request path.
+- `POST /register` without `username` gets a generated localpart, as the spec requires: 16
+  lowercase hex characters from the CSPRNG, redrawn if reserved, already registered or inside an
+  application service's namespace, then checked like a chosen name (0.12.38, conformance audit R12,
+  ADR-0198). An empty `username` is still `400 M_INVALID_USERNAME`, and
+  `m.login.application_service` registration still requires one.
 - Server-side access and refresh token expiry is enforced. `PersistentAccessToken`,
   `PersistentRefreshToken`, and `LocalSession` carry an `expires_at` field set at issuance from
   configurable `security.access_token_lifetime_ms` (default 1h) and

@@ -425,3 +425,7 @@ The four `requestToken` endpoints (`/register/{email,msisdn}/requestToken`, `/ac
 ## Configurable response budgets (0.12.18)
 
 The client-server runtime applies `server.client_api` policy to sync room/timeline counts, message/search/context work and pages, notifications/relations/threads/public-room/hierarchy listings and transient session cardinality. Sliding-sync parsing receives the same configured policy for timeline/subscription/state-pair caps. Client-requested limits remain upper bounds; increasing a server maximum does not change a client's requested timeline size or bypass history visibility, ignore-list or accepted-event filtering. See [operator budgets](user-manual.md#operational-budgets) for defaults and ranges. Runtime policies require restart.
+
+## Conformance audit wave 4 (0.12.38)
+
+Room account data (`GET`/`PUT /user/{userId}/rooms/{roomId}/account_data/{type}`) is routed. Both account-data `PUT`s require a JSON object body (`400 M_NOT_JSON` / `M_BAD_JSON`) and refuse the server-managed `m.fully_read` and `m.push_rules` with `405 M_BAD_JSON`. A room `PUT` needs a membership row in the room and stops new types at `server.client_api.max_room_account_data_per_room` (ADR-0197). `POST /register` without `username` gets a generated localpart (ADR-0198). `PUT /rooms/{roomId}/typing/{userId}` requires a boolean `typing`, and typing expires after its `timeout`, at most 120 s (ADR-0199). `POST /search` covers rooms the user has left, up to the point they left.
