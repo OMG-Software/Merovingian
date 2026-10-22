@@ -493,6 +493,12 @@ auto count_unread_by_thread_within(database::PersistentStore const& store, std::
             continue;
         }
         --budget.examinations_left;
+        // Counted only if the timeline would show it: a backfilled event stored after the join is
+        // judged by the state at the event, as /sync's timeline judges it.
+        if (!unread.visible(ev))
+        {
+            continue;
+        }
         auto const parsed = canonicaljson::parse_lossless(ev.json);
         if (parsed.error != canonicaljson::ParseError::none)
         {

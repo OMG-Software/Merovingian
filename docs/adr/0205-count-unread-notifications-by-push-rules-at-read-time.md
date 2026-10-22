@@ -42,6 +42,13 @@ Only events after the start of the user's current join are counted (`current_joi
 earliest `m.room.member` join of theirs with no later leave, ban, invite or knock. A join re-sent
 for a profile change does not restart the span. A user who is not joined counts nothing.
 
+Stream order alone is not enough: a backfilled event from before the join is stored, and ordered,
+after it. Every counted event therefore also passes `sync::HistoryVisibility::can_see`, the filter
+the timeline uses, judged by the state at the event (the classifier's `visible`). `/sync` and
+sliding sync lend the request's own filter, so its indexes are built once per request. Only
+accepted events count; a rejected or soft-failed event is never served (ADR-0207 records the
+same for the badge).
+
 ### Positive Consequences
 
 * Every ingest path is covered, because nothing is recorded at ingest.

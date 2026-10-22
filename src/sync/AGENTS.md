@@ -102,7 +102,10 @@ and counts only events after `counted_after()`, the start of the user's current
 join. Build one classifier per request and pass it to every count in that
 request (`/sync`, `compute_room_list`, `build_room_response`); it loads the
 user's rules once and caches each room's facts. Never decide notify or
-highlight from the event type or `m.mentions` here. Only `accepted` events count.
+highlight from the event type or `m.mentions` here. Only `accepted` events the user may
+see count: the walk asks `unread.visible()` (`HistoryVisibility::can_see`, the
+request's own filter for `/sync` and sliding sync) before it classifies, because
+a backfilled event from before the join is ordered after it.
 `count_unread_by_thread_within()` is the same walk with a `UnreadScanBudget`: the
 push badge (`homeserver::push_badge_unread_count`) saturates at 1000 and examines
 at most 4000 events, because it runs under `runtime.mutex` for every recipient

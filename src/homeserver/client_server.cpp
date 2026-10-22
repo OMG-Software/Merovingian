@@ -4714,7 +4714,8 @@ namespace
         // joined room's timeline.
         auto history_visibility = sync::HistoryVisibility{store, user};
         // R15 (ADR-0205): one push-rule classifier for the request's unread counts.
-        auto const unread_classifier = PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user};
+        auto const unread_classifier =
+            PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user, history_visibility};
 
         log_diagnostic("sync.request",
                        {
@@ -5555,7 +5556,8 @@ namespace
         // R15 (ADR-0205): one push-rule classifier for every count and the notification sort, built
         // after the M_UNKNOWN_POS and long-poll returns so a request that takes either does not load
         // the user's rules.
-        auto const unread_classifier = PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user};
+        auto const unread_classifier =
+            PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user, history_visibility};
 
         auto list_results = std::map<std::string, sync::RoomListResult>{};
         for (auto const& [list_name, list] : ssreq.lists)

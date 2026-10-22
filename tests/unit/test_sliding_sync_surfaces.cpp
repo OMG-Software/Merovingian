@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/room_history_fixture.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -355,6 +356,12 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
         append_event_from(store, "@bob:example.org", "$gamma-encrypted", "!gamma:example.org",
                           R"({"type":"m.room.encrypted","content":{"ciphertext":"..."}})", 7U);
 
+        // Fixture: alice may read every room (CSAZ-3), so its events are hers to count.
+        for (auto const* room : {"!alpha:example.org", "!beta:example.org", "!gamma:example.org"})
+        {
+            merovingian::tests::record_joined_state_for_room(store, room, "@alice:example.org");
+        }
+
         auto list = merovingian::sync::SlidingSyncList{};
         list.ranges = {
             {0U, 1U}
@@ -423,6 +430,12 @@ SCENARIO("Sliding sync room lists sort by threaded unread notifications and brea
                           R"({"type":"m.room.message","content":{"body":"two"}})", 21U);
         append_event_from(store, "@bob:example.org", "$delta-one", room_ids[2],
                           R"({"type":"m.room.message","content":{"body":"one"}})", 30U);
+
+        // Fixture: alice may read every room (CSAZ-3), so its events are hers to count.
+        for (auto const& room : room_ids)
+        {
+            merovingian::tests::record_joined_state_for_room(store, room, "@alice:example.org");
+        }
 
         auto list = merovingian::sync::SlidingSyncList{};
         list.ranges = {

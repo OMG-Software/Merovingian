@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/database/persistent_store.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -38,6 +39,10 @@ public:
 
     // Only events after this stream position in `room_id` are counted; nullopt counts none.
     [[nodiscard]] virtual auto counted_after(std::string_view room_id) const -> std::optional<std::uint64_t> = 0;
+
+    // Whether the user may see `event` at all. An event the timeline withholds (history visibility,
+    // a backfilled event from before the user's join) is never unread.
+    [[nodiscard]] virtual auto visible(database::PersistentEvent const& event) const -> bool = 0;
 
     // What `event` (a client-format event object of `room_id`) counts as.
     [[nodiscard]] virtual auto classify(std::string_view room_id, canonicaljson::Value const& event) const

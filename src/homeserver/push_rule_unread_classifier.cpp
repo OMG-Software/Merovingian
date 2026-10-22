@@ -86,7 +86,24 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
     : store_{store}
     , user_{user}
     , ruleset_{load_push_ruleset(store, user, max_user_rules)}
+    , owned_visibility_{std::in_place, store, user}
+    , visibility_{*owned_visibility_}
 {
+}
+
+PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user,
+                                                   std::size_t max_user_rules, sync::HistoryVisibility& visibility)
+    : store_{store}
+    , user_{user}
+    , ruleset_{load_push_ruleset(store, user, max_user_rules)}
+    , owned_visibility_{}
+    , visibility_{visibility}
+{
+}
+
+auto PushRuleUnreadClassifier::visible(database::PersistentEvent const& event) const -> bool
+{
+    return visibility_.get().can_see(event);
 }
 
 PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user,
@@ -94,6 +111,8 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
     : store_{store}
     , user_{user}
     , ruleset_{std::move(ruleset)}
+    , owned_visibility_{std::in_place, store, user}
+    , visibility_{*owned_visibility_}
 {
 }
 

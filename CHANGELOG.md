@@ -58,6 +58,11 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   "Rate-limited: No" (all `GET`, `DELETE`, and `PUT .../enabled` and `.../actions`) could be answered
   429; they now bypass the rate limiter. `PUT /pushrules/global/{kind}/{ruleId}` ("Rate-limited:
   Yes") keeps its bucket, including for a rule named `enabled` or `actions`.
+- **SECURITY (PR #523 review, unread counts and history visibility):** an event the timeline
+  withholds, such as one backfilled from before the user's join and stored after it, was still
+  counted (and highlighted by keyword rules), revealing something about history the user may not
+  read. Every counted event now passes the same `HistoryVisibility` filter as the timeline
+  (ADR-0205).
 
 ## 0.12.39
 

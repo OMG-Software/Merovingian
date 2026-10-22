@@ -5,6 +5,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/push_room_facts.hpp"
 #include "merovingian/push/push_rules.hpp"
+#include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <cstddef>
@@ -53,6 +54,12 @@ public:
     // With `ruleset` already loaded for `user` (load_push_ruleset), so a caller that has it does not
     // read and validate the user's rules a second time under runtime.mutex.
     PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user, push::PushRuleset ruleset);
+    // With the request's own `visibility` filter, so its indexes are built once per request; the
+    // constructors above build a filter of their own.
+    PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user, std::size_t max_user_rules,
+                             sync::HistoryVisibility& visibility);
+
+    [[nodiscard]] auto visible(database::PersistentEvent const& event) const -> bool override;
 
     [[nodiscard]] auto counted_after(std::string_view room_id) const -> std::optional<std::uint64_t> override;
     [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event) const
@@ -71,6 +78,10 @@ private:
     std::reference_wrapper<database::PersistentStore const> store_;
     std::string user_;
     push::PushRuleset ruleset_;
+    // The filter a caller lent, or one of this classifier's own. Declared before `visibility_`,
+    // which may refer to it.
+    std::optional<sync::HistoryVisibility> owned_visibility_;
+    std::reference_wrapper<sync::HistoryVisibility> visibility_;
     mutable std::map<std::string, RoomFacts, std::less<>> rooms_{};
 };
 
