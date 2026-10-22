@@ -1146,8 +1146,12 @@ SCENARIO("Rejected and soft-failed events never count as unread", "[sync][receip
     {
         auto store = merovingian::database::PersistentStore{};
         append_bob_messages(store, 3U, 10U);
-        store.events.at(1U).status = "rejected";
-        store.events.at(2U).status = "soft_failed";
+        store.events.modify(store.events.begin() + 1, [](merovingian::database::PersistentEvent& event) {
+            event.status = "rejected";
+        });
+        store.events.modify(store.events.begin() + 2, [](merovingian::database::PersistentEvent& event) {
+            event.status = "soft_failed";
+        });
         auto const classifier = StubClassifier{0U};
 
         WHEN("alice's unread count is computed")
@@ -1180,7 +1184,9 @@ SCENARIO("A rejected leave does not end the user's join for unread counting", "[
                                 {},
                                 {},
                                 {}});
-        store.events.back().status = "rejected";
+        store.events.modify(store.events.find("$alice_leave"), [](merovingian::database::PersistentEvent& event) {
+            event.status = "rejected";
+        });
 
         WHEN("the start of her current join is found")
         {
