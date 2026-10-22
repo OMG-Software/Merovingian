@@ -13,6 +13,8 @@ homeserver_sources = files(
   'local_http_router.cpp',
   'local_services.cpp',
   'media_service.cpp',
+  'media_upload_notifier.cpp',
+  'url_preview_service.cpp',
   'periodic_job.cpp',
   'push_badge_count.cpp',
   'push_retry.cpp',

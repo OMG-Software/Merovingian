@@ -1512,6 +1512,77 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "security.media.pending_upload_ttl_seconds")
+        {
+            if (!parse_u32_value(value, security.media.pending_upload_ttl_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.max_pending_uploads_per_user")
+        {
+            if (!parse_u32_value(value, security.media.max_pending_uploads_per_user))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.max_pending_uploads")
+        {
+            if (!parse_u64_value(value, security.media.max_pending_uploads))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.pending_upload_max_wait_ms")
+        {
+            if (!parse_u32_value(value, security.media.pending_upload_max_wait_ms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.url_preview_enabled")
+        {
+            if (!parse_bool_value(value, security.media.url_preview_enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "security.media.url_preview_max_page_size")
+        {
+            security.media.url_preview_max_page_size = std::string{value};
+        }
+        else if (key == "security.media.url_preview_max_image_size")
+        {
+            security.media.url_preview_max_image_size = std::string{value};
+        }
+        else if (key == "security.media.url_preview_timeout_seconds")
+        {
+            if (!parse_u32_value(value, security.media.url_preview_timeout_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.url_preview_max_redirects")
+        {
+            if (!parse_u32_value(value, security.media.url_preview_max_redirects))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.url_preview_cache_ttl_seconds")
+        {
+            if (!parse_u32_value(value, security.media.url_preview_cache_ttl_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.media.url_preview_cache_max_entries")
+        {
+            if (!parse_u32_value(value, security.media.url_preview_cache_max_entries))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "security.media.remote_media_cache_max_entries")
         {
             if (!parse_u64_value(value, security.media.remote_media_cache_max_entries))

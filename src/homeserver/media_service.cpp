@@ -12,12 +12,14 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/media_upload_notifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/media/repository.hpp"
+#include "merovingian/media/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -25,6 +27,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -474,9 +477,11 @@ namespace
     // record and blob in one transaction. `new_blob` writes `bytes`; otherwise
     // only the shared blob's reference count changes. On failure the admission
     // is undone in memory, so memory never holds media the database lacks.
+    // `completes_pending`, when not empty, is the reserved media ID (ADR-0212)
+    // whose reservation row is deleted in the same transaction.
     [[nodiscard]] auto persist_admitted_media(HomeserverRuntime& runtime, std::string_view media_id,
                                               std::string_view owner_user_id, bool quarantined, std::string_view bytes,
-                                              bool new_blob) -> bool
+                                              bool new_blob, std::string_view completes_pending = {}) -> bool
     {
         auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
         auto const* blob =
@@ -486,10 +491,10 @@ namespace
             database::commit_local_media_upload(runtime.database.persistent_store,
                                                 {record->media_id, std::string{owner_user_id}, record->content_type,
                                                  record->size_bytes, record->hash_algorithm, record->digest,
-                                                 quarantined, false, false},
+                                                 quarantined, false, false, record->upload_name},
                                                 {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes,
                                                  new_blob ? std::string{bytes} : std::string{}, blob->ref_count},
-                                                new_blob);
+                                                new_blob, completes_pending);
         if (!persisted)
         {
             std::ignore = media::rollback_local_media_upload(runtime.media_repository, media_id);
@@ -546,8 +551,8 @@ namespace
             auto const own_released = released_per_blob[blob->storage_id];
             persisted = database::commit_remote_media_admission(
                 runtime.database.persistent_store,
-                {record->media_id, "@remote-media:" + std::string{origin_server}, record->content_type,
-                 record->size_bytes, record->hash_algorithm, record->digest, admitted.quarantined, false, false},
+                {record->media_id, record->owner_user_id, record->content_type, record->size_bytes,
+                 record->hash_algorithm, record->digest, admitted.quarantined, false, false, record->upload_name},
                 {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes,
                  admitted.stored_new_blob ? std::string{bytes} : std::string{}, blob->ref_count - own_released},
                 admitted.stored_new_blob,
@@ -574,9 +579,11 @@ namespace
     [[nodiscard]] auto finalize_remote_media_fetch(HomeserverRuntime& runtime, std::string_view origin_server,
                                                    std::string_view media_id,
                                                    federation::ServerDiscoveryResult const& resolution,
-                                                   std::string content_type, std::string bytes) -> OperationResult
+                                                   std::string content_type, std::string bytes,
+                                                   std::string upload_name = {}) -> OperationResult
     {
         auto remote_req = media::RemoteMediaDownloadRequest{};
+        remote_req.upload_name = std::move(upload_name);
         remote_req.origin_server = std::string{origin_server};
         remote_req.media_id = std::string{media_id};
         remote_req.resolved_host = resolution.resolved_host;
@@ -630,8 +637,14 @@ namespace
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.remote_fetch_accepted",
                            "server", std::string{origin_server} + '/' + std::string{media_id},
                            fetch_result.content_type);
-        return make_operation_result(true, fetch_result.content_type + "|" + fetch_result.bytes, {},
-                                     fetch_result.status);
+        auto served =
+            make_operation_result(true, fetch_result.content_type + "|" + fetch_result.bytes, {}, fetch_result.status);
+        if (auto const* stored = media::find_local_media_record(runtime.media_repository, fetch_result.local_media_id);
+            stored != nullptr)
+        {
+            served.media_filename = stored->upload_name;
+        }
+        return served;
     }
 
     // Attempts the mandatory, authenticated federation media endpoint
@@ -833,12 +846,15 @@ namespace
             auto const redirect_content_type =
                 strip_mime_parameters(find_header_ci(redirect_result.response.headers, "content-type")
                                           .value_or(std::string{"application/octet-stream"}));
+            auto redirect_filename = media::content_disposition_filename(
+                find_header_ci(redirect_result.response.headers, "content-disposition").value_or(std::string{}));
             return finalize_remote_media_fetch(runtime, origin_server, media_id, redirect_resolution.discovery,
-                                               std::move(redirect_content_type), redirect_result.response.body);
+                                               std::move(redirect_content_type), redirect_result.response.body,
+                                               std::move(redirect_filename));
         }
 
         return finalize_remote_media_fetch(runtime, origin_server, media_id, resolution, parsed.content_type,
-                                           parsed.bytes);
+                                           parsed.bytes, parsed.filename);
     }
 
     // The answer for a remote file the remote media cache already holds within
@@ -867,6 +883,7 @@ namespace
         auto const local_media_id = cached->media_id;
         auto const storage_id = cached->storage_id;
         auto const content_type = cached->content_type;
+        auto const upload_name = cached->upload_name;
         auto const bytes = read_servable_media_bytes(runtime, local_media_id, storage_id, false);
         if (!bytes.has_value())
         {
@@ -876,7 +893,9 @@ namespace
                                                      {"origin_server", std::string{origin_server}, false},
                                                      {"media_id",      std::string{media_id},      false}
         });
-        return make_operation_result(true, content_type + "|" + *bytes, {}, 200U);
+        auto served = make_operation_result(true, content_type + "|" + *bytes, {}, 200U);
+        served.media_filename = upload_name;
+        return served;
     }
 
     // ADR-0121: the right to fetch one remote file, or the answer when it no
@@ -1102,9 +1121,140 @@ namespace
 
         auto content_type = strip_mime_parameters(find_header_ci(out_result.response.headers, "content-type")
                                                       .value_or(std::string{"application/octet-stream"}));
+        auto filename = media::content_disposition_filename(
+            find_header_ci(out_result.response.headers, "content-disposition").value_or(std::string{}));
 
         return finalize_remote_media_fetch(runtime, origin_server, media_id, resolution, std::move(content_type),
-                                           out_result.response.body);
+                                           out_result.response.body, std::move(filename));
+    }
+
+    // ADR-0212: 504 M_NOT_YET_UPLOADED, the spec's answer for a reserved media
+    // ID whose content did not arrive in time.
+    [[nodiscard]] auto not_yet_uploaded_result() -> OperationResult
+    {
+        auto result = make_operation_result(false, {}, "Content has not yet been uploaded", 504U);
+        result.errcode = "M_NOT_YET_UPLOADED";
+        return result;
+    }
+
+    enum class PendingDownload
+    {
+        // No reservation: the request goes on as for any other media ID.
+        not_pending,
+        // The content arrived while waiting.
+        uploaded,
+        // Still not uploaded when the wait ended.
+        timed_out,
+        // Handed to the media fetch pool (ADR-0121); the placeholder result is
+        // discarded by the dispatcher.
+        deferred,
+    };
+
+    // ADR-0212: a download of a reserved but empty local media ID waits for
+    // the upload, at most min(timeout_ms, pending_upload_max_wait_ms). It never
+    // waits on a main-pool thread: there it defers to the media fetch pool like
+    // a remote fetch, whose admission bounds how many waits run at once. It
+    // never waits with runtime.mutex held either. Runs with runtime.mutex held
+    // and published (RequestLockScope).
+    [[nodiscard]] auto await_pending_upload(HomeserverRuntime& runtime, std::string_view media_id,
+                                            std::uint32_t timeout_ms) -> PendingDownload
+    {
+        auto& repository = runtime.media_repository;
+        if (media::find_local_media_record(repository, media_id) != nullptr ||
+            media::find_pending_media_upload(repository, media_id, media::remote_media_cache_now_ms()) == nullptr)
+        {
+            return PendingDownload::not_pending;
+        }
+        auto const wait_ms = std::min(timeout_ms, repository.config.pending_upload_max_wait_ms);
+        if (wait_ms == 0U)
+        {
+            return PendingDownload::timed_out;
+        }
+        if (RemoteMediaFetchScope::current_mode() == RemoteMediaFetchMode::defer &&
+            RemoteMediaFetchScope::record_deferral())
+        {
+            log_diagnostic("download.pending_deferred", {
+                                                            {"media_id", std::string{media_id}, false}
+            });
+            return PendingDownload::deferred;
+        }
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{wait_ms};
+        auto& notifier = *runtime.media_upload_notifier;
+        while (true)
+        {
+            // Read while runtime.mutex is held: an upload that commits after the
+            // release has moved the generation on, so its wake-up is not lost.
+            auto const seen = notifier.generation();
+            std::ignore = [&notifier, seen, deadline] {
+                auto const unlocked = RuntimeLockRelease{};
+                return notifier.wait_for_upload(seen, deadline);
+            }();
+            if (media::find_local_media_record(repository, media_id) != nullptr)
+            {
+                return PendingDownload::uploaded;
+            }
+            if (media::find_pending_media_upload(repository, media_id, media::remote_media_cache_now_ms()) == nullptr)
+            {
+                return PendingDownload::not_pending;
+            }
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                return PendingDownload::timed_out;
+            }
+        }
+    }
+
+    // The answer for a download of a pending local media ID, or nullopt to go
+    // on serving it normally.
+    [[nodiscard]] auto pending_download_answer(HomeserverRuntime& runtime, std::string_view media_id,
+                                               std::uint32_t timeout_ms) -> std::optional<OperationResult>
+    {
+        switch (await_pending_upload(runtime, media_id, timeout_ms))
+        {
+        case PendingDownload::timed_out:
+            return not_yet_uploaded_result();
+        case PendingDownload::deferred:
+            return make_operation_result(false, {}, "pending media wait deferred to the media fetch pool", 503U);
+        case PendingDownload::not_pending:
+        case PendingDownload::uploaded:
+            break;
+        }
+        return std::nullopt;
+    }
+
+    // ADR-0212 / spec: the client-facing errcode for a refused upload. 403 for
+    // a file type the server does not permit or an exhausted quota, 413
+    // M_TOO_LARGE for content over max_upload_size.
+    [[nodiscard]] auto refused_upload_result(media::LocalMediaUploadResult const& result) -> OperationResult
+    {
+        switch (result.status)
+        {
+        case 413U: {
+            auto refused = make_operation_result(false, {}, result.reason, 413U);
+            refused.errcode = "M_TOO_LARGE";
+            return refused;
+        }
+        case 415U:
+        case 507U: {
+            auto refused = make_operation_result(false, {}, result.reason, 403U);
+            refused.errcode = "M_FORBIDDEN";
+            return refused;
+        }
+        case 409U: {
+            auto refused = make_operation_result(false, {}, "Media already uploaded", 409U);
+            refused.errcode = "M_CANNOT_OVERWRITE_MEDIA";
+            return refused;
+        }
+        default:
+            return make_operation_result(false, {}, result.reason, result.status);
+        }
+    }
+
+    [[nodiscard]] auto invalid_upload_filename_result() -> OperationResult
+    {
+        auto refused = make_operation_result(false, {}, "filename is not a valid file name", 400U);
+        refused.errcode = "M_INVALID_PARAM";
+        return refused;
     }
 
     // MED-4: who a thumbnail decode counts against: the user when the request
@@ -1309,6 +1459,9 @@ namespace
     result.is_redirect = false;
     result.content_type = strip_mime_parameters(
         find_raw_header_ci(media_part, "content-type").value_or(std::string{"application/octet-stream"}));
+    // R17: a remote download serves the remote server's filename.
+    result.filename =
+        media::content_disposition_filename(find_raw_header_ci(media_part, "content-disposition").value_or(""));
     result.bytes = std::string{media_part.body};
     return result;
 }
@@ -1340,7 +1493,8 @@ namespace
 
 [[nodiscard]] auto upload_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                       std::string_view declared_mime_type, std::string_view sniffed_mime_type,
-                                      bool scanner_clean, std::string_view bytes) -> OperationResult
+                                      bool scanner_clean, std::string_view bytes, std::string_view upload_name)
+    -> OperationResult
 {
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
@@ -1350,10 +1504,16 @@ namespace
         });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    if (!upload_name.empty() && !media::media_filename_is_valid(upload_name))
+    {
+        return invalid_upload_filename_result();
+    }
 
-    auto const result = media::upload_local_media(
-        runtime.media_repository, runtime.config.server().server_name,
-        {*user_id, std::string{declared_mime_type}, std::string{sniffed_mime_type}, std::string{bytes}, scanner_clean});
+    auto request = media::LocalMediaUploadRequest{*user_id, std::string{declared_mime_type},
+                                                  std::string{sniffed_mime_type}, std::string{bytes}, scanner_clean};
+    request.upload_name = std::string{upload_name};
+    auto const result =
+        media::upload_local_media(runtime.media_repository, runtime.config.server().server_name, request);
     if (!result.ok)
     {
         log_diagnostic("upload.rejected", {
@@ -1364,7 +1524,11 @@ namespace
         });
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.upload_rejected",
                            *user_id, "local-media", result.reason);
-        return make_operation_result(false, {}, result.reason, result.status);
+        auto refused = refused_upload_result(result);
+        // The internal status stays as the repository reported it; the client
+        // API maps it (refused.errcode carries the spec's errcode).
+        refused.status = result.status;
+        return refused;
     }
 
     // DB-5: the client is given an mxc:// URI only once the media and its blob
@@ -1401,6 +1565,154 @@ namespace
                                  {}, result.status);
 }
 
+[[nodiscard]] auto store_fetched_media_for_user(HomeserverRuntime& runtime, std::string_view owner_user_id,
+                                                std::string_view declared_mime_type, std::string_view bytes)
+    -> OperationResult
+{
+    auto request = media::LocalMediaUploadRequest{
+        std::string{owner_user_id}, strip_mime_parameters(std::string{declared_mime_type}),
+        media::sniff_mime_type(bytes), std::string{bytes}, !media::content_matches_eicar_test_signature(bytes)};
+    auto const result =
+        media::upload_local_media(runtime.media_repository, runtime.config.server().server_name, request);
+    if (!result.ok)
+    {
+        log_diagnostic("fetched_media.rejected",
+                       {
+                           {"actor",  std::string{owner_user_id}, false},
+                           {"reason", result.reason,              false}
+        });
+        return refused_upload_result(result);
+    }
+    if (!persist_admitted_media(runtime, result.media_id, owner_user_id, result.quarantined, bytes,
+                                !result.deduplicated))
+    {
+        return make_operation_result(false, {}, "media could not be stored", 500U);
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::moderation,
+                       result.quarantined ? "media.preview_image_quarantined" : "media.preview_image_stored",
+                       std::string{owner_user_id}, result.media_id, result.content_type);
+    if (result.quarantined)
+    {
+        return make_operation_result(false, {}, "media is quarantined", 451U);
+    }
+    return make_operation_result(
+        true, result.content_uri + "|" + std::to_string(result.size_bytes) + "|" + result.content_type, {}, 200U);
+}
+
+[[nodiscard]] auto create_pending_media_upload(HomeserverRuntime& runtime, std::string_view access_token)
+    -> OperationResult
+{
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    auto& repository = runtime.media_repository;
+    auto const plan = media::plan_pending_media_upload(repository, *user_id, media::remote_media_cache_now_ms());
+    if (!plan.ok)
+    {
+        log_diagnostic("create.refused", {
+                                             {"actor",  *user_id,    false},
+                                             {"reason", plan.reason, false}
+        });
+        auto refused = make_operation_result(false, {}, plan.reason, plan.status);
+        if (plan.status == 429U)
+        {
+            refused.errcode = "M_LIMIT_EXCEEDED";
+        }
+        return refused;
+    }
+    auto const& reservation = plan.reservation;
+    if (!database::commit_pending_media_upload(
+            runtime.database.persistent_store,
+            {reservation.media_id, reservation.owner_user_id, reservation.created_at_ms, reservation.expires_at_ms},
+            plan.expired_media_ids))
+    {
+        log_diagnostic("create.persist_failed",
+                       {
+                           {"actor", *user_id, false}
+        },
+                       observability::LogEventSeverity::error);
+        return make_operation_result(false, {}, "media ID could not be reserved", 500U);
+    }
+    media::apply_pending_media_upload(repository, plan);
+    log_diagnostic("create.accepted", {
+                                          {"actor",    *user_id,             false},
+                                          {"media_id", reservation.media_id, false}
+    });
+    append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.create_reserved", *user_id,
+                       reservation.media_id, "reserved");
+    return make_operation_result(true,
+                                 "mxc://" + runtime.config.server().server_name + "/" + reservation.media_id + "|" +
+                                     std::to_string(reservation.expires_at_ms),
+                                 {}, 200U);
+}
+
+[[nodiscard]] auto upload_pending_media(HomeserverRuntime& runtime, std::string_view access_token,
+                                        std::string_view media_id, std::string_view declared_mime_type,
+                                        std::string_view sniffed_mime_type, bool scanner_clean, std::string_view bytes,
+                                        std::string_view upload_name) -> OperationResult
+{
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    auto& repository = runtime.media_repository;
+    auto const refuse = [](std::uint16_t status, std::string_view errcode, std::string_view reason) {
+        auto refused = make_operation_result(false, {}, std::string{reason}, status);
+        refused.errcode = std::string{errcode};
+        return refused;
+    };
+    switch (media::admit_pending_media_upload(repository, media_id, *user_id, media::remote_media_cache_now_ms()))
+    {
+    case media::PendingUploadAdmission::already_uploaded:
+        return refuse(409U, "M_CANNOT_OVERWRITE_MEDIA", "Media already uploaded");
+    case media::PendingUploadAdmission::not_found:
+        return refuse(404U, "M_NOT_FOUND", "Unknown media ID");
+    case media::PendingUploadAdmission::forbidden:
+        return refuse(403U, "M_FORBIDDEN", "This media ID was not created by you");
+    case media::PendingUploadAdmission::accepted:
+        break;
+    }
+    if (!upload_name.empty() && !media::media_filename_is_valid(upload_name))
+    {
+        return invalid_upload_filename_result();
+    }
+
+    auto request = media::LocalMediaUploadRequest{*user_id, std::string{declared_mime_type},
+                                                  std::string{sniffed_mime_type}, std::string{bytes}, scanner_clean};
+    request.upload_name = std::string{upload_name};
+    request.media_id = std::string{media_id};
+    auto const result = media::upload_local_media(repository, runtime.config.server().server_name, request);
+    if (!result.ok)
+    {
+        log_diagnostic("upload_pending.rejected", {
+                                                      {"actor",    *user_id,                      false},
+                                                      {"media_id", std::string{media_id},         false},
+                                                      {"reason",   result.reason,                 false},
+                                                      {"status",   std::to_string(result.status), false}
+        });
+        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.upload_rejected",
+                           *user_id, std::string{media_id}, result.reason);
+        return refused_upload_result(result);
+    }
+    // DB-5: durable before the client is told; the reservation row goes in the
+    // same transaction. On failure the upload is undone and the reservation kept.
+    if (!persist_admitted_media(runtime, result.media_id, *user_id, result.quarantined, bytes, !result.deduplicated,
+                                media_id))
+    {
+        return make_operation_result(false, {}, "media could not be stored", 500U);
+    }
+    media::complete_pending_media_upload(repository, media_id);
+    runtime.media_upload_notifier->notify_uploaded();
+    append_local_audit(runtime.database, observability::AuditCategory::moderation,
+                       result.quarantined ? "media.upload_quarantined" : "media.upload_accepted", *user_id,
+                       result.media_id,
+                       result.quarantined ? result.reason : (result.deduplicated ? "deduplicated" : "stored"));
+    return make_operation_result(true, result.content_uri, {}, 200U);
+}
+
 [[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
                                         std::string_view media_id, bool legacy_endpoint,
                                         RemoteMediaRequestContext const& remote) -> OperationResult
@@ -1428,6 +1740,16 @@ namespace
         return fetch_remote_media_live(runtime, server_name, media_id, remote);
     }
 
+    // ADR-0212: a reserved ID whose content is not here yet. The legacy
+    // endpoints never serve media uploaded after the freeze (ADR-0068), so
+    // they do not wait for it either.
+    if (!legacy_endpoint)
+    {
+        if (auto pending = pending_download_answer(runtime, media_id, remote.timeout_ms); pending.has_value())
+        {
+            return std::move(*pending);
+        }
+    }
     auto const target = media::resolve_local_media_download(runtime.media_repository, media_id, legacy_endpoint);
     if (!target.ok)
     {
@@ -1438,6 +1760,10 @@ namespace
         });
         return make_operation_result(false, {}, target.reason, target.status);
     }
+    auto const upload_name = [&runtime, media_id] {
+        auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
+        return record == nullptr ? std::string{} : record->upload_name;
+    }();
     auto const bytes = read_servable_media_bytes(runtime, media_id, target.storage_id, legacy_endpoint);
     if (!bytes.has_value())
     {
@@ -1451,7 +1777,9 @@ namespace
                        {"media_id",     std::string{media_id}, false},
                        {"content_type", target.content_type,   false}
     });
-    return make_operation_result(true, target.content_type + "|" + *bytes, {}, 200U);
+    auto served = make_operation_result(true, target.content_type + "|" + *bytes, {}, 200U);
+    served.media_filename = upload_name;
+    return served;
 }
 
 [[nodiscard]] auto download_local_media_for_federation(HomeserverRuntime& runtime, std::string_view media_id)
@@ -1465,6 +1793,15 @@ namespace
     if (!decision.allowed)
     {
         return {false, 403U, {}, {}, decision.reason.public_summary};
+    }
+    // ADR-0212: inbound federation has no media fetch pool to wait on, so a
+    // reserved ID without content is answered 504 M_NOT_YET_UPLOADED at once
+    // (the spec lets the server respond before timeout_ms).
+    if (media::find_local_media_record(runtime.media_repository, media_id) == nullptr &&
+        media::find_pending_media_upload(runtime.media_repository, media_id, media::remote_media_cache_now_ms()) !=
+            nullptr)
+    {
+        return {false, 504U, {}, {}, "Content has not yet been uploaded"};
     }
     auto const target = media::resolve_local_media_download(runtime.media_repository, media_id, false);
     if (!target.ok)
@@ -1540,6 +1877,13 @@ namespace
                                             std::move(remote_source), thumbnail_requester(remote));
     }
 
+    if (!legacy_endpoint)
+    {
+        if (auto pending = pending_download_answer(runtime, media_id, remote.timeout_ms); pending.has_value())
+        {
+            return std::move(*pending);
+        }
+    }
     auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
     if (record == nullptr || record->state != media::LocalMediaState::available ||
         (legacy_endpoint && !record->legacy_endpoint_visible))

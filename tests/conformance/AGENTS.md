@@ -30,7 +30,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_canonicaljson_parser.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | `test_canonicaljson_serializer.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | `test_client_server_conformance.cpp` | [Client-Server API](../../docs/matrix-v1.19-spec/client-server-api.md) |
-| `test_content_repository_conformance.cpp` | [CS API § Content repository](../../docs/matrix-v1.19-spec/client-server-api.md#content-repository) (`{fileName}` downloads name the requested file in `Content-Disposition`; the deprecated route stays frozen for new media) |
+| `test_content_repository_conformance.cpp` | [CS API § Content repository](../../docs/matrix-v1.19-spec/client-server-api.md#content-repository) (`{fileName}` downloads and the upload's `filename` in `Content-Disposition`, `POST /_matrix/media/v1/create`, `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}`, `timeout_ms` and `504 M_NOT_YET_UPLOADED`) |
 | `test_event_auth_rules.cpp` | [Auth Rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
 | `test_event_graph_conformance.cpp` | [SS API § Retrieving events](../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-events) (`/state/{roomId}`, `/state_ids/{roomId}`) · [§ Backfilling and retrieving missing events](../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) (`/backfill/{roomId}`) |
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.19-spec/client-server-api.md#forming-relationships-between-events) |

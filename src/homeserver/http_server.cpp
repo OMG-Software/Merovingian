@@ -1304,10 +1304,16 @@ private:
 namespace
 {
 
-    [[nodiscard]] auto is_media_upload_target(std::string_view target) noexcept -> bool
+    [[nodiscard]] auto is_media_upload_target(std::string_view method, std::string_view target) noexcept -> bool
     {
-        return target == "/_matrix/media/v3/upload" || target.starts_with("/_matrix/media/v3/upload?") ||
-               target == "/_matrix/client/v1/media/upload" || target.starts_with("/_matrix/client/v1/media/upload?");
+        if (method == "PUT")
+        {
+            // ADR-0212: content for an mxc:// URI reserved by POST /create.
+            return target.starts_with("/_matrix/media/v3/upload/");
+        }
+        return method == "POST" &&
+               (target == "/_matrix/media/v3/upload" || target.starts_with("/_matrix/media/v3/upload?") ||
+                target == "/_matrix/client/v1/media/upload" || target.starts_with("/_matrix/client/v1/media/upload?"));
     }
 
     [[nodiscard]] auto max_upload_bytes(ClientServerRuntime const& runtime) -> std::size_t
@@ -1673,8 +1679,9 @@ namespace
             // authenticates. Anything else is answered from the head alone,
             // before a byte of a large body is read, and the connection closed
             // (its unread body cannot be skipped).
-            if (ctx.dispatch_mode == HttpDispatchMode::client_server && parse.request.method == "POST" &&
-                is_media_upload_target(parse.request.target) && expected_body_bytes > effective_cap)
+            if (ctx.dispatch_mode == HttpDispatchMode::client_server &&
+                is_media_upload_target(parse.request.method, parse.request.target) &&
+                expected_body_bytes > effective_cap)
             {
                 auto const head_only = build_local_request(parse.request, {}, ctx.peer_addr);
                 if (auto const refusal = media_upload_authentication_refusal(ctx.runtime, head_only);

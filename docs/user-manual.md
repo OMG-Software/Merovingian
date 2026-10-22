@@ -1267,12 +1267,25 @@ Service API".
 | `security.media.remote_media_cache_max_size` | `25GiB` | Bytes of cached remote media. The least recently used remote files are deleted to stay within it; a single file larger than this is refused with `507`. Empty means no limit. |
 | `security.media.thumbnail_cache_size` | `64MiB` | Bytes of generated thumbnails kept in memory, least recently used first out, so a repeated thumbnail request does not run the decoder again. A cached thumbnail is served only while its media is still servable. Empty or `0` disables the cache. Requires a restart. |
 | `security.media.thumbnail_max_concurrent_per_user` | `2` | Thumbnail decodes one requester (the user, or the client address when unauthenticated) may run at once, 1..64. A further request is refused with `429 M_LIMIT_EXCEEDED`. Requires a restart. |
+| `security.media.pending_upload_ttl_seconds` | `86400` | How long an `mxc://` URI reserved by `POST /_matrix/media/v1/create` stays usable without content (the spec's recommended 24 hours), 60..604800. Returned to the client as `unused_expires_at`. Requires a restart. |
+| `security.media.max_pending_uploads_per_user` | `10` | Live reservations one user may hold, 1..1000. Past it `create` answers `429 M_LIMIT_EXCEEDED`. Requires a restart. |
+| `security.media.max_pending_uploads` | `10000` | Live reservations the whole server may hold, 1..1000000. Requires a restart. |
+| `security.media.pending_upload_max_wait_ms` | `20000` | The longest a download of a reserved but not yet uploaded media ID waits (never longer than the request's `timeout_ms`) before `504 M_NOT_YET_UPLOADED`, 0..60000. The wait runs on the media fetch pool, never on a main request thread. Requires a restart. |
+| `security.media.url_preview_enabled` | `false` | Serve `GET /_matrix/client/v1/media/preview_url` (and the deprecated `/_matrix/media/v3/preview_url`). The server then fetches URLs your users name; every fetch and redirect is refused if it resolves to a private, loopback, link-local or reserved address or one in `security.federation.deny_ip_ranges`. While `false` the endpoint answers `404 M_UNRECOGNIZED`. Requires a restart. |
+| `security.media.url_preview_max_page_size` | `1MiB` | Largest page a preview fetches; a larger one is not previewed. At most `64MiB`. Requires a restart. |
+| `security.media.url_preview_max_image_size` | `5MiB` | Largest `og:image` a preview fetches and stores (also capped by `max_upload_size`). The image is stored as the requesting user's media and counts against their quota. At most `64MiB`. Requires a restart. |
+| `security.media.url_preview_timeout_seconds` | `10` | Total time for one preview (page, redirects and image), 1..30. Requires a restart. |
+| `security.media.url_preview_max_redirects` | `3` | Redirects a preview follows, each checked like the first hop, 0..5. Requires a restart. |
+| `security.media.url_preview_cache_ttl_seconds` | `3600` | How long a preview is served from memory before the URL is fetched again, 0..86400 (`0` disables the cache). Failures are cached for at most 5 minutes. Requires a restart. |
+| `security.media.url_preview_cache_max_entries` | `1000` | Previews kept in memory, least recently used first out, 0..100000. Requires a restart. |
 
 The three local capacity limits bound media your users upload, which would otherwise
 be unbounded: upload spam grows it until the database fills. Size limits must be empty
 (no limit) or use the suffixes `B`, `KiB`, `MiB` or `GiB`; anything else is rejected at
 startup rather than read as no limit. The effective limits are logged at startup. An upload that would cross any limit is refused with
-`507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
+`403 M_FORBIDDEN` (the spec's answer for "The user has reached a quota for uploaded content"; a
+file type the server does not permit gets the same, and an oversized upload `413 M_TOO_LARGE`);
+nothing is evicted, because clients hold `mxc://` URIs
 for what is already stored and eviction would break those links rather than shed
 load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
 record but no additional bytes.

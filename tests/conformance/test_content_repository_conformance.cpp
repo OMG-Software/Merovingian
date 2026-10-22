@@ -12,18 +12,26 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/in_memory_database_config.hpp"
+#include "../support/joining_threads.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/media/repository.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -69,16 +77,11 @@ using namespace merovingian::tests;
 
 auto const png_bytes = std::string{"\x89PNG\r\n\x1a\nconformance-image"};
 
-// Uploads png_bytes and returns the media ID of the content_uri.
-[[nodiscard]] auto upload(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
-    -> std::string
+[[nodiscard]] auto upload(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                          std::string const& target) -> std::string
 {
     auto const response = merovingian::homeserver::handle_client_server_request(
-        runtime, {"POST",
-                  "/_matrix/media/v3/upload",
-                  token,
-                  png_bytes,
-                  {merovingian::http::Header{"Content-Type", "image/png"}}});
+        runtime, {"POST", target, token, png_bytes, {merovingian::http::Header{"Content-Type", "image/png"}}});
     REQUIRE(response.response.status == 200U);
     auto const body = parse_object(response.response.body);
     auto const* content_uri = string_member(body, "content_uri");
@@ -107,6 +110,42 @@ auto const png_bytes = std::string{"\x89PNG\r\n\x1a\nconformance-image"};
     return errcode == nullptr ? std::string{} : *errcode;
 }
 
+[[nodiscard]] auto create(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> merovingian::homeserver::DispatchResult
+{
+    return merovingian::homeserver::handle_client_server_request(runtime,
+                                                                 {"POST", "/_matrix/media/v1/create", token, {}});
+}
+
+[[nodiscard]] auto created_media_id(merovingian::homeserver::DispatchResult const& result) -> std::string
+{
+    REQUIRE(result.response.status == 200U);
+    auto const body = parse_object(result.response.body);
+    auto const* content_uri = string_member(body, "content_uri");
+    REQUIRE(content_uri != nullptr);
+    REQUIRE(content_uri->starts_with("mxc://example.org/"));
+    return content_uri->substr(std::string_view{"mxc://example.org/"}.size());
+}
+
+[[nodiscard]] auto put_upload(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                              std::string const& media_id, std::string const& bytes = png_bytes,
+                              std::string const& content_type = "image/png") -> merovingian::homeserver::DispatchResult
+{
+    return merovingian::homeserver::handle_client_server_request(
+        runtime, {"PUT",
+                  "/_matrix/media/v3/upload/example.org/" + media_id,
+                  token,
+                  bytes,
+                  {merovingian::http::Header{"Content-Type", content_type}}});
+}
+
+[[nodiscard]] auto download(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                            std::string const& path_and_query) -> merovingian::homeserver::DispatchResult
+{
+    return merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + path_and_query, token, {}});
+}
+
 [[nodiscard]] auto get(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                        std::string const& target) -> merovingian::homeserver::DispatchResult
 {
@@ -132,7 +171,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId}/{fileName} serves existi
         auto started = merovingian::homeserver::start_client_server(content_config());
         REQUIRE(started.started);
         auto const token = login(started.runtime, "alice");
-        auto const media_id = upload(started.runtime, token);
+        auto const media_id = upload(started.runtime, token, "/_matrix/media/v3/upload");
         auto const prefix = std::string{"/_matrix/client/v1/media/download/example.org/"};
 
         WHEN("the media is downloaded by the named route")
@@ -240,7 +279,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} names pre-fre
         auto started = merovingian::homeserver::start_client_server(content_config());
         REQUIRE(started.started);
         auto const token = login(started.runtime, "bob");
-        auto const media_id = upload(started.runtime, token);
+        auto const media_id = upload(started.runtime, token, "/_matrix/media/v3/upload");
         auto const target = "/_matrix/media/v3/download/example.org/" + media_id + "/notes.png";
 
         WHEN("the media is downloaded by the deprecated named route")
@@ -276,6 +315,395 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} names pre-fre
                     REQUIRE(header_value(response.response, "Content-Disposition") ==
                             std::optional<std::string>{R"(inline; filename="notes.png")"});
                 }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/media/download/{serverName}/{mediaId}, 200 response headers
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
+//
+// Summary: Content-Disposition "If the upload was made with a filename, this
+// header MUST contain the same filename. Otherwise, filename is excluded from
+// the header."
+SCENARIO("Downloads give back the filename the upload was made with", "[conformance][client-server][media][r17]")
+{
+    GIVEN("one upload made with ?filename= and one made without")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        REQUIRE(started.started);
+        auto const token = login(started.runtime, "alice");
+        auto const named = upload(started.runtime, token, "/_matrix/media/v3/upload?filename=cat%20photo.png");
+        auto const unnamed = upload(started.runtime, token, "/_matrix/client/v1/media/upload");
+
+        WHEN("both are downloaded by the two-segment route")
+        {
+            auto const with_name = download(started.runtime, token, named);
+            auto const without_name = download(started.runtime, token, unnamed);
+
+            THEN("the named upload's Content-Disposition contains the same filename")
+            {
+                // Spec MUST: "this header MUST contain the same filename".
+                REQUIRE(with_name.response.status == 200U);
+                REQUIRE(header_value(with_name.response, "Content-Disposition") ==
+                        std::optional<std::string>{R"(inline; filename="cat photo.png")"});
+            }
+
+            THEN("the unnamed upload's Content-Disposition carries no filename")
+            {
+                // Spec: "Otherwise, filename is excluded from the header."
+                REQUIRE(without_name.response.status == 200U);
+                REQUIRE(header_value(without_name.response, "Content-Disposition") ==
+                        std::optional<std::string>{"inline"});
+            }
+        }
+
+        WHEN("the named upload is downloaded by the {fileName} route")
+        {
+            auto const renamed = download(started.runtime, token, named + "/renamed.png");
+
+            THEN("the caller's file name replaces the upload's")
+            {
+                REQUIRE(renamed.response.status == 200U);
+                REQUIRE(header_value(renamed.response, "Content-Disposition") ==
+                        std::optional<std::string>{R"(inline; filename="renamed.png")"});
+            }
+        }
+    }
+
+    GIVEN("an upload whose filename carries a control character")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        REQUIRE(started.started);
+        auto const token = login(started.runtime, "alice");
+
+        WHEN("it is uploaded")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST",
+                                  "/_matrix/media/v3/upload?filename=evil%0D%0AX-Injected:%201.png",
+                                  token,
+                                  png_bytes,
+                                  {merovingian::http::Header{"Content-Type", "image/png"}}});
+
+            THEN("it is refused, so no header can be injected through it")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(errcode_of(response) == "M_INVALID_PARAM");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: POST /_matrix/media/v1/create
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixmediav1create
+//
+// Summary: "Creates a new mxc:// URI, independently of the content being
+// uploaded." 200: content_uri (Required) and unused_expires_at, "the maximum
+// POSIX millisecond timestamp to complete the upload"; "The recommended default
+// expiration is 24 hours". "the server should limit the number of concurrent
+// pending media uploads a given user can have ... respond with an HTTP 429
+// error with an errcode of M_LIMIT_EXCEEDED."
+SCENARIO("POST /media/v1/create reserves an mxc:// URI that expires",
+         "[conformance][client-server][media][async-upload]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        REQUIRE(started.started);
+        auto const token = login(started.runtime, "alice");
+
+        WHEN("an mxc:// URI is created")
+        {
+            auto const before_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count();
+            auto const response = create(started.runtime, token);
+
+            THEN("the response names a URI on this server and an expiry about 24 hours away")
+            {
+                // Spec MUST: content_uri is required.
+                auto const media_id = created_media_id(response);
+                REQUIRE_FALSE(media_id.empty());
+                auto const body = parse_object(response.response.body);
+                auto const* expires = int_member(body, "unused_expires_at");
+                REQUIRE(expires != nullptr);
+                // Spec SHOULD: the recommended default expiration is 24 hours.
+                auto const day_ms = std::int64_t{24} * 60 * 60 * 1000;
+                REQUIRE(*expires >= before_ms + day_ms - 60000);
+                REQUIRE(*expires <= before_ms + day_ms + 60000);
+            }
+        }
+
+        WHEN("the user creates more URIs than the per-user pending limit allows")
+        {
+            started.runtime.homeserver.media_repository.config.max_pending_uploads_per_user = 2U;
+            auto const first = create(started.runtime, token);
+            auto const second = create(started.runtime, token);
+            auto const third = create(started.runtime, token);
+
+            THEN("the one past the limit is refused with 429 M_LIMIT_EXCEEDED")
+            {
+                REQUIRE(first.response.status == 200U);
+                REQUIRE(second.response.status == 200U);
+                // Spec SHOULD: 429 M_LIMIT_EXCEEDED for too many pending uploads.
+                REQUIRE(third.response.status == 429U);
+                REQUIRE(errcode_of(third) == "M_LIMIT_EXCEEDED");
+            }
+
+            AND_WHEN("one of the pending uploads is completed")
+            {
+                REQUIRE(put_upload(started.runtime, token, created_media_id(first)).response.status == 200U);
+                auto const after = create(started.runtime, token);
+
+                THEN("a completed upload is no longer pending, so another URI can be created")
+                {
+                    REQUIRE(after.response.status == 200U);
+                }
+            }
+        }
+
+        WHEN("the request carries no access token")
+        {
+            auto const response = create(started.runtime, {});
+
+            THEN("the request is refused as unauthenticated")
+            {
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/media/v3/upload/{serverName}/{mediaId}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixmediav3uploadservernamemediaid
+//
+// Summary: 200 {} on success; 403 M_FORBIDDEN when "The request comes from a
+// different user than the one that called POST /_matrix/media/v1/create"; 404
+// M_NOT_FOUND when "The MXC ID was not created with POST
+// /_matrix/media/v1/create" or "The MXC ID has expired"; 409
+// M_CANNOT_OVERWRITE_MEDIA when "called with a media ID that already has
+// content"; 413 when "The uploaded content is too large for the server"; 403
+// when "The server does not permit the file type".
+SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exactly once",
+         "[conformance][client-server][media][async-upload]")
+{
+    GIVEN("alice has reserved an mxc:// URI and bob is another user")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        REQUIRE(started.started);
+        auto const alice = login(started.runtime, "alice");
+        auto const bob = login(started.runtime, "bob");
+        auto const media_id = created_media_id(create(started.runtime, alice));
+
+        WHEN("alice uploads the content")
+        {
+            auto const response = put_upload(started.runtime, alice, media_id);
+
+            THEN("it succeeds with an empty object and the content is downloadable at the reserved URI")
+            {
+                // Spec MUST: 200 {}.
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
+                auto const downloaded = download(started.runtime, alice, media_id);
+                REQUIRE(downloaded.response.status == 200U);
+                REQUIRE(downloaded.response.body == png_bytes);
+            }
+
+            AND_WHEN("alice uploads to the same URI again")
+            {
+                auto const again = put_upload(started.runtime, alice, media_id);
+
+                THEN("the server refuses to overwrite it with 409 M_CANNOT_OVERWRITE_MEDIA")
+                {
+                    REQUIRE(again.response.status == 409U);
+                    REQUIRE(errcode_of(again) == "M_CANNOT_OVERWRITE_MEDIA");
+                }
+            }
+        }
+
+        WHEN("bob uploads to alice's reserved URI")
+        {
+            auto const response = put_upload(started.runtime, bob, media_id);
+
+            THEN("it is refused with 403 M_FORBIDDEN and nothing is stored")
+            {
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(errcode_of(response) == "M_FORBIDDEN");
+                REQUIRE(merovingian::media::find_local_media_record(started.runtime.homeserver.media_repository,
+                                                                    media_id) == nullptr);
+            }
+        }
+
+        WHEN("alice uploads to a media ID that was never created")
+        {
+            auto const response = put_upload(started.runtime, alice, "neverCreatedMediaId00");
+
+            THEN("it is refused with 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(errcode_of(response) == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("alice uploads to the reserved ID under another server's name")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT",
+                                  "/_matrix/media/v3/upload/other.example.org/" + media_id,
+                                  alice,
+                                  png_bytes,
+                                  {merovingian::http::Header{"Content-Type", "image/png"}}});
+
+            THEN("it is refused with 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(errcode_of(response) == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("the reservation has expired before alice uploads")
+        {
+            started.runtime.homeserver.media_repository.pending_uploads.at(media_id).expires_at_ms = 1U;
+            auto const response = put_upload(started.runtime, alice, media_id);
+
+            THEN("it is refused with 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when "The MXC ID has expired".
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(errcode_of(response) == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("alice uploads more than max_upload_size")
+        {
+            started.runtime.homeserver.media_repository.config.max_upload_bytes = 4U;
+            auto const response = put_upload(started.runtime, alice, media_id);
+
+            THEN("it is refused with 413 M_TOO_LARGE and the URI stays reserved")
+            {
+                REQUIRE(response.response.status == 413U);
+                REQUIRE(errcode_of(response) == "M_TOO_LARGE");
+                REQUIRE(merovingian::media::find_pending_media_upload(
+                            started.runtime.homeserver.media_repository, media_id,
+                            merovingian::media::remote_media_cache_now_ms()) != nullptr);
+            }
+        }
+
+        WHEN("alice uploads a file type the server does not permit")
+        {
+            started.runtime.homeserver.media_repository.config.quarantine_unknown_mime = false;
+            started.runtime.homeserver.media_repository.config.allowed_mime_types = {"image/png"};
+            auto const response = put_upload(started.runtime, alice, media_id, "plain words\n", "text/plain");
+
+            THEN("it is refused with 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(errcode_of(response) == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/media/download/{serverName}/{mediaId}, timeout_ms and 504
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
+//
+// Summary: timeout_ms is "The maximum number of milliseconds that the client is
+// willing to wait to start receiving data, in the case that the content has not
+// yet been uploaded ... The content repository SHOULD impose a maximum value for
+// this parameter. The content repository MAY respond before the timeout." 504:
+// "The content is not yet available. A standard error response will be returned
+// with the errcode M_NOT_YET_UPLOADED."
+SCENARIO("Downloading reserved media before its upload waits up to timeout_ms, then answers 504",
+         "[conformance][client-server][media][async-upload]")
+{
+    GIVEN("alice has reserved an mxc:// URI and not uploaded to it")
+    {
+        auto started = merovingian::homeserver::start_client_server(content_config());
+        REQUIRE(started.started);
+        auto const alice = login(started.runtime, "alice");
+        auto const media_id = created_media_id(create(started.runtime, alice));
+
+        WHEN("it is downloaded with timeout_ms=0")
+        {
+            auto const response = download(started.runtime, alice, media_id + "?timeout_ms=0");
+
+            THEN("the server answers 504 M_NOT_YET_UPLOADED")
+            {
+                REQUIRE(response.response.status == 504U);
+                REQUIRE(errcode_of(response) == "M_NOT_YET_UPLOADED");
+            }
+        }
+
+        WHEN("it is downloaded with a short timeout and nothing is uploaded")
+        {
+            auto const started_at = std::chrono::steady_clock::now();
+            auto const response = download(started.runtime, alice, media_id + "?timeout_ms=150");
+            auto const waited = std::chrono::steady_clock::now() - started_at;
+
+            THEN("the server waits about that long and then answers 504 M_NOT_YET_UPLOADED")
+            {
+                REQUIRE(response.response.status == 504U);
+                REQUIRE(errcode_of(response) == "M_NOT_YET_UPLOADED");
+                REQUIRE(waited >= std::chrono::milliseconds{100});
+            }
+        }
+
+        WHEN("the client asks to wait longer than the server's maximum")
+        {
+            started.runtime.homeserver.media_repository.config.pending_upload_max_wait_ms = 50U;
+            auto const started_at = std::chrono::steady_clock::now();
+            auto const response = download(started.runtime, alice, media_id + "?timeout_ms=60000");
+            auto const waited = std::chrono::steady_clock::now() - started_at;
+
+            THEN("the server's maximum bounds the wait")
+            {
+                // Spec SHOULD: impose a maximum value for timeout_ms.
+                REQUIRE(response.response.status == 504U);
+                REQUIRE(waited < std::chrono::seconds{10});
+            }
+        }
+
+        WHEN("it is uploaded while a download is waiting")
+        {
+            auto waiter_status = std::uint16_t{0U};
+            auto waiter_body = std::string{};
+            auto threads = merovingian::tests::JoiningThreads{};
+            threads.emplace_back([&started, &alice, &media_id, &waiter_status, &waiter_body] {
+                auto const response = download(started.runtime, alice, media_id + "?timeout_ms=10000");
+                waiter_status = response.response.status;
+                waiter_body = response.response.body;
+            });
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (started.runtime.homeserver.media_upload_notifier->waiting() == 0U &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{2});
+            }
+            auto const uploaded = put_upload(started.runtime, alice, media_id);
+            threads.join();
+
+            THEN("the waiting download is served the content")
+            {
+                REQUIRE(uploaded.response.status == 200U);
+                REQUIRE(waiter_status == 200U);
+                REQUIRE(waiter_body == png_bytes);
+            }
+        }
+
+        WHEN("a remote server asks for it over federation")
+        {
+            auto const result =
+                merovingian::homeserver::download_local_media_for_federation(started.runtime.homeserver, media_id);
+
+            THEN("it is answered 504 at once, since the federation path has no pool to wait on")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 504U);
             }
         }
     }

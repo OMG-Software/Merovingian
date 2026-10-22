@@ -14,6 +14,16 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `decoder_hardening.cpp` |
 | `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter), behind an injectable `DecoderHardeningOps` function table |
 | `runtime_media.cpp` | Wires the media service into the runtime |
+| `url_preview.cpp` | URL previews' pure parts (ADR-0213): the bounded, non-recursive `og:*`/`<title>` extractor, `resolve_preview_reference` and the bounded `UrlPreviewCache`. No I/O; fetching lives in `homeserver/url_preview_service.cpp` |
+
+## Upload names and reserved IDs
+
+- An upload's `filename` is checked with `media_filename_is_valid` (an invalid one is refused, not
+  cleaned) and stored as `LocalMediaRecord::upload_name`; it reaches a header only through
+  `media_content_disposition` (ADR-0211).
+- `pending_uploads` holds IDs reserved by `POST /_matrix/media/v1/create`; `make_media_id` never
+  mints one of them, and `upload_local_media` with `LocalMediaUploadRequest::media_id` fills one
+  only once (ADR-0212).
 
 ## Internal body format
 

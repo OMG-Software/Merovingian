@@ -491,6 +491,19 @@ value. Test fixtures that do not exercise persistence select it through
   `homeserver::max_inbound_receipt_entries`; at the cap the oldest receipt of a
   *remote* user is removed, never a local user's. Main only: the table is not in
   `federation_worker_table_allowlist`.
+- Schema version `26` (`migrations/026_media_upload_names_and_pending_uploads.sql`) changes the
+  media tables. (The conformance waves reserved slot `029` for it; it is numbered after whatever
+  lands first, because the migration runner refuses a gap in the chain.)
+  - `media.upload_name` (`TEXT NOT NULL DEFAULT ''`, ADR-0211) is the upload's `filename`
+    (or the remote server's `Content-Disposition` filename), served back in
+    `Content-Disposition`.
+  - `media_pending_uploads` (`media_id` primary key, `owner_user_id`, `created_at_ms`,
+    `expires_at_ms`, indexed by owner; ADR-0212) holds the `mxc://` URIs reserved by
+    `POST /_matrix/media/v1/create` that have no content yet. `commit_pending_media_upload`
+    inserts one and deletes the expired ones it was handed in the same transaction;
+    `commit_local_media_upload` with `completes_pending_media_id` deletes the row in the
+    transaction that stores the content. Rows are bounded by `max_pending_uploads`. Main only:
+    not in `federation_worker_table_allowlist` (the federation media route runs in main).
 - `users.deactivated` column (schema version `14`, migration
   `migrations/014_user_deactivation.sql`) is a `TEXT NOT NULL DEFAULT
   'false'` column added to the existing `users` table (no new table), set by
@@ -1181,7 +1194,7 @@ migration's table cannot go unclassified:
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
   `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
-  `receipts`, `appservice_directory`, plus six tables `schema.cpp`
+  `receipts`, `appservice_directory`, `media_pending_uploads`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from

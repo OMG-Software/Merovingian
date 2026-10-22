@@ -23,6 +23,15 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // ADR-0212 / ADR-0213: the asynchronous-upload and URL preview limits are
+    // copied into the media repository's runtime config at startup.
+    if (starts_with(key, "security.media.url_preview_") || key == "security.media.pending_upload_ttl_seconds" ||
+        key == "security.media.max_pending_uploads_per_user" || key == "security.media.max_pending_uploads" ||
+        key == "security.media.pending_upload_max_wait_ms")
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     // Federation admission/recovery and client API budgets are copied into
     // runtime objects at startup. Worker IPC framing also depends on the
     // federation byte caps. A config snapshot reload does not rebuild these

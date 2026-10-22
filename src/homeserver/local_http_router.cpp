@@ -526,6 +526,15 @@ namespace
     [[nodiscard]] auto response_from_media_operation(OperationResult const& result) -> LocalHttpResponse
     {
         auto out = response(result.status, result.ok ? result.value : result.reason);
+        out.errcode = result.errcode;
+        if (result.ok && !result.media_filename.empty())
+        {
+            // R17: the stored upload filename crosses the internal boundary
+            // percent-encoded, so it can never break the header line; the
+            // client API decodes it and builds Content-Disposition from it.
+            out.headers.emplace_back(std::string{media_filename_header},
+                                     core::percent_encode_path_component(result.media_filename));
+        }
         if (result.retry_after_ms > 0U)
         {
             // A throttled result (the client-outbound budget, ADR-0079) carries its
@@ -1109,6 +1118,25 @@ namespace
         return out;
     }
 
+    // Parses a timeout_ms query value: digits only, saturating at a day.
+    [[nodiscard]] auto parse_timeout_ms(std::string_view value) noexcept -> std::optional<std::uint32_t>
+    {
+        if (value.empty() || value.size() > 12U)
+        {
+            return std::nullopt;
+        }
+        auto result = std::uint64_t{0U};
+        for (auto const ch : value)
+        {
+            if (ch < '0' || ch > '9')
+            {
+                return std::nullopt;
+            }
+            result = result * 10U + static_cast<std::uint64_t>(ch - '0');
+        }
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(result, 86400000U));
+    }
+
     struct ThumbnailParams final
     {
         std::uint32_t width{0U};
@@ -1177,13 +1205,23 @@ namespace
                 {
                     context.allow_remote = false;
                 }
+                // ADR-0212: how long to wait for content that has not been
+                // uploaded yet. A value that is not a non-negative integer is
+                // ignored (the spec default applies); the media service caps it.
+                if (kv.first == "timeout_ms")
+                {
+                    if (auto const parsed = parse_timeout_ms(kv.second); parsed.has_value())
+                    {
+                        context.timeout_ms = *parsed;
+                    }
+                }
             }
         }
         return context;
     }
 
     // MED-4: a thumbnail request also names its requester, for the per-user
-    // decode cap.
+    // decode cap. ADR-0212: so does a download, which may wait for an upload.
     [[nodiscard]] auto thumbnail_request_context(LocalHttpRequest const& request, HomeserverRuntime& runtime)
         -> RemoteMediaRequestContext
     {
@@ -1572,6 +1610,24 @@ namespace
             return std::nullopt;
         }
         return local_media_download_parts(path.substr(0U, second));
+    }
+
+    // R17: the `filename` query parameter of an upload, percent-decoded.
+    [[nodiscard]] auto upload_filename_from_target(std::string_view target) -> std::string
+    {
+        auto const query_start = target.find('?');
+        if (query_start == std::string_view::npos)
+        {
+            return {};
+        }
+        for (auto const& kv : parse_audit_query_string(target.substr(query_start + 1U)))
+        {
+            if (kv.first == "filename")
+            {
+                return core::percent_decode(kv.second);
+            }
+        }
+        return {};
     }
 
     // Admin media routes (quarantine/release/remove) take a single path
@@ -5220,7 +5276,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         auto result = logout_local_user(runtime, request.access_token);
         return result.ok ? response(200U, "logged out") : response(401U, result.reason);
     }
-    if (request.method == "POST" && request.target == "/_matrix/media/v3/upload")
+    if (request.method == "POST" &&
+        (request.target == "/_matrix/media/v3/upload" || starts_with(request.target, "/_matrix/media/v3/upload?")))
     {
         auto const fields = split_pipe_4(request.body);
         if (!fields.has_value())
@@ -5233,7 +5290,35 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(400U, "scanner_clean must be clean or dirty");
         }
         auto const result =
-            upload_local_media(runtime, request.access_token, (*fields)[0], (*fields)[1], *scanner_clean, (*fields)[3]);
+            upload_local_media(runtime, request.access_token, (*fields)[0], (*fields)[1], *scanner_clean, (*fields)[3],
+                               upload_filename_from_target(request.target));
+        return response_from_media_operation(result);
+    }
+    // ADR-0212: POST /_matrix/media/v1/create reserves an mxc:// URI.
+    if (request.method == "POST" && request.target == "/_matrix/media/v1/create")
+    {
+        return response_from_media_operation(create_pending_media_upload(runtime, request.access_token));
+    }
+    // ADR-0212: PUT /_matrix/media/v3/upload/{mediaId}[?filename=] fills a
+    // reserved mxc:// URI. The client API has already checked the server name.
+    auto constexpr reserved_upload_prefix = std::string_view{"/_matrix/media/v3/upload/"};
+    if (request.method == "PUT" && starts_with(request.target, reserved_upload_prefix))
+    {
+        auto const suffix = path_suffix(request.target, reserved_upload_prefix);
+        auto const media_id = suffix.substr(0U, suffix.find('?'));
+        auto const fields = split_pipe_4(request.body);
+        if (media_id.empty() || !fields.has_value())
+        {
+            return response(400U, "upload body must be declared_mime|sniffed_mime|scanner_clean|bytes");
+        }
+        auto const scanner_clean = parse_bool_flag((*fields)[2]);
+        if (!scanner_clean.has_value())
+        {
+            return response(400U, "scanner_clean must be clean or dirty");
+        }
+        auto const result =
+            upload_pending_media(runtime, request.access_token, media_id, (*fields)[0], (*fields)[1], *scanner_clean,
+                                 (*fields)[3], upload_filename_from_target(request.target));
         return response_from_media_operation(result);
     }
     auto constexpr download_prefix = std::string_view{"/_matrix/media/v3/download/"};
@@ -5245,7 +5330,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const result =
-            download_local_media(runtime, (*parts)[0], (*parts)[1], true, remote_media_context(request, runtime));
+            download_local_media(runtime, (*parts)[0], (*parts)[1], true, thumbnail_request_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
@@ -5285,7 +5370,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const result =
-            download_local_media(runtime, (*parts)[0], (*parts)[1], false, remote_media_context(request, runtime));
+            download_local_media(runtime, (*parts)[0], (*parts)[1], false, thumbnail_request_context(request, runtime));
         return response_from_media_operation(result);
     }
     auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};

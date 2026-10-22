@@ -6,6 +6,7 @@
 #include "merovingian/media/thumbnail_cache.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -73,6 +74,20 @@ struct LocalMediaRecord final
     // upload request, and on hydration by is_remote_cache_owner; never inferred from the owner
     // string alone, which a local account could imitate (security audit run-1).
     bool from_remote_fetch{false};
+    // The `filename` the upload was made with, or the remote server's
+    // Content-Disposition filename; empty when there was none. Served back in
+    // Content-Disposition on download (ADR-0211).
+    std::string upload_name{};
+};
+
+// ADR-0212: an mxc:// URI reserved by POST /_matrix/media/v1/create whose
+// content has not been uploaded. Times are Unix milliseconds.
+struct PendingMediaUpload final
+{
+    std::string media_id{};
+    std::string owner_user_id{};
+    std::uint64_t created_at_ms{0U};
+    std::uint64_t expires_at_ms{0U};
 };
 
 // Whether a persisted owner string names the remote media cache (ADR-0120): the
@@ -131,6 +146,9 @@ struct LocalMediaRepository final
     // requester. Both guarded by runtime.mutex like the rest of the repository.
     ThumbnailCache thumbnail_cache{};
     std::unordered_map<std::string, std::uint32_t> thumbnail_decodes_in_flight{};
+    // ADR-0212: reservations made by POST /_matrix/media/v1/create, keyed by
+    // media ID. Bounded by RuntimeMediaConfig::max_pending_uploads.
+    std::unordered_map<std::string, PendingMediaUpload> pending_uploads{};
 };
 
 struct LocalMediaUploadRequest final
@@ -148,6 +166,13 @@ struct LocalMediaUploadRequest final
     // client's own upload. Selects RuntimeMediaConfig::remote_fetch_media_policy
     // instead of local_upload_policy when evaluating acceptance.
     bool from_remote_fetch{false};
+    // The upload's `filename` (R17), already validated by
+    // media_filename_is_valid; stored on the record.
+    std::string upload_name{};
+    // ADR-0212: the reserved media ID this upload fills (PUT
+    // /_matrix/media/v3/upload/{serverName}/{mediaId}); empty mints a fresh
+    // one. The caller has checked the reservation with admit_pending_media_upload.
+    std::string media_id{};
 };
 
 struct LocalMediaUploadResult final
@@ -209,6 +234,8 @@ struct RemoteMediaDownloadRequest final
     std::uint64_t pixel_count{0U};
     std::uint64_t animation_frame_count{1U};
     bool decoder_marked_safe{true};
+    // R17: the filename in the remote server's Content-Disposition, if any.
+    std::string upload_name{};
 };
 
 struct RemoteMediaDownloadResult final
@@ -254,6 +281,48 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 // entry are removed and the blob reference it took is released. Returns false
 // when no record has that ID.
 [[nodiscard]] auto rollback_local_media_upload(LocalMediaRepository& repository, std::string_view media_id) -> bool;
+
+// ADR-0212: reserving an mxc:// URI for a later upload. Expired reservations
+// found on the way are listed in `expired_media_ids` so the caller deletes
+// them in the same transaction.
+struct PendingMediaUploadPlan final
+{
+    bool ok{false};
+    std::uint16_t status{500U};
+    std::string reason{};
+    PendingMediaUpload reservation{};
+    std::vector<std::string> expired_media_ids{};
+};
+// Plans a reservation for `owner_user_id` at `now_ms`: 429 when the user
+// already holds max_pending_uploads_per_user live reservations or the server
+// max_pending_uploads. Changes nothing; see apply_pending_media_upload.
+[[nodiscard]] auto plan_pending_media_upload(LocalMediaRepository& repository, std::string_view owner_user_id,
+                                             std::uint64_t now_ms) -> PendingMediaUploadPlan;
+// Applies a plan the database has committed.
+auto apply_pending_media_upload(LocalMediaRepository& repository, PendingMediaUploadPlan const& plan) -> void;
+// Hydration: replaces the reservations with `reservations`.
+auto restore_pending_media_uploads(LocalMediaRepository& repository, std::vector<PendingMediaUpload> reservations)
+    -> void;
+// The live (unexpired) reservation for `media_id`, or nullptr.
+[[nodiscard]] auto find_pending_media_upload(LocalMediaRepository const& repository, std::string_view media_id,
+                                             std::uint64_t now_ms) noexcept -> PendingMediaUpload const*;
+// Whether `user_id` may upload content to `media_id` now, in the order the
+// spec's errors are checked: content already there (409
+// M_CANNOT_OVERWRITE_MEDIA when the user owns it, 403 otherwise), no live
+// reservation (404 M_NOT_FOUND), a reservation made by someone else (403
+// M_FORBIDDEN).
+enum class PendingUploadAdmission
+{
+    accepted,
+    already_uploaded,
+    not_found,
+    forbidden,
+};
+[[nodiscard]] auto admit_pending_media_upload(LocalMediaRepository& repository, std::string_view media_id,
+                                              std::string_view user_id, std::uint64_t now_ms) -> PendingUploadAdmission;
+// Forgets the reservation for `media_id` once its content is durable.
+auto complete_pending_media_upload(LocalMediaRepository& repository, std::string_view media_id) -> void;
+
 // Resolves a local media download to the blob that holds its bytes, applying
 // the record checks (state, legacy visibility). Reads no bytes.
 [[nodiscard]] auto resolve_local_media_download(LocalMediaRepository& repository, std::string_view media_id,

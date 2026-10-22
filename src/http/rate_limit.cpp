@@ -228,6 +228,13 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
         .builtin_per_user =
             {
                              {"/_matrix/client/v3/login", {5U, 60U}},
+                             // ADR-0213: every uncached preview is an outbound fetch the
+                // user causes, so previews have their own per-user cap.
+                {"/_matrix/client/v1/media/preview_url", {30U, 60U}},
+                             {"/_matrix/media/v3/preview_url", {30U, 60U}},
+                             // ADR-0212: the spec asks servers to limit "the rate of
+                // requests to create mxc:// URIs" as well as how many are pending.
+                {"/_matrix/media/v1/create", {30U, 60U}},
                              },
         .default_per_ip = {600U, 60U},
     };

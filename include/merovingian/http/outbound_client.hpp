@@ -81,7 +81,11 @@ struct OutboundRequest final
     // filesystem artifact, not something a network peer can point at): an
     // appservice registration file's `url`, which the Matrix Application
     // Service API's own canonical example (and most real-world bridges)
-    // gives as a plain `http://` localhost address. When true, `url` may be
+    // gives as a plain `http://` localhost address. The one other use is a
+    // URL preview hop (ADR-0213), which is client-named but carries no
+    // credential and is address-checked and pinned like any other request;
+    // it must only ever be made through the preview gate in
+    // homeserver/url_preview_service.cpp. When true, `url` may be
     // `http://` OR `https://`; TLS verification still applies whenever the
     // connection does end up being TLS.
     bool allow_cleartext_http{false};
@@ -148,8 +152,8 @@ struct SystemCaTrust final
 // userinfo, fragments, control bytes, backslashes, encoded authority bytes,
 // invalid IP literals, and malformed ports. This performs no DNS or network
 // I/O and shares its parser and rules with OutboundClient::perform().
-[[nodiscard]] auto parse_outbound_url(std::string_view url,
-                                      bool allow_cleartext_http = false) -> std::optional<ParsedOutboundUrl>;
+[[nodiscard]] auto parse_outbound_url(std::string_view url, bool allow_cleartext_http = false)
+    -> std::optional<ParsedOutboundUrl>;
 
 // Pure validator. Returns OutboundError::none when the request is well-formed.
 // Does not perform DNS, TLS, or any network I/O.

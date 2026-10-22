@@ -1034,3 +1034,32 @@ SCENARIO("media_filename_is_valid accepts only names a Content-Disposition heade
         }
     }
 }
+
+// Spec: a remote media download's Content-Disposition "filename" is used as the
+// filename instead (Client-Server API v1.19, GET .../download/{serverName}/{mediaId}).
+// The remote server is untrusted, so its header is read strictly (ADR-0211).
+SCENARIO("A remote Content-Disposition filename is read strictly", "[media][security][r17]")
+{
+    GIVEN("Content-Disposition values a remote server might send")
+    {
+        WHEN("the file name is read from each")
+        {
+            THEN("quoted, token and RFC 5987 forms are read, the extended form wins, and unsafe names are dropped")
+            {
+                REQUIRE(merovingian::media::content_disposition_filename(R"(inline; filename="photo.jpg")") ==
+                        "photo.jpg");
+                REQUIRE(merovingian::media::content_disposition_filename("attachment; filename=report.pdf") ==
+                        "report.pdf");
+                REQUIRE(merovingian::media::content_disposition_filename(
+                            R"(inline; filename="fallback.txt"; filename*=UTF-8''caf%C3%A9.txt)") == "caf\xC3\xA9.txt");
+                REQUIRE(merovingian::media::content_disposition_filename(R"(inline; filename="semi;colon.txt")") ==
+                        "semi;colon.txt");
+                REQUIRE(merovingian::media::content_disposition_filename("inline").empty());
+                REQUIRE(merovingian::media::content_disposition_filename("inline; filename*=utf-8''a%0D%0Ab").empty());
+                REQUIRE(
+                    merovingian::media::content_disposition_filename("inline; filename*=iso-8859-1''a.txt").empty());
+                REQUIRE(merovingian::media::content_disposition_filename(R"(inline; filename="../../x")").empty());
+            }
+        }
+    }
+}

@@ -14,12 +14,14 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/media_upload_notifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_coalescer.hpp"
 #include "merovingian/homeserver/runtime_mutex.hpp"
 #include "merovingian/http/in_flight_budget.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/repository.hpp"
+#include "merovingian/media/url_preview.hpp"
 #include "merovingian/net/listener.hpp"
 #include "merovingian/observability/audit_rate_gate.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -481,6 +483,14 @@ struct HomeserverRuntime final
     // unique_ptr so leads keep a stable address across a runtime move.
     std::unique_ptr<RemoteMediaFetchCoalescer> remote_media_fetch_coalescer{
         std::make_unique<RemoteMediaFetchCoalescer>()};
+    // ADR-0212: wakes downloads waiting for a reserved media ID's content. Its
+    // mutex is a leaf: never waited on with `mutex` held. Held through a
+    // unique_ptr so waiters keep a stable address across a runtime move.
+    std::unique_ptr<MediaUploadNotifier> media_upload_notifier{std::make_unique<MediaUploadNotifier>()};
+    // ADR-0213: URL preview responses by canonical URL, bounded by
+    // security.media.url_preview_cache_max_entries. Guarded by `mutex`. Not
+    // carried across a runtime move: it is only a cache.
+    media::UrlPreviewCache url_preview_cache{};
     // Bounded admission semaphore for Argon2id password and registration-token
     // verification (AUTH-4). Stored by unique_ptr so the runtime remains movable
     // while the semaphore itself is not.
@@ -663,6 +673,9 @@ struct OperationResult final
     // 400 M_TOO_LARGE for an event over the spec's size limits (CSAZ-9). Empty
     // means the caller maps the status to its usual errcode.
     std::string errcode{};
+    // R17: for a successful media download, the filename to serve in
+    // Content-Disposition (the upload's, or the remote server's); empty when none.
+    std::string media_filename{};
 };
 
 struct SessionRefreshResult final

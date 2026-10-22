@@ -46,6 +46,12 @@ inline constexpr std::size_t max_media_filename_bytes = 255U;
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaidfilename
 [[nodiscard]] auto media_content_disposition(std::string_view content_type, std::string_view filename) -> std::string;
 
+// The file name a remote server's Content-Disposition value names
+// (`filename=` as a token or quoted string, or RFC 5987 `filename*=utf-8''...`,
+// which wins), or empty when there is none or it fails media_filename_is_valid.
+// Reads at most 1024 bytes of the value, in one linear pass.
+[[nodiscard]] auto content_disposition_filename(std::string_view header_value) -> std::string;
+
 enum class MediaDisposition
 {
     accept,

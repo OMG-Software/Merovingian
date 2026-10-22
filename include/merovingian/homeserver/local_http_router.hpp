@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -40,6 +41,12 @@ struct LocalHttpRequest final
     std::string verified_origin{};
     std::string verified_key_id{};
 };
+
+// R17: the internal header in which the local router hands a download's stored
+// upload filename (percent-encoded) to the client API, which turns it into
+// Content-Disposition. Never written to the wire: the client API builds the
+// download response afresh.
+inline constexpr std::string_view media_filename_header{"X-Merovingian-Media-Filename"};
 
 struct LocalHttpResponse final
 {

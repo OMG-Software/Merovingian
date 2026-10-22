@@ -420,6 +420,20 @@ struct PersistentLocalMedia final
     bool removed{false};
     // See media::LocalMediaRecord::legacy_endpoint_visible.
     bool legacy_endpoint_visible{true};
+    // Migration 026 (ADR-0211): the `filename` the upload was made with (or the remote
+    // server's Content-Disposition filename), empty when none was given.
+    std::string upload_name{};
+};
+
+// Migration 026 (ADR-0212): an mxc:// URI reserved by POST /_matrix/media/v1/create
+// whose content has not been uploaded yet. Times are milliseconds since the
+// Unix epoch. The row is deleted in the transaction that stores the content.
+struct PersistentPendingMediaUpload final
+{
+    std::string media_id{};
+    std::string owner_user_id{};
+    std::uint64_t created_at_ms{0U};
+    std::uint64_t expires_at_ms{0U};
 };
 
 // A remote (server_name, media_id) and the local record holding its stored
@@ -941,6 +955,7 @@ struct PersistentStore final
         , local_media{other.local_media}
         , remote_media{other.remote_media}
         , media_blobs{other.media_blobs}
+        , pending_media_uploads{other.pending_media_uploads}
         , audit_log{other.audit_log}
         , audit_log_evicted{other.audit_log_evicted}
         , admin_actions{other.admin_actions}
@@ -1025,6 +1040,7 @@ struct PersistentStore final
         local_media = other.local_media;
         remote_media = other.remote_media;
         media_blobs = other.media_blobs;
+        pending_media_uploads = other.pending_media_uploads;
         audit_log = other.audit_log;
         audit_log_evicted = other.audit_log_evicted;
         admin_actions = other.admin_actions;
@@ -1123,6 +1139,8 @@ struct PersistentStore final
     std::vector<PersistentLocalMedia> local_media{};
     std::vector<PersistentRemoteMedia> remote_media{};
     std::vector<PersistentMediaBlob> media_blobs{};
+    // Migration 026: reservations made by POST /_matrix/media/v1/create.
+    std::vector<PersistentPendingMediaUpload> pending_media_uploads{};
     // In-memory window over the most recent `max_in_memory_audit_events` audit
     // rows (AUTH-1). The database table is the durable, complete record; this
     // deque is a bounded mirror for the admin views, so an unauthenticated flood
@@ -1577,8 +1595,17 @@ auto rebuild_key_signature_index(PersistentStore& store) -> void;
 // When `new_blob` is true the blob row is written with `blob.bytes` (a new
 // blob, or a removed one revived by a re-upload); otherwise the bytes are
 // already durable and only the reference count is updated (ADR-0119).
+// `completes_pending_media_id`, when not empty, names the pending reservation
+// (POST /_matrix/media/v1/create) this upload fills; its row is deleted in the
+// same transaction (ADR-0212).
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
-                                             PersistentMediaBlob const& blob, bool new_blob) -> bool;
+                                             PersistentMediaBlob const& blob, bool new_blob,
+                                             std::string_view completes_pending_media_id = {}) -> bool;
+// ADR-0212: inserts one pending upload reservation and deletes the expired
+// reservations in `expired_media_ids`, in one transaction. The in-memory mirror
+// changes only after the commit succeeds.
+[[nodiscard]] auto commit_pending_media_upload(PersistentStore& store, PersistentPendingMediaUpload row,
+                                               std::vector<std::string> const& expired_media_ids) -> bool;
 
 // ADR-0119: media bytes live only in the database and are read per request.
 // prepare_media_blob_read runs under the runtime mutex and captures where to

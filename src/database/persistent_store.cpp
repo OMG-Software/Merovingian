@@ -3228,8 +3228,9 @@ namespace
     {
         return record_statement("insert_media",
                                 "INSERT INTO media (media_id, owner_user_id, content_type, size_bytes, "
-                                "hash_algorithm, digest, quarantined, removed, legacy_endpoint_visible) "
-                                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                                "hash_algorithm, digest, quarantined, removed, legacy_endpoint_visible, "
+                                "upload_name) "
+                                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                                 {
                                     {media.media_id,                                   false},
                                     {media.owner_user_id,                              false},
@@ -3239,7 +3240,30 @@ namespace
                                     {media.digest,                                     false},
                                     {media.quarantined ? "true" : "false",             false},
                                     {media.removed ? "true" : "false",                 false},
-                                    {media.legacy_endpoint_visible ? "true" : "false", false}
+                                    {media.legacy_endpoint_visible ? "true" : "false", false},
+                                    {media.upload_name,                                false}
+        });
+    }
+
+    [[nodiscard]] auto delete_pending_media_upload_statement(std::string_view media_id) -> PreparedStatement
+    {
+        return record_statement("delete_pending_media_upload", "DELETE FROM media_pending_uploads WHERE media_id = $1",
+                                {
+                                    {std::string{media_id}, false}
+        });
+    }
+
+    [[nodiscard]] auto insert_pending_media_upload_statement(PersistentPendingMediaUpload const& row)
+        -> PreparedStatement
+    {
+        return record_statement("insert_pending_media_upload",
+                                "INSERT INTO media_pending_uploads (media_id, owner_user_id, created_at_ms, "
+                                "expires_at_ms) VALUES ($1, $2, $3, $4)",
+                                {
+                                    {row.media_id,                      false},
+                                    {row.owner_user_id,                 false},
+                                    {std::to_string(row.created_at_ms), false},
+                                    {std::to_string(row.expires_at_ms), false}
         });
     }
 
@@ -3348,7 +3372,8 @@ namespace
 }
 
 [[nodiscard]] auto commit_local_media_upload(PersistentStore& store, PersistentLocalMedia media,
-                                             PersistentMediaBlob const& blob, bool new_blob) -> bool
+                                             PersistentMediaBlob const& blob, bool new_blob,
+                                             std::string_view completes_pending_media_id) -> bool
 {
     if (!local_media_row_is_valid(store, media) || !media_blob_row_is_valid(blob) || blob.ref_count == 0U ||
         (new_blob && blob.bytes.size() != blob.size_bytes))
@@ -3362,12 +3387,58 @@ namespace
     // reference count is written; re-binding them would copy the whole file.
     auto const blob_statement =
         new_blob ? upsert_media_blob_statement(blob) : update_media_blob_ref_count_statement(blob);
-    if (!commit_persistent_transaction(store, {insert_local_media_statement(media), blob_statement}))
+    auto statements = std::vector<PreparedStatement>{insert_local_media_statement(media), blob_statement};
+    // ADR-0212: content for a reserved mxc:// URI replaces the reservation in
+    // the same transaction, so a restart never sees both or neither.
+    if (!completes_pending_media_id.empty())
+    {
+        statements.push_back(delete_pending_media_upload_statement(completes_pending_media_id));
+    }
+    if (!commit_persistent_transaction(store, std::move(statements)))
     {
         return false;
     }
     store.local_media.push_back(std::move(media));
     remember_media_blob(store, blob, new_blob);
+    if (!completes_pending_media_id.empty())
+    {
+        std::erase_if(store.pending_media_uploads,
+                      [completes_pending_media_id](PersistentPendingMediaUpload const& row) {
+                          return row.media_id == completes_pending_media_id;
+                      });
+    }
+    return true;
+}
+
+[[nodiscard]] auto commit_pending_media_upload(PersistentStore& store, PersistentPendingMediaUpload row,
+                                               std::vector<std::string> const& expired_media_ids) -> bool
+{
+    if (row.media_id.empty() || row.owner_user_id.empty() || row.expires_at_ms <= row.created_at_ms ||
+        std::ranges::any_of(store.pending_media_uploads,
+                            [&row](PersistentPendingMediaUpload const& existing) {
+                                return existing.media_id == row.media_id;
+                            }) ||
+        std::ranges::any_of(store.local_media, [&row](PersistentLocalMedia const& existing) {
+            return existing.media_id == row.media_id;
+        }))
+    {
+        return false;
+    }
+    auto statements = std::vector<PreparedStatement>{};
+    statements.reserve(expired_media_ids.size() + 1U);
+    for (auto const& expired : expired_media_ids)
+    {
+        statements.push_back(delete_pending_media_upload_statement(expired));
+    }
+    statements.push_back(insert_pending_media_upload_statement(row));
+    if (!commit_persistent_transaction(store, std::move(statements)))
+    {
+        return false;
+    }
+    std::erase_if(store.pending_media_uploads, [&expired_media_ids](PersistentPendingMediaUpload const& existing) {
+        return std::ranges::find(expired_media_ids, existing.media_id) != expired_media_ids.end();
+    });
+    store.pending_media_uploads.push_back(std::move(row));
     return true;
 }
 

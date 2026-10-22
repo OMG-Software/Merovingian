@@ -202,6 +202,7 @@ namespace
             record.quarantine_reason = media_row.quarantined ? "persisted quarantine" : std::string{};
             record.legacy_endpoint_visible = media_row.legacy_endpoint_visible;
             record.from_remote_fetch = media::is_remote_cache_owner(media_row.owner_user_id, server_name);
+            record.upload_name = media_row.upload_name;
             records.push_back(std::move(record));
         }
 
@@ -233,6 +234,16 @@ namespace
             }
         }
         media::restore_remote_media_cache(repository, std::move(entries));
+
+        // ADR-0212: reservations survive a restart; expired ones are kept until
+        // the next create deletes them.
+        auto reservations = std::vector<media::PendingMediaUpload>{};
+        reservations.reserve(persistent_store.pending_media_uploads.size());
+        for (auto const& row : persistent_store.pending_media_uploads)
+        {
+            reservations.push_back({row.media_id, row.owner_user_id, row.created_at_ms, row.expires_at_ms});
+        }
+        media::restore_pending_media_uploads(repository, std::move(reservations));
     }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept

@@ -532,6 +532,157 @@ auto admin_quarantine_policy(AdminQuarantineRequest const& request) -> MediaPoli
     return {MediaDisposition::accept, {}};
 }
 
+namespace
+{
+
+    [[nodiscard]] auto ascii_lower(std::string_view text) -> std::string
+    {
+        auto lowered = std::string{text};
+        std::ranges::transform(lowered, lowered.begin(), [](char c) {
+            return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+        });
+        return lowered;
+    }
+
+    [[nodiscard]] auto trim_spaces(std::string_view text) noexcept -> std::string_view
+    {
+        while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
+        {
+            text.remove_prefix(1U);
+        }
+        while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+        {
+            text.remove_suffix(1U);
+        }
+        return text;
+    }
+
+    [[nodiscard]] auto hex_value(char c) noexcept -> int
+    {
+        if (c >= '0' && c <= '9')
+        {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f')
+        {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F')
+        {
+            return c - 'A' + 10;
+        }
+        return -1;
+    }
+
+    // RFC 5987 ext-value: charset'language'percent-encoded. Only UTF-8 (and its
+    // ASCII subset) is accepted; anything malformed yields empty.
+    [[nodiscard]] auto decode_ext_value(std::string_view value) -> std::string
+    {
+        auto const first = value.find('\'');
+        auto const second = first == std::string_view::npos ? first : value.find('\'', first + 1U);
+        if (second == std::string_view::npos)
+        {
+            return {};
+        }
+        auto const charset = ascii_lower(value.substr(0U, first));
+        if (charset != "utf-8" && charset != "us-ascii")
+        {
+            return {};
+        }
+        auto const encoded = value.substr(second + 1U);
+        auto decoded = std::string{};
+        for (auto index = std::size_t{0U}; index < encoded.size(); ++index)
+        {
+            if (encoded[index] != '%')
+            {
+                decoded += encoded[index];
+                continue;
+            }
+            if (index + 2U >= encoded.size())
+            {
+                return {};
+            }
+            auto const high = hex_value(encoded[index + 1U]);
+            auto const low = hex_value(encoded[index + 2U]);
+            if (high < 0 || low < 0)
+            {
+                return {};
+            }
+            decoded += static_cast<char>((high << 4) | low);
+            index += 2U;
+        }
+        return decoded;
+    }
+
+} // namespace
+
+auto content_disposition_filename(std::string_view header_value) -> std::string
+{
+    constexpr auto max_scanned = std::size_t{1024U};
+    auto remaining = header_value.substr(0U, std::min(header_value.size(), max_scanned));
+    auto plain = std::string{};
+    auto extended = std::string{};
+    // One linear pass over at most max_scanned bytes: split on ';' outside
+    // quoted strings.
+    while (!remaining.empty())
+    {
+        auto in_quotes = false;
+        auto end = std::size_t{0U};
+        for (; end < remaining.size(); ++end)
+        {
+            auto const c = remaining[end];
+            if (c == '\\' && in_quotes && end + 1U < remaining.size())
+            {
+                ++end;
+                continue;
+            }
+            if (c == '"')
+            {
+                in_quotes = !in_quotes;
+            }
+            else if (c == ';' && !in_quotes)
+            {
+                break;
+            }
+        }
+        auto const parameter = trim_spaces(remaining.substr(0U, end));
+        remaining = end < remaining.size() ? remaining.substr(end + 1U) : std::string_view{};
+        auto const equals = parameter.find('=');
+        if (equals == std::string_view::npos)
+        {
+            continue;
+        }
+        auto const name = ascii_lower(trim_spaces(parameter.substr(0U, equals)));
+        auto value = trim_spaces(parameter.substr(equals + 1U));
+        if (name == "filename*")
+        {
+            extended = decode_ext_value(value);
+        }
+        else if (name == "filename")
+        {
+            if (value.size() >= 2U && value.front() == '"' && value.back() == '"')
+            {
+                value = value.substr(1U, value.size() - 2U);
+                plain.clear();
+                for (auto index = std::size_t{0U}; index < value.size(); ++index)
+                {
+                    if (value[index] == '\\' && index + 1U < value.size())
+                    {
+                        ++index;
+                    }
+                    plain += value[index];
+                }
+            }
+            else
+            {
+                plain = std::string{value};
+            }
+        }
+    }
+    auto const& chosen = extended.empty() ? plain : extended;
+    return media_filename_is_valid(chosen) ? chosen : std::string{};
+}
+
 auto media_security_boundary_notes() -> std::vector<std::string>
 {
     return {

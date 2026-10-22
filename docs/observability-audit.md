@@ -224,7 +224,9 @@ Grepping for `append_local_audit` call sites finds these event-name families:
 - `media.*` (`src/homeserver/media_service.cpp`, moderation category):
   `media.upload_rejected`, `media.upload_quarantined`, `media.upload_accepted`,
   `media.quarantined`, `media.released`, `media.removed`,
-  `media.remote_fetch_accepted`, `media.remote_fetch_rejected`.
+  `media.remote_fetch_accepted`, `media.remote_fetch_rejected`, `media.create_reserved`
+  (`POST /_matrix/media/v1/create`, ADR-0212), `media.preview_image_stored` and
+  `media.preview_image_quarantined` (a URL preview's `og:image`, ADR-0213).
 - `trust_safety.policy_rule.*` (`src/homeserver/client_server.cpp`, policy
   category): `trust_safety.policy_rule.upsert`, `trust_safety.policy_rule.delete`,
   plus the dynamic event types trust-and-safety policy matches emit via

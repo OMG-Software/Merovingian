@@ -395,6 +395,9 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
          "/_matrix/client/v1/media/download/example.org/one/a.png",                                                                          "/_matrix/client/v1/media/download/example.org/two/b.png"                                         },
         {"/_matrix/media/v3/download/{server}/{mediaId}/{fileName}",                "/_matrix/media/v3/download/example.org/one/a.png",
          "/_matrix/media/v3/download/example.org/two/b.png"                                                                                                                                                                                    },
+        // ADR-0212: the reserved-ID upload.
+        {"/_matrix/media/v3/upload/{server}/{mediaId}",                             "/_matrix/media/v3/upload/example.org/one",
+         "/_matrix/media/v3/upload/example.org/two"                                                                                                                                                                                            },
     };
 
     GIVEN("a one-request operator cap keyed on each route template")

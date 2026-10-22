@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.41-1
+- Serve named media downloads and upload filenames; add asynchronous uploads and opt-in URL previews (conformance audit, media).
+
 * Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.40-1
 - Let users create, delete, enable and reorder push rules; count unread notifications by push rule; retry failed push notifications.
 

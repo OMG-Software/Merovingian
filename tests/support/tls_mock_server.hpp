@@ -513,6 +513,19 @@ public:
         return "https://" + host_port();
     }
 
+    // The bound loopback port and the PEM of the self-signed certificate, for
+    // tests that pin this server's host themselves (URL previews pin it through
+    // HomeserverRuntime::test_forced_outbound_resolution).
+    [[nodiscard]] auto port() const -> std::uint16_t
+    {
+        return acceptor_.bound_port();
+    }
+
+    [[nodiscard]] auto certificate_pem() const -> std::string const&
+    {
+        return certificate_.certificate_pem;
+    }
+
     // A cooperative identity server for tests that only need a 3PID to end up
     // associated with an account: requestToken is answered with the sid
     // "email-sid" or "msisdn-sid", and getValidated3pid for that sid reports the
