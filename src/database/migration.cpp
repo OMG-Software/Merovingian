@@ -714,6 +714,23 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {23U, "drop_receipts", std::move(statements), MigrationDirection::downgrade};
 }
 
+// ADR-0192: rooms an appservice has published to the directory of one of its networks, so the
+// published directory survives a restart. Main-process only.
+[[nodiscard]] auto upgrade_appservice_directory_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("appservice_directory").value()).value());
+    return {25U, "appservice_directory", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v25 -> v24: drop the appservice_directory table.
+[[nodiscard]] auto downgrade_appservice_directory_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("appservice_directory").value());
+    return {24U, "drop_appservice_directory", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -739,7 +756,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_room_alias_creator_migration(),
             upgrade_appservice_outbox_migration(),
             upgrade_deferred_pdus_migration(),
-            upgrade_receipts_migration()};
+            upgrade_receipts_migration(),
+            upgrade_appservice_directory_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -890,7 +908,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_receipts_migration(),
+    return {downgrade_appservice_directory_migration(),
+            downgrade_receipts_migration(),
             downgrade_deferred_pdus_migration(),
             downgrade_appservice_outbox_migration(),
             downgrade_room_alias_creator_migration(),

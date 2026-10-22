@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/worker_pool.hpp"
 
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/secret_buffer.hpp"
@@ -412,6 +413,10 @@ namespace
         {
             return R"({"type":"edu_ingest_result","status":"rejected_invalid","reason":"main at per-channel in-flight cap"})";
         }
+        if (type == "membership_template_ingest")
+        {
+            return R"({"type":"membership_template_ingest_result","found":true,"reason":"{\"errcode\":\"M_UNKNOWN\",\"error\":\"main at per-channel in-flight cap\"}","error_status":503})";
+        }
         return R"({"type":"error","status":503,"reason":"main at per-channel in-flight cap"})";
     }
 
@@ -643,8 +648,14 @@ namespace
         bool locally_denied{false};
     };
 
+    // `authorised_here` is this server's name when the relay is a send_join
+    // the membership acceptor may co-sign as a restricted join's authorising
+    // server (R04, ADR-0185): such an event cannot carry our signature yet, and
+    // the acceptor checks the allow conditions before it adds one. Empty for
+    // every other relay, which must already carry every signature it needs.
     [[nodiscard]] auto verify_relayed_event_signature(HomeserverRuntime& runtime, std::string_view event_json,
-                                                      std::string const& room_version) -> RelayedSignature
+                                                      std::string const& room_version,
+                                                      std::string_view authorised_here = {}) -> RelayedSignature
     {
         auto pdu = federation::parse_federation_pdu(event_json, [&room_version](std::string_view) {
             return room_version;
@@ -655,26 +666,25 @@ namespace
         }
         pdu.room_version = room_version;
         auto const sender_server = server_name_of(pdu.sender);
-        auto const signature = std::ranges::find_if(pdu.signatures, [sender_server](auto const& sig) {
-            return sig.server_name == sender_server;
-        });
-        if (sender_server.empty() || signature == pdu.signatures.end())
+        if (sender_server.empty() || federation::signature_key_ids_for_server(pdu.signatures, sender_server).empty())
         {
             return {{}, "relayed event has no signature from its sender's server"};
         }
-        auto const resolution = [&]() {
+        // No trustworthy client address travels in these relay frames. All
+        // main relay misses share the bounded unknown-source bucket; never let
+        // a worker choose a source to evade main's quota. Each lookup may go to
+        // the network, so runtime.mutex is released around it.
+        auto const resolve = [&runtime](std::string_view server_name, std::string_view key_id) {
             auto const unlocked = RuntimeLockRelease{};
             std::ignore = unlocked;
-            // No trustworthy client address travels in these relay frames.
-            // All main relay misses share the bounded unknown-source bucket;
-            // never let a worker choose a source to evade main's quota.
-            return federation::resolve_verification_key(runtime.federation, {}, sender_server, signature->key_id);
-        }();
-        if (resolution.locally_denied)
+            return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
+        };
+        // R05: every key ID listed for the sender's server, not only the first.
+        auto const decision = federation::authorize_federation_pdu_sender(pdu, std::nullopt, resolve);
+        if (decision.status == 503U)
         {
             return {{}, "main key-resolution admission overloaded", true};
         }
-        auto const decision = federation::authorize_federation_pdu(pdu, sender_server, resolution.key);
         if (!decision.accepted)
         {
             return {{}, "relayed event failed signature verification: " + decision.reason};
@@ -690,12 +700,15 @@ namespace
         {
             return {{}, "relayed event could not be checked for an authorising server"};
         }
-        auto const authorising = federation::verify_join_authorising_server_signature(
-            parsed.value, *policy, [&runtime](std::string_view server_name, std::string_view key_id) {
-                auto const unlocked = RuntimeLockRelease{};
-                std::ignore = unlocked;
-                return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
-            });
+        if (!authorised_here.empty())
+        {
+            if (auto const authorising_key = federation::join_authorising_signature_key(parsed.value);
+                authorising_key.has_value() && authorising_key->server_name == authorised_here)
+            {
+                return {pdu.event_id, {}};
+            }
+        }
+        auto const authorising = federation::verify_join_authorising_server_signature(parsed.value, *policy, resolve);
         if (authorising.status == 503U)
         {
             return {{}, "main key-resolution admission overloaded", true};
@@ -721,10 +734,11 @@ namespace
     // choose where to backfill from; anything fetched there is verified
     // again) is taken from the frame.
     [[nodiscard]] auto reverify_relayed_envelope(HomeserverRuntime& runtime,
-                                                 federation::InboundPduEnvelope const& frame) -> RelayedEnvelope
+                                                 federation::InboundPduEnvelope const& frame,
+                                                 std::string_view authorised_here = {}) -> RelayedEnvelope
     {
         auto const room_version = relayed_room_version(runtime, frame.room_id, frame.room_version);
-        auto const signature = verify_relayed_event_signature(runtime, frame.json, room_version);
+        auto const signature = verify_relayed_event_signature(runtime, frame.json, room_version, authorised_here);
         if (!signature.refusal.empty())
         {
             return {std::nullopt, signature.refusal, signature.locally_denied};
@@ -810,8 +824,14 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
         return serialize_membership_ingest_result(result);
     }
     // TRUST BOUNDARY (ADR-0071): verified before the runtime lock is taken,
-    // because resolving the sender's key may go to the network.
-    auto const relayed = reverify_relayed_envelope(runtime, frame);
+    // because resolving the sender's key may go to the network. A send_join
+    // naming one of our users as its authorising user is co-signed by the
+    // acceptor after it checks the allow conditions (R04, ADR-0185), so only
+    // that one signature is left to it.
+    auto const our_server = endpoint == federation::FederationEndpoint::send_join
+                                ? std::string{runtime.config.server().server_name}
+                                : std::string{};
+    auto const relayed = reverify_relayed_envelope(runtime, frame, our_server);
     if (!relayed.envelope.has_value())
     {
         log_relay_refused("membership_ingest", frame.event_id, relayed.refusal);
@@ -999,6 +1019,26 @@ auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string
     return serialize_profile_query_ingest_result(profile);
 }
 
+auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // The frame comes from the worker (ADR-0071: untrusted input). A template
+    // carries no secret, only event IDs of the room's current state. The
+    // worker checked the user against the X-Matrix origin, which main cannot
+    // see, so main checks what it can: a well-formed frame naming a federated
+    // user ID of ANOTHER server (make_join is how a remote server joins; a
+    // local user joins through the client API). The provider takes
+    // runtime.mutex itself and makes no network call.
+    auto const request = ipc::deserialize_membership_template_ingest(request_json);
+    if (!request.has_value() || !runtime.federation.membership_template_provider ||
+        !auth::user_id_is_valid_federated(request->user_id) ||
+        auth::user_id_server_name(request->user_id) == runtime.config.server().server_name)
+    {
+        return ipc::serialize_membership_template_ingest_result(std::nullopt);
+    }
+    return ipc::serialize_membership_template_ingest_result(runtime.federation.membership_template_provider(
+        federation::FederationEndpoint::make_join, request->room_id, request->user_id, request->supported_versions));
+}
+
 auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
 {
     // GET /_matrix/federation/v1/event/{eventId} carries no room ID, so it
@@ -1168,146 +1208,156 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         // the frame and enqueues the real work on handler_pool_. Each task
         // holds its own ref-counted channel snapshot and sends the response
         // from the pool, so a slow handler can never stall later queued frames.
-        supervisor->set_channel_request_handler([this, shard_index = i](
-                                                    std::shared_ptr< // SHARED_PTR: reviewed - queued receiver.
-                                                        ipc::IpcChannel> const& ch,
-                                                    std::uint64_t id, std::string json) {
-            auto const type = json_get_str(json, "type");
-            // The supervisor supplies the exact receiving channel. Capture it
-            // in each task: a later snapshot could be another worker generation
-            // with colliding channel-local parent IDs.
-            // ADR-0078: frames a worker must never send are refused first,
-            // inline, with no runtime lock, no handler-pool slot and no work.
-            if (ch && refuse_forbidden_worker_request(*ch, id, type))
-            {
-                return;
-            }
-            if (type == "pdu_ingest")
-            {
-                auto const room_id = json_get_str(json, "room_id");
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, room_id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        auto const result = handle_pdu_ingest_request(runtime_, json);
-                        if (result.status == federation::PduIngestionStatus::accepted)
-                        {
-                            // Push the just-committed event back down to whichever
-                            // shard owns this room — in practice the same worker that
-                            // made this exact pdu_ingest call, since shard_for() is a
-                            // pure function of room_id. Without this, a message
-                            // relayed from a worker is only ever visible in main's own
-                            // store: pdu_sink deliberately does not write to the
-                            // worker's own PersistentStore ("does NOT write events",
-                            // see worker_event_loop.cpp), and nothing else refreshes a
-                            // worker's room snapshot for ordinary (non-membership)
-                            // traffic. A later backfill/event/state query for this
-                            // room landing back on that shard would otherwise omit
-                            // this event. See docs/architecture.md, "Federation
-                            // worker room staleness".
-                            notify_room_changed(room_id);
-                        }
-                        ch->send_response(id, serialize_pdu_ingest_result(result));
-                    }))
+        supervisor->set_channel_request_handler(
+            [this, shard_index = i](std::shared_ptr< // SHARED_PTR: reviewed - queued receiver.
+                                        ipc::IpcChannel> const& ch,
+                                    std::uint64_t id, std::string json) {
+                auto const type = json_get_str(json, "type");
+                // The supervisor supplies the exact receiving channel. Capture it
+                // in each task: a later snapshot could be another worker generation
+                // with colliding channel-local parent IDs.
+                // ADR-0078: frames a worker must never send are refused first,
+                // inline, with no runtime lock, no handler-pool slot and no work.
+                if (ch && refuse_forbidden_worker_request(*ch, id, type))
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    return;
                 }
-            }
-            else if (type == "membership_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_membership_ingest_request(runtime_, json));
-                    }))
+                if (type == "pdu_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    auto const room_id = json_get_str(json, "room_id");
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, room_id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            auto const result = handle_pdu_ingest_request(runtime_, json);
+                            if (result.status == federation::PduIngestionStatus::accepted)
+                            {
+                                // Push the just-committed event back down to whichever
+                                // shard owns this room — in practice the same worker that
+                                // made this exact pdu_ingest call, since shard_for() is a
+                                // pure function of room_id. Without this, a message
+                                // relayed from a worker is only ever visible in main's own
+                                // store: pdu_sink deliberately does not write to the
+                                // worker's own PersistentStore ("does NOT write events",
+                                // see worker_event_loop.cpp), and nothing else refreshes a
+                                // worker's room snapshot for ordinary (non-membership)
+                                // traffic. A later backfill/event/state query for this
+                                // room landing back on that shard would otherwise omit
+                                // this event. See docs/architecture.md, "Federation
+                                // worker room staleness".
+                                notify_room_changed(room_id);
+                            }
+                            ch->send_response(id, serialize_pdu_ingest_result(result));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "edu_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_edu_ingest_request(runtime_, json, *ch));
-                    }))
+                else if (type == "membership_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_membership_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "invite_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_invite_ingest_request(runtime_, json));
-                    }))
+                else if (type == "edu_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_edu_ingest_request(runtime_, json, *ch));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "otk_claim_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json));
-                    }))
+                else if (type == "invite_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_invite_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "user_devices_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_user_devices_ingest_request(runtime_, json));
-                    }))
+                else if (type == "otk_claim_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "device_keys_query_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
-                    }))
+                else if (type == "user_devices_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_user_devices_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "profile_query_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
-                    }))
+                else if (type == "device_keys_query_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "event_query_ingest")
-            {
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{*ch};
-                        ch->send_response(id, handle_event_query_ingest_request(runtime_, json));
-                    }))
+                else if (type == "profile_query_ingest")
                 {
-                    ch->send_response(id, overload_response_for(type));
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
                 }
-            }
-            else if (type == "room_sync_result")
-            {
-                // Fire-and-forget notification from the worker reporting the
-                // outcome of an asynchronous room_sync reload.  No response is
-                // sent.  Handle it inline on the dispatch thread: it only
-                // updates an in-memory status map.
-                auto const result_room_id = json_get_str(json, "room_id");
-                auto const result_state = json_get_str(json, "state");
-                auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
-                record_room_sync_result(result_room_id, result_state, result_generation);
-            }
-            else
-            {
-                LOG_WARNING("WorkerPool shard " + std::to_string(shard_index) +
-                            ": unexpected IPC request type: " + type);
-            }
-        });
+                else if (type == "membership_template_ingest")
+                {
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_membership_template_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
+                }
+                else if (type == "event_query_ingest")
+                {
+                    if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                            auto const guard = InFlightGuard{*ch};
+                            ch->send_response(id, handle_event_query_ingest_request(runtime_, json));
+                        }))
+                    {
+                        ch->send_response(id, overload_response_for(type));
+                    }
+                }
+                else if (type == "room_sync_result")
+                {
+                    // Fire-and-forget notification from the worker reporting the
+                    // outcome of an asynchronous room_sync reload.  No response is
+                    // sent.  Handle it inline on the dispatch thread: it only
+                    // updates an in-memory status map.
+                    auto const result_room_id = json_get_str(json, "room_id");
+                    auto const result_state = json_get_str(json, "state");
+                    auto const result_generation = ipc::ipc_json_get_u64(json, "generation");
+                    record_room_sync_result(result_room_id, result_state, result_generation);
+                }
+                else
+                {
+                    LOG_WARNING("WorkerPool shard " + std::to_string(shard_index) +
+                                ": unexpected IPC request type: " + type);
+                }
+            });
 
         supervisor->start();
         workers_.push_back(std::move(supervisor));

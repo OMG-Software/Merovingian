@@ -811,6 +811,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("server.client_api.max_filters_per_user", config.server().client_api.max_filters_per_user, 100000U);
     validate_count("server.client_api.max_global_account_data_per_user",
                    config.server().client_api.max_global_account_data_per_user, 100000U);
+    validate_count("server.client_api.max_room_account_data_per_room",
+                   config.server().client_api.max_room_account_data_per_room, 100000U);
     validate_count("server.client_api.max_threads_page_size", config.server().client_api.max_threads_page_size, 1000U);
     validate_count("server.client_api.max_relations_page_size", config.server().client_api.max_relations_page_size,
                    1000U);
@@ -823,6 +825,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("appservice.connect_timeout_seconds", config.appservice().connect_timeout_seconds, 120U);
     validate_count("appservice.total_timeout_seconds", config.appservice().total_timeout_seconds, 300U);
     validate_bytes("appservice.response_max_size", config.appservice().response_max_size, 67108864U);
+    validate_count("appservice.max_queued_events", config.appservice().max_queued_events, 10000000U);
     if (config.appservice().connect_timeout_seconds > config.appservice().total_timeout_seconds)
     {
         findings.push_back({"appservice.connect_timeout_seconds", "must not exceed total_timeout_seconds"});

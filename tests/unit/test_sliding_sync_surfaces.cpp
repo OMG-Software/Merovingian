@@ -604,6 +604,56 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
 // Spec (C-S API, Room history visibility): a user needs to join a room to view events in it,
 // and (Receipts) "Servers MUST NOT send the m.read.private receipt to any other user than the
 // one which originally sent it". CSAZ-1 / CSAZ-4 at the extension builder.
+// Account data is never signed, so its content may hold fractional numbers: m.tag's `order` is
+// "A number in a range [0,1]". The account_data extension must deliver such content unchanged,
+// not replace it with an empty object as the canonical-JSON parser would (PR #522 review).
+SCENARIO("Sliding sync account_data extension delivers content holding fractional numbers",
+         "[sync][sliding-sync][extensions][account-data]")
+{
+    GIVEN("a room tag whose order is 0.5")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+        store.memberships = {
+            {"!room-a:example.org", "@alice:example.org", "join", 1U},
+        };
+        store.account_data = {
+            {"@alice:example.org", "!room-a:example.org", "m.tag", R"({"tags":{"m.favourite":{"order":0.5}}})", 4U},
+        };
+        auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
+        requests.account_data = merovingian::sync::ExtAccountDataRequest{true};
+
+        WHEN("the account_data extension is built")
+        {
+            auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
+                                                                       2U, 2U, store, {"!room-a:example.org"});
+
+            THEN("the tag arrives with its order")
+            {
+                REQUIRE(responses.account_data.has_value());
+                REQUIRE(responses.account_data->rooms_json.contains("!room-a:example.org"));
+                auto const& events = responses.account_data->rooms_json.at("!room-a:example.org");
+                REQUIRE(events.size() == 1U);
+                auto const parsed = merovingian::canonicaljson::parse_json(events.front());
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* event = std::get_if<Object>(&parsed.value.storage());
+                REQUIRE(event != nullptr);
+                auto const* content = object_member(*event, "content");
+                REQUIRE(content != nullptr);
+                auto const* tags = object_member(*content, "tags");
+                REQUIRE(tags != nullptr);
+                auto const* favourite = object_member(*tags, "m.favourite");
+                REQUIRE(favourite != nullptr);
+                auto const* order = json_member(*favourite, "order");
+                REQUIRE(order != nullptr);
+                auto const* order_number = std::get_if<double>(&order->storage());
+                REQUIRE(order_number != nullptr);
+                REQUIRE(*order_number == 0.5);
+            }
+        }
+    }
+}
+
 SCENARIO("Sliding sync receipts and typing extensions serve only joined rooms and visible receipts",
          "[sync][sliding-sync][extensions][security][csaz-1][csaz-4]")
 {

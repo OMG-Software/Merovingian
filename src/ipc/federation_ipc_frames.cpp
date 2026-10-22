@@ -562,4 +562,138 @@ auto serialize_room_sync_result(std::string_view room_id, std::string_view state
     return body;
 }
 
+namespace
+{
+
+    auto append_string_array(std::string& body, std::vector<std::string> const& values) -> void
+    {
+        body += '[';
+        auto first = true;
+        for (auto const& value : values)
+        {
+            if (!first)
+            {
+                body += ',';
+            }
+            first = false;
+            body += ipc_json_str(value);
+        }
+        body += ']';
+    }
+
+    [[nodiscard]] auto get_string_array(canonicaljson::Object const& obj, std::string_view key)
+        -> std::vector<std::string>
+    {
+        auto values = std::vector<std::string>{};
+        auto const* array = get_array(obj, key);
+        if (array == nullptr)
+        {
+            return values;
+        }
+        for (auto const& entry : *array)
+        {
+            if (auto const* text = std::get_if<std::string>(&entry.storage()); text != nullptr)
+            {
+                values.push_back(*text);
+            }
+        }
+        return values;
+    }
+
+} // namespace
+
+auto serialize_membership_template_ingest(MembershipTemplateIngest const& request) -> std::string
+{
+    auto body = std::string{R"({"type":"membership_template_ingest","room_id":)"};
+    body += ipc_json_str(request.room_id);
+    body += R"(,"user_id":)";
+    body += ipc_json_str(request.user_id);
+    body += R"(,"supported_versions":)";
+    append_string_array(body, request.supported_versions);
+    body += '}';
+    return body;
+}
+
+auto deserialize_membership_template_ingest(std::string_view json) -> std::optional<MembershipTemplateIngest>
+{
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = parsed.error == canonicaljson::ParseError::none ? object_of(parsed.value) : nullptr;
+    if (obj == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto request = MembershipTemplateIngest{get_str(*obj, "room_id"), get_str(*obj, "user_id"),
+                                            get_string_array(*obj, "supported_versions")};
+    if (request.room_id.empty() || request.user_id.empty())
+    {
+        return std::nullopt;
+    }
+    return request;
+}
+
+auto serialize_membership_template_ingest_result(std::optional<federation::MembershipEventTemplate> const& result)
+    -> std::string
+{
+    auto body = std::string{R"({"type":"membership_template_ingest_result","found":)"};
+    if (!result.has_value())
+    {
+        body += "false}";
+        return body;
+    }
+    auto const& tmpl = *result;
+    body += "true";
+    body += R"(,"room_id":)";
+    body += ipc_json_str(tmpl.room_id);
+    body += R"(,"user_id":)";
+    body += ipc_json_str(tmpl.user_id);
+    body += R"(,"membership":)";
+    body += ipc_json_str(tmpl.membership);
+    body += R"(,"room_version":)";
+    body += ipc_json_str(tmpl.room_version);
+    body += R"(,"origin":)";
+    body += ipc_json_str(tmpl.origin);
+    body += R"(,"origin_server_ts":)";
+    body += std::to_string(tmpl.origin_server_ts);
+    body += R"(,"prev_events":)";
+    append_string_array(body, tmpl.prev_events);
+    body += R"(,"auth_events":)";
+    append_string_array(body, tmpl.auth_events);
+    body += R"(,"depth":)";
+    body += std::to_string(tmpl.depth);
+    body += R"(,"content_json":)";
+    body += ipc_json_str(tmpl.content_json);
+    body += R"(,"reason":)";
+    body += ipc_json_str(tmpl.reason);
+    body += R"(,"error_status":)";
+    body += std::to_string(tmpl.error_status);
+    body += '}';
+    return body;
+}
+
+auto deserialize_membership_template_ingest_result(std::string_view json)
+    -> std::optional<federation::MembershipEventTemplate>
+{
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = parsed.error == canonicaljson::ParseError::none ? object_of(parsed.value) : nullptr;
+    if (obj == nullptr || !get_bool(*obj, "found"))
+    {
+        return std::nullopt;
+    }
+    auto tmpl = federation::MembershipEventTemplate{};
+    tmpl.room_id = get_str(*obj, "room_id");
+    tmpl.user_id = get_str(*obj, "user_id");
+    tmpl.membership = get_str(*obj, "membership");
+    tmpl.room_version = get_str(*obj, "room_version");
+    tmpl.origin = get_str(*obj, "origin");
+    tmpl.origin_server_ts = get_int(*obj, "origin_server_ts");
+    tmpl.prev_events = get_string_array(*obj, "prev_events");
+    tmpl.auth_events = get_string_array(*obj, "auth_events");
+    tmpl.depth = get_int(*obj, "depth");
+    tmpl.content_json = get_str(*obj, "content_json");
+    tmpl.reason = get_str(*obj, "reason");
+    auto const status = get_int(*obj, "error_status");
+    tmpl.error_status = status >= 400 && status <= 599 ? static_cast<std::uint16_t>(status) : std::uint16_t{500U};
+    return tmpl;
+}
+
 } // namespace merovingian::ipc

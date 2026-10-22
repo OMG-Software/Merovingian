@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <regex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -162,6 +163,22 @@ struct AppserviceRegistrationParseResult final
 [[nodiscard]] auto appservice_owns_user(AppserviceRegistration const& registration, std::string_view server_name,
                                         std::string_view user_id) noexcept -> bool;
 
+// What the interest test knows about one event in one room. Every view must
+// outlive the call.
+struct EventInterestFacts final
+{
+    std::string_view room_id{};
+    // Every alias the room has on this server (a room may have several); empty when it has none.
+    std::span<std::string const> room_aliases{};
+    std::string_view sender{};
+    // The state_key of an `m.room.member` event, i.e. the user the membership change is about
+    // (the invitee of an invite, the user kicked or banned). Empty for any other event.
+    std::string_view member_event_target{};
+    // Every user CURRENTLY joined to the room (the sender, if already a member, should be
+    // included by the caller — the test does not special-case it against `sender`).
+    std::span<std::string const> room_members{};
+};
+
 // True when `registration` is interested in an event that occurred in a
 // room, per Matrix v1.19 Application Service API §"Registration": "An
 // application service is said to be 'interested' in a given event if it
@@ -170,14 +187,15 @@ struct AppserviceRegistrationParseResult final
 // own sender_localpart, which is always implicitly covered — see
 // appservice_owns_user) matches when "a local user matching one of the
 // namespaces is the target of the event, or is a joined member of the room
-// where the event occurred." `room_alias` may be empty (room has no
-// canonical alias); `room_members` is every user CURRENTLY joined to the
-// room (the sender, if already a member, should be included by the
-// caller — this function does not special-case it against `sender`).
+// where the event occurred." The target of a membership event is its
+// `state_key` (an invite names the invitee there, who is not yet joined), the
+// sender is also a user the event is about, and only LOCAL users count: "Events
+// affecting users on other homeservers are not sent to an application service,
+// even if the user happens to match one of the users namespaces" unless the
+// room is of interest for another reason.
 [[nodiscard]] auto registration_interested_in_room_event(AppserviceRegistration const& registration,
-                                                         std::string_view server_name, std::string_view room_id,
-                                                         std::string_view room_alias, std::string_view sender,
-                                                         std::vector<std::string> const& room_members) noexcept -> bool;
+                                                         std::string_view server_name,
+                                                         EventInterestFacts const& facts) noexcept -> bool;
 
 // Immutable, load-once collection of every registered appservice. Built at
 // startup from `config::AppserviceConfig::registration_files` (see

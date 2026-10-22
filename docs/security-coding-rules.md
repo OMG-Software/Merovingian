@@ -479,6 +479,41 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (CWE-347 Improper Verification of Cryptographic Signature; security audit run-1, ADR-0171).
   Source: `src/federation/AGENTS.md`.
 
+- **Check a sender's signature against every key ID it lists, never only the first, and
+  bound the candidates.** Use `federation::authorize_federation_pdu_sender` or
+  `verify_server_signatures_on_event`; candidates come from `signature_key_ids_for_server`:
+  `ed25519:` IDs only, no repeats, each through the caller's admitted lookup, and an event
+  listing more than `max_signature_keys_per_server` (4) is refused before any lookup. Unknown
+  keys and keys expired before `origin_server_ts` are skipped; any other signature that does
+  not verify refuses the event, and at least one must verify.
+  Why: a first-match loop refused genuine events signed with a rotated key and let a relay
+  make any event fail by listing a junk ID first; "any one verifies" accepts an event carrying
+  an invalid signature by a published key, which the spec drops; an unbounded list lets one
+  event force unbounded key fetches (CWE-347 Improper Verification of Cryptographic Signature;
+  CWE-400 Uncontrolled Resource Consumption for the bound; conformance audit R05, ADR-0183).
+  Source: `src/federation/AGENTS.md`.
+
+- **This server co-signs a restricted join only after `homeserver::decide_restricted_join`
+  authorises it, and every locally composed join naming a local authoriser passes the same
+  decision.** The only exemption from the authorising-signature check is a `send_join` naming
+  this server's user (`PduSignatureChecks::authorised_here`), because the acceptor signs it,
+  after dropping every signature the joining server filed under this server's name. An allow
+  condition is verifiable only while this server is joined to the room it names.
+  Why: the auth rules check only that the named user is joined with invite power and that its
+  server signed; whether the joining user met an allow condition is checked by nobody else, so
+  signing without the decision lets anyone into a restricted room (CWE-863 Incorrect
+  Authorization; conformance audit R04, ADR-0185).
+  Source: `src/federation/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **Never refuse a received event for a content-hash mismatch; redact it and continue.**
+  Only a signature failure refuses (spec "Checks performed on receipt of a PDU", steps 2 and
+  3). Everything after the check (authorisation, our signature, what is stored and returned)
+  uses the redacted copy.
+  Why: the direct membership endpoints refused a mismatch before the acceptor could redact it.
+  Content the hash does not cover is unauthenticated, so only the redacted copy may be used
+  (CWE-345 Insufficient Verification of Data Authenticity; conformance audit R06).
+  Source: `src/federation/AGENTS.md`.
+
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
   server supplies inline. The cache fetches from `/_matrix/key/v2/server` and trusts a key for
   at most 7 days after the fetch. From room v5 an event's signing key must be valid at the
@@ -617,6 +652,29 @@ quickly finding everything a given `AGENTS.md` file contributed.
   audit run-1, `sp02.appservice-regex-compile-under-mutex`).
   Source: `src/appservice/AGENTS.md`.
 
+- **The events queued for one appservice are capped (`appservice.max_queued_events`), and a refused event
+  is counted, logged and audited, never silent.** `enqueue_appservice_delivery` skips an appservice
+  whose queue is at the cap, increments `appservice_outbox_dropped`, and reports the first refusal and
+  every thousandth after it at warning level (which writes an `appservice.outbox.full` audit row
+  naming the appservice).
+  Why: the outbox of a bridge that never returns would otherwise grow with all the traffic of every
+  room it is interested in, without bound, in the database and in memory (CWE-770; ADR-0191).
+  Source: `src/homeserver/AGENTS.md`, `src/appservice/AGENTS.md`.
+
+- **Ephemeral data for an appservice is in memory, coalesced by key and bounded, and its
+  per-update work is budgeted.** At most 512 items per appservice, 100 per transaction, and 20000
+  member-against-namespace matches per presence update (finding the subject's rooms is not charged, so
+  rooms the subject is not in cannot use the budget up).
+  Why: typing, receipts and presence arrive far more often than events, from federation too; an
+  unbounded or per-member-per-update cost under `runtime.mutex` is a denial of service (CWE-400;
+  ADR-0190).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **The appservice ping takes a slot in the client-outbound budget before its outbound call**, as the
+  `/thirdparty/*` lookups do (ADR-0181).
+  Why: it holds a request-pool thread for up to the appservice timeout (ADR-0079).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## Identity Service client
 
 - **Every Identity Service host must resolve to SSRF-safe pinned addresses via
@@ -647,6 +705,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   would let a user bind an address they do not own (AUTH-5), after which the
   real owner is refused `M_THREEPID_IN_USE`.
   Source: `src/identity/AGENTS.md`, `docs/auth-identity.md`.
+
+- **An `id_access_token` is validated at the client-server boundary before it is forwarded
+  (`identity::id_access_token_is_valid`: printable ASCII, no space, at most 4096 bytes).** A violation is
+  `400 M_INVALID_PARAM`; no identity-server call is made. This is in addition to the outbound client's
+  own header check (ADR-0180), which stays the control every outbound header passes.
+  Why: the token arrives as a JSON string, so after unescaping it can hold CR and LF, and it becomes the
+  `Authorization` header of a call to the identity server (CWE-113; security audit run-1,
+  `sp02.is-token-crlf-header-injection`).
+  Source: `src/identity/AGENTS.md`.
 
 ## HTTP and network boundary
 
@@ -784,10 +851,15 @@ media-fetch-pool task.
 
 - **Rows a user can add, and that requests scan under the runtime lock, are capped per user.**
   A new global account-data type past `server.client_api.max_global_account_data_per_user` is
-  refused with `400 M_TOO_LARGE`; an update to a type the user holds is always allowed. Caps
-  refuse, never evict (ADR-0118).
+  refused with `400 M_TOO_LARGE`; an update to a type the user holds is always allowed. Room
+  account data is written only for a room the user holds a membership in, and a new type past
+  `server.client_api.max_room_account_data_per_room` in that room is refused the same way. The
+  `m.tag` and `m.fully_read` rows the tags and read-marker APIs write count towards that cap but
+  are never refused by it, so tagging and read markers keep working at the cap (ADR-0197).
+  Caps refuse, never evict (ADR-0118).
   Why: account-data reads scan every row under the lock, so one user adding types without bound
-  slowed every request that reads them (CWE-770; security audit run-1, ADR-0173).
+  slowed every request that reads them (CWE-770; security audit run-1, ADR-0173). Room rows
+  multiply by rooms, so they need both bounds (conformance audit R10, ADR-0197).
   Source: `src/homeserver/AGENTS.md`.
 
 - **The outbound client refuses a header name that is not an RFC 9110 token, or a value with a

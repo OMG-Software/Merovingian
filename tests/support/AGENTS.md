@@ -6,6 +6,8 @@ Shared test utilities used across unit, conformance, and integration tests.
 
 | File | Purpose |
 |---|---|
+| `appservice_test_config.hpp` | `TestAppservice` and `appservice_test_config()`: write registration files for appservices with the as_token `as-token-<id>`, hs_token `hs-token-<id>` and sender `_<id>_bot`, and build a `Config` that loads them (token registration on, in-memory database). Adjust the returned `Config` (for example `appservice().max_queued_events`) before starting the runtime |
+| `mock_appservice.hpp` | `MockAppservice`: a loopback plain-HTTP appservice that records every request (method, target, `Authorization`, body), answers with a settable global status or per-target-prefix answers, and can `go_silent()` to make the homeserver's outbound timeout fire. Like `tls_mock_server.hpp` it breaks the no-I/O rule because conformance and integration suites share it |
 | `joining_threads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit, or earlier with `join()` when a scenario asserts on what the threads did. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
 | `json_test_support.hpp` | JSON assertion helpers: `require_json_key()`, `parse_or_fail()` |
 | `master_key.hpp` | Deterministic Ed25519 key pair for signing in tests; do not use in production |
@@ -34,8 +36,11 @@ first rather than assuming every shared helper lives under `tests/support/`.
   belong in an anonymous namespace in the test file that uses them.
 - Helpers must not start a database, server, or any I/O — they are pure utilities.
   Any helper that requires I/O belongs in `tests/integration/` as a fixture class.
-- **Exception — `tls_mock_server.hpp`.** It writes a temp certificate and accepts real
-  loopback TLS connections, so it breaks the no-I/O rule. It lives here because a
-  `tests/integration/` fixture is not reachable from `tests/conformance/`, and both suites
-  need the same mock HTTPS peer. Keep the exception to this file: any new I/O helper used
-  by only one suite still belongs in that suite's directory.
+- **Exceptions — `tls_mock_server.hpp`, `mock_appservice.hpp` and `appservice_test_config.hpp`.**
+  `tls_mock_server.hpp` writes a temp certificate and accepts real loopback TLS connections,
+  `MockAppservice` (`mock_appservice.hpp`) accepts real loopback HTTP connections, and
+  `appservice_test_config.hpp` writes registration files, so all three break the no-I/O rule.
+  They live here because a `tests/integration/` fixture is not reachable from
+  `tests/conformance/`, and both suites need the same mock peers and registrations. Keep the
+  exceptions to these files: any new I/O helper used by only one suite still belongs in that
+  suite's directory.

@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `024`.
+Current highest: `025`.
 
 - Schema version `16` (`016_media_legacy_endpoint_visibility.sql`) ALTERs
   `legacy_endpoint_visible` onto `media` (ADR-0068).
@@ -56,6 +56,13 @@ unread counts survive a restart. Main reads and writes it; it is not in
 `federation_worker_table_allowlist` (the worker relays receipt EDUs to main),
 and `tests/unit/test_worker_db_uri.cpp` classifies it as a table the worker
 never reads.
+
+Schema version `25` (`025_appservice_directory.sql`, ADR-0192) adds the
+`appservice_directory` table: the rooms an appservice has published to
+the directory of one of its networks, one row per
+`(appservice_id, network_id, room_id)`. Main reads and writes it; it is not in
+`federation_worker_table_allowlist`, and `tests/unit/test_worker_db_uri.cpp`
+classifies it as a table the worker never reads.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that

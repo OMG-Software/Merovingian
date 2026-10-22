@@ -100,6 +100,19 @@ fi
 * Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.41-1
 - Index the in-memory event store by event ID and by stream order.
 
+* Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.38-1
+- Conformance audit wave 4: room account data, account data validation, generated usernames, typing expiry, search of left rooms.
+
+* Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.37-1
+- Send appservices invites to their virtual users, ephemeral data, and the events createRoom makes; add appservice ping and network directories.
+- Forward send_attempt to identity servers on requestToken.
+
+* Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.36-1
+- Fix federation conformance findings: restricted joins through this server as resident, every listed signing key checked, hash mismatches on membership endpoints redacted, m.tz profile queries.
+
+* Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.35-1
+- Answer 200 for a stored profile change when propagation to a room fails; send profile updates only to rooms whose state holds the user joined.
+
 * Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.34-1
 - Fix the low-severity findings of security audit run-1 (federation fan-out, remote media owner, room versions, outbound headers, thirdparty lookups).
 

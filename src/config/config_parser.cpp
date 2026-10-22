@@ -168,6 +168,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "server.client_api.max_room_account_data_per_room")
+        {
+            if (!parse_u32_value(value, server.client_api.max_room_account_data_per_room))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "server.client_api.to_device_message_ttl_seconds")
         {
             if (!parse_u32_value(value, server.client_api.to_device_message_ttl_seconds))
@@ -262,6 +269,13 @@ namespace
         else if (key == "appservice.response_max_size")
         {
             appservice.response_max_size = std::string{value};
+        }
+        else if (key == "appservice.max_queued_events")
+        {
+            if (!parse_u32_value(value, appservice.max_queued_events))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
         }
         else if (key == "server.client_api.max_sync_rooms")
         {

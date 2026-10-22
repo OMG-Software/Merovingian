@@ -428,8 +428,22 @@ value. Test fixtures that do not exercise persistence select it through
   now informational: it is **not** a threshold new events are compared
   against, because stream orderings are allocated before commit and events in
   other rooms commit out of order. Main process only: the table is not in
-  `federation_worker_table_allowlist`. The queue of an appservice that never
-  comes back grows without bound (no row is dropped for age).
+  `federation_worker_table_allowlist`. The queue of one appservice is capped at
+  `appservice.max_queued_events` rows (default 100000, ADR-0191): at the cap
+  `enqueue_appservice_delivery` writes no further row for that appservice, and
+  `count_appservice_outbox_entries` (two binary searches over the sorted mirror)
+  is what it checks. No row is dropped for age.
+- `appservice_directory` table (schema version `25`, migration
+  `migrations/025_appservice_directory.sql`, ADR-0192) holds the rooms an
+  appservice has published to the directory of one of its networks (protocols)
+  with `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}`:
+  one row `(appservice_id, network_id, room_id)`, primary key all three.
+  `PersistentAppserviceDirectoryEntry`, `PersistentStore::appservice_directory`
+  and `set_appservice_directory_entry` / `appservice_directory_contains` are
+  implemented for both SQLite and PostgreSQL and hydrated on backend open;
+  listing and unlisting are idempotent and commit before the mirror changes. It
+  is independent of `rooms.directory_public`. Main only: the table is not in
+  `federation_worker_table_allowlist`.
 - `deferred_pdus` table (schema version `23`, migration
   `migrations/023_deferred_pdus.sql`, R03, ADR-0165) holds the federation PDUs
   `ingest_pdu_event` could not yet place because a `prev_event` or `auth_event`
@@ -1155,7 +1169,7 @@ migration's table cannot go unclassified:
   `event_state_groups`, `forward_extremities` (the last four added in
   0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
   is now moved out of the never-reads list below).
-- **Worker never reads** (46 tables): `users`, `devices`, `access_tokens`,
+- **Worker never reads** (47 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -1166,7 +1180,7 @@ migration's table cannot go unclassified:
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
   `login_tokens`, `appservice_txn_cursor`, `appservice_outbox`, `deferred_pdus`,
-  `receipts`, plus six tables `schema.cpp`
+  `receipts`, `appservice_directory`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
   `rate_limits`, `room_versions`, `state_group_edges` — vestigial from

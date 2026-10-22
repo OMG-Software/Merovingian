@@ -191,6 +191,11 @@ production-gated.
   `GET /_matrix/client/v1/register/m.login.registration_token/validity` endpoint verifies the
   candidate through the same Argon2id hash (`registration_token_matches`) rather than comparing
   plaintext, so the token material never sits on the request path.
+- `POST /register` without `username` gets a generated localpart, as the spec requires: 16
+  lowercase hex characters from the CSPRNG, redrawn if reserved, already registered or inside an
+  application service's namespace, then checked like a chosen name (0.12.38, conformance audit R12,
+  ADR-0198). An empty `username` is still `400 M_INVALID_USERNAME`, and
+  `m.login.application_service` registration still requires one.
 - Server-side access and refresh token expiry is enforced. `PersistentAccessToken`,
   `PersistentRefreshToken`, and `LocalSession` carry an `expires_at` field set at issuance from
   configurable `security.access_token_lifetime_ms` (default 1h) and
@@ -348,7 +353,14 @@ trusted `id_server` is supplied, not just persist locally:
   M_THREEPID_MEDIUM_NOT_SUPPORTED` (before AUTH-5 it minted a local session
   that was already marked validated and sent nothing). Fail closed with `502` on
   transport error or a malformed IS response; `403` when `id_server` is not
-  trusted; `400 M_BAD_JSON` when only one of the pair is supplied.
+  trusted; `400 M_BAD_JSON` when only one of the pair is supplied. The client's
+  `send_attempt` is forwarded in the IS request body (R09; the IS "will only send
+  an email if the send_attempt is a number greater than the most recent one which
+  it has seen"), and an `id_access_token` that is not printable ASCII without
+  spaces of at most 4096 bytes is `400 M_INVALID_PARAM` on this, the `bind`, the
+  deprecated `/account/3pid` and the 3PID invite routes, before any IS call
+  (`identity::id_access_token_is_valid`, sp02, ADR-0180): it becomes the
+  `Authorization` header of the IS call.
 
 - **`bind`** (`/account/3pid/bind`, plus the deprecated `/account/3pid`) - after
   the identity server has confirmed the session validated (below) and the

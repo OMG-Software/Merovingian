@@ -807,6 +807,29 @@ struct ListenerBinding final
             appservice_delivery_job.wake();
         };
     }
+    // Ends typing whose timeout has passed (audit R13, ADR-0199), so a client or remote server
+    // that never sends typing:false cannot leave a user typing for good. It runs again at the
+    // next pending expiry, at most every 5 s, and only ever touches `runtime`, which outlives
+    // this function. Declared after the pools so it is stopped and joined before them.
+    auto typing_expiry_job = merovingian::homeserver::PeriodicJob{
+        "typing-expiry", [&runtime](merovingian::homeserver::StopFlag const&) {
+            return merovingian::homeserver::expire_typing_notifications(runtime, std::chrono::steady_clock::now());
+        }};
+    if (!typing_expiry_job.start())
+    {
+        LOG_CRITICAL("Typing expiry thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
+    {
+        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        runtime.homeserver.typing_expiry_wake = [&typing_expiry_job]() {
+            typing_expiry_job.wake();
+        };
+    }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 
@@ -868,6 +891,11 @@ struct ListenerBinding final
         runtime.homeserver.appservice_delivery_wake = nullptr;
     }
     appservice_delivery_job.stop();
+    {
+        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        runtime.homeserver.typing_expiry_wake = nullptr;
+    }
+    typing_expiry_job.stop();
     // Clears its wake hook under the runtime lock, then stops; a retry in
     // progress ends within its own outbound deadlines and the PDU stays
     // retained in the database for the next start.

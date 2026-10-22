@@ -27,6 +27,30 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    `send_join` state this server stores when it joins (`filter_verified_send_join_events`)
    directly (ADR-0171). A new ingestion path does the same.
 
+   Either signature is checked against every key ID the event lists for that server, not only
+   the first. The sender check (`authorize_federation_pdu_sender`,
+   `verify_server_signatures_on_event`) skips unknown keys and keys expired before the event's
+   `origin_server_ts`, refuses the event if any other signature does not verify, and needs at
+   least one that does ("If all signatures from known unexpired keys ... are found to be
+   valid"; R05, ADR-0183). The authorising-server check
+   (`verify_join_authorising_server_signature`) accepts any one valid signature, as its auth
+   rule asks (ADR-0171). The list is written by whoever relays the event, so it is bounded:
+   only `ed25519:` IDs, no repeats, each through the caller's admitted lookup; more than
+   `max_signature_keys_per_server` (4) for the sender's server is refused before any lookup.
+   Never pick "the" key ID with a loop that stops at the first match.
+
+   A `send_join` naming one of THIS server's users as `join_authorised_via_users_server`
+   cannot carry our signature yet: the request layer and the worker relay leave that one check
+   to the acceptor (`PduSignatureChecks::authorised_here`), which co-signs only after
+   `homeserver::decide_restricted_join` authorises the join, and drops every signature filed
+   under this server's name before signing (R04, ADR-0185). No other endpoint
+   or server gets that exemption.
+
+   A content-hash mismatch is never a reason to refuse an event on any path: the event is
+   redacted and processed further (spec "Checks performed on receipt of a PDU", step 3). The
+   membership acceptor and the invite handler redact; `handle_send_membership` and
+   `handle_invite` refuse only a signature failure, with 400 `M_INVALID_PARAM` (R06).
+
    A failed signature is NEVER charged to the claimed origin's `RemoteTrustState`: the origin
    is unauthenticated until the signature verifies, so doing so lets any sender lock a real
    peer out (FED-4, ADR-0081). Charge it to the source address
@@ -130,7 +154,7 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `outbound_transaction.cpp` | Batches local events and delivers them to remote servers |
 | `server_discovery.cpp` | Resolves `server_name` → host:port per SS API §Resolving Server Names |
 | `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
-| `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave |
+| `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave (a refused template carries `error_status`, e.g. 403 `M_FORBIDDEN` for a restricted room) |
 | `key_query.cpp` | E2EE key responses served over federation, key EDU contents, filtering remote key-query responses |
 | `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060) |
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |

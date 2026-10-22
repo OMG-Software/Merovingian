@@ -221,6 +221,11 @@ Grepping for `append_local_audit` call sites finds these event-name families:
   plus the dynamic event types trust-and-safety policy matches emit via
   `append_policy_audit`.
 - `runtime.started` (`src/homeserver/runtime.cpp`, admin category).
+- `appservice.outbox.full` (`src/homeserver/appservice_delivery.cpp`, policy category, written through
+  `log_diagnostic_audit` at warning level): an event was not queued for an appservice because its queue
+  is at `appservice.max_queued_events`. Actor and target are the appservice `id`; the reason carries the
+  cap and the number of events refused so far. Emitted for the first refusal and every thousandth after it,
+  so a bridge stuck at its cap does not write a row per event; the exact count is the metric above.
 
 The `access_token.rejected` row carries a `reason` that distinguishes the
 failure mode: `token hashing failed`, `session not found`, `user not found`,
@@ -467,6 +472,12 @@ metadata ahead of each metric family. Core families currently exported are:
 - `merovingian_federation_outbound_rejected_total`: outbound federation transactions refused
   because the dispatch queue, or the destination's share of it, was full (ADR-0177)
 - `merovingian_federation_outbound_pending`: outbound federation transactions waiting to be sent
+- `merovingian_appservice_outbox_queued{appservice_id="..."}` (gauge: events queued for the appservice),
+  `merovingian_appservice_outbox_dropped_total{appservice_id="..."}` (counter: events refused because the
+  queue was at `appservice.max_queued_events`, ADR-0191) and
+  `merovingian_appservice_ephemeral_dropped_total{appservice_id="..."}` (counter: ephemeral items dropped
+  because the in-memory queue was full, ADR-0190), one series per registered appservice. A non-zero dropped
+  counter means a bridge has been unreachable long enough to lose data and is worth alerting on.
 - all `media_*` repository counters and gauges already tracked by the runtime
 
 Metric names and label keys are ASCII-safe, payload-free operator fields. New

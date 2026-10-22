@@ -15,6 +15,7 @@
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -35,8 +36,10 @@
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -123,6 +126,42 @@ namespace
                                               {"component", component.name,                                      true},
                                               {"status",    observability::health_status_name(component.status), true}
             }));
+        }
+
+        // Appservice queues (ADR-0190, ADR-0191): the depth of each outbox, the events refused at the
+        // appservice.max_queued_events cap, and the ephemeral items dropped at their own cap. An
+        // operator alerts on the dropped counters: a non-zero value means a bridge has been
+        // unreachable for long enough to lose events.
+        for (auto const& registration : runtime.appservices.all())
+        {
+            auto const labels = std::vector<observability::MetricLabel>{
+                {"appservice_id", registration.id, true}
+            };
+            auto const find_count = [&registration](auto const& counts) -> std::int64_t {
+                auto const found = counts.find(registration.id);
+                return found == counts.end() ? std::int64_t{0} : static_cast<std::int64_t>(found->second);
+            };
+            auto const ephemeral_dropped = [&]() -> std::int64_t {
+                auto const found = runtime.appservice_ephemeral.find(registration.id);
+                return found == runtime.appservice_ephemeral.end() ? std::int64_t{0}
+                                                                   : static_cast<std::int64_t>(found->second.dropped);
+            }();
+            metrics.push_back(make_metric(
+                "merovingian_appservice_outbox_queued",
+                static_cast<std::int64_t>(database::count_appservice_outbox_entries(store, registration.id)),
+                observability::MetricType::gauge, "Events queued for an application service and not yet delivered.",
+                labels));
+            metrics.push_back(make_metric("merovingian_appservice_outbox_dropped_total",
+                                          find_count(runtime.appservice_outbox_dropped),
+                                          observability::MetricType::counter,
+                                          "Events not queued for an application service because its outbox was at "
+                                          "appservice.max_queued_events, since the process started.",
+                                          labels));
+            metrics.push_back(make_metric("merovingian_appservice_ephemeral_dropped_total", ephemeral_dropped,
+                                          observability::MetricType::counter,
+                                          "Ephemeral items dropped from an application service's queue because it "
+                                          "was full, since the process started.",
+                                          labels));
         }
 
         auto const media_metrics = media::media_repository_metrics(runtime.media_repository);
@@ -431,7 +470,11 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , test_frozen_event_clock_ms(other.test_frozen_event_clock_ms)
     , appservices(std::move(other.appservices))
     , appservice_delivery_wake(std::move(other.appservice_delivery_wake))
+    , typing_expiry_wake(std::move(other.typing_expiry_wake))
     , appservice_delivery_backoff(std::move(other.appservice_delivery_backoff))
+    , appservice_ephemeral(std::move(other.appservice_ephemeral))
+    , appservice_pending_ephemeral(std::move(other.appservice_pending_ephemeral))
+    , appservice_outbox_dropped(std::move(other.appservice_outbox_dropped))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
@@ -482,7 +525,11 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     test_frozen_event_clock_ms = other.test_frozen_event_clock_ms;
     appservices = std::move(other.appservices);
     appservice_delivery_wake = std::move(other.appservice_delivery_wake);
+    typing_expiry_wake = std::move(other.typing_expiry_wake);
     appservice_delivery_backoff = std::move(other.appservice_delivery_backoff);
+    appservice_ephemeral = std::move(other.appservice_ephemeral);
+    appservice_pending_ephemeral = std::move(other.appservice_pending_ephemeral);
+    appservice_outbox_dropped = std::move(other.appservice_outbox_dropped);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);
@@ -526,6 +573,24 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     return it == rt.room_typing_stream_id.end() ? std::uint64_t{0U} : it->second;
 }
 
+namespace
+{
+
+    // Gives the room a new typing stream position and tells appservices its typing list
+    // `current` (sorted). Every typing change (local, federated, cleared by a message send, or
+    // expired) passes through here, so this is the one place appservices that receive ephemeral
+    // data are told (R08, ADR-0190).
+    auto advance_room_typing_stream_id(HomeserverRuntime& rt, std::string_view room_id,
+                                       std::vector<std::string> const& current) -> std::uint64_t
+    {
+        auto const new_id = database::allocate_sync_stream_id(rt.database.persistent_store);
+        rt.room_typing_stream_id[std::string{room_id}] = new_id;
+        queue_appservice_typing(rt, room_id, current);
+        return new_id;
+    }
+
+} // namespace
+
 [[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
                                                            std::vector<std::string> const& previous) -> std::uint64_t
 {
@@ -534,9 +599,71 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     {
         return room_typing_stream_id_for(rt, room_id);
     }
-    auto const new_id = database::allocate_sync_stream_id(rt.database.persistent_store);
-    rt.room_typing_stream_id[std::string{room_id}] = new_id;
-    return new_id;
+    return advance_room_typing_stream_id(rt, room_id, current);
+}
+
+[[nodiscard]] auto expire_typing(HomeserverRuntime& rt, std::chrono::steady_clock::time_point now) -> TypingExpiry
+{
+    // Runs under runtime.mutex, so the work is a fixed number of passes over the typing table,
+    // never one pass per expired room (PR #522 review). Each (room, user) pair has at most one
+    // entry, so a room that loses an expired typist always changes its typing list and gets one
+    // new stream position, as update_room_typing_stream_id_if_changed would give it.
+    auto expiry = TypingExpiry{};
+    auto const is_expired = [now](InboundTypingUser const& entry) {
+        return entry.typing && entry.expires_at <= now;
+    };
+    auto const local_suffix = ":" + rt.config.server().server_name;
+    // Pass 1: the rooms that lose a typist, and the local typists that expired.
+    auto remaining_by_room = std::map<std::string, std::vector<std::string>, std::less<>>{};
+    for (auto const& entry : rt.typing_users)
+    {
+        if (!is_expired(entry))
+        {
+            continue;
+        }
+        remaining_by_room.try_emplace(entry.room_id);
+        if (entry.user_id.ends_with(local_suffix))
+        {
+            expiry.expired_local.push_back(entry);
+        }
+    }
+    if (!remaining_by_room.empty())
+    {
+        // Pass 2: drop the expired entries.
+        std::erase_if(rt.typing_users, is_expired);
+        expiry.changed = true;
+    }
+    // Pass 3: the typists left in each affected room, and the next pending deadline.
+    for (auto const& entry : rt.typing_users)
+    {
+        if (!entry.typing)
+        {
+            continue;
+        }
+        if (auto const room = remaining_by_room.find(entry.room_id); room != remaining_by_room.end())
+        {
+            room->second.push_back(entry.user_id);
+        }
+        if (entry.expires_at != std::chrono::steady_clock::time_point::max() &&
+            (!expiry.next_expiry.has_value() || entry.expires_at < *expiry.next_expiry))
+        {
+            expiry.next_expiry = entry.expires_at;
+        }
+    }
+    for (auto& [room_id, remaining] : remaining_by_room)
+    {
+        std::ranges::sort(remaining);
+        std::ignore = advance_room_typing_stream_id(rt, room_id, remaining);
+    }
+    return expiry;
+}
+
+auto wake_typing_expiry(HomeserverRuntime& rt) -> void
+{
+    if (rt.typing_expiry_wake)
+    {
+        rt.typing_expiry_wake();
+    }
 }
 
 auto bootstrap_local_database(config::Config const& config) -> LocalDatabase

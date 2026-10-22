@@ -23,12 +23,14 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 using merovingian::appservice::any_exclusive_namespace_matches;
 using merovingian::appservice::any_namespace_matches;
 using merovingian::appservice::appservice_owns_user;
 using merovingian::appservice::AppserviceRegistration;
 using merovingian::appservice::AppserviceRegistry;
+using merovingian::appservice::EventInterestFacts;
 using merovingian::appservice::load_registration_file;
 using merovingian::appservice::load_registrations;
 using merovingian::appservice::Namespace;
@@ -566,41 +568,59 @@ SCENARIO("registration_interested_in_room_event matches per the spec's namespace
         auto const& registration = *parsed.value;
         auto const server_name = std::string_view{"example.org"};
 
+        auto const interested = [&](EventInterestFacts const& facts) {
+            return registration_interested_in_room_event(registration, server_name, facts);
+        };
+
         WHEN("the room id itself is in the rooms namespace (empty here) but the sender is a namespaced user")
         {
             THEN("the appservice is interested via the sender")
             {
-                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
-                                                            "@_irc_bridge_alice:example.org", {}));
+                CHECK(interested({.room_id = "!room:example.org", .sender = "@_irc_bridge_alice:example.org"}));
             }
         }
 
         WHEN("the room has a matching canonical alias")
         {
+            auto const aliases = std::vector<std::string>{"#_irc_bridge_channel:example.org"};
+
             THEN("the appservice is interested via the alias namespace, regardless of sender/members")
             {
-                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org",
-                                                            "#_irc_bridge_channel:example.org", "@carol:example.org",
-                                                            {}));
+                CHECK(interested(
+                    {.room_id = "!room:example.org", .room_aliases = aliases, .sender = "@carol:example.org"}));
+            }
+        }
+
+        WHEN("only the second of several aliases matches the alias namespace")
+        {
+            auto const aliases = std::vector<std::string>{"#general:example.org", "#_irc_bridge_second:example.org"};
+
+            THEN("the appservice is interested: every alias of the room counts, not the first")
+            {
+                CHECK(interested(
+                    {.room_id = "!room:example.org", .room_aliases = aliases, .sender = "@carol:example.org"}));
             }
         }
 
         WHEN("a namespaced user is a joined member but neither the sender nor the alias match")
         {
+            auto const members = std::vector<std::string>{"@carol:example.org", "@_irc_bridge_dave:example.org"};
+
             THEN("the appservice is interested via room_members")
             {
-                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
-                                                            "@carol:example.org",
-                                                            {"@carol:example.org", "@_irc_bridge_dave:example.org"}));
+                CHECK(interested(
+                    {.room_id = "!room:example.org", .sender = "@carol:example.org", .room_members = members}));
             }
         }
 
         WHEN("nothing about the event touches the appservice's namespaces at all")
         {
+            auto const members = std::vector<std::string>{"@carol:example.org"};
+
             THEN("the appservice is not interested")
             {
-                CHECK_FALSE(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
-                                                                  "@carol:example.org", {"@carol:example.org"}));
+                CHECK_FALSE(interested(
+                    {.room_id = "!room:example.org", .sender = "@carol:example.org", .room_members = members}));
             }
         }
 
@@ -608,8 +628,90 @@ SCENARIO("registration_interested_in_room_event matches per the spec's namespace
         {
             THEN("the appservice is interested (sender_localpart is always implicitly covered)")
             {
-                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
-                                                            "@_irc_bot:example.org", {}));
+                CHECK(interested({.room_id = "!room:example.org", .sender = "@_irc_bot:example.org"}));
+            }
+        }
+    }
+}
+
+// R07. Spec: Application Service API v1.19, "Registration": the `users` namespace matches
+// "a local user matching one of the namespaces is the target of the event, or is a joined member
+// of the room where the event occurred"; and "Events affecting users on other homeservers are not
+// sent to an application service, even if the user happens to match one of the users namespaces
+// (unless, of course, the event affects a room that the application service is interested in for
+// another reason ...)". An invite names its target in `state_key`; the invitee is not yet joined.
+SCENARIO("an appservice is interested in a membership event whose state_key is one of its users",
+         "[appservice][registration][r07]")
+{
+    GIVEN("the IRC bridge registration and a room none of whose members belong to the bridge")
+    {
+        auto const parsed = parse_registration_json(irc_bridge_registration_json());
+        REQUIRE(parsed.value.has_value());
+        auto const& registration = *parsed.value;
+        auto const server_name = std::string_view{"example.org"};
+        auto const members = std::vector<std::string>{"@carol:example.org"};
+        auto const interested = [&](EventInterestFacts const& facts) {
+            return registration_interested_in_room_event(registration, server_name, facts);
+        };
+
+        WHEN("a human invites a virtual user of the bridge (the invitee is not joined)")
+        {
+            THEN("the appservice is interested: the invitee is the target of the event")
+            {
+                CHECK(interested({.room_id = "!room:example.org",
+                                  .sender = "@carol:example.org",
+                                  .member_event_target = "@_irc_bridge_dave:example.org",
+                                  .room_members = members}));
+            }
+        }
+
+        WHEN("a human kicks or bans a virtual user, so the target is no longer joined either")
+        {
+            THEN("the appservice is still interested, through the state_key")
+            {
+                CHECK(interested({.room_id = "!room:example.org",
+                                  .sender = "@carol:example.org",
+                                  .member_event_target = "@_irc_bridge_erin:example.org"}));
+            }
+        }
+
+        WHEN("the appservice's own sender_localpart user is the target of the membership event")
+        {
+            THEN("the appservice is interested")
+            {
+                CHECK(interested({.room_id = "!room:example.org",
+                                  .sender = "@carol:example.org",
+                                  .member_event_target = "@_irc_bot:example.org"}));
+            }
+        }
+
+        WHEN("the target is an ordinary user outside every namespace")
+        {
+            THEN("the appservice is not interested")
+            {
+                CHECK_FALSE(interested({.room_id = "!room:example.org",
+                                        .sender = "@carol:example.org",
+                                        .member_event_target = "@frank:example.org",
+                                        .room_members = members}));
+            }
+        }
+
+        WHEN("the target matches a users namespace but lives on another homeserver")
+        {
+            THEN("the appservice is not interested: only local users count")
+            {
+                CHECK_FALSE(interested({.room_id = "!room:example.org",
+                                        .sender = "@carol:example.org",
+                                        .member_event_target = "@_irc_bridge_dave:remote.example",
+                                        .room_members = members}));
+            }
+        }
+
+        WHEN("the event is not a membership event (no member_event_target)")
+        {
+            THEN("a virtual user named nowhere in the event does not make the appservice interested")
+            {
+                CHECK_FALSE(interested({.room_id = "!room:example.org", .sender = "@carol:example.org"}));
             }
         }
     }

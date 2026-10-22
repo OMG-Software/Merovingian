@@ -472,11 +472,27 @@ struct VerificationKeyResolution final
                                             std::string_view server_name, std::string_view key_id)
     -> VerificationKeyResolution;
 
-// How many of the key IDs an event lists under its authorising server are
-// tried. Any one valid signature satisfies the rule, but the signatures object
-// is not itself signed, so a relaying server can add key IDs, and each
-// candidate may cost a key fetch. A rotating server signs with one or two keys.
-inline constexpr std::size_t max_authorising_signature_keys{4U};
+// How many of the key IDs an event lists under one server's signatures are
+// checked, for the sender's server (audit R05, ADR-0183) and a restricted
+// join's authorising server (ADR-0171) alike. The signatures object is not
+// itself signed, so a relaying server can add key IDs, and each candidate may
+// cost a key fetch. A rotating server signs with one or two keys. An event
+// listing more than this for its sender's server is refused, fail-closed.
+inline constexpr std::size_t max_signature_keys_per_server{4U};
+inline constexpr std::size_t max_authorising_signature_keys{max_signature_keys_per_server};
+
+// The signing key identifiers `signatures` lists for `server_name`, in the
+// event's own order, without repeats, keeping only the ed25519 algorithm this
+// server understands and at most max_signature_keys_per_server of them.
+// appendices.md "Checking for a Signature", step 2: "Removes any signing key
+// identifiers from the entry with algorithms it doesn't understand."
+[[nodiscard]] auto signature_key_ids_for_server(std::vector<events::EventSignature> const& signatures,
+                                                std::string_view server_name) -> std::vector<std::string>;
+
+// True when `signatures` lists more than max_signature_keys_per_server distinct
+// ed25519 key IDs for `server_name`, so not every one of them would be checked.
+[[nodiscard]] auto lists_too_many_signature_keys(std::vector<events::EventSignature> const& signatures,
+                                                 std::string_view server_name) -> bool;
 
 // The server and keys a restricted join's authorising-server signature may be
 // checked with: the homeserver of content.join_authorised_via_users_server and
@@ -501,6 +517,42 @@ struct AuthorisingSignatureKey final
 // over a RemoteKeyResolver).
 using AuthorisingKeyResolver =
     std::function<VerificationKeyResolution(std::string_view server_name, std::string_view key_id)>;
+// The same contract for any server's signature (the sender's, R05).
+using SignatureKeyResolver = AuthorisingKeyResolver;
+
+// Audit R05 (ADR-0183). Whether `event` passes the signature check for
+// `server_name`, judged over every ed25519 key ID `signatures` lists for it.
+// server-server-api.md "Validating hashes and signatures on received events":
+// "If a signature is from an unknown or expired key, it is skipped", and "If
+// all signatures from known unexpired keys from the originating server(s) are
+// found to be valid, the expected content hash is calculated". So a key that
+// does not resolve, or expired before the event's origin_server_ts, is
+// skipped; a known, unexpired key whose signature does not verify refuses the
+// event (403) whatever the others say; and at least one key must verify
+// (403 otherwise). More than max_signature_keys_per_server listed IDs is a
+// 403 before any lookup. A local admission denial on any candidate is a
+// retryable 503 and running out of `deadline` a 504: neither is a verdict.
+// `signatures` is the event's parsed signatures (FederationPdu::signatures or
+// EventEnvelope::signatures).
+[[nodiscard]] auto verify_server_signatures_on_event(
+    canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version, std::string_view server_name,
+    std::vector<events::EventSignature> const& signatures, SignatureKeyResolver const& resolve_key,
+    crypto::Ed25519Provider& provider,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
+    -> FederationDecision;
+
+// Audit R05: the sender-signature check of a received PDU,
+// verify_server_signatures_on_event for the server of its `sender`.
+// `known_key` (the X-Matrix key of a direct request) is used without calling
+// `resolve_key` when it is for the sender's server and one of the listed IDs;
+// every other candidate goes through `resolve_key`, which must be an admitted
+// path (FED-10). A PDU missing required fields or JSON, or that does not
+// parse, is a 400; an unknown room version a 500.
+[[nodiscard]] auto authorize_federation_pdu_sender(
+    FederationPdu const& pdu, std::optional<FederationKeyRecord> const& known_key,
+    SignatureKeyResolver const& resolve_key,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max())
+    -> FederationDecision;
 
 // EVT-1 (rooms/v8.md and v10.md auth rule 4.2.1; v12.md rule 5.2.1): an
 // m.room.member event whose content carries join_authorised_via_users_server

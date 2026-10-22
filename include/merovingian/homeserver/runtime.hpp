@@ -136,6 +136,39 @@ struct AppserviceDeliveryBackoff final
     std::chrono::milliseconds delay{0};
 };
 
+// Ephemeral data (m.typing, m.receipt, m.presence) waiting to ride the next transaction to one
+// appservice that set `receive_ephemeral` (R08, ADR-0190). In memory only and bounded: ephemeral
+// data describes the present, so a restart or an overflow loses nothing worth keeping, and
+// persisting it would put one database write behind every typing indicator.
+//
+// `key` is what makes two items the same fact about the present (one room's typing list, one
+// user's presence, one user's receipt of one type in one thread). A newer item with the same key
+// replaces the older one, so a chatty room cannot fill the queue with states already superseded.
+struct AppserviceEphemeralItem final
+{
+    std::string key{};
+    std::string json{}; // one serialized client-format event, `room_id` included when room-scoped
+};
+
+struct AppserviceEphemeralQueue final
+{
+    std::deque<AppserviceEphemeralItem> items{};
+    // Items discarded because the queue was full, since the process started (a metric).
+    std::uint64_t dropped{0U};
+};
+
+// The ephemeral items attached to the transaction currently in flight for one appservice, kept so
+// that a retry under the same transaction ID carries exactly the same items ("MUST NOT alter ...
+// events they were going to send within that transaction ID on retries"). `events_free` marks a
+// transaction that carries no event (ephemeral data alone); its ID comes from the cursor's
+// next_txn_id and it is never persisted, so a restart forgets it.
+struct AppservicePendingEphemeral final
+{
+    std::uint64_t txn_id{0U};
+    bool events_free{false};
+    std::vector<std::string> items{};
+};
+
 struct LocalRoom final
 {
     std::string room_id{};
@@ -211,12 +244,36 @@ constexpr auto max_receipt_thread_id_bytes = std::size_t{255U};
 // without bound. A "*" device counts as one delivery.
 constexpr auto max_inbound_direct_to_device_deliveries = std::size_t{1000U};
 
+// Typing expiry (conformance audit R13, ADR-0199). Spec (PUT /rooms/{roomId}/typing/{userId}):
+// "the user is typing for the next N milliseconds where N is the value specified in the timeout
+// key". A request without a timeout gets the default; a longer one is cut to the ceiling, so no
+// client can make its typing last indefinitely. A federated m.typing EDU carries no timeout, so a
+// remote user's typing lasts federation_typing_timeout from the latest EDU that set it.
+constexpr auto default_typing_timeout = std::chrono::milliseconds{30'000};
+constexpr auto max_typing_timeout = std::chrono::milliseconds{120'000};
+constexpr auto federation_typing_timeout = std::chrono::milliseconds{60'000};
+
 struct InboundTypingUser final
 {
     std::string room_id{};
     std::string user_id{};
     bool typing{false};
     std::uint64_t stream_id{0U};
+    // When this typing stops on its own. The default never expires; every path that sets
+    // `typing` to true sets it.
+    std::chrono::steady_clock::time_point expires_at{std::chrono::steady_clock::time_point::max()};
+};
+
+// What expire_typing changed.
+struct TypingExpiry final
+{
+    // Some room's typing users changed, so its typing stream position advanced.
+    bool changed{false};
+    // This server's own users whose typing expired: remote servers in their rooms are told
+    // they stopped.
+    std::vector<InboundTypingUser> expired_local{};
+    // The earliest expiry still pending, if any.
+    std::optional<std::chrono::steady_clock::time_point> next_expiry{};
 };
 
 // RAII scope guard that wires the active `LocalDatabase` into the
@@ -332,9 +389,24 @@ struct HomeserverRuntime final
     // runtime.mutex on another thread (PeriodicJob::wake does neither). Cleared under
     // runtime.mutex at shutdown before the thread is stopped.
     std::function<void()> appservice_delivery_wake{};
+    // Wakes the "typing-expiry" job (R13, ADR-0199) so a typing deadline earlier than the job's
+    // current sleep is not missed. Set by the process entry point once that thread exists; null
+    // in tests, which call expire_typing_notifications directly. Called through
+    // wake_typing_expiry with runtime.mutex held, so it must not block or wait for runtime.mutex
+    // on another thread (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown
+    // before the thread is stopped.
+    std::function<void()> typing_expiry_wake{};
     // The drainer's retry state per appservice, keyed by registration id. In memory only: after
     // a restart the first attempt is immediate. Guarded by `mutex`.
     std::map<std::string, AppserviceDeliveryBackoff, std::less<>> appservice_delivery_backoff{};
+    // Ephemeral data queued per appservice, keyed by registration id (R08, ADR-0190). Only
+    // appservices with `receive_ephemeral` and a url ever have an entry. Guarded by `mutex`.
+    std::map<std::string, AppserviceEphemeralQueue, std::less<>> appservice_ephemeral{};
+    // The ephemeral items of the transaction in flight per appservice. Guarded by `mutex`.
+    std::map<std::string, AppservicePendingEphemeral, std::less<>> appservice_pending_ephemeral{};
+    // Events NOT queued for an appservice because its outbox was at
+    // appservice.max_queued_events, since the process started (ADR-0191). Guarded by `mutex`.
+    std::map<std::string, std::uint64_t, std::less<>> appservice_outbox_dropped{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Installed by main when security.federation.enabled is true. Verifies and
     // routes inbound federation, including explicit main-process bypasses.
@@ -525,6 +597,14 @@ auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void;
 [[nodiscard]] auto room_typing_stream_id_for(HomeserverRuntime const& rt, std::string_view room_id) -> std::uint64_t;
 [[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
                                                            std::vector<std::string> const& previous) -> std::uint64_t;
+// Removes every typing entry whose expiry is at or before `now`, and advances the typing stream
+// position of each room whose typing users changed, so /sync and sliding sync report the room's
+// new (possibly empty) m.typing list (R13, ADR-0199). The caller holds runtime.mutex, wakes
+// sync waiters when `changed`, and tells remote servers about `expired_local`.
+[[nodiscard]] auto expire_typing(HomeserverRuntime& rt, std::chrono::steady_clock::time_point now) -> TypingExpiry;
+// Wakes the typing-expiry job, if one runs. Every path that sets a user typing calls it, with
+// runtime.mutex held, after setting `expires_at` (R13, ADR-0199).
+auto wake_typing_expiry(HomeserverRuntime& rt) -> void;
 
 struct RuntimeStartOptions final
 {

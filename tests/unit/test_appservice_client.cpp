@@ -19,6 +19,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -319,6 +320,248 @@ SCENARIO("AppserviceClient applies configured bounds to every outbound request",
                 CHECK(observed->connect_timeout_seconds == 3U);
                 CHECK(observed->total_timeout_seconds == 7U);
                 CHECK(observed->max_response_body_bytes == 2048U);
+            }
+        }
+    }
+}
+
+// Spec: Application Service API v1.19, "Pushing ephemeral data": the transaction request body carries an
+// `ephemeral` array alongside the required `events` array when the registration set receive_ephemeral.
+SCENARIO("a transaction request body carries ephemeral events only when there are some", "[appservice][client][r08]")
+{
+    GIVEN("a transaction with one event and two ephemeral events")
+    {
+        auto transaction = merovingian::appservice::AppserviceTransaction{};
+        transaction.txn_id = "7";
+        transaction.events.push_back({R"({"body":"hi"})", "$e:example.org", 1U, "!r:example.org", "@alice:example.org",
+                                      std::nullopt, "m.room.message"});
+        transaction.ephemeral_json = {
+            R"({"content":{"user_ids":["@a:example.org"]},"room_id":"!r:example.org","type":"m.typing"})",
+            R"({"content":{"presence":"online"},"sender":"@a:example.org","type":"m.presence"})",
+        };
+
+        WHEN("the request body is built")
+        {
+            auto const body = parse_object(merovingian::appservice::build_transaction_request_body(transaction));
+
+            THEN("events and ephemeral are both arrays, ephemeral in the order given")
+            {
+                auto const* events = object_member(body, "events");
+                auto const* ephemeral = object_member(body, "ephemeral");
+                REQUIRE(events != nullptr);
+                REQUIRE(ephemeral != nullptr);
+                auto const* ephemeral_array = std::get_if<merovingian::canonicaljson::Array>(&ephemeral->storage());
+                REQUIRE(ephemeral_array != nullptr);
+                REQUIRE(ephemeral_array->size() == 2U);
+                auto const* first = std::get_if<merovingian::canonicaljson::Object>(&(*ephemeral_array)[0].storage());
+                REQUIRE(first != nullptr);
+                auto const* type = object_member(*first, "type");
+                REQUIRE(type != nullptr);
+                CHECK(*std::get_if<std::string>(&type->storage()) == "m.typing");
+            }
+        }
+    }
+
+    GIVEN("a transaction with no ephemeral events")
+    {
+        auto transaction = merovingian::appservice::AppserviceTransaction{};
+        transaction.txn_id = "8";
+
+        WHEN("the request body is built")
+        {
+            auto const body = parse_object(merovingian::appservice::build_transaction_request_body(transaction));
+
+            THEN("the optional ephemeral property is absent and events is an empty array")
+            {
+                CHECK(object_member(body, "ephemeral") == nullptr);
+                REQUIRE(object_member(body, "events") != nullptr);
+            }
+        }
+    }
+
+    GIVEN("an ephemeral element that is not valid JSON")
+    {
+        auto transaction = merovingian::appservice::AppserviceTransaction{};
+        transaction.txn_id = "9";
+        transaction.ephemeral_json = {"{not json", R"({"type":"m.typing","room_id":"!r:x","content":{}})"};
+
+        WHEN("the request body is built")
+        {
+            auto const body = parse_object(merovingian::appservice::build_transaction_request_body(transaction));
+
+            THEN("it is skipped and the valid element still travels")
+            {
+                auto const* ephemeral = object_member(body, "ephemeral");
+                REQUIRE(ephemeral != nullptr);
+                auto const* ephemeral_array = std::get_if<merovingian::canonicaljson::Array>(&ephemeral->storage());
+                REQUIRE(ephemeral_array != nullptr);
+                CHECK(ephemeral_array->size() == 1U);
+            }
+        }
+    }
+}
+
+// Spec: Application Service API v1.19, "Pinging", POST /_matrix/app/v1/ping: "called by the homeserver to
+// ensure that the connection works and the hs_token the homeserver has is correct", with the request body
+// {"transaction_id": ...} copied from the client call.
+SCENARIO("pinging an appservice classifies every way the call can end", "[appservice][client][ping]")
+{
+    GIVEN("an appservice client whose transport is a recording stub")
+    {
+        auto outbound = merovingian::http::OutboundClient{};
+        auto network = ResolvableDiscoveryNetwork{};
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+        auto observed = std::optional<merovingian::http::OutboundRequest>{};
+        auto answer = merovingian::http::OutboundResult{};
+        answer.ok = true;
+        answer.response.status = 200U;
+        auto client = merovingian::appservice::AppserviceClient{
+            outbound, discovery, merovingian::config::AppserviceConfig{},
+            [&observed, &answer](merovingian::http::OutboundRequest const& request) {
+                observed = request;
+                return answer;
+            }};
+        auto parsed_registration = merovingian::appservice::parse_registration_json(R"({
+            "id": "bridge",
+            "url": "http://127.0.0.1:1234",
+            "as_token": "the-as-token",
+            "hs_token": "the-hs-token",
+            "sender_localpart": "_bridge_bot",
+            "namespaces": {"users": [], "aliases": [], "rooms": []}
+        })");
+        REQUIRE(parsed_registration.value.has_value());
+        auto& registration = *parsed_registration.value;
+
+        WHEN("the appservice answers 200")
+        {
+            auto const result = client.ping(registration, "meow");
+
+            THEN("the ping succeeds and carried the hs_token, the path and the transaction id")
+            {
+                REQUIRE(result.ok());
+                REQUIRE(observed.has_value());
+                CHECK(observed->method == "POST");
+                CHECK(observed->url == "http://127.0.0.1:1234/_matrix/app/v1/ping");
+                CHECK(observed->body == R"({"transaction_id":"meow"})");
+                auto const authorization =
+                    std::ranges::find_if(observed->headers, [](merovingian::http::OutboundHeader const& header) {
+                        return header.name == "Authorization";
+                    });
+                REQUIRE(authorization != observed->headers.end());
+                CHECK(authorization->value == "Bearer the-hs-token");
+                CHECK(result.duration_ms >= 0);
+            }
+        }
+
+        WHEN("the appservice is pinged without a transaction id")
+        {
+            auto const result = client.ping(registration, std::nullopt);
+
+            THEN("the request body is an empty object")
+            {
+                REQUIRE(result.ok());
+                REQUIRE(observed.has_value());
+                CHECK(observed->body == "{}");
+            }
+        }
+
+        WHEN("the appservice is pinged with an empty transaction id")
+        {
+            auto const result = client.ping(registration, std::string{});
+
+            THEN("the empty transaction id is copied into the request body, not dropped")
+            {
+                REQUIRE(result.ok());
+                REQUIRE(observed.has_value());
+                CHECK(observed->body == R"({"transaction_id":""})");
+            }
+        }
+
+        WHEN("the appservice rejects the hs_token with 403")
+        {
+            answer.response.status = 403U;
+            answer.response.body = R"({"errcode":"M_FORBIDDEN"})";
+            auto const result = client.ping(registration, "meow");
+
+            THEN("the failure is bad_status and carries the appservice's status and body")
+            {
+                CHECK(result.failure == merovingian::appservice::AppservicePingFailure::bad_status);
+                CHECK(result.status == 403U);
+                CHECK(result.body == R"({"errcode":"M_FORBIDDEN"})");
+            }
+        }
+
+        WHEN("the appservice answers with a very long body")
+        {
+            answer.response.status = 500U;
+            answer.response.body = std::string(merovingian::appservice::max_ping_body_bytes * 4U, 'x');
+            auto const result = client.ping(registration, std::nullopt);
+
+            THEN("the body kept for the error is bounded")
+            {
+                CHECK(result.failure == merovingian::appservice::AppservicePingFailure::bad_status);
+                CHECK(result.body.size() == merovingian::appservice::max_ping_body_bytes);
+            }
+        }
+
+        WHEN("the appservice answers with a redirect, which the transport refuses to follow")
+        {
+            answer.ok = false;
+            answer.error = merovingian::http::OutboundError::redirect_rejected;
+            answer.response.status = 302U;
+            auto const result = client.ping(registration, std::nullopt);
+
+            THEN("it is a bad status (the appservice did answer), not a failed connection")
+            {
+                CHECK(result.failure == merovingian::appservice::AppservicePingFailure::bad_status);
+                CHECK(result.status == 302U);
+            }
+        }
+
+        WHEN("the transport times out")
+        {
+            answer.ok = false;
+            answer.error = merovingian::http::OutboundError::timeout;
+            answer.response.status = 0U;
+            auto const result = client.ping(registration, std::nullopt);
+
+            THEN("the failure is connection_timeout")
+            {
+                CHECK(result.failure == merovingian::appservice::AppservicePingFailure::connection_timeout);
+            }
+        }
+
+        WHEN("the transport cannot connect, or TLS fails, or the reply is oversize")
+        {
+            answer.ok = false;
+            answer.response.status = 0U;
+
+            THEN("each is connection_failed")
+            {
+                for (auto const error : {merovingian::http::OutboundError::connection_failed,
+                                         merovingian::http::OutboundError::tls_verification_failed,
+                                         merovingian::http::OutboundError::response_too_large,
+                                         merovingian::http::OutboundError::network_error})
+                {
+                    answer.error = error;
+                    CHECK(client.ping(registration, std::nullopt).failure ==
+                          merovingian::appservice::AppservicePingFailure::connection_failed);
+                }
+            }
+        }
+
+        WHEN("the registration has url null")
+        {
+            registration.url = std::nullopt;
+            observed.reset();
+            auto const result = client.ping(registration, "meow");
+
+            THEN("the failure is url_not_set and nothing was sent")
+            {
+                CHECK(result.failure == merovingian::appservice::AppservicePingFailure::url_not_set);
+                CHECK_FALSE(observed.has_value());
             }
         }
     }

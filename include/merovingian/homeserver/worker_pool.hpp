@@ -118,6 +118,16 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> std::string;
 
+// Handles a "membership_template_ingest" IPC request (a worker relaying an
+// inbound GET /_matrix/federation/v1/make_join). A restricted room's template
+// names an authorising user only after its allow conditions are checked, and
+// those name other rooms, which a shard's snapshot may not hold or may hold
+// stale (audit R04, ADR-0185). Main builds the template from its own store
+// with its own membership_template_provider. A malformed frame is answered
+// with no template (404 to the requesting server).
+[[nodiscard]] auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
 // Handles an "event_query_ingest" IPC request (a worker relaying an inbound
 // GET /_matrix/federation/v1/event/{eventId}). Unlike user_devices_ingest/
 // device_keys_query_ingest/profile_query_ingest above, this route's

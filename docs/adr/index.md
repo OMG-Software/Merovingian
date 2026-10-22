@@ -181,6 +181,16 @@
 * [0179 - A room's stored version is resolved through one accessor, and a join must match the create event](0179-a-rooms-stored-version-is-resolved-through-one-accessor.md)
 * [0180 - The outbound client refuses header fields that are not valid HTTP](0180-the-outbound-client-refuses-invalid-header-fields.md)
 * [0181 - Third-party lookups take a client outbound proxy slot and keep per-appservice timeouts](0181-third-party-lookups-take-a-client-outbound-proxy-slot.md)
+* [0182 - A profile change succeeds once stored, and reaches only rooms whose state holds the user joined](0182-a-profile-change-succeeds-once-stored-and-reaches-only-rooms-whose-state-holds-the-user-joined.md)
+* [0183 - Every known, unexpired key's signature of the sender's server must verify](0183-every-known-key-signature-of-the-sender-must-verify.md)
+* [0184 - Federation workers relay make_join to main](0184-federation-workers-relay-make-join-to-main.md)
+* [0185 - A resident authorises restricted joins only after checking the allow conditions](0185-a-resident-authorises-restricted-joins-only-after-checking-the-allow-conditions.md)
+* [0190 - Appservice ephemeral data is in memory, bounded, coalesced and best-effort](0190-appservice-ephemeral-data-is-in-memory-bounded-and-best-effort.md)
+* [0191 - Cap the events queued for one appservice and refuse the rest](0191-cap-queued-events-per-appservice.md) — refines ADR-0163
+* [0192 - Appservice network directories are persisted per protocol, and instance IDs name the protocol](0192-appservice-network-directories-are-persisted-per-protocol.md)
+* [0197 - Room account data needs a membership in the room and is capped per room](0197-room-account-data-needs-a-membership-and-is-capped-per-room.md)
+* [0198 - A registration without a username gets a random hexadecimal localpart](0198-a-registration-without-username-gets-a-random-hex-localpart.md)
+* [0199 - Typing expires on a periodic job, with a ceiling for clients and a timeout for federation](0199-typing-expires-on-a-periodic-job-with-a-ceiling-and-a-federation-timeout.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 
 ## Proposed Records
@@ -210,3 +220,5 @@
 * [0079 - Client-triggered outbound proxying runs under a bounded in-flight budget, not a separate pool](0079-client-triggered-outbound-proxying-runs-under-a-bounded-in-flight-budget.md) — Superseded by ADR-0121 for remote media downloads and thumbnails, which run on their own pool; directory lookups keep this budget
 * [0015 - Keep the signing secret out of the federation worker](0015-keep-the-signing-secret-out-of-the-federation-worker.md) — Superseded by ADR-0078 for the signing-oracle part (the `sign_request` frame); the signing secret still never enters the worker
 * [0126 - Local membership is projected once, at the local-event choke point](0126-local-membership-is-projected-once-at-the-local-event-choke-point.md) — Refined by ADR-0149: the projection commits in the event's own transaction, and a row is realigned if resolution leaves another member event current
+* [0163 - Appservice delivery is a durable outbox drained by one thread](0163-appservice-delivery-is-a-durable-outbox-drained-by-one-thread.md) — Refined by ADR-0191: the queue of one appservice is capped at `appservice.max_queued_events`, and ADR-0190: ephemeral data rides the same transactions but is not durable
+* [0173 - Cap a user's global account-data types; room account data stays bounded by membership](0173-cap-global-account-data-types-per-user.md) — Refined by ADR-0197: room account data also needs a membership row and is capped per room

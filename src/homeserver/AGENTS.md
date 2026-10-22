@@ -21,6 +21,7 @@ This is the largest and most complex module — read this file carefully before 
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
+| `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
 | `default_push_ruleset.cpp` | The server-default push ruleset returned by `/pushrules/` |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -138,6 +139,26 @@ network before the deferral, so a refusal or cache hit never costs a pool slot. 
 file are coalesced (`RemoteMediaFetchCoalescer`): never wait on the coalescer with `runtime.mutex`
 held, and never take `runtime.mutex` while holding its mutex.
 
+## Restricted joins as the resident (R04, ADR-0184, ADR-0185)
+
+`decide_restricted_join` (`restricted_join.cpp`) is the only place that decides whether a
+non-member may join a restricted room through an allow condition, and which local user
+authorises it. Three callers use it and must stay in step: the `make_join` template provider
+(names `join_authorised_via_users_server` and adds that user's member event to `auth_events`,
+or refuses with 400 `M_UNABLE_TO_AUTHORISE_JOIN` / `M_UNABLE_TO_GRANT_JOIN` or 403
+`M_FORBIDDEN` via `MembershipEventTemplate::error_status`), the `send_join` acceptor (co-signs
+with `sign_invite_event` only when the decision authorises the named user, before the auth
+checks and before storing, after `without_signatures_of` drops whatever the joining server filed
+under our name; refuses unsigned otherwise), and `compose_signed_event` (refuses any local join
+naming a local authoriser the decision does not accept, so `PUT /state` cannot skip the check;
+a join by a user already joined has the field dropped instead, ADR-0185).
+An allow condition counts as verifiable only while this server is joined to the room it names:
+state kept after leaving is not current. Federation workers relay `make_join` to main
+(`membership_template_ingest`), since allowed rooms may live in another shard; main refuses a
+frame whose user ID is malformed or local. The decision reads state under `runtime.mutex`, takes
+the room version through `declared_room_version`, and is bounded by
+`max_restricted_join_conditions` (32).
+
 ## Federation worker relays are untrusted input
 
 A frame from the federation worker is input from the process most exposed to
@@ -201,7 +222,14 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (ADR-0176).
 - `PUT /user/{userId}/account_data/{type}` refuses a new global type past
   `max_global_account_data_per_user` with `400 M_TOO_LARGE`, and always allows an update to a
-  type the user already holds (ADR-0173). Room account data is bounded by membership.
+  type the user already holds (ADR-0173). `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
+  is written only for a room the user holds a membership row in, and refuses a new type past
+  `max_room_account_data_per_room` per room the same way (ADR-0197). Server-written rows (`m.tag`,
+  `m.fully_read`) go through `set_account_data` and are never refused.
+- `/search` judges a room the user has left with `room_read_access_for` only when one of its
+  events would be returned, so those scans stay bounded by the page (R16).
+- `expire_typing` groups the typing table by room in a fixed number of passes and hands each
+  affected room its new typing list; it never rescans the table per expired room (R13).
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
   (ADR-0174).
 
@@ -276,6 +304,17 @@ visibility and aliases stand for `m.room.canonical_alias`), refuse it up front w
 event type, before anything is created. Membership alone is not enough. Alias `PUT` validates with
 `auth::room_alias_is_valid` and requires this server's domain; `DELETE` allows the alias's recorded creator.
 
+## Typing expiry (R13, ADR-0199)
+
+Every path that sets a typing entry to `typing: true` sets its `expires_at`: the client's
+`timeout` (default `default_typing_timeout`, at most `max_typing_timeout`), or
+`federation_typing_timeout` from an inbound EDU. `expire_typing_notifications` removes expired
+entries, advances the room's typing stream position and sends `typing: false` for local users; it
+runs on the "typing-expiry" `PeriodicJob` in `main.cpp`. A new path that adds a typing entry must
+set `expires_at`, or it never expires, and call `wake_typing_expiry` so an earlier deadline than the
+job's current sleep is not missed. Every read and write of `typing_users` holds `runtime.mutex`:
+the federation EDU sink runs without it and takes it itself in the typing case.
+
 ## Appservice delivery (R01, ADR-0163)
 
 A request never sends to an appservice. `enqueue_appservice_delivery` writes `appservice_outbox` rows (interest decided
@@ -285,3 +324,29 @@ add an "already delivered" check to the enqueue: stream orderings commit out of 
 primary key is the only dedupe. A transaction's ID and event are written to the cursor before the send; do not
 rebuild a transaction from anything but its stored event. Clear the wake hook under `runtime.mutex` before stopping
 the job.
+
+- **Every stored event is queued once, by the code that stored it.** `queue_event_for_appservices` (room_service.cpp)
+  wraps `enqueue_appservice_delivery` and passes the `state_key` of a membership event as `member_event_target` (R07).
+  Send, each membership transition, the third-party invite made on join, federation PDUs and `createRoom` all call it.
+  The federation `/invite` handler, for a room this server is not in, stores the invite as an outlier with no
+  `LocalRoom` and calls the `room_id` overload of `enqueue_appservice_delivery` with the invitee as target: no
+  transaction will bring that event again, so it is the only chance an appservice has to see its user invited.
+  `createRoom` collects what it stores in a `CreatedEventQueue` whose destructor queues the events, so every exit path
+  queues them and the room's alias exists when interest is judged. A new path that stores a client-visible event
+  must call it too.
+- **A queue is capped** (`appservice.max_queued_events`, ADR-0191): the newest event is refused, counted in
+  `appservice_outbox_dropped`, and the first refusal and every thousandth is logged at warning level and audited
+  (`appservice.outbox.full`). Do not evict the oldest row; it may be the transaction on the cursor.
+- **Ephemeral data** (`appservice_ephemeral.cpp`, ADR-0190) is in memory only: `queue_appservice_typing` (called from
+  `update_room_typing_stream_id_if_changed`), `queue_appservice_receipt` and `queue_appservice_presence` (called after
+  the store write, local and federated) coalesce by key into `HomeserverRuntime::appservice_ephemeral`, bounded per
+  appservice. The drainer attaches up to 100 items to the next transaction and keeps them in
+  `appservice_pending_ephemeral` so a retry under the same ID carries the same items. Only a freshly built transaction
+  takes queued items: a retry whose first attempt carried none carries none. With no event queued it sends an
+  events-free transaction whose ID comes from `next_txn_id`. Never persist it and never queue it for `url: null`.
+- **Ping and the network directory** (`client_server.cpp`) act on the appservice named by the masquerade token
+  (`decode_masquerade_token`), never on a path parameter alone: `POST /_matrix/client/v1/appservice/{appserviceId}/ping`
+  and `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}` answer `403 M_FORBIDDEN` to a token that
+  is not an appservice's. The ping holds an ADR-0079 slot and releases `runtime.mutex` for the call. The directory
+  entry needs a protocol the registration declares and a room the appservice is interested in; it is persisted
+  (`appservice_directory`, ADR-0192).

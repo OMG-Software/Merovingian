@@ -657,6 +657,7 @@ server.client_api.max_one_time_keys_per_device=1000
 server.client_api.max_key_signatures_per_user=10000
 server.client_api.max_filters_per_user=1000
 server.client_api.max_global_account_data_per_user=1000
+server.client_api.max_room_account_data_per_room=100
 server.client_api.max_body_size=1MiB
 
 # server.http
@@ -727,3 +728,7 @@ security.federation.state_resolution.max_auth_chain_walk_events=131072
 appservice.connect_timeout_seconds=10
 appservice.total_timeout_seconds=30
 appservice.response_max_size=16MiB
+# The most events queued for ONE application service. At the cap further events for that
+# service are not queued (counted, logged and audited as appservice.outbox.full; ADR-0191).
+# Restart required.
+appservice.max_queued_events=100000

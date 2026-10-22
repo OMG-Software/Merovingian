@@ -521,38 +521,69 @@ namespace
     // The public authorization resolver predates admission and returns optional.
     // Adapt only around its synchronous invocation: no denial flag is shared
     // across the parallel sender tasks, which return their own explicit results.
+    // Sender keys a caller resolved ahead of verification (the /send
+    // transaction's parallel pre-pass), keyed on (server name, key ID).
+    using PrefetchedSenderKeys = std::map<std::pair<std::string, std::string>, SenderKeyResolution>;
+
+    // Which checks of a received PDU's signatures a caller runs.
+    struct PduSignatureChecks final
+    {
+        // Keys resolved ahead of time; consulted before any admitted lookup.
+        PrefetchedSenderKeys const& prefetched;
+        // A restricted join naming a user of this server is signed here, by
+        // the send_join acceptor, after it has checked the allow conditions
+        // (R04, ADR-0185), so it cannot already carry a signature from us.
+        // Set to this server's name to leave that one check to the acceptor.
+        std::string_view authorised_here{};
+    };
+
+    // The sender server's signature, then a restricted join's authorising
+    // server's (EVT-1). Every candidate key goes through one admitted lookup
+    // (FED-10); each check tries every listed key ID up to
+    // max_signature_keys_per_server (R05, ADR-0183). `known_key` is the
+    // X-Matrix key of the request, used without a lookup when it is the
+    // sender's.
     [[nodiscard]] auto authorize_admitted_federation_pdu(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationPdu const& pdu,
-                                                         std::optional<FederationKeyRecord> const& key)
-        -> FederationDecision
+                                                         std::optional<FederationKeyRecord> const& known_key,
+                                                         PduSignatureChecks const& checks) -> FederationDecision
     {
-        // Several authorising-server keys may be tried. As in
-        // verify_join_authorising_server_signature, a local denial on any of
-        // them is sticky (a later failure must not turn it into a refusal) and
-        // counts only when nothing verified (it must not override an accept).
-        auto locally_denied = false;
-        auto const resolver = [&runtime, &request,
-                               &locally_denied](std::string_view server_name,
-                                                std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
-            auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
-            if (!resolved.key.has_value())
-            {
-                locally_denied = locally_denied || resolved.failure == KeyResolutionFailureKind::local_resource_denial;
-                return std::nullopt;
-            }
-            auto remote = FederationRemoteRuntime{};
-            remote.server_name = std::string{server_name};
-            remote.signing_key = std::move(*resolved.key);
-            return remote;
+        auto const resolve = [&runtime, &request, &checks](std::string_view server_name,
+                                                           std::string_view key_id) -> VerificationKeyResolution {
+            auto const prefetched = checks.prefetched.find(std::pair<std::string, std::string>{server_name, key_id});
+            auto resolved = prefetched != checks.prefetched.end()
+                                ? prefetched->second
+                                : resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
+            return {std::move(resolved.key),
+                    resolved.failure == KeyResolutionFailureKind::local_resource_denial && !resolved.key.has_value()};
         };
-        auto verifier = FederationEd25519Verifier{};
-        auto const decision = authorize_federation_pdu(pdu, request.origin, key, resolver, verifier);
-        if (!decision.accepted && locally_denied)
+        auto const sender_decision = authorize_federation_pdu_sender(pdu, known_key, resolve);
+        if (!sender_decision.accepted)
         {
-            return make_decision(false, 503U, "local signing-key resolution admission unavailable");
+            return sender_decision;
         }
-        return decision;
+        auto const* room_version =
+            rooms::find_room_version_policy(pdu.room_version.empty() ? std::string{"12"} : pdu.room_version);
+        if (room_version == nullptr)
+        {
+            return make_decision(false, 500U, "room version policy is unavailable");
+        }
+        auto const parsed = canonicaljson::parse_lossless(pdu.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+        }
+        if (!checks.authorised_here.empty())
+        {
+            if (auto const authorising = join_authorising_signature_key(parsed.value);
+                authorising.has_value() && authorising->server_name == checks.authorised_here)
+            {
+                return make_decision(true, 200U, {});
+            }
+        }
+        auto verifier = FederationEd25519Verifier{};
+        return verify_join_authorising_server_signature(parsed.value, *room_version, resolve, verifier);
     }
 
     // Failed X-Matrix signatures are charged to the SOURCE ADDRESS, never to the
@@ -1126,7 +1157,7 @@ namespace
         }
         if (!populated.reason.empty())
         {
-            return {400U, populated.reason};
+            return {populated.error_status == 0U ? std::uint16_t{400U} : populated.error_status, populated.reason};
         }
         auto body = build_make_template_response(populated);
         if (body.empty())
@@ -1203,65 +1234,39 @@ namespace
             pdu.json = envelope->json;
             pdu.room_version = send_room_ver.empty() ? std::string{"12"} : send_room_ver;
 
-            // Resolve the sender domain's signing key. For the direct case
-            // (sender_domain == request.origin) use the remote's key; for the
-            // relayed case resolve via remote_key_resolver.
-            auto const pdu_sender_dom = sender_domain(pdu.sender);
-            auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
-            if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
-            {
-                // Relayed PDU: resolve the sender domain's key separately.
-                auto key_id = std::string{};
-                for (auto const& sig : pdu.signatures)
-                {
-                    if (sig.server_name == pdu_sender_dom)
-                    {
-                        key_id = sig.key_id;
-                        break;
-                    }
-                }
-                if (!key_id.empty())
-                {
-                    auto const resolved =
-                        resolve_admitted_sender_key(runtime, request.remote_addr, pdu_sender_dom, key_id);
-                    if (!resolved.key.has_value() &&
-                        resolved.failure == KeyResolutionFailureKind::local_resource_denial)
-                    {
-                        return {503U, homeserver::matrix_error("M_UNKNOWN",
-                                                               "local signing-key resolution admission unavailable")};
-                    }
-                    key_for_pdu = resolved.key;
-                }
-                else
-                {
-                    key_for_pdu = std::nullopt;
-                }
-            }
-
-            // Signature verification (Ed25519 + key validity). For restricted joins
-            // the authorising user's homeserver signature is also verified (EVT-1).
-            auto const pdu_decision = authorize_admitted_federation_pdu(runtime, request, pdu, key_for_pdu);
+            // Signature verification (Ed25519 + key validity) against every
+            // key ID the event lists for its sender's server (R05); the
+            // request's X-Matrix key is tried first without a lookup. For
+            // restricted joins the authorising user's homeserver signature is
+            // also verified (EVT-1), except on send_join when that server is
+            // this one: the acceptor checks the allow conditions and then adds
+            // the signature itself (R04, ADR-0185).
+            // Spec v1.19 send_join / send_leave / send_knock: "servers SHOULD
+            // return `M_INVALID_PARAM` if: The ... event fails a signature check".
+            // A local key-resolution overload is not a verdict: 503, retryable.
+            auto const none = PrefetchedSenderKeys{};
+            auto const pdu_decision = authorize_admitted_federation_pdu(
+                runtime, request, pdu, remote.signing_key,
+                PduSignatureChecks{none, route.endpoint == FederationEndpoint::send_join
+                                             ? std::string_view{runtime.config.server_name}
+                                             : std::string_view{}});
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.membership_rejected", request.origin, request.target,
                                  pdu_decision.reason);
-                return {pdu_decision.status == 0U ? std::uint16_t{403U} : pdu_decision.status,
-                        homeserver::matrix_error(pdu_decision.status == 503U ? "M_UNKNOWN" : "M_FORBIDDEN",
-                                                 pdu_decision.reason)};
+                if (pdu_decision.status == 503U)
+                {
+                    return {503U, homeserver::matrix_error("M_UNKNOWN", pdu_decision.reason)};
+                }
+                return {400U, homeserver::matrix_error("M_INVALID_PARAM", pdu_decision.reason)};
             }
 
-            // Content hash verification (spec: servers MUST verify content hash
-            // before processing the event).
-            {
-                auto const parsed_for_hash = canonicaljson::parse_lossless(envelope->json);
-                if (parsed_for_hash.error != canonicaljson::ParseError::none ||
-                    !events::verify_pdu_content_hash(parsed_for_hash.value))
-                {
-                    audit_federation(runtime, "federation.membership_hash_rejected", request.origin, request.target,
-                                     "content-hash-mismatch");
-                    return {403U, homeserver::matrix_error("M_FORBIDDEN", "PDU content hash verification failed")};
-                }
-            }
+            // Audit R06: the content hash is NOT checked here. Spec "Checks
+            // performed on receipt of a PDU", step 3: "Passes hash checks,
+            // otherwise it is redacted before being processed further." The
+            // membership acceptor redacts on a mismatch and stores, authorises
+            // and returns the redacted copy (it runs on the worker-relay path
+            // too, so the rule holds wherever the event is accepted).
         }
         envelope->origin = request.origin;
         auto const acceptance =
@@ -1408,56 +1413,39 @@ namespace
             pdu.json = invite_request->invite_event_json;
             pdu.room_version = room_ver;
 
-            // Resolve the sender domain's signing key.
-            auto const pdu_sender_dom = sender_domain(pdu.sender);
-            auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
-            if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
-            {
-                auto key_id = std::string{};
-                for (auto const& sig : pdu.signatures)
-                {
-                    if (sig.server_name == pdu_sender_dom)
-                    {
-                        key_id = sig.key_id;
-                        break;
-                    }
-                }
-                if (!key_id.empty())
-                {
-                    auto const resolved =
-                        resolve_admitted_sender_key(runtime, request.remote_addr, pdu_sender_dom, key_id);
-                    if (!resolved.key.has_value() &&
-                        resolved.failure == KeyResolutionFailureKind::local_resource_denial)
-                    {
-                        return {503U, homeserver::matrix_error("M_UNKNOWN",
-                                                               "local signing-key resolution admission unavailable")};
-                    }
-                    key_for_pdu = resolved.key;
-                }
-                else
-                {
-                    key_for_pdu = std::nullopt;
-                }
-            }
-
-            // Signature verification.
-            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
+            // Signature verification against every key ID the invite lists for
+            // its sender's server (R05), through the admitted lookup; the
+            // request's X-Matrix key is tried first without one. Spec v1.19
+            // PUT /invite (v1 and v2): "servers SHOULD return `M_INVALID_PARAM`
+            // if: The invite event fails a signature check". A local
+            // key-resolution overload is not a verdict: 503, retryable.
+            auto const pdu_decision = authorize_federation_pdu_sender(
+                pdu, remote.signing_key,
+                [&runtime, &request](std::string_view server_name,
+                                     std::string_view key_id) -> VerificationKeyResolution {
+                    auto resolved = resolve_admitted_sender_key(runtime, request.remote_addr, server_name, key_id);
+                    auto const denied = !resolved.key.has_value() &&
+                                        resolved.failure == KeyResolutionFailureKind::local_resource_denial;
+                    return {std::move(resolved.key), denied};
+                });
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
                                  pdu_decision.reason);
-                return {pdu_decision.status == 0U ? std::uint16_t{400U} : pdu_decision.status,
-                        homeserver::matrix_error("M_INVALID_PARAM", pdu_decision.reason)};
+                if (pdu_decision.status == 503U)
+                {
+                    return {503U, homeserver::matrix_error("M_UNKNOWN", pdu_decision.reason)};
+                }
+                return {400U, homeserver::matrix_error("M_INVALID_PARAM", pdu_decision.reason)};
             }
 
-            // Content hash verification.
-            if (!events::verify_pdu_content_hash(parsed_event.value))
-            {
-                audit_federation(runtime, "federation.invite_hash_rejected", request.origin, request.target,
-                                 "content-hash-mismatch");
-                return {400U,
-                        homeserver::matrix_error("M_INVALID_PARAM", "invite event content hash verification failed")};
-            }
+            // Audit R06: the content hash is NOT checked here. Spec "Checks
+            // performed on receipt of a PDU", step 3: "Passes hash checks,
+            // otherwise it is redacted before being processed further." The
+            // invite handler redacts a mismatched invite before it authorises,
+            // signs or stores it (it also serves the worker relay), so it must
+            // know the room version the event was checked under.
+            invite_request->room_version = room_ver;
         }
         // Forward the X-Matrix origin so the invite_handler can enforce the
         // sender/origin match (spec §4223).
@@ -1598,24 +1586,33 @@ namespace
         {
             return {400U, "query/profile requires a user_id parameter"};
         }
+        // Spec v1.19 (query/profile, `field`): "Defined values are `displayname`,
+        // `avatar_url` and `m.tz`. In addition to these servers MAY allow users to
+        // set additional key/value pairs." Any key is therefore a valid request;
+        // this server stores only displayname and avatar_url, so every other key
+        // (m.tz included, audit R18) is a field the user does not have, which the
+        // spec answers with 404: "the queried field does not exist".
         auto const field = query_param_value(request.target, "field");
-        if (!field.empty() && field != "displayname" && field != "avatar_url")
-        {
-            return {400U, "query/profile field must be displayname or avatar_url"};
-        }
         auto const profile = runtime.profile_query_provider(user_id);
         if (!profile.found)
         {
             return {404U, homeserver::matrix_error("M_NOT_FOUND", "Profile not found")};
         }
+        // 200: "If the user does not have a particular field set on their profile,
+        // the server MUST either exclude it from the response body or give it the
+        // value null." An unset field is left out, never sent as "".
         auto response = canonicaljson::Object{};
-        if (field.empty() || field == "displayname")
+        if ((field.empty() || field == "displayname") && !profile.displayname.empty())
         {
             response.push_back(canonicaljson::make_member("displayname", canonicaljson::Value{profile.displayname}));
         }
-        if (field.empty() || field == "avatar_url")
+        if ((field.empty() || field == "avatar_url") && !profile.avatar_url.empty())
         {
             response.push_back(canonicaljson::make_member("avatar_url", canonicaljson::Value{profile.avatar_url}));
+        }
+        if (!field.empty() && response.empty())
+        {
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Profile field not found")};
         }
         auto body = serialize_response_object(std::move(response));
         if (body.empty())
@@ -2331,6 +2328,186 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     return make_decision(true, 200U, {});
 }
 
+namespace
+{
+
+    // True for a signing key identifier whose algorithm this server
+    // understands (appendices.md "Checking for a Signature", step 2).
+    [[nodiscard]] auto signing_key_algorithm_is_supported(std::string_view key_id) noexcept -> bool
+    {
+        auto constexpr ed25519_prefix = std::string_view{"ed25519:"};
+        return key_id.size() > ed25519_prefix.size() && key_id.starts_with(ed25519_prefix);
+    }
+
+    // The sender-signature loop (audit R05, ADR-0183). server-server-api.md
+    // "Validating hashes and signatures on received events": "If a signature is
+    // from an unknown or expired key, it is skipped" and "If all signatures
+    // from known unexpired keys from the originating server(s) are found to be
+    // valid, the expected content hash is calculated". So every listed key that
+    // resolves and is valid at the event's origin_server_ts must verify, and at
+    // least one must (appendices.md "Checking for a Signature", step 3: no
+    // verification key, the check fails). A local admission denial or the
+    // deadline leaves a key's status unknown, so the outcome is a retryable
+    // 503 / 504 rather than a verdict, even when another key verified.
+    [[nodiscard]] auto verify_every_known_listed_key(
+        canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version, std::string_view server_name,
+        std::vector<std::string> const& key_ids, SignatureKeyResolver const& resolve_key,
+        crypto::Ed25519Provider& provider, std::chrono::steady_clock::time_point deadline) -> FederationDecision
+    {
+        auto verified = std::size_t{0U};
+        auto locally_denied = false;
+        for (auto const& key_id : key_ids)
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                return make_decision(false, 504U, "signing-key resolution exceeded the caller's deadline");
+            }
+            auto const resolved = resolve_key ? resolve_key(server_name, key_id) : VerificationKeyResolution{};
+            if (resolved.locally_denied)
+            {
+                locally_denied = true;
+                continue;
+            }
+            // Unknown: skipped. A key filed under another server is no key of
+            // this one, so it is unknown too.
+            if (!resolved.key.has_value() || resolved.key->server_name != server_name)
+            {
+                continue;
+            }
+            auto const validity = check_signing_key_valid_for_event(*resolved.key, event, room_version);
+            if (!validity.accepted)
+            {
+                if (validity.status == 400U)
+                {
+                    return validity;
+                }
+                // Expired before the event was sent: skipped.
+                continue;
+            }
+            auto const signature =
+                events::verify_event_signature(event, room_version, {std::string{server_name}, key_id},
+                                               crypto::Ed25519PublicKey{resolved.key->public_key_bytes}, provider);
+            if (!signature.valid)
+            {
+                return make_decision(false, 403U, "signature by a known key does not verify: " + signature.error);
+            }
+            ++verified;
+        }
+        if (locally_denied)
+        {
+            return make_decision(false, 503U, "local signing-key resolution admission unavailable");
+        }
+        if (verified == 0U)
+        {
+            return make_decision(false, 403U, "no listed signing key of the server is known and unexpired");
+        }
+        return make_decision(true, 200U, {});
+    }
+
+} // namespace
+
+auto signature_key_ids_for_server(std::vector<events::EventSignature> const& signatures, std::string_view server_name)
+    -> std::vector<std::string>
+{
+    auto key_ids = std::vector<std::string>{};
+    for (auto const& signature : signatures)
+    {
+        if (key_ids.size() == max_signature_keys_per_server)
+        {
+            break;
+        }
+        if (signature.server_name != server_name || !signing_key_algorithm_is_supported(signature.key_id) ||
+            std::ranges::find(key_ids, signature.key_id) != key_ids.end())
+        {
+            continue;
+        }
+        key_ids.push_back(signature.key_id);
+    }
+    return key_ids;
+}
+
+auto lists_too_many_signature_keys(std::vector<events::EventSignature> const& signatures, std::string_view server_name)
+    -> bool
+{
+    auto key_ids = std::vector<std::string_view>{};
+    for (auto const& signature : signatures)
+    {
+        if (signature.server_name != server_name || !signing_key_algorithm_is_supported(signature.key_id) ||
+            std::ranges::find(key_ids, std::string_view{signature.key_id}) != key_ids.end())
+        {
+            continue;
+        }
+        key_ids.push_back(signature.key_id);
+        if (key_ids.size() > max_signature_keys_per_server)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto verify_server_signatures_on_event(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version,
+                                       std::string_view server_name,
+                                       std::vector<events::EventSignature> const& signatures,
+                                       SignatureKeyResolver const& resolve_key, crypto::Ed25519Provider& provider,
+                                       std::chrono::steady_clock::time_point deadline) -> FederationDecision
+{
+    if (lists_too_many_signature_keys(signatures, server_name))
+    {
+        return make_decision(false, 403U, "event lists more signing keys for the server than are checked");
+    }
+    auto const key_ids = signature_key_ids_for_server(signatures, server_name);
+    if (key_ids.empty())
+    {
+        return make_decision(false, 403U, "event carries no supported signature from the server");
+    }
+    return verify_every_known_listed_key(event, room_version, server_name, key_ids, resolve_key, provider, deadline);
+}
+
+auto authorize_federation_pdu_sender(FederationPdu const& pdu, std::optional<FederationKeyRecord> const& known_key,
+                                     SignatureKeyResolver const& resolve_key,
+                                     std::chrono::steady_clock::time_point deadline) -> FederationDecision
+{
+    if (pdu.event_id.empty() || pdu.room_id.empty() || pdu.event_type.empty() || pdu.sender.empty())
+    {
+        return make_decision(false, 400U, "PDU is missing required fields");
+    }
+    auto const pdu_sender_domain = sender_domain(pdu.sender);
+    auto const presence = verify_federation_event_signatures(pdu.signatures, pdu_sender_domain);
+    if (!presence.accepted)
+    {
+        return make_decision(false, 403U, presence.reason);
+    }
+    if (pdu.json.empty())
+    {
+        return make_decision(false, 400U, "comma-delimited PDUs require JSON for cryptographic verification");
+    }
+    auto const* room_version =
+        rooms::find_room_version_policy(pdu.room_version.empty() ? std::string{"12"} : pdu.room_version);
+    if (room_version == nullptr)
+    {
+        return make_decision(false, 500U, "room version policy is unavailable");
+    }
+    auto const parsed = canonicaljson::parse_lossless(pdu.json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+    }
+    // The key already in hand (a direct request's X-Matrix key) costs no
+    // lookup when it is one of the sender's listed keys.
+    auto const known_is_sender_key = known_key.has_value() && known_key->server_name == pdu_sender_domain;
+    auto const resolve = [&](std::string_view server_name, std::string_view key_id) -> VerificationKeyResolution {
+        if (known_is_sender_key && server_name == known_key->server_name && key_id == known_key->key_id)
+        {
+            return {known_key};
+        }
+        return resolve_key ? resolve_key(server_name, key_id) : VerificationKeyResolution{};
+    };
+    auto verifier = FederationEd25519Verifier{};
+    return verify_server_signatures_on_event(parsed.value, *room_version, pdu_sender_domain, pdu.signatures, resolve,
+                                             verifier, deadline);
+}
+
 auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::optional<AuthorisingSignatureKey>
 {
     auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
@@ -2378,7 +2555,9 @@ auto join_authorising_signature_key(canonicaljson::Value const& event) -> std::o
             {
                 break;
             }
-            if (!member.key.empty())
+            // Only identifiers of an algorithm this server understands count
+            // toward the cap (appendices.md "Checking for a Signature", step 2).
+            if (signing_key_algorithm_is_supported(member.key))
             {
                 key.key_ids.push_back(member.key);
             }
@@ -2475,7 +2654,24 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
                               RemoteKeyResolver const& remote_key_resolver, crypto::Ed25519Provider& provider)
     -> FederationDecision
 {
-    auto const sender_decision = authorize_federation_pdu(pdu, expected_origin, key);
+    std::ignore = expected_origin;
+    // A RemoteKeyResolver reports no local admission denial, so a failed
+    // lookup here is reported as unresolved.
+    auto const resolve_key = [&remote_key_resolver](std::string_view server_name,
+                                                    std::string_view key_id) -> VerificationKeyResolution {
+        if (!remote_key_resolver)
+        {
+            return {};
+        }
+        auto resolved = remote_key_resolver(server_name, key_id);
+        if (!resolved.has_value())
+        {
+            return {};
+        }
+        return {std::move(resolved->signing_key)};
+    };
+    // R05: every key ID listed for the sender's server, `key` first.
+    auto const sender_decision = authorize_federation_pdu_sender(pdu, key, resolve_key);
     if (!sender_decision.accepted)
     {
         return sender_decision;
@@ -2493,23 +2689,6 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     {
         return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
     }
-
-    // The caller (authorize_admitted_federation_pdu) turns a local admission
-    // denial inside remote_key_resolver into its own 503, so a failed lookup
-    // here is reported as unresolved.
-    auto const resolve_key = [&remote_key_resolver](std::string_view server_name,
-                                                    std::string_view key_id) -> VerificationKeyResolution {
-        if (!remote_key_resolver)
-        {
-            return {};
-        }
-        auto resolved = remote_key_resolver(server_name, key_id);
-        if (!resolved.has_value())
-        {
-            return {};
-        }
-        return {std::move(resolved->signing_key)};
-    };
     return verify_join_authorising_server_signature(parsed.value, *room_version, resolve_key, provider);
 }
 
@@ -3210,7 +3389,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // Fan-out is capped by `join_parallelism` (the federation-wide concurrency
     // cap; see docs/user-manual.md). A configured value of 0 is clamped to 1
     // (sequential) — config validation already rejects 0, this is defensive.
-    auto sender_key_map = std::map<std::pair<std::string, std::string>, SenderKeyResolution>{};
+    auto sender_key_map = PrefetchedSenderKeys{};
     if (runtime.remote_key_resolver && !transaction.pdus.empty())
     {
         auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
@@ -3223,20 +3402,15 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             {
                 continue;
             }
-            auto key_id = std::string{};
-            for (auto const& sig : pdu.signatures)
-            {
-                if (sig.server_name == dom)
-                {
-                    key_id = sig.key_id;
-                    break;
-                }
-            }
-            if (key_id.empty())
+            // Only the first listed key is fetched ahead: it is the one a
+            // server signs with. Any further candidate (R05) is looked up only
+            // if that one does not verify, through the same admitted path.
+            auto const key_ids = signature_key_ids_for_server(pdu.signatures, dom);
+            if (key_ids.empty())
             {
                 continue;
             }
-            auto const key = std::make_pair(dom, key_id);
+            auto const key = std::make_pair(dom, key_ids.front());
             if (seen.insert(key).second)
             {
                 distinct_pairs.push_back(key);
@@ -3319,70 +3493,17 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             }
         }
 
-        auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
-        if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
-        {
-            auto sender_key_id = std::string{};
-            for (auto const& sig : pdu.signatures)
-            {
-                if (sig.server_name == pdu_sender_dom)
-                {
-                    sender_key_id = sig.key_id;
-                    break;
-                }
-            }
-            if (!sender_key_id.empty())
-            {
-                // Use the pre-resolved sender key from the parallel fan-out
-                // above. Fall back to a synchronous resolve only if the pre-pass
-                // missed this pair (defensive — the pre-pass collects every
-                // relayed (sender_domain, key_id) pair), then apply the same
-                // fail-closed contract: no key → PDU rejected, not persisted.
-                auto resolved_key = SenderKeyResolution{};
-                auto const it = sender_key_map.find(std::pair<std::string, std::string>{pdu_sender_dom, sender_key_id});
-                if (it != sender_key_map.end())
-                {
-                    resolved_key = it->second;
-                }
-                else
-                {
-                    resolved_key =
-                        resolve_admitted_sender_key(runtime, request.remote_addr, pdu_sender_dom, sender_key_id);
-                }
-                if (resolved_key.key.has_value())
-                {
-                    key_for_pdu = *resolved_key.key;
-                }
-                else
-                {
-                    if (resolved_key.failure == KeyResolutionFailureKind::local_resource_denial)
-                    {
-                        local_key_resolution_denied = true;
-                        auto const reason = std::string{"local signing-key resolution admission unavailable"};
-                        pdu_errors.push_back(canonicaljson::make_member(
-                            pdu.event_id, canonicaljson::Value{canonicaljson::Object{
-                                              canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
-                        continue;
-                    }
-                    record_remote_trust_failure(remote.trust);
-                    ++pdu_trust_failures;
-                    auto const reason = std::string{"relayed PDU: could not resolve sender domain signing key"};
-                    log_diagnostic("pdu.rejected", {
-                                                       {"origin",     request.origin,              false},
-                                                       {"sender_dom", std::string{pdu_sender_dom}, false},
-                                                       {"reason",     reason,                      false}
-                    });
-                    audit_federation(runtime, "federation.rejected", request.origin, request.target, reason);
-                    pdu_errors.push_back(canonicaljson::make_member(
-                        pdu.event_id, canonicaljson::Value{canonicaljson::Object{
-                                          canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
-                    continue;
-                }
-            }
-        }
-        // Signature verification (Ed25519 + key validity). For restricted joins
-        // the authorising user's homeserver signature is also verified (EVT-1).
-        auto const pdu_decision = authorize_admitted_federation_pdu(runtime, request, pdu, key_for_pdu);
+        // Signature verification (Ed25519 + key validity) against every key ID
+        // the PDU lists for its sender's server, up to
+        // max_signature_keys_per_server (R05, ADR-0183): the request's X-Matrix
+        // key first when the sender is the origin, then the pre-resolved key
+        // from the fan-out above, then an admitted lookup. Fail-closed: no key
+        // that verifies → the PDU is rejected, not persisted; a local
+        // admission denial with nothing verified is a retryable 503. For
+        // restricted joins the authorising user's homeserver signature is
+        // also verified (EVT-1).
+        auto const pdu_decision = authorize_admitted_federation_pdu(runtime, request, pdu, remote.signing_key,
+                                                                    PduSignatureChecks{sender_key_map});
         if (!pdu_decision.accepted)
         {
             if (pdu_decision.status == 503U)

@@ -91,15 +91,15 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::st
     REQUIRE(resp.response.status == 200U);
 }
 
-// PUT a deliberately non-JSON m.ignored_user_list body — proves malformed
-// account data is treated as "nothing ignored" rather than erroring.
-auto set_malformed_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
-                                 std::string const& percent_encoded_user_id) -> void
+// Stores a deliberately non-JSON m.ignored_user_list row — proves malformed
+// account data is treated as "nothing ignored" rather than erroring. Since
+// 0.12.38 the PUT API refuses such a body (spec, PUT /user/{userId}/account_data/{type}:
+// 400 "The request body is not a JSON object", conformance audit R11), so the
+// row is written straight to the store, as one stored by an earlier version would be.
+auto set_malformed_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::string const& user_id) -> void
 {
-    auto const resp = merovingian::homeserver::handle_client_server_request(
-        rt, {"PUT", "/_matrix/client/v3/user/" + percent_encoded_user_id + "/account_data/m.ignored_user_list", token,
-             "this is not valid JSON at all"});
-    REQUIRE(resp.response.status == 200U);
+    REQUIRE(merovingian::homeserver::set_account_data(
+        rt, {user_id, std::string{}, "m.ignored_user_list", "this is not valid JSON at all", 0U}));
 }
 
 [[nodiscard]] auto create_room_with_invite(merovingian::homeserver::ClientServerRuntime& rt,
@@ -466,7 +466,7 @@ SCENARIO("a malformed m.ignored_user_list is treated as empty rather than blocki
         REQUIRE(baseline.response.status == 200U);
         auto const since = next_batch_of(baseline.response.body);
 
-        set_malformed_ignored_users(rt, alice, "%40alice%3Aexample.org");
+        set_malformed_ignored_users(rt, "@alice:example.org");
 
         WHEN("bob sends a message and alice syncs")
         {

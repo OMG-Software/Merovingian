@@ -1,5 +1,6 @@
 homeserver_sources = files(
   'appservice_delivery.cpp',
+  'appservice_ephemeral.cpp',
   'auth_service.cpp',
   'client_outbound_proxy.cpp',
   'client_server.cpp',
@@ -19,6 +20,7 @@ homeserver_sources = files(
   'stored_room_version.cpp',
   'remote_media_fetch_scope.cpp',
   'request_lock.cpp',
+  'restricted_join.cpp',
   'room_service.cpp',
   'runtime.cpp',
   'runtime_mutex.cpp',

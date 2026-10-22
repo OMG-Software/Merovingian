@@ -266,14 +266,17 @@ struct SendJoinStateIngestResult final
 // Spec (Client-Server API, "Events on Change of Profile Information"): when a user changes their
 // display name or avatar URL, "an m.room.member event (with a join membership) is sent to every
 // room the user is a member of, to update the displayname and avatar_url". Sends that event,
-// carrying the user's current profile, through send_event to each room `access_token`'s user has
-// joined whose membership does not already carry it. A room that refuses the event (its auth
-// rules or size limits) is logged; the others still get theirs. Then sends the section's
+// carrying the user's current profile, through send_event to each room whose current m.room.member
+// state for `access_token`'s user is a join that does not already carry it. A room the runtime
+// member list names but whose state does not hold the user as joined is skipped, never joined
+// (ADR-0182). A room that refuses the event (its auth rules, room version, size limits or a storage
+// failure) is logged as a warning; the others still get theirs. Then sends the section's
 // m.presence update: the user's current presence (offline if
 // never set) is stored again at a new sync stream position, and /sync adds the display name and
-// avatar URL to it. Reports failure if any room or presence update fails, even though the profile
-// and other rooms may already be updated. Retrying the same profile update repairs pending rooms
-// without sending duplicate membership events to rooms already current. Takes runtime.mutex (recursive).
+// avatar URL to it. Called after the profile is stored, so it succeeds whatever the rooms and
+// presence do: only an unauthenticated token fails it (401). A room left behind is sent the next
+// profile update, without duplicate membership events to rooms already current. Takes
+// runtime.mutex (recursive).
 [[nodiscard]] auto propagate_profile_change(HomeserverRuntime& runtime, std::string_view access_token)
     -> OperationResult;
 // Evaluates push rules and dispatches push notifications (and GET

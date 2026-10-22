@@ -261,12 +261,17 @@ struct ClientApiConfig final
     //   - max_filters_per_user: stored sync filters per user.
     //   - max_global_account_data_per_user: global (non-room) account-data
     //     types per user; updating a type the user holds is always allowed.
-    //     Room account data is not counted: it is written only for rooms the
-    //     user is joined to (tags, read markers). ADR-0173.
+    //     Room account data is not counted here. ADR-0173.
+    //   - max_room_account_data_per_room: client-set account-data types a
+    //     user holds in one room, written only for a room the user holds a
+    //     membership in; updating a held type is always allowed. The m.tag
+    //     and m.fully_read rows the tags and read-marker APIs write count
+    //     towards it but are never refused. ADR-0197.
     std::uint32_t max_one_time_keys_per_device{1000U};
     std::uint32_t max_key_signatures_per_user{10000U};
     std::uint32_t max_filters_per_user{1000U};
     std::uint32_t max_global_account_data_per_user{1000U};
+    std::uint32_t max_room_account_data_per_room{100U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
 };
@@ -769,6 +774,11 @@ struct AppserviceConfig final
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{30U};
     std::string response_max_size{"16MiB"};
+    // The most events that may sit queued (appservice_outbox rows) for ONE appservice. At the cap
+    // further events for that appservice are not queued, counted, logged at warning level and
+    // audited, so a bridge that never returns cannot grow the store and every in-memory mirror
+    // without bound (ADR-0191, refining ADR-0163). Restart required like the rest of appservice.*.
+    std::uint32_t max_queued_events{100000U};
 };
 
 struct SecurityConfig final

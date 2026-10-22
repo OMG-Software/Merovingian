@@ -28,6 +28,159 @@ early or look thread parents up cheaply.
   `tests/integration/test_postgresql_persistence_flow.cpp` cover hydration after a status update moves
   the row.
 
+## 0.12.38
+
+Conformance audit (2026-10-17) wave 4: the Client-Server API findings R10, R11, R12, R13 and R16.
+
+- **FIXED (R10):** `GET` and `PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type}`
+  were not routed. They now store and read room account data, which `/sync` and sliding sync
+  deliver in the room's `account_data` and which never falls back to the global type of the same
+  name. A malformed room ID is `400 M_INVALID_PARAM`. A `PUT` needs a membership row in the room
+  (`404 M_NOT_FOUND` otherwise), and a new type past the new
+  `server.client_api.max_room_account_data_per_room` (default 100) in that room is
+  `400 M_TOO_LARGE`; an update to a held type always succeeds (ADR-0197, refining ADR-0173).
+- **FIXED (R11):** both account-data `PUT`s stored any body. A body that is not JSON is now
+  `400 M_NOT_JSON`, JSON that is not an object `400 M_BAD_JSON`, and the server-managed
+  `m.fully_read` and `m.push_rules` `405 M_BAD_JSON`, globally and per room. Nothing is stored.
+- **FIXED (R12):** `POST /register` without `username` was `400 M_BAD_JSON`. The server now
+  generates the localpart, as the spec requires: 16 hex characters from the CSPRNG, redrawn if
+  reserved, taken or in an application service's namespace (ADR-0198).
+- **FIXED (R13):** typing never expired, and a `typing` that was not a boolean counted as true.
+  `PUT /rooms/{roomId}/typing/{userId}` now refuses a missing `typing` (`M_MISSING_PARAM`), a
+  non-boolean one or a non-integer `timeout` (`M_BAD_JSON`), a negative `timeout`
+  (`M_INVALID_PARAM`) and a body that is not JSON (`M_NOT_JSON`), changing nothing. Typing lasts
+  the client's `timeout` (30 s when omitted, at most 120 s) and, for a remote user, 60 s from
+  their server's latest EDU. A new "typing-expiry" background job removes expired typing, wakes
+  `/sync` and sliding-sync waiters with the room's new `m.typing`, and sends `typing: false` to
+  remote servers for local users (ADR-0199).
+- **FIXED (R16):** `/search` covered only rooms the user was joined to. It now covers every room
+  the user has been in, including rooms left, kicked or banned from after a join, each event still
+  judged by history visibility, so nothing sent after the user left is returned. `include_state`
+  gives a left room's state as of the leave. Forgotten rooms, invites and knocks are not searched.
+- **FIXED (data race, found in review):** the federated `m.typing` EDU sink, which the dispatcher
+  runs without `runtime.mutex`, read and wrote typing state unlocked, racing the client typing
+  route, `/sync` and the new typing-expiry job. It now takes the lock itself.
+- **R12 follow-up:** a `username` (or legacy `user`) that is present but not a string is now
+  `400 M_BAD_JSON`, not treated as omitted, so it no longer creates an account with a generated ID.
+- **R13 follow-up:** setting a user typing wakes the typing-expiry job, so a deadline shorter than
+  the job's current sleep (up to 5 s) is no longer missed.
+- **R20 (open):** `POST /register` runs User-Interactive Authentication before the username checks
+  the spec says must come first; recorded in the audit report, not yet scheduled.
+- **FIXED (found in review):** account-data and typing bodies were parsed with the canonical-JSON
+  parser, which refuses fractional numbers, so a valid body such as `{"order":0.5}` was
+  `400 M_NOT_JSON`. They now use the general parser (account data is never signed), and a
+  fractional typing `timeout` is `400 M_BAD_JSON`. The sliding-sync `account_data` extension also
+  read stored account data with the canonical parser and sent `{}` for an `m.tag` with an `order`;
+  it now delivers the content. The same canonical re-read was fixed where stored account data
+  reaches a client or is rewritten: the sliding-sync response assembly, room `initialSync`,
+  sliding sync's `is_dm` (`m.direct`), and `createRoom`'s `is_direct` update of `m.direct`, which
+  started from an empty mapping and destroyed the user's existing direct rooms when their
+  `m.direct` held a fractional number.
+- **R13 follow-up:** the typing-expiry pass no longer rescans the typing table for every expired
+  room while holding the runtime lock; it groups the table by room in a fixed number of passes.
+- **Tests:** new `tests/conformance/test_account_data_conformance.cpp` and
+  `tests/conformance/test_typing_conformance.cpp`; new scenarios for `/register` without
+  `username`, `/search` of a left and a forgotten room, the room account-data caps, the room
+  capped store, remote typing expiry and the new configuration key. The four conformance
+  scenarios that asserted `404 M_UNRECOGNIZED` for room account data are replaced by normative
+  ones. The ignoring-users scenario for a malformed `m.ignored_user_list` now writes the bad row
+  straight to the store, since the PUT API refuses it.
+
+## 0.12.37
+
+Conformance audit wave 3: the Application Service and Identity Service findings R07, R08 and R09,
+the appservice ping and network directories, and `createRoom` appservice delivery.
+
+- **FIXED (R07):** an appservice was interested in an event only through its sender, the room's
+  joined members, or the room's first alias, so an invite to one of its virtual users (who is not yet
+  joined) never reached it. Interest now includes the `state_key` of an `m.room.member` event (the
+  target) and every alias of the room (`appservice::EventInterestFacts`). An invite received over
+  federation for a room this server is not in, stored only as an outlier, is now queued too: no
+  later transaction brings it again.
+- **FIXED (R08):** `receive_ephemeral` is honoured. `m.typing`, `m.receipt` (a private read receipt
+  only for a user in the appservice's namespaces) and `m.presence` (including the one a profile
+  change sends) are queued in memory per appservice, coalesced by what they describe, bounded (512
+  items, 100 per transaction, 20000 namespace matches per presence update), and sent in the
+  transaction's `ephemeral` array, alone in an events-free transaction when no event is queued. A
+  retry resends the same items under the same ID (ADR-0190).
+- **FIXED (R09):** the four `requestToken` endpoints forward `send_attempt` to the identity server.
+- **ADDED:** `POST /_matrix/client/v1/appservice/{appserviceId}/ping` and the outbound
+  `POST /_matrix/app/v1/ping`, with `duration_ms`, `M_URL_NOT_SET`, `M_FORBIDDEN`,
+  `M_CONNECTION_FAILED`, `M_BAD_STATUS` (status and a bounded body) and `M_CONNECTION_TIMEOUT`. The
+  call releases `runtime.mutex` and holds a client-outbound slot; `transaction_id` is copied as given.
+- **ADDED:** `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}`, persisted in the
+  new `appservice_directory` table (migration `025`, schema version 25), and `third_party_instance_id`
+  / `include_all_networks` on `POST /publicRooms`. `instance_id` is now
+  `<registration id>:<protocol>:<index>` so it names the network (ADR-0192). An appservice may list
+  only a room it is interested in, under a protocol it declares.
+- **FIXED:** `createRoom` queues the events it creates for interested appservices, as does the
+  third-party invite stored on join.
+- **SECURITY:** the queue of one appservice is capped by `appservice.max_queued_events` (default
+  100000). Further events are refused, counted (`merovingian_appservice_outbox_dropped_total`),
+  logged and audited as `appservice.outbox.full` (ADR-0191, noted on ADR-0163). New metrics:
+  `merovingian_appservice_outbox_queued` and `merovingian_appservice_ephemeral_dropped_total`.
+- **SECURITY:** every client-server route that forwards an `id_access_token` refuses one that is not
+  printable ASCII without spaces of at most 4096 bytes (`400 M_INVALID_PARAM`), before the outbound
+  client's own header check (ADR-0180).
+
+## 0.12.36
+
+Fixes the federation findings of the 17 October 2026 conformance audit (wave 2: R04, R05, R06,
+R18). No migration.
+
+- **FIXED (R04):** this server could not be the resident that authorises a restricted-room join.
+  `GET /make_join` never named a `join_authorised_via_users_server`, and `send_join` never added
+  this server's signature, so every non-invited join into a restricted or `knock_restricted` room
+  failed. `homeserver::decide_restricted_join` now checks the room's allow conditions against this
+  server's current state and picks a joined local user with invite power. `make_join` names that
+  user (and their member event among the auth events) or refuses with 400
+  `M_UNABLE_TO_AUTHORISE_JOIN`, 400 `M_UNABLE_TO_GRANT_JOIN` or 403 `M_FORBIDDEN`. An allow
+  condition counts as verifiable only while this server is resident in the room it names: state
+  kept after leaving is not current. `send_join` co-signs only a join it authorises, before it is
+  stored, after dropping any signature the joining server filed under this server's name; it
+  returns the co-signed event. A local user's join into a local restricted room carries the field
+  too, and a client cannot name an authoriser through `PUT /state` to skip the check. A join by a
+  user who is already joined (a profile update that copies the join's content) has the field
+  dropped instead, as m.room.member encourages, so it is not refused. Federation
+  workers relay `make_join` to main, which holds every room the conditions name (ADR-0184,
+  ADR-0185).
+- **FIXED (R05):** the sender's signature on a relayed PDU, an invite, a worker-relayed event, a
+  backfilled event and `send_join` state was checked only against the first key ID listed for the
+  sender's server. Every listed `ed25519` key ID is now checked, as "Validating hashes and
+  signatures on received events" requires: an unknown key, or one expired before the event's
+  `origin_server_ts`, is skipped; a known, unexpired key whose signature does not verify refuses
+  the event; at least one must verify. An event listing more than four key IDs for its sender's
+  server is refused before any lookup, and a local key-lookup overload is a retryable 503
+  (ADR-0183).
+- **FIXED (R06):** `send_join`, `send_leave`, `send_knock` and `/invite` (v1, v2) refused an event
+  whose content hash did not match. The spec says such an event "is redacted before being processed
+  further": the acceptor and the invite handler now redact it and authorise, sign, store and return
+  the redacted copy. An invite for a room this server does not hold is redacted and signed under the
+  request's `room_version`, not version 10. A signature failure is refused with 400 `M_INVALID_PARAM`, as those endpoints
+  say.
+- **FIXED (R18):** `GET /query/profile` refused `field=m.tz` (and any other key) with 400. Any
+  field is a valid request; one the user does not have is 404 `M_NOT_FOUND`, and an unset field is
+  left out of a full profile instead of being sent as `""`.
+- **FIXED:** the `make_join` template provider read room state without the runtime lock.
+- **DOCS:** ADR-0183 to ADR-0185; the conformance audit report marks R04, R05, R06 and R18 fixed;
+  `docs/event-engine.md`, `docs/threat-model.md`, `docs/security-coding-rules.md`,
+  `docs/architecture.md`, `docs/todos/capability-gaps.md` and the federation, homeserver,
+  federation-worker and IPC module rules updated.
+
+## 0.12.35
+
+- **FIXED:** `PUT /_matrix/client/v3/profile/{userId}/displayname` (and `avatar_url`) answered
+  `500` after storing the new value whenever one joined room or the presence write could not take
+  the propagated update, so Element reported a failed change that had happened. A room that refuses
+  every time (an unsupported room version, a missing create event, a non-federating room created
+  elsewhere) made every later profile change fail as well. The PUT now answers `200` once the field
+  is stored, as the endpoint's responses require; a room that fails is logged at warning
+  (`profile.propagation.room_failed`) and is sent the update at the next profile change (ADR-0182).
+- **FIXED:** profile propagation chose rooms from the runtime member list, which can name a user the
+  room's state says has left. In a public room the join it sent then rejoined them. Rooms are now
+  chosen by the user's current `m.room.member` state; a room only the list names is skipped
+  (`profile.propagation.not_member`).
+
 ## 0.12.34
 
 Fixes the six LOW findings from security audit run-1 (2026-10-20), and two defects found while

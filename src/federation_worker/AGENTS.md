@@ -72,7 +72,9 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    `profile_query_provider` and `event_query_provider` all relay to main over IPC. Each was a
    shipped bug when it did not (worker-accepted joins and invites invisible to main, split-brain
    one-time-key claims, stale device and profile reads); see the comments above each override in
-   `worker_event_loop.cpp`.
+   `worker_event_loop.cpp`. `membership_template_provider` relays `make_join` (only) as
+   `membership_template_ingest`: a restricted room's allow conditions name rooms another shard
+   owns (R04, ADR-0184).
 5. **`local_pool` and `relay_pool` stay separate.** `local_pool` (`federation.worker.threads`)
    serves endpoints answerable from the snapshot; `relay_pool` (`federation.worker.relay_threads`)
    serves endpoints that block on an IPC round trip or outbound HTTP.

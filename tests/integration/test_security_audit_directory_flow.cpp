@@ -6,6 +6,7 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
+#include "merovingian/database/schema.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -548,7 +549,8 @@ SCENARIO("schema version 17 rooms migrate to private directory visibility",
             THEN("the legacy room remains private and is absent from the public directory")
             {
                 REQUIRE(started.started);
-                REQUIRE(started.runtime.homeserver.database.schema_version == 24U);
+                REQUIRE(started.runtime.homeserver.database.schema_version ==
+                        merovingian::database::current_schema_version());
                 auto const persisted_room = std::ranges::find_if(
                     started.runtime.homeserver.database.persistent_store.rooms, [&legacy_room_id](auto const& room) {
                         return room.room_id == legacy_room_id;

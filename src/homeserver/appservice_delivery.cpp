@@ -8,6 +8,8 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/homeserver/appservice_ephemeral.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -18,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -125,6 +128,33 @@ namespace
         return found == newest_first.end() ? nullptr : &*found;
     }
 
+    // Every thousandth drop is reported, starting with the first: a bridge that stays down at the
+    // cap would otherwise log and audit once per event of every room it is interested in.
+    constexpr auto outbox_drop_report_interval = std::uint64_t{1000U};
+
+    // Counts an event that was not queued for `registration` because its outbox is full (ADR-0191)
+    // and reports it at warning level, which also writes an audit row naming the appservice.
+    auto record_outbox_drop(HomeserverRuntime& runtime, appservice::AppserviceRegistration const& registration,
+                            std::string_view event_id) -> void
+    {
+        auto const dropped = ++runtime.appservice_outbox_dropped[registration.id];
+        if ((dropped - 1U) % outbox_drop_report_interval != 0U)
+        {
+            return;
+        }
+        auto const reason = "outbox at " + std::to_string(runtime.config.appservice().max_queued_events) +
+                            " queued events; events dropped so far: " + std::to_string(dropped);
+        log_diagnostic_audit(runtime.database, "appservice", "appservice.outbox.full",
+                             {
+                                 {"appservice_id", registration.id,                                               false},
+                                 {"event_id",      std::string{event_id},                                         false},
+                                 {"dropped_total", std::to_string(dropped),                                       false},
+                                 {"max_queued",    std::to_string(runtime.config.appservice().max_queued_events), false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::policy,
+                             "appservice.outbox.full", registration.id, registration.id, reason);
+    }
+
     struct AppserviceDrainOutcome final
     {
         // Rows are still queued that this call did not reach (the per-call cap), so the caller
@@ -140,6 +170,90 @@ namespace
         auto& backoff = runtime.appservice_delivery_backoff[appservice_id];
         backoff.delay = backoff.delay.count() == 0 ? initial_backoff : std::min(backoff.delay * 2, maximum_backoff);
         backoff.retry_at = failed_at + backoff.delay;
+    }
+
+    // Sends `transaction` to the appservice with runtime.mutex released for the call, and advances
+    // `clock_now` by how long it took. Called with `lock` held (exactly one level: the drainer is
+    // never called under the lock).
+    [[nodiscard]] auto send_over_network(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& lock,
+                                         appservice::AppserviceRegistration const& registration,
+                                         appservice::AppserviceTransaction const& transaction,
+                                         std::chrono::steady_clock::time_point& clock_now)
+        -> appservice::AppserviceCallResult
+    {
+        auto const started = std::chrono::steady_clock::now();
+        // Built under the lock: it copies the timeouts out of the runtime config.
+        auto client = appservice::AppserviceClient{*runtime.outbound_client, *runtime.cached_discovery,
+                                                   runtime.config.appservice()};
+        auto result = [&]() {
+            auto const unlocked = RuntimeLockRelease{lock};
+            return client.send_transaction(registration, transaction);
+        }();
+        clock_now +=
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::steady_clock::now() - started);
+        return result;
+    }
+
+    auto log_send_failure(std::string const& appservice_id, appservice::AppserviceTransaction const& transaction,
+                          appservice::AppserviceCallResult const& result) -> void
+    {
+        log_diagnostic("appservice.delivery.failed",
+                       {
+                           {"appservice_id", appservice_id,                                        false},
+                           {"txn_id",        transaction.txn_id,                                   false},
+                           {"error",         std::string{http::outbound_error_name(result.error)}, false},
+                           {"detail",        result.error_detail,                                  false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+
+    // Sends the ephemeral data of one appservice on its own, in a transaction with no events
+    // (ADR-0190), because no event is queued to carry it. `pending` is the data of a transaction
+    // that failed before and is sent again under its own ID; otherwise the queue is drained into a
+    // fresh transaction whose ID comes from the cursor (its next_txn_id is persisted, nothing
+    // else is). Returns false when the attempt failed or could not be made, in which case the
+    // caller stops for this appservice until its back-off ends.
+    [[nodiscard]] auto send_ephemeral_only(HomeserverRuntime& runtime, std::unique_lock<RuntimeMutex>& lock,
+                                           appservice::AppserviceRegistration const& registration,
+                                           std::chrono::steady_clock::time_point& clock_now) -> bool
+    {
+        auto& store = runtime.database.persistent_store;
+        auto const& appservice_id = registration.id;
+        auto pending = runtime.appservice_pending_ephemeral.find(appservice_id);
+        if (pending == runtime.appservice_pending_ephemeral.end() || !pending->second.events_free)
+        {
+            auto cursor = database::find_appservice_txn_cursor(store, appservice_id);
+            auto const txn_id = cursor.next_txn_id;
+            cursor.next_txn_id += 1U;
+            if (!database::store_appservice_txn_cursor(store, cursor))
+            {
+                log_diagnostic("appservice.delivery.cursor_write_failed",
+                               {
+                                   {"appservice_id", appservice_id, false}
+                },
+                               observability::LogEventSeverity::warning);
+                record_failure(runtime, appservice_id, clock_now);
+                return false;
+            }
+            auto items = take_appservice_ephemeral(runtime, appservice_id);
+            pending = runtime.appservice_pending_ephemeral
+                          .insert_or_assign(appservice_id, AppservicePendingEphemeral{txn_id, true, std::move(items)})
+                          .first;
+        }
+
+        auto transaction = appservice::AppserviceTransaction{};
+        transaction.txn_id = std::to_string(pending->second.txn_id);
+        transaction.ephemeral_json = pending->second.items;
+        auto const result = send_over_network(runtime, lock, registration, transaction, clock_now);
+        if (result.ok || result.disabled)
+        {
+            runtime.appservice_pending_ephemeral.erase(appservice_id);
+            runtime.appservice_delivery_backoff.erase(appservice_id);
+            return true;
+        }
+        log_send_failure(appservice_id, transaction, result);
+        record_failure(runtime, appservice_id, clock_now);
+        return false;
     }
 
     // Sends the transactions queued for one appservice. Called with `lock` held; releases it
@@ -162,10 +276,25 @@ namespace
             {
                 return {};
             }
+            // An events-free transaction that failed before goes first, under its own ID, so its
+            // ephemeral items are not reordered behind later ones.
+            if (auto const parked = runtime.appservice_pending_ephemeral.find(appservice_id);
+                parked != runtime.appservice_pending_ephemeral.end() && parked->second.events_free)
+            {
+                if (!send_ephemeral_only(runtime, lock, registration, clock_now))
+                {
+                    return {};
+                }
+                continue;
+            }
 
             auto cursor = database::find_appservice_txn_cursor(store, appservice_id);
             auto event = std::optional<appservice::AppserviceTransactionEvent>{};
-            if (cursor.pending_txn_id != 0U)
+            // A transaction with a pending ID was sent before, so this attempt is a retry: it may carry
+            // only what the first attempt carried (ADR-0190). Only a transaction built on this pass
+            // takes queued ephemeral items.
+            auto const is_retry = cursor.pending_txn_id != 0U;
+            if (is_retry)
             {
                 // Sent but never acknowledged: rebuild it from the stored event and send it again
                 // under its own ID. This is also how a cursor left pending by the pre-outbox design
@@ -198,7 +327,16 @@ namespace
                 auto const entry = database::find_first_appservice_outbox_entry(store, appservice_id);
                 if (!entry.has_value())
                 {
-                    return {};
+                    // No event is queued; ephemeral data alone is still worth a transaction.
+                    if (!has_appservice_ephemeral(runtime, appservice_id))
+                    {
+                        return {};
+                    }
+                    if (!send_ephemeral_only(runtime, lock, registration, clock_now))
+                    {
+                        return {};
+                    }
+                    continue;
                 }
                 auto const* const row = find_event_by_id(store, entry->event_id);
                 event = row == nullptr ? std::nullopt : appservice_transaction_event_for(*row);
@@ -240,26 +378,43 @@ namespace
             auto transaction = appservice::AppserviceTransaction{};
             transaction.txn_id = std::to_string(cursor.pending_txn_id);
             transaction.events.push_back(std::move(*event));
+            // Ephemeral data (ADR-0190). A retry carries exactly the items parked for its transaction
+            // ID, or none when its first attempt carried none (or a restart forgot them); items queued
+            // since stay queued for the next transaction. A fresh transaction takes what is queued now.
+            if (is_retry)
+            {
+                if (auto const parked = runtime.appservice_pending_ephemeral.find(appservice_id);
+                    parked != runtime.appservice_pending_ephemeral.end() && !parked->second.events_free &&
+                    parked->second.txn_id == cursor.pending_txn_id)
+                {
+                    transaction.ephemeral_json = parked->second.items;
+                }
+            }
+            else if (registration.receive_ephemeral)
+            {
+                transaction.ephemeral_json = take_appservice_ephemeral(runtime, appservice_id);
+                if (transaction.ephemeral_json.empty())
+                {
+                    // Nothing to park; drop a stale entry left by an earlier transaction ID.
+                    runtime.appservice_pending_ephemeral.erase(appservice_id);
+                }
+                else
+                {
+                    runtime.appservice_pending_ephemeral.insert_or_assign(
+                        appservice_id,
+                        AppservicePendingEphemeral{cursor.pending_txn_id, false, transaction.ephemeral_json});
+                }
+            }
 
-            auto const started = std::chrono::steady_clock::now();
-            // Built under the lock: it copies the timeouts out of the runtime config.
-            auto client = appservice::AppserviceClient{*runtime.outbound_client, *runtime.cached_discovery,
-                                                       runtime.config.appservice()};
-            auto const result = [&]() {
-                // Releases runtime.mutex for the call and takes it back when the scope ends. This thread
-                // holds exactly one level (the drainer is never called under the lock).
-                auto const unlocked = RuntimeLockRelease{lock};
-                return client.send_transaction(registration, transaction);
-            }();
-            clock_now += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::steady_clock::now() - started);
+            auto const result = send_over_network(runtime, lock, registration, transaction, clock_now);
 
             if (result.ok || result.disabled)
             {
                 if (!database::complete_appservice_delivery(store, appservice_id, cursor.pending_stream_ordering))
                 {
                     // The appservice has it but the acknowledgement did not reach the database, so
-                    // the next attempt re-sends the same transaction ID (idempotent per the spec).
+                    // the next attempt re-sends the same transaction ID (idempotent per the spec). The
+                    // parked ephemeral items stay, so that resend carries exactly what this one did.
                     log_diagnostic("appservice.delivery.cursor_write_failed",
                                    {
                                        {"appservice_id", appservice_id, false}
@@ -268,31 +423,49 @@ namespace
                     record_failure(runtime, appservice_id, clock_now);
                     return {};
                 }
+                runtime.appservice_pending_ephemeral.erase(appservice_id);
                 runtime.appservice_delivery_backoff.erase(appservice_id);
                 continue;
             }
 
-            log_diagnostic("appservice.delivery.failed",
-                           {
-                               {"appservice_id", appservice_id,                                        false},
-                               {"txn_id",        transaction.txn_id,                                   false},
-                               {"error",         std::string{http::outbound_error_name(result.error)}, false},
-                               {"detail",        result.error_detail,                                  false}
-            },
-                           observability::LogEventSeverity::warning);
+            log_send_failure(appservice_id, transaction, result);
             record_failure(runtime, appservice_id, clock_now);
             return {};
         }
 
         // The cap was reached; whether anything is left decides whether to come straight back.
         auto const pending = database::find_appservice_txn_cursor(store, appservice_id).pending_txn_id != 0U;
-        return {pending || database::find_first_appservice_outbox_entry(store, appservice_id).has_value()};
+        return {pending || database::find_first_appservice_outbox_entry(store, appservice_id).has_value() ||
+                has_appservice_ephemeral(runtime, appservice_id)};
     }
 
 } // namespace
 
+auto appservice_room_aliases(HomeserverRuntime const& runtime, std::string_view room_id) -> std::vector<std::string>
+{
+    auto aliases = std::vector<std::string>{};
+    for (auto const& alias : runtime.database.persistent_store.room_aliases)
+    {
+        if (alias.room_id == room_id)
+        {
+            aliases.push_back(alias.room_alias);
+        }
+    }
+    return aliases;
+}
+
 auto enqueue_appservice_delivery(HomeserverRuntime& runtime, LocalRoom const& room, std::string_view event_id,
-                                 std::uint64_t fallback_stream_ordering, std::string_view sender) -> void
+                                 std::uint64_t fallback_stream_ordering, std::string_view sender,
+                                 std::string_view member_event_target) -> void
+{
+    enqueue_appservice_delivery(runtime, room.room_id, room.members, event_id, fallback_stream_ordering, sender,
+                                member_event_target);
+}
+
+auto enqueue_appservice_delivery(HomeserverRuntime& runtime, std::string_view room_id,
+                                 std::span<std::string const> room_members, std::string_view event_id,
+                                 std::uint64_t fallback_stream_ordering, std::string_view sender,
+                                 std::string_view member_event_target) -> void
 {
     if (runtime.appservices.empty() || runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr)
     {
@@ -317,19 +490,27 @@ auto enqueue_appservice_delivery(HomeserverRuntime& runtime, LocalRoom const& ro
             observability::LogEventSeverity::error);
         return;
     }
-    auto const room_alias = [&]() -> std::string {
-        auto const it = std::ranges::find_if(store.room_aliases, [&](database::PersistentRoomAlias const& alias) {
-            return alias.room_id == room.room_id;
-        });
-        return it == store.room_aliases.end() ? std::string{} : it->room_alias;
-    }();
+    auto const room_aliases = appservice_room_aliases(runtime, room_id);
+    auto const facts = appservice::EventInterestFacts{.room_id = room_id,
+                                                      .room_aliases = room_aliases,
+                                                      .sender = sender,
+                                                      .member_event_target = member_event_target,
+                                                      .room_members = room_members};
 
     auto queued = false;
     for (auto const& registration : runtime.appservices.all())
     {
-        if (!appservice::registration_interested_in_room_event(registration, server_name, room.room_id, room_alias,
-                                                               sender, room.members))
+        if (!appservice::registration_interested_in_room_event(registration, server_name, facts))
         {
+            continue;
+        }
+        // ADR-0191: a queue at its cap takes no more rows. A row that is already queued is not a new
+        // row, so the repeat of an enqueue that happened is not counted as a drop.
+        if (!database::has_appservice_outbox_entry(store, registration.id, stream_ordering) &&
+            database::count_appservice_outbox_entries(store, registration.id) >=
+                static_cast<std::size_t>(runtime.config.appservice().max_queued_events))
+        {
+            record_outbox_drop(runtime, registration, event_id);
             continue;
         }
         if (database::enqueue_appservice_event(store, {registration.id, stream_ordering, std::string{event_id}}))

@@ -627,7 +627,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         {
             continue;
         }
-        auto const parsed = canonicaljson::parse_lossless(ad.content_json);
+        // Account data is never signed and may hold fractional numbers: general parser.
+        auto const parsed = canonicaljson::parse_json(ad.content_json);
         if (parsed.error != canonicaljson::ParseError::none)
         {
             continue;
