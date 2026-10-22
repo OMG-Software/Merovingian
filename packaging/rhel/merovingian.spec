@@ -1,4 +1,5 @@
 Name:           merovingian
+Version:        0.12.36
 Version:        0.12.35
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
@@ -97,6 +98,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.36-1
+- Fix federation conformance findings: restricted joins through this server as resident, every listed signing key checked, hash mismatches on membership endpoints redacted, m.tz profile queries.
 * Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.35-1
 - Answer 200 for a stored profile change when propagation to a room fails; send profile updates only to rooms whose state holds the user joined.
 

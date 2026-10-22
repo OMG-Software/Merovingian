@@ -148,11 +148,15 @@ authorises it. Three callers use it and must stay in step: the `make_join` templ
 or refuses with 400 `M_UNABLE_TO_AUTHORISE_JOIN` / `M_UNABLE_TO_GRANT_JOIN` or 403
 `M_FORBIDDEN` via `MembershipEventTemplate::error_status`), the `send_join` acceptor (co-signs
 with `sign_invite_event` only when the decision authorises the named user, before the auth
-checks and before storing; refuses unsigned otherwise), and `compose_signed_event` (refuses any
-local join naming a local authoriser the decision does not accept, so `PUT /state` cannot skip
-the check). Federation workers relay `make_join` to main (`membership_template_ingest`), since
-allowed rooms may live in another shard. The decision reads state under `runtime.mutex` and is
-bounded by `max_restricted_join_conditions` (32).
+checks and before storing, after `without_signatures_of` drops whatever the joining server filed
+under our name; refuses unsigned otherwise), and `compose_signed_event` (refuses any local join
+naming a local authoriser the decision does not accept, so `PUT /state` cannot skip the check).
+An allow condition counts as verifiable only while this server is joined to the room it names:
+state kept after leaving is not current. Federation workers relay `make_join` to main
+(`membership_template_ingest`), since allowed rooms may live in another shard; main refuses a
+frame whose user ID is malformed or local. The decision reads state under `runtime.mutex`, takes
+the room version through `declared_room_version`, and is bounded by
+`max_restricted_join_conditions` (32).
 
 ## Federation worker relays are untrusted input
 

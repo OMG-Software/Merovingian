@@ -198,28 +198,34 @@ Implemented now:
   0.12.32 the router's ingestion maps (`build_auth_event_map_from_entries`)
   select it too, so restricted joins received over federation are accepted
   when they should be
-- signatures are checked against every key ID listed for the server, not only
-  the first (0.12.34, R05, ADR-0183): `federation::authorize_federation_pdu_sender`
-  for the sender's server on `/send`, `send_*`, `/invite`, worker relay and
-  backfill, and `verify_server_signature_with_any_listed_key` for the
-  `send_join` state this server stores. Candidates are the `ed25519:` key IDs
-  in the event's order, without repeats, at most four per server, each through
-  the caller's admitted lookup; any one that verifies is enough
-- as the resident of a restricted room (0.12.34, R04, ADR-0184, ADR-0185),
+- the sender's signature is checked against every key ID listed for its
+  server, not only the first (0.12.36, R05, ADR-0183):
+  `federation::authorize_federation_pdu_sender` on `/send`, `send_*`,
+  `/invite`, worker relay and backfill, and
+  `federation::verify_server_signatures_on_event` for the `send_join` state
+  this server stores. Candidates are the `ed25519:` key IDs in the event's
+  order, without repeats, each through the caller's admitted lookup; more than
+  four is refused before any lookup. A key that does not resolve, or expired
+  before the event's `origin_server_ts`, is skipped; every other signature must
+  verify, and at least one must ("If all signatures from known unexpired keys
+  ... are found to be valid"). The authorising-server check (ADR-0171) still
+  accepts any one valid signature, as its auth rule says
+- as the resident of a restricted room (0.12.36, R04, ADR-0184, ADR-0185),
   `homeserver::decide_restricted_join` checks the allow conditions against this
-  server's current state (at most 32 conditions; a room it holds no state for
-  cannot be validated). `make_join` names the lowest local user ID with invite
+  server's current state (at most 32 conditions; a room it holds no state for,
+  or is no longer joined to, cannot be validated). `make_join` names the lowest local user ID with invite
   power in `join_authorised_via_users_server` and that user's member event in
   `auth_events`, or answers 400 `M_UNABLE_TO_AUTHORISE_JOIN`, 400
   `M_UNABLE_TO_GRANT_JOIN` or 403 `M_FORBIDDEN`; federation workers relay
   `make_join` to main. The `send_join` acceptor co-signs a join naming a local
   user only when the decision authorises that user, before any auth check or
-  storage, and refuses it unsigned otherwise. A local user's join into a local
+  storage, after dropping any signature filed under this server's name, and
+  refuses it unsigned otherwise. A local user's join into a local
   restricted room carries the field, and `compose_signed_event` refuses any
   local join naming a local authoriser the decision does not accept (so
   `PUT /state/m.room.member` cannot skip the check)
 - a content-hash mismatch on a direct membership endpoint redacts, it does not
-  reject (0.12.34, R06): `handle_send_membership` and `handle_invite` refuse
+  reject (0.12.36, R06): `handle_send_membership` and `handle_invite` refuse
   only a signature failure (400 `M_INVALID_PARAM`); the acceptor and the
   invite handler redact and then store, authorise, sign and return the
   redacted copy. The `send_join` response `event` is the copy this server

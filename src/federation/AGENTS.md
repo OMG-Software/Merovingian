@@ -28,17 +28,22 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    directly (ADR-0171). A new ingestion path does the same.
 
    Either signature is checked against every key ID the event lists for that server, not only
-   the first: `authorize_federation_pdu_sender` (sender) and
-   `verify_join_authorising_server_signature` (authorising server) try each candidate from
-   `signature_key_ids_for_server` / `join_authorising_signature_key` until one verifies. The
-   list is written by whoever relays the event, so it is bounded: only `ed25519:` IDs, no
-   repeats, at most `max_signature_keys_per_server` (4), each through the caller's admitted
-   lookup (R05, ADR-0183). Never pick "the" key ID with a loop that stops at the first match.
+   the first. The sender check (`authorize_federation_pdu_sender`,
+   `verify_server_signatures_on_event`) skips unknown keys and keys expired before the event's
+   `origin_server_ts`, refuses the event if any other signature does not verify, and needs at
+   least one that does ("If all signatures from known unexpired keys ... are found to be
+   valid"; R05, ADR-0183). The authorising-server check
+   (`verify_join_authorising_server_signature`) accepts any one valid signature, as its auth
+   rule asks (ADR-0171). The list is written by whoever relays the event, so it is bounded:
+   only `ed25519:` IDs, no repeats, each through the caller's admitted lookup; more than
+   `max_signature_keys_per_server` (4) for the sender's server is refused before any lookup.
+   Never pick "the" key ID with a loop that stops at the first match.
 
    A `send_join` naming one of THIS server's users as `join_authorised_via_users_server`
    cannot carry our signature yet: the request layer and the worker relay leave that one check
    to the acceptor (`PduSignatureChecks::authorised_here`), which co-signs only after
-   `homeserver::decide_restricted_join` authorises the join (R04, ADR-0185). No other endpoint
+   `homeserver::decide_restricted_join` authorises the join, and drops every signature filed
+   under this server's name before signing (R04, ADR-0185). No other endpoint
    or server gets that exemption.
 
    A content-hash mismatch is never a reason to refuse an event on any path: the event is

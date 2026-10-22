@@ -1,7 +1,7 @@
 # Federation workers relay make_join to main
 
 * Status: accepted
-* Date: 2026-10-21
+* Date: 2026-10-22
 
 Technical Story: conformance audit 2026-10-17, finding R04
 
@@ -30,10 +30,13 @@ the allowed room after it started, or authorise users who have since left it.
 Chosen option: "relay make_join to main". The worker overrides only the `make_join` case of
 `membership_template_provider`; main answers it with its own provider
 (`handle_membership_template_ingest_request`) and `make_join` moved to the relay pool
-(`federation_endpoint_requires_main_relay`). The frame carries the room ID, the user ID (already
-checked against the X-Matrix origin by the worker) and the advertised room versions; main
-returns no template for a malformed frame. A template holds nothing the worker's snapshot does
-not, so the frame needs no further trust check (ADR-0071 concerns frames that carry PDUs). An IPC
+(`federation_endpoint_requires_main_relay`). The frame carries the room ID, the user ID (checked
+against the X-Matrix origin by the worker, which main cannot see) and the advertised room
+versions. Main treats it as untrusted input (ADR-0071) and checks what it can: it returns no
+template for a malformed frame, or for a user ID that is not a valid federated user ID of
+another server, since `make_join` is how a remote server's user joins. A template holds only
+event IDs of the room's current state, so a compromised worker learns nothing it could not
+learn by asking as a remote server. An IPC
 timeout or main at its in-flight cap answers the remote with a 5xx, which is retryable.
 
 Fan-out of every room to every shard was rejected: it multiplies snapshot reloads by the shard

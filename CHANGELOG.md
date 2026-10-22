@@ -1,3 +1,43 @@
+## 0.12.36
+
+Fixes the federation findings of the 17 October 2026 conformance audit (wave 2: R04, R05, R06,
+R18). No migration.
+
+- **FIXED (R04):** this server could not be the resident that authorises a restricted-room join.
+  `GET /make_join` never named a `join_authorised_via_users_server`, and `send_join` never added
+  this server's signature, so every non-invited join into a restricted or `knock_restricted` room
+  failed. `homeserver::decide_restricted_join` now checks the room's allow conditions against this
+  server's current state and picks a joined local user with invite power. `make_join` names that
+  user (and their member event among the auth events) or refuses with 400
+  `M_UNABLE_TO_AUTHORISE_JOIN`, 400 `M_UNABLE_TO_GRANT_JOIN` or 403 `M_FORBIDDEN`. An allow
+  condition counts as verifiable only while this server is resident in the room it names: state
+  kept after leaving is not current. `send_join` co-signs only a join it authorises, before it is
+  stored, after dropping any signature the joining server filed under this server's name; it
+  returns the co-signed event. A local user's join into a local restricted room carries the field
+  too, and a client cannot name an authoriser through `PUT /state` to skip the check. Federation
+  workers relay `make_join` to main, which holds every room the conditions name (ADR-0184,
+  ADR-0185).
+- **FIXED (R05):** the sender's signature on a relayed PDU, an invite, a worker-relayed event, a
+  backfilled event and `send_join` state was checked only against the first key ID listed for the
+  sender's server. Every listed `ed25519` key ID is now checked, as "Validating hashes and
+  signatures on received events" requires: an unknown key, or one expired before the event's
+  `origin_server_ts`, is skipped; a known, unexpired key whose signature does not verify refuses
+  the event; at least one must verify. An event listing more than four key IDs for its sender's
+  server is refused before any lookup, and a local key-lookup overload is a retryable 503
+  (ADR-0183).
+- **FIXED (R06):** `send_join`, `send_leave`, `send_knock` and `/invite` (v1, v2) refused an event
+  whose content hash did not match. The spec says such an event "is redacted before being processed
+  further": the acceptor and the invite handler now redact it and authorise, sign, store and return
+  the redacted copy. A signature failure is refused with 400 `M_INVALID_PARAM`, as those endpoints
+  say.
+- **FIXED (R18):** `GET /query/profile` refused `field=m.tz` (and any other key) with 400. Any
+  field is a valid request; one the user does not have is 404 `M_NOT_FOUND`, and an unset field is
+  left out of a full profile instead of being sent as `""`.
+- **FIXED:** the `make_join` template provider read room state without the runtime lock.
+- **DOCS:** ADR-0183 to ADR-0185; the conformance audit report marks R04, R05, R06 and R18 fixed;
+  `docs/event-engine.md`, `docs/threat-model.md`, `docs/security-coding-rules.md`,
+  `docs/architecture.md`, `docs/todos/capability-gaps.md` and the federation, homeserver,
+  federation-worker and IPC module rules updated.
 ## 0.12.35
 
 - **FIXED:** `PUT /_matrix/client/v3/profile/{userId}/displayname` (and `avatar_url`) answered

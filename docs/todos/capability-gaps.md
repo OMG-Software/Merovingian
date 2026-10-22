@@ -180,7 +180,7 @@ PDU signatures (ADR-0071), the per-IP connection cap, and the eleven low items
 with the listener-test flake — is finished; see the `CHANGELOG.md` 0.12.13
 section. Only D3 (below) was deferred.
 
-## RESOLVED (0.12.34, R04): restricted-room joins through this server as the resident
+## RESOLVED (0.12.36, R04): restricted-room joins through this server as the resident
 
 Found on the 0.12.13 branch (2026-09-28), not fixed there. When a remote user
 joins a room this server hosts through a restricted-room condition, the
@@ -188,7 +188,7 @@ resident server must put `join_authorised_via_users_server` (a local user
 able to invite) in the `make_join` template, sign the resulting event in
 `send_join`, and answer `M_UNABLE_TO_AUTHORISE_JOIN` or
 `M_UNABLE_TO_GRANT_JOIN` when it cannot (server-server-api.md, `make_join`
-and `send_join`; auth rule "restricted"). Status: `resolved` in 0.12.34
+and `send_join`; auth rule "restricted"). Status: `resolved` in 0.12.36
 (conformance audit R04, ADR-0184, ADR-0185): `homeserver::decide_restricted_join`
 checks the allow conditions against this server's current state; the
 `make_join` template (built by main, relayed from workers) names the lowest
@@ -260,7 +260,7 @@ checks to the membership path (`runtime.federation.membership_acceptor` in
   receipt; ... reason=...`), which is the fastest way to diagnose the
   remaining failures.
 
-Correction (0.12.34, conformance audit R06): the redaction above never ran for a
+Correction (0.12.36, conformance audit R06): the redaction above never ran for a
 direct `send_join` / `send_leave` / `send_knock` or `/invite`, because the
 request layer (`handle_send_membership`, `handle_invite`) still refused a hash
 mismatch with 403 / 400 before the acceptor or invite handler saw the event.
