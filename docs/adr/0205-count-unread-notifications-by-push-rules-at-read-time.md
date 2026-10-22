@@ -33,7 +33,8 @@ Chosen option: evaluate in the existing walk. `count_unread_by_thread` asks a
 `sync::UnreadEventClassifier` about every unread event. The homeserver's
 `PushRuleUnreadClassifier` loads the user's rules once (ADR-0204), computes each room's facts
 (power levels, member count and the user's display name, through the same `push_room_facts`
-helpers delivery uses) the first time it meets the room, and evaluates `push::evaluate_push_rules`.
+helpers delivery uses) and evaluates `push::evaluate_push_rules`. The first room it meets gathers
+the facts for all of the user's rooms, from one walk of each table it reads (ADR-0207).
 An event counts as a notification when the result notifies, and as a highlight when it notifies
 with the highlight tweak. Callers build one classifier per request: `/sync`, sliding sync (its
 counts and sort), and the badge for each push delivery.

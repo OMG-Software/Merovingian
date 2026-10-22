@@ -77,6 +77,10 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   receipts by room in one walk. `/sync`, sliding sync and the badge give the same counts as before.
   The badge's setup is still linear in the server's memberships and receipts tables, once per badge;
   per-user store indexes are the follow-up (ADR-0207).
+- **DOCS (PR #523 review):** `docs/todos/capability-gaps.md` described `counts.unread` as the sum of
+  `/sync`'s per-room counts and said unread counts skip the history-visibility filter.
+  `src/sync/AGENTS.md` listed the push badge among the counts made by `count_unread_by_thread()`.
+  Each now matches ADR-0205 and ADR-0207.
 
 ## 0.12.39
 
