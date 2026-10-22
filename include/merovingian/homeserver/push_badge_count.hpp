@@ -27,6 +27,10 @@ struct PushBadgeCount final
     std::uint32_t unread{0U};
     // Store rows the pass visited, thread-parent lookups included.
     std::uint64_t rows_visited{0U};
+    // Whole store tables walked outside the row budget to set the pass up: the memberships, the
+    // read receipts, and the classifier's (PushRuleUnreadClassifier::table_walks). Each once per
+    // badge, however many rooms the user is in.
+    std::uint64_t table_walks{0U};
     // The pass ran out of rows before visiting every row of the store. `unread` is then a lower
     // bound: it counts only events the visited rows prove unread.
     bool capped{false};

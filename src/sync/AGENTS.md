@@ -101,7 +101,10 @@ decision (R15, ADR-0205): the walk asks a `sync::UnreadEventClassifier`
 and counts only events after `counted_after()`, the start of the user's current
 join. Build one classifier per request and pass it to every count in that
 request (`/sync`, `compute_room_list`, `build_room_response`); it loads the
-user's rules once and caches each room's facts. Never decide notify or
+user's rules once, and on first use gathers every room's facts and join start
+from one walk each of the memberships, the current state and the events (event
+lookups through the request's `HistoryVisibility` index). Never add a lookup
+to it that walks a whole table per room (ADR-0207). Never decide notify or
 highlight from the event type or `m.mentions` here. Only `accepted` events the user may
 see count: the walk asks `unread.visible()` (`HistoryVisibility::can_see`, the
 request's own filter for `/sync` and sliding sync) before it classifies, because

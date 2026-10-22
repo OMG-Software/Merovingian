@@ -243,12 +243,15 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
   It visits at most `push_badge_row_budget` (10000) store rows in one pass, charging every row
   before any filter, and saturates at `push_badge_unread_cap` (1000) (ADR-0207); do not replace it
-  with a per-room or unbounded count.
+  with a per-room or unbounded count. Its setup walks each table a fixed number of times
+  (`PushBadgeCount::table_walks`), whatever the number of rooms: nothing per room may walk a whole
+  table.
 
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 
 Read a stored room's version only through `stored_room_version` / `stored_room_version_policy`
-(`stored_room_version.hpp`), or `declared_room_version` for a create event in hand. A create event
+(`stored_room_version.hpp`), or `declared_room_version` for a create event in hand
+(`stored_create_room_version` when what is in hand is the stored create event's JSON). A create event
 without `room_version` is version 1, which has no policy: refuse the room on `nullptr`, never
 substitute a default. The accessor never returns an empty string (an unusable declaration is version
 1 too), because several parsers replace an empty version with `"12"`. Only a room with no stored

@@ -15,6 +15,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -328,6 +329,78 @@ SCENARIO("A capped push badge falls back to the membership row when it did not r
             {
                 REQUIRE(count.capped);
                 REQUIRE(count.unread == 0U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// `rooms` joined rooms, each with one unread message after alice's join. The even rooms also hold
+// an unthreaded read receipt on an older message stored before everything else, so a pass that
+// stops `rooms` rows short of the store's end never reaches those receipts' targets.
+auto add_rooms_with_old_receipts(merovingian::homeserver::HomeserverRuntime& runtime, std::size_t rooms) -> void
+{
+    auto& store = runtime.database.persistent_store;
+    auto room_id = [](std::size_t index) {
+        return "!r" + std::to_string(index) + ":example.org";
+    };
+    for (auto index = std::size_t{0U}; index < rooms; ++index)
+    {
+        add_message(store, "$old" + std::to_string(index), room_id(index), 1U + index);
+    }
+    for (auto index = std::size_t{0U}; index < rooms; ++index)
+    {
+        join_room(store, room_id(index));
+        add_membership(store, "$j" + std::to_string(index), room_id(index), "join", 1000U + index);
+        add_message(store, "$m" + std::to_string(index), room_id(index), 2000U + index);
+        if (index % 2U == 0U)
+        {
+            store.receipts.push_back(
+                {room_id(index), "m.read", std::string{alice}, "$old" + std::to_string(index), 0U, 1U, ""});
+        }
+    }
+    for (auto index = std::size_t{0U}; index < rooms; ++index)
+    {
+        merovingian::tests::record_joined_state_for_room(store, room_id(index), alice);
+    }
+}
+
+} // namespace
+
+SCENARIO("A capped push badge over many rooms skips unreached receipts and walks no table per room",
+         "[push][push-badge][r15]")
+{
+    GIVEN("300 joined rooms, half with a read receipt whose target the budget does not reach, and one such room "
+          "on its own")
+    {
+        constexpr auto rooms = std::size_t{300U};
+        auto many = merovingian::homeserver::HomeserverRuntime{};
+        add_rooms_with_old_receipts(many, rooms);
+        auto one = merovingian::homeserver::HomeserverRuntime{};
+        add_rooms_with_old_receipts(one, 1U);
+
+        WHEN("each badge stops before the oldest rows, which hold the receipts' targets")
+        {
+            auto const count = badge(many, many.database.persistent_store.events.size() - rooms);
+            auto const single = badge(one, one.database.persistent_store.events.size() - 1U);
+            auto const exact = exact_total(many);
+
+            THEN("rooms with an unreached unthreaded receipt add nothing and the badge stays at most /sync's")
+            {
+                // Fixture: every room's newest message is unread; only the 150 odd rooms are provable.
+                REQUIRE(exact == rooms);
+                REQUIRE(count.capped);
+                REQUIRE(count.unread == rooms / 2U);
+                REQUIRE(count.unread <= exact);
+            }
+
+            THEN("its setup walks each table the same number of times as for one room")
+            {
+                REQUIRE(single.capped);
+                REQUIRE(count.table_walks > 0U);
+                REQUIRE(count.table_walks == single.table_walks);
             }
         }
     }

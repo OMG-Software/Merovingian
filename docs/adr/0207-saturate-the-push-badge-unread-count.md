@@ -73,22 +73,39 @@ the count: an own event in the same thread, or a membership change, with a highe
 than a counted event. The tests cover rows stored out of order, and check that a capped badge never
 exceeds the exact count.
 
-Per-room setup is not yet bounded by the row budget either. The classifier's room facts (power
-levels, display name) and its history-visibility indexes are built from the store once per room and
-once per badge.
+### Setup outside the row budget
 
-**Follow-up:** store-wide indexes, by stream ordering and by event ID. They let the pass start at
-the newest rows and stop at each room's read marker or join start, make thread-parent lookups exact
-and cheap, and bound the per-room setup. They are a store-wide change, deferred from this PR, like
+The 10000 rows bound the event scan. Setting the pass up is linear in the `memberships` and
+`receipts` tables, plus the visibility filter's indexes and the `PushRuleUnreadClassifier`'s room
+sources, once per badge. Nothing per room walks a whole table any more (PR #523 review):
+
+* The classifier gathers every room's facts at once, on its first room: one walk of `memberships`
+  (joined counts, the user's rooms), one of the current `state` (power levels, create and the
+  user's member event), the user's profile, and the events those name from the visibility filter's
+  event index. It used to walk `memberships`, `state` and `events` again for each room.
+* A capped pass groups the receipts whose targets it did not reach by room in one walk of the
+  user's receipts. It used to walk all of them again for each room.
+
+`PushBadgeCount::table_walks` counts these walks, and a test holds it the same for 300 rooms as for
+one. Main's `total_unread_count` already made walks of the same kind once per badge. Bounding them
+by the user rather than the server needs per-user indexes.
+
+**Follow-up:** store indexes (`feature/event-store-indexes`): by stream ordering, by event ID, and
+per user for memberships and receipts. They let the pass start at the newest rows and stop at each
+room's read marker or join start, make thread-parent lookups exact and cheap, and make the setup
+proportional to the user's own rows. They are a store-wide change, deferred from this PR, like
 room-scoped indexing.
 
 ### Positive Consequences
 
-* A badge costs at most 10000 row visits under the lock, however large the store or the backlog.
+* The badge's event scan costs at most 10000 row visits under the lock, however large the store or
+  the backlog. Its setup is a fixed number of table walks, whatever the number of rooms.
 * While the store is within the budget, the badge is exact (to 1000).
 
 ### Negative Consequences
 
+* The setup walks are linear in the server's `memberships` and `receipts` tables and in its events
+  (the visibility filter's event index), once per badge, until the per-user indexes land.
 * On a store larger than the budget the badge is a lower bound until the indexes land. Rooms whose
   join was not reached count from the membership row, missing the events before the user's latest
   membership change.

@@ -51,15 +51,22 @@ namespace
 auto push_room_facts(database::PersistentStore const& store, std::string_view room_id, std::uint64_t member_count)
     -> PushRoomFacts
 {
+    return push_room_facts_from(current_state_event(store, room_id, "m.room.power_levels", ""),
+                                stored_room_version(store, room_id), member_count);
+}
+
+auto push_room_facts_from(canonicaljson::Value power_levels, std::optional<std::string> const& room_version,
+                          std::uint64_t member_count) -> PushRoomFacts
+{
     auto facts = PushRoomFacts{};
     facts.member_count = member_count;
     // A null Value when the room has no power levels: extract_user_power_level then applies every
     // default.
-    facts.power_levels = current_state_event(store, room_id, "m.room.power_levels", "");
+    facts.power_levels = std::move(power_levels);
     // Room versions 1-9 may encode a power level as a string, and 1-5 as a float. Reading such a
     // value as absent would silently apply a default instead of the level the room set, so the
     // room's own version decides how it is read.
-    auto const* policy = rooms::find_room_version_policy(stored_room_version(store, room_id).value_or("12"));
+    auto const* policy = rooms::find_room_version_policy(room_version.value_or("12"));
     facts.level_encoding =
         policy == nullptr ? events::PowerLevelEncoding::integers_or_strings : events::power_level_encoding(*policy);
     auto const* event = std::get_if<canonicaljson::Object>(&facts.power_levels.storage());
@@ -82,7 +89,18 @@ auto room_member_display_name(database::PersistentStore const& store, std::strin
     -> std::string
 {
     auto const event = current_state_event(store, room_id, "m.room.member", member);
-    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    if (auto name = member_display_name_from(event, {}); !name.empty())
+    {
+        return name;
+    }
+    auto const profile = database::find_profile(store, member);
+    return profile.has_value() ? profile->displayname : std::string{};
+}
+
+auto member_display_name_from(canonicaljson::Value const& member_event, std::string_view profile_display_name)
+    -> std::string
+{
+    auto const* root = std::get_if<canonicaljson::Object>(&member_event.storage());
     auto const* content = root == nullptr ? nullptr : member_object(*root, "content");
     if (content != nullptr)
     {
@@ -95,8 +113,7 @@ auto room_member_display_name(database::PersistentStore const& store, std::strin
             return *text;
         }
     }
-    auto const profile = database::find_profile(store, member);
-    return profile.has_value() ? profile->displayname : std::string{};
+    return std::string{profile_display_name};
 }
 
 auto push_evaluation_context(PushRoomFacts const& facts, std::string_view recipient, std::string recipient_display_name,

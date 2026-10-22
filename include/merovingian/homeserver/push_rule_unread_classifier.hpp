@@ -27,6 +27,13 @@ namespace merovingian::homeserver
 // display name in it and the start of the user's current join are computed the first time the
 // room is asked about.
 //
+// Nothing per room walks a whole table (ADR-0207). The first room asked about builds, once, what
+// every room's facts need: one walk of the memberships (joined counts, the user's rooms), one of
+// the current state (each of the user's rooms' power levels, create and the user's member event),
+// and the user's profile; the events those name come from the visibility filter's event index.
+// The first counted_after() walks the events once for every room's join start. A room the user
+// holds no membership row in is never counted; asked about anyway, it is computed on its own.
+//
 // Only events after the user's current join are counted. Earlier events are history the user
 // may not be allowed to see, and a content rule counted over them would reveal whether they
 // contain a word (ADR-0205).
@@ -59,6 +66,11 @@ public:
     [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event) const
         -> sync::UnreadEventOutcome override;
 
+    // Whole store tables walked so far: memberships, current state, profiles and events, each
+    // counted once per walk (the visibility filter's own indexes are not). It does not grow with
+    // the number of rooms asked about.
+    [[nodiscard]] auto table_walks() const noexcept -> std::uint64_t;
+
 private:
     struct RoomFacts final
     {
@@ -66,7 +78,18 @@ private:
         std::string display_name{};
     };
 
+    // What a room's facts are read from, gathered for all of the user's rooms at once.
+    struct RoomSources final
+    {
+        std::uint64_t joined_members{0U};
+        std::optional<std::string> power_levels_event_id{};
+        std::optional<std::string> create_event_id{};
+        std::optional<std::string> member_event_id{};
+    };
+
     [[nodiscard]] auto room(std::string_view room_id) const -> RoomFacts const&;
+    auto ensure_room_sources() const -> void;
+    auto ensure_join_transitions() const -> void;
 
     std::reference_wrapper<database::PersistentStore const> store_;
     std::string user_;
@@ -76,8 +99,14 @@ private:
     std::optional<sync::HistoryVisibility> owned_visibility_;
     std::reference_wrapper<sync::HistoryVisibility> visibility_;
     mutable std::map<std::string, RoomFacts, std::less<>> rooms_{};
-    // Computed only when counted_after() asks, so classify() never scans the store for it.
+    mutable bool room_sources_built_{false};
+    mutable std::map<std::string, RoomSources, std::less<>> room_sources_{};
+    mutable std::string profile_display_name_{};
+    // Built only when counted_after() asks, so classify() never scans the events for it.
+    mutable bool join_transitions_built_{false};
+    mutable std::map<std::string, std::vector<std::pair<std::uint64_t, bool>>, std::less<>> join_transitions_{};
     mutable std::map<std::string, std::optional<std::uint64_t>, std::less<>> join_starts_{};
+    mutable std::uint64_t table_walks_{0U};
 };
 
 // The stream position of the event that began `user`'s current join of `room_id`: the earliest

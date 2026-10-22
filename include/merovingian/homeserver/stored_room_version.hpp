@@ -20,6 +20,11 @@ namespace merovingian::homeserver
 // version into a default of their own. Never substitute a supported default here.
 [[nodiscard]] auto declared_room_version(canonicaljson::Object const& create_event) -> std::string;
 
+// The version a stored m.room.create event's JSON declares, through declared_room_version: "1" when
+// it does not parse as an object. stored_room_version applies it to the room's create row; a caller
+// that has already found that row's event uses it directly.
+[[nodiscard]] auto stored_create_room_version(std::string_view create_event_json) -> std::string;
+
 // The version of a room as its stored m.room.create declares it, through declared_room_version.
 // nullopt only when no m.room.create is stored for the room (an unknown room): a caller decides
 // what that means for it. A create row whose event is missing or unparseable yields "1".

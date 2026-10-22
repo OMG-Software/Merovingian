@@ -67,6 +67,16 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   counted (and highlighted by keyword rules), revealing something about history the user may not
   read. Every counted event now passes the same `HistoryVisibility` filter as the timeline
   (ADR-0205).
+- **SECURITY (PR #523 review, per-room table walks under the runtime lock):** the unread classifier
+  walked the whole `memberships`, current `state` and `events` tables again for each room it was
+  asked about. In `/sync` this happened per room for every request; in the push badge it happened for
+  every recipient of every event. A capped badge also walked all of the user's read receipts again
+  for each room. The classifier now builds its room facts and every room's join start once per
+  request: one walk each of the memberships, the current state and the events, plus the user's
+  profile. Event lookups go through the visibility filter's event index. The badge groups unreached
+  receipts by room in one walk. `/sync`, sliding sync and the badge give the same counts as before.
+  The badge's setup is still linear in the server's memberships and receipts tables, once per badge;
+  per-user store indexes are the follow-up (ADR-0207).
 
 ## 0.12.39
 

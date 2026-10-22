@@ -55,6 +55,15 @@ auto declared_room_version(canonicaljson::Object const& create_event) -> std::st
     return version == nullptr || version->empty() ? std::string{"1"} : *version;
 }
 
+auto stored_create_room_version(std::string_view create_event_json) -> std::string
+{
+    auto const parsed = canonicaljson::parse_lossless(create_event_json);
+    auto const* object = parsed.error == canonicaljson::ParseError::none
+                             ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                             : nullptr;
+    return object == nullptr ? std::string{"1"} : declared_room_version(*object);
+}
+
 auto stored_room_version(database::PersistentStore const& store, std::string_view room_id) -> std::optional<std::string>
 {
     for (auto const& state : store.state)
@@ -65,11 +74,7 @@ auto stored_room_version(database::PersistentStore const& store, std::string_vie
         }
         for (auto const& event : store.events.with_id(state.event_id))
         {
-            auto const parsed = canonicaljson::parse_lossless(event.json);
-            auto const* object = parsed.error == canonicaljson::ParseError::none
-                                     ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
-                                     : nullptr;
-            return object == nullptr ? std::string{"1"} : declared_room_version(*object);
+            return stored_create_room_version(event.json);
         }
         // The create row names an event that is not stored: nothing usable is declared.
         return std::string{"1"};

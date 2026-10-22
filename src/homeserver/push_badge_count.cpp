@@ -15,6 +15,7 @@
 #include <ranges>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -45,6 +46,13 @@ namespace
         std::uint64_t membership_row_ordering{0U};
     };
 
+    // The read receipts of one room whose target a capped pass did not reach.
+    struct UnreachedReceipts final
+    {
+        bool unthreaded{false};
+        std::set<std::string, std::less<>> threads{};
+    };
+
     [[nodiscard]] auto has_member(canonicaljson::Object const& object, std::string_view key) noexcept -> bool
     {
         return std::ranges::any_of(object, [key](canonicaljson::ObjectMember const& member) {
@@ -62,6 +70,7 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
 
     // Loaded once, before the pass: the joined rooms, and the read receipts read_markers_for uses
     // (m.read and m.read.private), keyed by the event each names.
+    auto table_walks = std::uint64_t{0U};
     auto rooms = std::map<std::string, BadgeRoom, std::less<>>{};
     for (auto const& membership : store.memberships)
     {
@@ -70,6 +79,7 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
             rooms.try_emplace(membership.room_id).first->second.membership_row_ordering = membership.stream_ordering;
         }
     }
+    ++table_walks;
     auto const& receipts = runtime.database.persistent_store.receipts;
     auto receipt_targets = std::unordered_map<std::string, std::vector<std::size_t>>{};
     for (auto index = std::size_t{0U}; index < receipts.size(); ++index)
@@ -81,6 +91,7 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
             receipt_targets[receipt.event_id].push_back(index);
         }
     }
+    ++table_walks;
     auto receipt_found = std::set<std::size_t>{};
 
     auto const classifier = PushRuleUnreadClassifier{store, user_id, ruleset};
@@ -179,38 +190,46 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     result.rows_visited = row_budget - rows_left;
     result.capped = !all_rows_visited;
 
+    // A capped pass may not have reached a receipt's event, whose position is then unknown: count
+    // nothing it could cover. Grouped by room in one walk of the user's receipts, so no room
+    // walks them all again.
+    auto unreached = std::map<std::string_view, UnreachedReceipts, std::less<>>{};
+    if (result.capped)
+    {
+        for (auto const& [event_id, indexes] : receipt_targets)
+        {
+            for (auto const index : indexes)
+            {
+                if (receipt_found.contains(index))
+                {
+                    continue;
+                }
+                auto& room = unreached[receipts[index].room_id];
+                if (receipts[index].thread_id.empty())
+                {
+                    room.unthreaded = true;
+                }
+                else
+                {
+                    room.threads.insert(receipts[index].thread_id);
+                }
+            }
+        }
+    }
+    result.table_walks = table_walks + classifier.table_walks();
+
     auto total = std::uint64_t{0U};
+    auto const no_unreached = UnreachedReceipts{};
     for (auto& [room_id, facts] : rooms)
     {
         if (facts.own_thread_unknown)
         {
             continue;
         }
-        // A capped pass may not have reached a receipt's event, whose position is then unknown:
-        // count nothing it could cover.
-        auto unreadable_room = false;
-        auto unreadable_threads = std::set<std::string, std::less<>>{};
-        if (result.capped)
-        {
-            for (auto const& [event_id, indexes] : receipt_targets)
-            {
-                for (auto const index : indexes)
-                {
-                    if (receipts[index].room_id != room_id || receipt_found.contains(index))
-                    {
-                        continue;
-                    }
-                    if (receipts[index].thread_id.empty())
-                    {
-                        unreadable_room = true;
-                    }
-                    else
-                    {
-                        unreadable_threads.insert(receipts[index].thread_id);
-                    }
-                }
-            }
-        }
+        auto const found_unreached = unreached.find(room_id);
+        auto const& room_unreached = found_unreached == unreached.end() ? no_unreached : found_unreached->second;
+        auto const unreadable_room = room_unreached.unthreaded;
+        auto const& unreadable_threads = room_unreached.threads;
         auto start = join_start_from(std::move(facts.transitions));
         // A capped pass that did not reach the join falls back to the membership row: every path
         // that stores an accepted m.room.member event for the user rewrites the row's ordering with

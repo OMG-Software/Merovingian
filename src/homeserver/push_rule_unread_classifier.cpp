@@ -5,8 +5,10 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 
 #include <algorithm>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -131,9 +133,34 @@ auto PushRuleUnreadClassifier::counted_after(std::string_view room_id) const -> 
     {
         return cached->second;
     }
-    auto start = current_join_start(store_.get(), room_id, user_);
+    ensure_join_transitions();
+    auto const transitions = join_transitions_.find(room_id);
+    auto start = transitions == join_transitions_.end() ? std::nullopt : join_start_from(transitions->second);
     join_starts_.emplace(std::string{room_id}, start);
     return start;
+}
+
+auto PushRuleUnreadClassifier::table_walks() const noexcept -> std::uint64_t
+{
+    return table_walks_;
+}
+
+auto PushRuleUnreadClassifier::ensure_join_transitions() const -> void
+{
+    if (join_transitions_built_)
+    {
+        return;
+    }
+    join_transitions_built_ = true;
+    // current_join_start's transitions, for every room at once.
+    for (auto const& event : store_.get().events)
+    {
+        if (auto transition = member_transition(event, event.room_id, user_); transition.has_value())
+        {
+            join_transitions_[event.room_id].push_back(*transition);
+        }
+    }
+    ++table_walks_;
 }
 
 auto PushRuleUnreadClassifier::classify(std::string_view room_id, canonicaljson::Value const& event) const
@@ -157,13 +184,109 @@ auto PushRuleUnreadClassifier::room(std::string_view room_id) const -> RoomFacts
     {
         return cached->second;
     }
+    ensure_room_sources();
     auto const& store = store_.get();
-    auto const members = static_cast<std::uint64_t>(
-        std::ranges::count_if(store.memberships, [room_id](database::PersistentMembership const& membership) {
-            return membership.room_id == room_id && membership.membership == "join";
-        }));
-    auto facts = RoomFacts{push_room_facts(store, room_id, members), room_member_display_name(store, room_id, user_)};
+    auto const sources = room_sources_.find(room_id);
+    if (sources == room_sources_.end())
+    {
+        // Not one of the user's rooms, so never counted: computed on its own, as before.
+        ++table_walks_;
+        auto const members = static_cast<std::uint64_t>(
+            std::ranges::count_if(store.memberships, [room_id](database::PersistentMembership const& membership) {
+                return membership.room_id == room_id && membership.membership == "join";
+            }));
+        auto facts =
+            RoomFacts{push_room_facts(store, room_id, members), room_member_display_name(store, room_id, user_)};
+        return rooms_.emplace(std::string{room_id}, std::move(facts)).first->second;
+    }
+    // The same reads push_room_facts and room_member_display_name make, through the event index.
+    auto& visibility = visibility_.get();
+    auto const event_value = [&visibility](std::optional<std::string> const& event_id) -> canonicaljson::Value {
+        auto const* event = event_id.has_value() ? visibility.find_event(*event_id) : nullptr;
+        if (event == nullptr)
+        {
+            return canonicaljson::Value{};
+        }
+        auto parsed = canonicaljson::parse_lossless(event->json);
+        return parsed.error == canonicaljson::ParseError::none ? std::move(parsed.value) : canonicaljson::Value{};
+    };
+    auto version = std::optional<std::string>{};
+    if (sources->second.create_event_id.has_value())
+    {
+        auto const* create = visibility.find_event(*sources->second.create_event_id);
+        version = create == nullptr ? std::string{"1"} : stored_create_room_version(create->json);
+    }
+    auto facts =
+        RoomFacts{push_room_facts_from(event_value(sources->second.power_levels_event_id), version,
+                                       sources->second.joined_members),
+                  member_display_name_from(event_value(sources->second.member_event_id), profile_display_name_)};
     return rooms_.emplace(std::string{room_id}, std::move(facts)).first->second;
+}
+
+auto PushRuleUnreadClassifier::ensure_room_sources() const -> void
+{
+    if (room_sources_built_)
+    {
+        return;
+    }
+    room_sources_built_ = true;
+    auto const& store = store_.get();
+
+    // The user's rooms, and every room's joined members.
+    auto joined = std::unordered_map<std::string_view, std::uint64_t>{};
+    for (auto const& membership : store.memberships)
+    {
+        if (membership.user_id == user_)
+        {
+            room_sources_.try_emplace(membership.room_id);
+        }
+        if (membership.membership == "join")
+        {
+            ++joined[membership.room_id];
+        }
+    }
+    ++table_walks_;
+    for (auto& [room_id, sources] : room_sources_)
+    {
+        if (auto const count = joined.find(room_id); count != joined.end())
+        {
+            sources.joined_members = count->second;
+        }
+    }
+
+    // Each of those rooms' current power levels, create and the user's member event. The first row
+    // of each wins, as current_state_event and stored_room_version take it.
+    for (auto const& state : store.state)
+    {
+        auto const room = room_sources_.find(state.room_id);
+        if (room == room_sources_.end())
+        {
+            continue;
+        }
+        auto const record = [&state](std::optional<std::string>& event_id) {
+            if (!event_id.has_value())
+            {
+                event_id = state.event_id;
+            }
+        };
+        if (state.state_key.empty() && state.event_type == "m.room.power_levels")
+        {
+            record(room->second.power_levels_event_id);
+        }
+        else if (state.state_key.empty() && state.event_type == "m.room.create")
+        {
+            record(room->second.create_event_id);
+        }
+        else if (state.state_key == user_ && state.event_type == "m.room.member")
+        {
+            record(room->second.member_event_id);
+        }
+    }
+    ++table_walks_;
+
+    auto const profile = database::find_profile(store, user_);
+    profile_display_name_ = profile.has_value() ? profile->displayname : std::string{};
+    ++table_walks_;
 }
 
 } // namespace merovingian::homeserver
