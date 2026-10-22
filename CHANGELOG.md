@@ -51,12 +51,8 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
 - **SECURITY (PR #523 review, bounded work under the runtime lock):** the push badge
   (`counts.unread`) re-ran the exact per-room unread walk for every joined room, each scanning the
   whole store, under `runtime.mutex` for every recipient of every event. `count_push_badge` now makes
-  one pass of at most 10000 store rows, newest first, charging every row visited (thread-parent
-  lookups included) before any filter, and saturates at 1000 (ADR-0207). Within the budget it
-  equals the sum of `/sync`'s exact counts; past it, it is a lower bound that can miss recent unread
-  events until store indexes by stream ordering and event ID land. A room whose join the pass did not
-  reach counts from the user's membership row, whose ordering is never before the join start. `/sync` unread counts stay
-  exact. Rejected and soft-failed events no longer count as unread, and a rejected leave no longer
+  one walk of at most 10000 rows and saturates at 1000 (ADR-0207; see the stream-order entry below
+  for how the walk runs). `/sync` unread counts stay exact. Rejected and soft-failed events no longer count as unread, and a rejected leave no longer
   ends a user's join for counting.
 - **FIXED (PR #523 review, spec rate limits):** the push-rule endpoints the spec documents as
   "Rate-limited: No" (all `GET`, `DELETE`, and `PUT .../enabled` and `.../actions`) could be answered
@@ -73,10 +69,9 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   every recipient of every event. A capped badge also walked all of the user's read receipts again
   for each room. The classifier now builds its room facts and every room's join start once per
   request: one walk each of the memberships, the current state and the events, plus the user's
-  profile. Event lookups go through the visibility filter's event index. The badge groups unreached
-  receipts by room in one walk. `/sync`, sliding sync and the badge give the same counts as before.
-  The badge's setup is still linear in the server's memberships and receipts tables, once per badge;
-  per-user store indexes are the follow-up (ADR-0207).
+  profile. Events are looked up by ID (ADR-0215). `/sync`, sliding sync and the badge give the same
+  counts as before. The badge's setup is still linear in the server's memberships and receipts
+  tables, once per badge; per-user indexes on them are a follow-up (ADR-0207).
 - **FIXED (PR #523 review, string notification levels):** push evaluation read a room's
   `notifications` levels only when they were JSON integers. Room versions 1-9 allow a level written
   as a string ("This includes the nested values within the `events`, `notifications` and `users`
@@ -85,6 +80,15 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   `@room`. Each entry is now read with `events::decode_power_level`, the decoder the authorization
   rules use, in the room version's encoding. An entry the rules would not read, such as a string in
   version 10 or later, still falls back to the default.
+- **FIXED (PR #523 review, a capped badge could count what /sync does not):** the badge's walk
+  followed the order rows were stored in, which is not stream order. A capped walk could reach a
+  message without reaching the user's later own message in the same thread, and count a message
+  they had read. The walk now runs newest first in true stream order over the indexed event table
+  (ADR-0215). It resolves each read receipt's position by event ID before it starts, and looks
+  thread parents up by ID at no cost to its budget. It stops as soon as every joined room is
+  settled: past a non-join membership change, or at a join under the unthreaded read marker. An
+  uncapped badge equals `/sync`'s count. A capped one counts only events above the lowest row
+  visited, so it never counts one `/sync` would not (ADR-0207, amended).
 - **DOCS (PR #523 review):** `docs/todos/capability-gaps.md` described `counts.unread` as the sum of
   `/sync`'s per-room counts and said unread counts skip the history-visibility filter.
   `src/sync/AGENTS.md` listed the push badge among the counts made by `count_unread_by_thread()`.

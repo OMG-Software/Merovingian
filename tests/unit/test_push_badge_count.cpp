@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // homeserver::count_push_badge: the Push Gateway `counts.unread` for one recipient, from one
-// bounded pass over the store (ADR-0207). Under the budget it must equal the sum of the exact
-// per-room counts /sync reports; when capped it must never count more than they would.
+// bounded walk of the store, newest first in stream order (ADR-0207, ADR-0215). When it ends
+// uncapped it must equal the sum of the exact per-room counts /sync reports; when capped it must
+// never count more than they would.
 
 #include "../support/room_history_fixture.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -92,6 +93,43 @@ auto join_room(merovingian::database::PersistentStore& store, std::string_view r
     return merovingian::homeserver::count_push_badge(runtime, alice, ruleset, row_budget);
 }
 
+// An m.room.message alice sent, so a read of its thread up to it; `relates_to` is its
+// m.relates_to object, or empty for the main timeline.
+auto add_own_message(merovingian::database::PersistentStore& store, std::string event_id, std::string_view room_id,
+                     std::uint64_t stream_ordering, std::string const& relates_to = {}) -> void
+{
+    auto content = std::string{R"({"msgtype":"m.text","body":"me")"};
+    if (!relates_to.empty())
+    {
+        content += R"(,"m.relates_to":)" + relates_to;
+    }
+    content += "}";
+    add_event(store, std::move(event_id), room_id, alice,
+              std::string{R"({"type":"m.room.message","sender":")"} + std::string{alice} + R"(","room_id":")" +
+                  std::string{room_id} + R"(","content":)" + content + "}",
+              stream_ordering);
+}
+
+// Every budget from one row to the whole store: a capped badge never exceeds /sync's count, and
+// one that ends uncapped (it visited every row, or stopped once every room was settled) equals it.
+auto require_never_over_exact(merovingian::homeserver::HomeserverRuntime const& runtime) -> void
+{
+    auto const exact = exact_total(runtime);
+    for (auto budget = std::uint64_t{1U}; budget <= runtime.database.persistent_store.events.size(); ++budget)
+    {
+        auto const count = badge(runtime, budget);
+        INFO("budget " << budget << ", badge " << count.unread << ", exact " << exact);
+        REQUIRE(count.unread <= exact);
+        if (!count.capped)
+        {
+            REQUIRE(count.unread == exact);
+        }
+    }
+    auto const full = badge(runtime);
+    REQUIRE_FALSE(full.capped);
+    REQUIRE(full.unread == exact);
+}
+
 } // namespace
 
 SCENARIO("Under its budget the push badge equals the sum of /sync's exact counts", "[push][push-badge][r15]")
@@ -146,12 +184,41 @@ SCENARIO("Under its budget the push badge equals the sum of /sync's exact counts
             auto const count = badge(runtime);
             auto const exact = exact_total(runtime);
 
-            THEN("it visits every row and matches /sync")
+            THEN("it matches /sync, and no smaller budget gives more")
             {
                 // Fixture: a11 and a13, b24, c31 are unread; nothing else is.
                 REQUIRE(exact == 4U);
                 REQUIRE_FALSE(count.capped);
                 REQUIRE(count.unread == exact);
+                require_never_over_exact(runtime);
+            }
+        }
+    }
+}
+
+SCENARIO("A capped push badge sees the user's newer own event before the message it reads", "[push][push-badge][r15]")
+{
+    GIVEN("alice's own message at ordering 6 stored before her join at 1 and bob's message at 5")
+    {
+        // PR #523 review 5621537346: in arrival order a two-row pass reached the message and the
+        // join but not her own later message, and counted the message she had read.
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        join_room(store, "!r:example.org");
+        add_own_message(store, "$own6", "!r:example.org", 6U);
+        add_membership(store, "$join1", "!r:example.org", "join", 1U);
+        add_message(store, "$msg5", "!r:example.org", 5U);
+        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
+
+        WHEN("the badge is counted with a budget of two rows")
+        {
+            auto const count = badge(runtime, 2U);
+
+            THEN("it counts nothing, as /sync does")
+            {
+                REQUIRE(exact_total(runtime) == 0U);
+                REQUIRE(count.capped);
+                REQUIRE(count.unread == 0U);
             }
         }
     }
@@ -179,7 +246,7 @@ SCENARIO("The push badge charges every row it visits and stops at its budget", "
         {
             auto const count = badge(runtime, 20U);
 
-            THEN("it stops after twenty rows, and the room it never reached adds nothing")
+            THEN("it stops after twenty rows, all newer than the room's messages, and counts nothing")
             {
                 REQUIRE(count.rows_visited == 20U);
                 REQUIRE(count.capped);
@@ -190,61 +257,123 @@ SCENARIO("The push badge charges every row it visits and stops at its budget", "
     }
 }
 
-SCENARIO("A capped push badge never counts more than /sync would", "[push][push-badge][r15]")
+SCENARIO("A fully read user's badge stops once every room is settled", "[push][push-badge][r15]")
 {
-    GIVEN("a room whose rows are stored out of stream order: a pre-join message first, then the join and two "
-          "unread messages")
+    GIVEN("a joined room whose last message alice has read, above a hundred older rows")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         auto& store = runtime.database.persistent_store;
-        join_room(store, "!r:example.org");
-        add_message(store, "$r3", "!r:example.org", 3U);
-        add_membership(store, "$r5", "!r:example.org", "join", 5U);
-        add_message(store, "$r10", "!r:example.org", 10U);
-        add_message(store, "$r11", "!r:example.org", 11U);
-        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
-        auto const exact = exact_total(runtime);
-
-        WHEN("the budget reaches the join but not the oldest row, and when it reaches only the newest row")
+        for (auto stream = std::uint64_t{1U}; stream <= 100U; ++stream)
         {
-            auto const reaches_join = badge(runtime, store.events.size() - 1U);
-            auto const newest_only = badge(runtime, 1U);
-
-            THEN("each is capped and at most the exact count")
-            {
-                REQUIRE(exact == 2U);
-                REQUIRE(reaches_join.capped);
-                REQUIRE(reaches_join.unread <= exact);
-                REQUIRE(reaches_join.unread == 2U);
-                REQUIRE(newest_only.capped);
-                REQUIRE(newest_only.unread == 0U);
-            }
+            add_message(store, "$old" + std::to_string(stream), "!z:example.org", stream);
         }
-    }
-}
-
-SCENARIO("A fully read user's badge is zero after visiting every row", "[push][push-badge][r15]")
-{
-    GIVEN("a joined room whose last message alice has read")
-    {
-        auto runtime = merovingian::homeserver::HomeserverRuntime{};
-        auto& store = runtime.database.persistent_store;
         join_room(store, "!r:example.org");
-        add_membership(store, "$r1", "!r:example.org", "join", 1U);
-        add_message(store, "$r10", "!r:example.org", 10U);
-        add_message(store, "$r11", "!r:example.org", 11U);
+        add_membership(store, "$r200", "!r:example.org", "join", 200U);
+        add_message(store, "$r210", "!r:example.org", 210U);
+        add_message(store, "$r211", "!r:example.org", 211U);
         merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
-        runtime.database.persistent_store.receipts.push_back(
-            {"!r:example.org", "m.read", std::string{alice}, "$r11", 0U, 1U, ""});
+        store.receipts.push_back({"!r:example.org", "m.read", std::string{alice}, "$r211", 0U, 1U, ""});
 
         WHEN("the badge is counted")
         {
             auto const count = badge(runtime);
 
-            THEN("it is zero and the rows visited are the whole store, which is under the budget")
+            THEN("it is exact and zero, and it stopped at her join instead of walking the whole store")
             {
-                REQUIRE(count.unread == 0U);
                 REQUIRE_FALSE(count.capped);
+                REQUIRE(count.unread == 0U);
+                REQUIRE(count.rows_visited == 3U);
+                REQUIRE(count.rows_visited < store.events.size());
+            }
+        }
+    }
+}
+
+SCENARIO("A capped push badge never counts more than /sync would", "[push][push-badge][r15]")
+{
+    GIVEN("rooms stored out of stream order: own events in a thread and the main timeline, a leave and rejoin, "
+          "and receipts both unthreaded and threaded")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        auto const thread_reply = [](std::string_view root) {
+            return std::string{
+                       R"({"type":"m.room.message","sender":"@bob:example.org","content":{"msgtype":"m.text",)"} +
+                   R"("body":"t","m.relates_to":{"rel_type":"m.thread","event_id":")" + std::string{root} + R"("}}})";
+        };
+
+        // !a: bob's thread reply at 14 is read by alice's own reply at 16, stored first; bob's main
+        // message at 15 is unread; a threaded receipt covers bob's thread reply at 12.
+        join_room(store, "!a:example.org");
+        add_own_message(store, "$a16", "!a:example.org", 16U, R"({"rel_type":"m.thread","event_id":"$a10"})");
+        add_message(store, "$a15", "!a:example.org", 15U);
+        add_membership(store, "$a1", "!a:example.org", "join", 1U);
+        add_message(store, "$a10", "!a:example.org", 10U);
+        add_event(store, "$a12", "!a:example.org", bob, thread_reply("$a10"), 12U);
+        add_event(store, "$a14", "!a:example.org", bob, thread_reply("$a10"), 14U);
+        store.receipts.push_back({"!a:example.org", "m.read", std::string{alice}, "$a12", 0U, 1U, "$a10"});
+
+        // !b: she left at 21 and rejoined at 23, stored newest first; b22 is from while she was out.
+        join_room(store, "!b:example.org");
+        add_message(store, "$b24", "!b:example.org", 24U);
+        add_membership(store, "$b23", "!b:example.org", "join", 23U);
+        add_message(store, "$b22", "!b:example.org", 22U);
+        add_membership(store, "$b21", "!b:example.org", "leave", 21U);
+        add_membership(store, "$b20", "!b:example.org", "join", 20U);
+
+        // !c: an unthreaded receipt on c31, stored after the messages it reads.
+        join_room(store, "!c:example.org");
+        add_message(store, "$c33", "!c:example.org", 33U);
+        add_membership(store, "$c30", "!c:example.org", "join", 30U);
+        add_message(store, "$c31", "!c:example.org", 31U);
+        add_message(store, "$c32", "!c:example.org", 32U);
+        store.receipts.push_back({"!c:example.org", "m.read", std::string{alice}, "$c31", 0U, 1U, ""});
+
+        for (auto const* room : {"!a:example.org", "!b:example.org", "!c:example.org"})
+        {
+            merovingian::tests::record_joined_state_for_room(store, room, alice);
+        }
+
+        WHEN("the badge is counted with every budget from one row to the whole store")
+        {
+            THEN("no budget gives more than /sync, and every uncapped result equals it")
+            {
+                // Fixture: a10 and a15 in the main timeline; b24; c32 and c33.
+                REQUIRE(exact_total(runtime) == 5U);
+                require_never_over_exact(runtime);
+            }
+        }
+    }
+}
+
+SCENARIO("Thread-parent lookups do not count as rows the push badge visits", "[push][push-badge][r15]")
+{
+    GIVEN("a thread root, a reply in it, and a reference to the reply whose thread is found through it")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        join_room(store, "!r:example.org");
+        add_membership(store, "$r1", "!r:example.org", "join", 1U);
+        add_message(store, "$root", "!r:example.org", 10U);
+        add_event(store, "$reply", "!r:example.org", bob,
+                  R"({"type":"m.room.message","sender":"@bob:example.org","content":{"msgtype":"m.text","body":"t",)"
+                  R"("m.relates_to":{"rel_type":"m.thread","event_id":"$root"}}})",
+                  11U);
+        add_event(store, "$ref", "!r:example.org", bob,
+                  R"({"type":"m.room.message","sender":"@bob:example.org","content":{"msgtype":"m.text","body":"r",)"
+                  R"("m.relates_to":{"rel_type":"m.reference","event_id":"$reply"}}})",
+                  12U);
+        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
+
+        WHEN("the badge is counted")
+        {
+            auto const count = badge(runtime);
+
+            THEN("it visits each stored row once and counts all three messages")
+            {
+                REQUIRE_FALSE(count.capped);
+                REQUIRE(count.unread == 3U);
+                REQUIRE(count.unread == exact_total(runtime));
                 REQUIRE(count.rows_visited == store.events.size());
             }
         }
@@ -283,7 +412,7 @@ SCENARIO("The push badge saturates at its cap", "[push][push-badge][r15]")
 SCENARIO("A capped push badge falls back to the membership row when it did not reach the join",
          "[push][push-badge][r15]")
 {
-    GIVEN("alice's join stored first, three unread messages after it, and her membership row at ordering 8")
+    GIVEN("alice's join at 1, three unread messages after it, and her membership row at ordering 8")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         auto& store = runtime.database.persistent_store;
@@ -297,9 +426,9 @@ SCENARIO("A capped push badge falls back to the membership row when it did not r
         merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
         auto const exact = exact_total(runtime);
 
-        WHEN("the budget reaches every row but the join")
+        WHEN("the budget reaches the three messages but not the join")
         {
-            auto const count = badge(runtime, store.events.size() - 1U);
+            auto const count = badge(runtime, 3U);
 
             THEN("only events after the row's ordering count, and never more than /sync would")
             {
@@ -321,9 +450,9 @@ SCENARIO("A capped push badge falls back to the membership row when it did not r
         add_message(store, "$r12", "!r:example.org", 12U);
         merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
 
-        WHEN("the budget reaches every row but the join")
+        WHEN("the budget reaches the two messages but not the join")
         {
-            auto const count = badge(runtime, store.events.size() - 1U);
+            auto const count = badge(runtime, 2U);
 
             THEN("the room adds nothing")
             {
@@ -338,8 +467,7 @@ namespace
 {
 
 // `rooms` joined rooms, each with one unread message after alice's join. The even rooms also hold
-// an unthreaded read receipt on an older message stored before everything else, so a pass that
-// stops `rooms` rows short of the store's end never reaches those receipts' targets.
+// an unthreaded read receipt on an older message stored before everything else.
 auto add_rooms_with_old_receipts(merovingian::homeserver::HomeserverRuntime& runtime, std::size_t rooms) -> void
 {
     auto& store = runtime.database.persistent_store;
@@ -369,11 +497,10 @@ auto add_rooms_with_old_receipts(merovingian::homeserver::HomeserverRuntime& run
 
 } // namespace
 
-SCENARIO("A capped push badge over many rooms skips unreached receipts and walks no table per room",
+SCENARIO("A capped push badge over many rooms reads receipts up front and walks no table per room",
          "[push][push-badge][r15]")
 {
-    GIVEN("300 joined rooms, half with a read receipt whose target the budget does not reach, and one such room "
-          "on its own")
+    GIVEN("300 joined rooms, half with a read receipt on a message older than the join, and one such room alone")
     {
         constexpr auto rooms = std::size_t{300U};
         auto many = merovingian::homeserver::HomeserverRuntime{};
@@ -387,18 +514,15 @@ SCENARIO("A capped push badge over many rooms skips unreached receipts and walks
             auto const single = badge(one, one.database.persistent_store.events.size() - 1U);
             auto const exact = exact_total(many);
 
-            THEN("rooms with an unreached unthreaded receipt add nothing and the badge stays at most /sync's")
+            THEN("every room's unread message counts, because its receipt's position was read before the walk")
             {
-                // Fixture: every room's newest message is unread; only the 150 odd rooms are provable.
                 REQUIRE(exact == rooms);
                 REQUIRE(count.capped);
-                REQUIRE(count.unread == rooms / 2U);
-                REQUIRE(count.unread <= exact);
+                REQUIRE(count.unread == exact);
             }
 
             THEN("its setup walks each table the same number of times as for one room")
             {
-                REQUIRE(single.capped);
                 REQUIRE(count.table_walks > 0U);
                 REQUIRE(count.table_walks == single.table_walks);
             }

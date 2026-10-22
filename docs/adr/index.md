@@ -194,8 +194,7 @@
 * [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md)
 * [0205 - Count unread notifications by the user's push rules at read time, from the start of their join](0205-count-unread-notifications-by-push-rules-at-read-time.md)
 * [0206 - Retry failed push notifications from a bounded in-memory queue on one job thread](0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md)
-* [0207 - Count the push badge in one bounded pass over the store, and saturate it](0207-saturate-the-push-badge-unread-count.md)
-* [0207 - Saturate the push badge's unread count, and bound the walk that computes it](0207-saturate-the-push-badge-unread-count.md)
+* [0207 - Count the push badge in one bounded walk of the store, and saturate it](0207-saturate-the-push-badge-unread-count.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 
 ## Proposed Records

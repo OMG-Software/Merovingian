@@ -7,10 +7,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <optional>
-#include <string>
 #include <utility>
 #include <variant>
 
@@ -139,77 +135,43 @@ auto read_markers_for(std::vector<database::PersistentReceipt> const& receipts, 
     return markers;
 }
 
-namespace
-{
-
-    // event_thread_id's walk with the parent lookup supplied: `find` answers nullopt when it gave up
-    // (a bounded lookup out of budget), which ends the walk with nullopt; otherwise the stored event
-    // with that ID, or nullptr when the store holds none.
-    template <typename Find>
-    [[nodiscard]] auto thread_of(canonicaljson::Object const& event, Find&& find) -> std::optional<std::string>
-    {
-        // Parents are parsed into `parent`, which owns the object `current` points into while it is
-        // examined.
-        auto parent = canonicaljson::Value{};
-        auto const* current = &event;
-        for (auto hop = std::size_t{0U};; ++hop)
-        {
-            auto const* relation = relation_of(*current);
-            auto const* related_id = relation != nullptr ? member_string(*relation, "event_id") : nullptr;
-            if (related_id == nullptr || related_id->empty())
-            {
-                return std::string{main_thread_id};
-            }
-            auto const* rel_type = member_string(*relation, "rel_type");
-            if (rel_type != nullptr && *rel_type == "m.thread")
-            {
-                return *related_id;
-            }
-            if (hop == max_thread_relation_hops)
-            {
-                return std::string{main_thread_id};
-            }
-            auto const stored = find(*related_id);
-            if (!stored.has_value())
-            {
-                return std::nullopt;
-            }
-            if (*stored == nullptr)
-            {
-                return std::string{main_thread_id};
-            }
-            auto parsed = canonicaljson::parse_lossless((*stored)->json);
-            auto const* parent_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (parsed.error != canonicaljson::ParseError::none || parent_object == nullptr)
-            {
-                return std::string{main_thread_id};
-            }
-            parent = std::move(parsed.value);
-            current = std::get_if<canonicaljson::Object>(&parent.storage());
-        }
-    }
-
-} // namespace
-
-auto event_thread_id_within(database::PersistentStore const& store, canonicaljson::Object const& event,
-                            std::uint64_t& rows_left) -> std::optional<std::string>
-{
-    return thread_of(
-        event, [&store, &rows_left](std::string const& event_id) -> std::optional<database::PersistentEvent const*> {
-            if (rows_left == 0U)
-            {
-                return std::nullopt;
-            }
-            --rows_left;
-            auto const stored = store.events.find(event_id);
-            return stored == store.events.end() ? nullptr : &*stored;
-        });
-}
-
 auto event_thread_id(database::PersistentStore const& store, canonicaljson::Object const& event) -> std::string
 {
-    auto unlimited = std::numeric_limits<std::uint64_t>::max();
-    return *event_thread_id_within(store, event, unlimited);
+    // Parents are parsed into `parent`, which owns the object `current` points into while it is
+    // examined.
+    auto parent = canonicaljson::Value{};
+    auto const* current = &event;
+    for (auto hop = std::size_t{0U};; ++hop)
+    {
+        auto const* relation = relation_of(*current);
+        auto const* related_id = relation != nullptr ? member_string(*relation, "event_id") : nullptr;
+        if (related_id == nullptr || related_id->empty())
+        {
+            return std::string{main_thread_id};
+        }
+        auto const* rel_type = member_string(*relation, "rel_type");
+        if (rel_type != nullptr && *rel_type == "m.thread")
+        {
+            return *related_id;
+        }
+        if (hop == max_thread_relation_hops)
+        {
+            return std::string{main_thread_id};
+        }
+        auto const stored = store.events.find(*related_id);
+        if (stored == store.events.end())
+        {
+            return std::string{main_thread_id};
+        }
+        auto parsed = canonicaljson::parse_lossless(stored->json);
+        auto const* parent_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || parent_object == nullptr)
+        {
+            return std::string{main_thread_id};
+        }
+        parent = std::move(parsed.value);
+        current = std::get_if<canonicaljson::Object>(&parent.storage());
+    }
 }
 
 } // namespace merovingian::sync

@@ -119,11 +119,14 @@ whole table per room (ADR-0207).
 
 The push badge (`homeserver::count_push_badge`, the Push Gateway `counts.unread`)
 does not use `count_unread_by_thread()`: it runs under `runtime.mutex` for every
-recipient of every event, so it makes one pass of at most 10000 rows over the
-store and saturates at 1000 (ADR-0207). It applies the same rules through shared
-helpers (`member_transition`, `join_start_from`, `event_thread_id_within`, the
-classifier), and a test holds it equal to the walk when it visits every row. Change one, change both. Capped, it
-is a lower bound. Its setup walks each table a fixed number of times
+recipient of every event, so it makes one walk of the events, newest first in
+stream order (`in_stream_order()`, ADR-0215), stops once every room is settled,
+visits at most 10000 rows and saturates at 1000 (ADR-0207). It applies the same
+rules through shared helpers (`member_transition`, `join_start_from`,
+`event_thread_id`, the classifier) and resolves receipt positions as
+`read_markers_for()` does; tests hold it equal to the walk whenever it is not
+capped. Change one, change both. Capped, it is a lower bound that never counts an
+event `/sync` would not. Its setup walks each table a fixed number of times
 (`PushBadgeCount::table_walks`), whatever the number of rooms. `/sync` and
 sliding sync stay exact.
 

@@ -15,9 +15,9 @@ struct HomeserverRuntime;
 // The Push Gateway API's `counts.unread` ("the number of unread messages a user has across all of
 // the rooms they are a member of") for one recipient (ADR-0207). Push delivery computes it under
 // runtime.mutex for every recipient of every notifying event, so its work must not grow with the
-// store: one pass over at most push_badge_row_budget store rows, every row charged before any
-// filter, thread-parent lookups included. The count saturates at push_badge_unread_cap: it is a
-// badge, and clients do not show counts that large in full.
+// store: one walk of the events, newest first in stream order (ADR-0215), that stops once every
+// joined room is settled and visits at most push_badge_row_budget rows. The count saturates at
+// push_badge_unread_cap: it is a badge, and clients do not show counts that large in full.
 inline constexpr auto push_badge_unread_cap = std::uint32_t{1000U};
 inline constexpr auto push_badge_row_budget = std::uint64_t{10000U};
 
@@ -25,28 +25,31 @@ struct PushBadgeCount final
 {
     // The badge, at most push_badge_unread_cap.
     std::uint32_t unread{0U};
-    // Store rows the pass visited, thread-parent lookups included.
+    // Event rows the walk visited. Thread-parent lookups are hash lookups and are not counted.
     std::uint64_t rows_visited{0U};
-    // Whole store tables walked outside the row budget to set the pass up: the memberships, the
-    // read receipts, and the classifier's (PushRuleUnreadClassifier::table_walks). Each once per
-    // badge, however many rooms the user is in.
+    // Whole store tables walked outside the event walk to set it up: the memberships, the read
+    // receipts, and the classifier's (PushRuleUnreadClassifier::table_walks). Each once per badge,
+    // however many rooms the user is in.
     std::uint64_t table_walks{0U};
-    // The pass ran out of rows before visiting every row of the store. `unread` is then a lower
-    // bound: it counts only events the visited rows prove unread.
+    // The walk ran out of rows before every room was settled. `unread` is then a lower bound: an
+    // unsettled room counts only events above the lowest row visited.
     bool capped{false};
 };
 
 // The badge for `user_id` by `ruleset` (the rules delivery already loaded for them), over at most
-// `row_budget` rows. One pass, newest row first, across all of the user's joined rooms: it records
-// the read receipts' targets, the user's own events (which read their thread), the user's
-// membership changes and the candidate events, then applies them independently of row order with
-// the same rules as sync::count_unread_by_thread over read_receipt_markers and current_join_start.
-// When the pass visits every row the badge equals the sum of those exact per-room counts.
+// `row_budget` rows. Before the walk it reads the joined rooms and each read receipt's position.
+// The walk meets every row newest first, so by the time it reaches a candidate event it has met
+// every own event (which reads its thread) and every membership change above it. A room is
+// settled, and its rows below are skipped, once nothing below can change its count: the walk has
+// passed below a non-join membership change, which pins the start of the current join, or has met
+// a join at or below the unthreaded read marker with only joins above. The walk stops when every
+// joined room is settled. Its rules are sync::count_unread_by_thread's over read_markers_for and
+// current_join_start, so an uncapped badge equals the sum of those exact per-room counts.
 //
-// When it is capped it never counts more than the exact count would, except as noted in ADR-0207:
-// a room whose join it did not reach counts from its membership row's ordering instead (later than
-// or equal to the join start), a room is skipped when neither is usable or the pass did not reach the
-// target of its unthreaded receipt, and a candidate whose thread could not be determined is skipped.
+// Capped, it never counts more than the exact count: an unsettled room counts only candidates
+// above the lowest row visited, from the earliest join met there, or, when it met no membership
+// change, from its membership row's ordering (at or after the join start), and nothing when that
+// is 0.
 //
 // Call with runtime.mutex held.
 [[nodiscard]] auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id,

@@ -9,14 +9,13 @@
 #include "merovingian/sync/read_markers.hpp"
 
 #include <algorithm>
-#include <cstddef>
+#include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <ranges>
-#include <set>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -25,32 +24,29 @@ namespace merovingian::homeserver
 namespace
 {
 
-    // A visited event the user's rules notify for, waiting for its room's markers and join start.
+    // A visited event the user's rules notify for, waiting for its room's join start.
     struct Candidate final
     {
         std::uint64_t stream_ordering{0U};
         std::string thread_id{};
     };
 
-    // What the pass learnt about one joined room.
+    // What the walk has learnt about one joined room.
     struct BadgeRoom final
     {
+        // Receipt positions, resolved before the walk; the user's own events add to `threads` as
+        // the walk meets them.
         sync::ReadMarkers markers{};
         std::vector<std::pair<std::uint64_t, bool>> transitions{};
         std::vector<Candidate> candidates{};
-        // An own event whose thread could not be determined within the budget: it may cover any
-        // thread, so the room counts nothing.
-        bool own_thread_unknown{false};
         // The stream ordering on the user's membership row, rewritten on every membership event
         // they get (profile changes included), so at or after the start of the current join.
         std::uint64_t membership_row_ordering{0U};
-    };
-
-    // The read receipts of one room whose target a capped pass did not reach.
-    struct UnreachedReceipts final
-    {
-        bool unthreaded{false};
-        std::set<std::string, std::less<>> threads{};
+        // Nothing the walk has still to visit can change the room's count.
+        bool settled{false};
+        // A non-join membership change has been met: the join start is pinned once the walk has
+        // passed below it.
+        bool met_non_join{false};
     };
 
     [[nodiscard]] auto has_member(canonicaljson::Object const& object, std::string_view key) noexcept -> bool
@@ -58,6 +54,25 @@ namespace
         return std::ranges::any_of(object, [key](canonicaljson::ObjectMember const& member) {
             return member.key == key;
         });
+    }
+
+    // The thread a non-state event the user sent reads (read_markers_for, ADR-0170), or nullopt for
+    // a state event, which reads nothing.
+    [[nodiscard]] auto own_event_thread(database::PersistentStore const& store, database::PersistentEvent const& row)
+        -> std::optional<std::string>
+    {
+        if (row.json.find("\"state_key\"") == std::string::npos &&
+            row.json.find("\"m.relates_to\"") == std::string::npos)
+        {
+            return std::string{sync::main_thread_id};
+        }
+        auto const parsed = canonicaljson::parse_lossless(row.json);
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || object == nullptr || has_member(*object, "state_key"))
+        {
+            return std::nullopt;
+        }
+        return sync::event_thread_id(store, *object);
     }
 
 } // namespace
@@ -68,9 +83,9 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     auto const& store = runtime.database.persistent_store;
     auto result = PushBadgeCount{};
 
-    // Loaded once, before the pass: the joined rooms, and the read receipts read_markers_for uses
-    // (m.read and m.read.private), keyed by the event each names.
-    auto table_walks = std::uint64_t{0U};
+    // Before the walk: the joined rooms, and each one's receipt positions. read_markers_for reads
+    // m.read and m.read.private, at the stream ordering of the event each names in the room; a
+    // receipt whose event is not stored there moves nothing.
     auto rooms = std::map<std::string, BadgeRoom, std::less<>>{};
     for (auto const& membership : store.memberships)
     {
@@ -79,175 +94,156 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
             rooms.try_emplace(membership.room_id).first->second.membership_row_ordering = membership.stream_ordering;
         }
     }
-    ++table_walks;
-    auto const& receipts = runtime.database.persistent_store.receipts;
-    auto receipt_targets = std::unordered_map<std::string, std::vector<std::size_t>>{};
-    for (auto index = std::size_t{0U}; index < receipts.size(); ++index)
+    ++result.table_walks;
+    for (auto const& receipt : store.receipts)
     {
-        auto const& receipt = receipts[index];
-        if (receipt.user_id == user_id && rooms.contains(receipt.room_id) &&
-            (receipt.receipt_type == "m.read" || receipt.receipt_type == "m.read.private"))
-        {
-            receipt_targets[receipt.event_id].push_back(index);
-        }
-    }
-    ++table_walks;
-    auto receipt_found = std::set<std::size_t>{};
-
-    auto const classifier = PushRuleUnreadClassifier{store, user_id, ruleset};
-    auto rows_left = row_budget;
-    auto all_rows_visited = true;
-    // Newest row first, so a capped pass is more likely to reach recent events; nothing below
-    // depends on the order (store.events is not stream-ordered, ADR-0207).
-    for (auto const& row : std::views::reverse(store.events))
-    {
-        if (rows_left == 0U)
-        {
-            all_rows_visited = false;
-            break;
-        }
-        --rows_left;
-        auto const room = rooms.find(row.room_id);
-        if (room == rooms.end())
+        auto const room = rooms.find(receipt.room_id);
+        if (receipt.user_id != user_id || room == rooms.end() ||
+            (receipt.receipt_type != "m.read" && receipt.receipt_type != "m.read.private"))
         {
             continue;
         }
-        auto& facts = room->second;
-
-        // read_markers_for: a receipt's position is the stream ordering of the event it names.
-        if (auto const targets = receipt_targets.find(row.event_id); targets != receipt_targets.end())
+        auto const event = store.events.find_in_room(receipt.room_id, receipt.event_id);
+        if (event == store.events.end())
         {
-            for (auto const index : targets->second)
-            {
-                auto const& receipt = receipts[index];
-                if (receipt.room_id != row.room_id)
-                {
-                    continue;
-                }
-                receipt_found.insert(index);
-                auto& position =
-                    receipt.thread_id.empty() ? facts.markers.unthreaded : facts.markers.threads[receipt.thread_id];
-                position = std::max(position, row.stream_ordering);
-            }
+            continue;
         }
-        // current_join_start's transitions.
+        auto& markers = room->second.markers;
+        auto& position = receipt.thread_id.empty() ? markers.unthreaded : markers.threads[receipt.thread_id];
+        position = std::max(position, event->stream_ordering);
+    }
+    ++result.table_walks;
+
+    auto const classifier = PushRuleUnreadClassifier{store, user_id, ruleset};
+    auto unsettled = rooms.size();
+    auto const settle = [&unsettled](BadgeRoom& room) {
+        if (!room.settled)
+        {
+            room.settled = true;
+            --unsettled;
+        }
+    };
+    // Rooms that met a non-join membership change, by its stream ordering, highest first: each is
+    // settled once the walk is below that ordering, when every transition at or above it is known.
+    auto pinned = std::multimap<std::uint64_t, std::reference_wrapper<BadgeRoom>, std::greater<>>{};
+
+    auto rows_left = row_budget;
+    // The stream ordering of the last row visited. Every row above it has been visited; rows equal
+    // to it may not all have been (stream_ordering is not unique).
+    auto lowest_visited = std::numeric_limits<std::uint64_t>::max();
+    for (auto const& row : store.events.in_stream_order() | std::views::reverse)
+    {
+        while (!pinned.empty() && pinned.begin()->first > row.stream_ordering)
+        {
+            settle(pinned.begin()->second.get());
+            pinned.erase(pinned.begin());
+        }
+        if (unsettled == 0U)
+        {
+            break;
+        }
+        if (rows_left == 0U)
+        {
+            result.capped = true;
+            break;
+        }
+        --rows_left;
+        lowest_visited = row.stream_ordering;
+
+        auto const found = rooms.find(row.room_id);
+        if (found == rooms.end() || found->second.settled)
+        {
+            continue;
+        }
+        auto& room = found->second;
+        auto const unthreaded = room.markers.unthreaded;
+
+        // current_join_start's transitions. Met newest first: a join->join change (a profile
+        // change) leaves the join start undecided; a change from any other membership pins it.
         if (auto transition = member_transition(row, row.room_id, user_id); transition.has_value())
         {
-            facts.transitions.push_back(*transition);
+            room.transitions.push_back(*transition);
+            if (!transition->second && !room.met_non_join)
+            {
+                room.met_non_join = true;
+                pinned.emplace(transition->first, room);
+            }
+            else if (transition->second && !room.met_non_join && transition->first <= unthreaded)
+            {
+                // Every transition above here is a join, so the join start is at or below this
+                // one, which the unthreaded marker covers: nothing below can count.
+                settle(room);
+                continue;
+            }
         }
 
         if (row.sender_user_id == user_id)
         {
-            // read_markers_for: a non-state event the user sent reads its own thread (ADR-0170).
-            auto thread_id = std::optional<std::string>{std::string{sync::main_thread_id}};
-            if (row.json.find("\"state_key\"") != std::string::npos ||
-                row.json.find("\"m.relates_to\"") != std::string::npos)
+            // read_markers_for: a non-state event the user sent reads its own thread up to itself.
+            // Walking newest first, every such event above a candidate is met before it.
+            if (row.stream_ordering <= unthreaded)
             {
-                auto const parsed = canonicaljson::parse_lossless(row.json);
-                auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                if (parsed.error != canonicaljson::ParseError::none || object == nullptr ||
-                    has_member(*object, "state_key"))
-                {
-                    continue;
-                }
-                thread_id = sync::event_thread_id_within(store, *object, rows_left);
-            }
-            if (!thread_id.has_value())
-            {
-                facts.own_thread_unknown = true;
-                all_rows_visited = false;
                 continue;
             }
-            auto& position = facts.markers.threads[*thread_id];
-            position = std::max(position, row.stream_ordering);
+            if (auto thread_id = own_event_thread(store, row); thread_id.has_value())
+            {
+                auto& position = room.markers.threads[*thread_id];
+                position = std::max(position, row.stream_ordering);
+            }
             continue;
         }
 
-        // sync::count_unread_by_thread's filters, in its order after the position checks, which
-        // wait until the pass has the markers and the join start.
-        if (row.status != "accepted" || !classifier.visible(row))
+        // sync::count_unread_by_thread's filters; the join start and thread coverage are applied
+        // once the walk has met the events that decide them.
+        if (row.status != "accepted" || row.stream_ordering <= unthreaded || !classifier.visible(row))
         {
             continue;
         }
         auto const parsed = canonicaljson::parse_lossless(row.json);
         auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        if (parsed.error != canonicaljson::ParseError::none || object == nullptr)
+        if (parsed.error != canonicaljson::ParseError::none || object == nullptr ||
+            !classifier.classify(row.room_id, parsed.value).notify)
         {
             continue;
         }
-        if (!classifier.classify(row.room_id, parsed.value).notify)
-        {
-            continue;
-        }
-        auto thread_id = sync::event_thread_id_within(store, *object, rows_left);
-        if (!thread_id.has_value())
-        {
-            all_rows_visited = false;
-            continue;
-        }
-        facts.candidates.push_back({row.stream_ordering, std::move(*thread_id)});
+        room.candidates.push_back({row.stream_ordering, sync::event_thread_id(store, *object)});
     }
     result.rows_visited = row_budget - rows_left;
-    result.capped = !all_rows_visited;
-
-    // A capped pass may not have reached a receipt's event, whose position is then unknown: count
-    // nothing it could cover. Grouped by room in one walk of the user's receipts, so no room
-    // walks them all again.
-    auto unreached = std::map<std::string_view, UnreachedReceipts, std::less<>>{};
-    if (result.capped)
-    {
-        for (auto const& [event_id, indexes] : receipt_targets)
-        {
-            for (auto const index : indexes)
-            {
-                if (receipt_found.contains(index))
-                {
-                    continue;
-                }
-                auto& room = unreached[receipts[index].room_id];
-                if (receipts[index].thread_id.empty())
-                {
-                    room.unthreaded = true;
-                }
-                else
-                {
-                    room.threads.insert(receipts[index].thread_id);
-                }
-            }
-        }
-    }
-    result.table_walks = table_walks + classifier.table_walks();
+    result.table_walks += classifier.table_walks();
 
     auto total = std::uint64_t{0U};
-    auto const no_unreached = UnreachedReceipts{};
-    for (auto& [room_id, facts] : rooms)
+    for (auto& [room_id, room] : rooms)
     {
-        if (facts.own_thread_unknown)
+        // An unsettled room in a capped walk knows only the rows above `lowest_visited`: its own
+        // events and membership changes there are all known, so counting only candidates above it
+        // never counts an event /sync would not. Otherwise the room is exact.
+        auto const partial = result.capped && !room.settled;
+        auto transitions = std::move(room.transitions);
+        if (partial)
+        {
+            std::erase_if(transitions, [lowest_visited](std::pair<std::uint64_t, bool> const& transition) {
+                return transition.first <= lowest_visited;
+            });
+        }
+        auto const transitions_known = !transitions.empty();
+        auto start = join_start_from(std::move(transitions));
+        // A capped walk that met none of the room's membership changes falls back to the membership
+        // row: every path that stores an accepted m.room.member event for the user rewrites its
+        // ordering with the event's or a later one, so it is never before the join start and can
+        // only under-count. Only joins met, the earliest of them is at or after the join start too.
+        if (partial && !transitions_known && room.membership_row_ordering != 0U)
+        {
+            start = room.membership_row_ordering;
+        }
+        if (!start.has_value())
         {
             continue;
         }
-        auto const found_unreached = unreached.find(room_id);
-        auto const& room_unreached = found_unreached == unreached.end() ? no_unreached : found_unreached->second;
-        auto const unreadable_room = room_unreached.unthreaded;
-        auto const& unreadable_threads = room_unreached.threads;
-        auto start = join_start_from(std::move(facts.transitions));
-        // A capped pass that did not reach the join falls back to the membership row: every path
-        // that stores an accepted m.room.member event for the user rewrites the row's ordering with
-        // the event's or a later one, so it is never before the join start and can only under-count.
-        // Uncapped, a room with no join counts nothing, as /sync's walk does.
-        if (!start.has_value() && result.capped && facts.membership_row_ordering != 0U)
+        for (auto const& candidate : room.candidates)
         {
-            start = facts.membership_row_ordering;
-        }
-        if (unreadable_room || !start.has_value())
-        {
-            continue;
-        }
-        for (auto const& candidate : facts.candidates)
-        {
-            if (candidate.stream_ordering <= facts.markers.unthreaded || candidate.stream_ordering <= *start ||
-                unreadable_threads.contains(candidate.thread_id) ||
-                facts.markers.covers(candidate.stream_ordering, candidate.thread_id))
+            // Strictly above: a row at `lowest_visited` may share its ordering with an unvisited row.
+            if ((partial && candidate.stream_ordering <= lowest_visited) || candidate.stream_ordering <= *start ||
+                room.markers.covers(candidate.stream_ordering, candidate.thread_id))
             {
                 continue;
             }
