@@ -225,18 +225,42 @@ namespace
     // §"Serving inline content" against stored XSS through uploaded files.
     // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
     //
-    // No filename parameter is emitted: this server does not yet persist the
-    // upload filename, and the spec permits omitting it when unavailable ("When
-    // the header is not supplied, or does not supply a filename, the local
-    // download response does not include a filename").
-    auto apply_media_security_headers(LocalHttpResponse& response, std::string_view content_type) -> void
+    // `filename` is the {fileName} of a named download route (R17), whose
+    // Content-Disposition "MUST contain the file name requested in the path";
+    // empty for every other route, and the header then names no file.
+    auto apply_media_security_headers(LocalHttpResponse& response, std::string_view content_type,
+                                      std::string_view filename = {}) -> void
     {
         append_header_if_missing(response.headers, "Content-Security-Policy",
                                  "sandbox; default-src 'none'; script-src 'none'; plugin-types application/pdf; "
                                  "style-src 'unsafe-inline'; object-src 'self';");
         append_header_if_missing(response.headers, "Cross-Origin-Resource-Policy", "cross-origin");
         append_header_if_missing(response.headers, "Content-Disposition",
-                                 media::content_type_is_inline_safe(content_type) ? "inline" : "attachment");
+                                 media::media_content_disposition(content_type, filename));
+    }
+
+    // R17: the percent-decoded {fileName} of GET .../download/{serverName}/{mediaId}/{fileName},
+    // or empty for the two-segment route and every other one.
+    [[nodiscard]] auto download_route_filename(std::string_view target) -> std::string
+    {
+        auto const path = target.substr(0U, target.find('?'));
+        for (auto const prefix :
+             {std::string_view{"/_matrix/client/v1/media/download/"}, std::string_view{"/_matrix/media/v3/download/"}})
+        {
+            if (!path.starts_with(prefix))
+            {
+                continue;
+            }
+            auto const rest = path.substr(prefix.size());
+            auto const first = rest.find('/');
+            auto const second = first == std::string_view::npos ? first : rest.find('/', first + 1U);
+            if (second == std::string_view::npos)
+            {
+                return {};
+            }
+            return core::percent_decode_path_component(rest.substr(second + 1U));
+        }
+        return {};
     }
 
     auto apply_cors_headers(LocalHttpRequest const& req, LocalHttpResponse& response, config::CorsConfig const& cors)
@@ -3216,12 +3240,25 @@ namespace
             }
             auto const media_path = rest.substr(action_end + 1U);
             auto const media_slash = media_path.find('/');
-            if (media_slash == std::string_view::npos || !has_one_segment(media_path.substr(0U, media_slash)) ||
-                !has_one_segment(media_path.substr(media_slash + 1U)))
+            if (media_slash == std::string_view::npos || !has_one_segment(media_path.substr(0U, media_slash)))
             {
                 return false;
             }
-            out = std::string{prefix} + std::string{action} + "/{server}/{mediaId}";
+            auto const id_and_name = media_path.substr(media_slash + 1U);
+            if (has_one_segment(id_and_name))
+            {
+                out = std::string{prefix} + std::string{action} + "/{server}/{mediaId}";
+                return true;
+            }
+            // R17: a download may name the file, {server}/{mediaId}/{fileName}.
+            auto const name_slash = id_and_name.find('/');
+            if (action != "download" || name_slash == std::string_view::npos ||
+                !has_one_segment(id_and_name.substr(0U, name_slash)) ||
+                !has_one_segment(id_and_name.substr(name_slash + 1U)))
+            {
+                return false;
+            }
+            out = std::string{prefix} + "download/{server}/{mediaId}/{fileName}";
             return true;
         };
 
@@ -9003,7 +9040,7 @@ namespace
         auto const content_type = std::string_view{local_response.body}.substr(0U, pipe_pos);
         auto const bytes = std::string_view{local_response.body}.substr(pipe_pos + 1U);
         auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
-        apply_media_security_headers(response, content_type);
+        apply_media_security_headers(response, content_type, download_route_filename(req.target));
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
@@ -12139,6 +12176,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
+    // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}
     // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
     // Authenticated media endpoints (MSC3860 / Matrix v1.11). The v1 routes
     // require an access token per spec v1.19 §13.8, so they are dispatched after

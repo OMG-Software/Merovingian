@@ -1,3 +1,16 @@
+## 0.12.41
+
+Media part of the conformance audit (2026-10-17): R17 and the wave-6 media endpoints.
+
+- **FIXED (R17):** `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}` and the
+  deprecated `/_matrix/media/v3/download/.../{fileName}` answered 404 for media that existed: the
+  local router refused the third path segment. They now serve the media, and `Content-Disposition`
+  names the requested file, as the spec requires. A name is written as an RFC 6266 quoted string
+  (printable ASCII) or `filename*=utf-8''` percent-encoding, and a name with a control character,
+  a path separator or invalid UTF-8 is left out (`media::media_content_disposition`, ADR-0211). The
+  deprecated named route stays frozen for new media (ADR-0068). Named downloads have their own
+  rate-limit bucket (`.../download/{server}/{mediaId}/{fileName}`).
+
 ## 0.12.40
 
 Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-report-2026-10-17.md`.

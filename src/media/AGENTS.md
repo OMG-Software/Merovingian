@@ -52,6 +52,14 @@ set from the upload request (only the remote fetch sets it) and rebuilt on hydra
 alone: a local account could imitate `@remote-media:` (ADR-0178), and the localpart `remote-media`
 is reserved (`auth::localpart_is_reserved`).
 
+## File names in Content-Disposition (ADR-0211)
+
+A file name (the `{fileName}` of a named download) is client-chosen text that lands in a
+response header. Write `Content-Disposition` only with `media::media_content_disposition()`
+(`security.cpp`): it leaves out a name that `media_filename_is_valid()` refuses (control
+characters, `/`, `\`, invalid UTF-8, over 255 bytes) and encodes the rest per RFC 6266. Never
+concatenate a name into a header value anywhere else.
+
 ## Thumbnail worker
 
 The thumbnail worker runs as a separate sandboxed process (`thumbnail_worker_main.cpp`).

@@ -342,12 +342,22 @@ Client-facing download and thumbnail responses previously carried only
   to anything served over federation (audit finding 8). Unknown and
   non-inline-safe types fail closed to `attachment` on both paths.
 
-**Remaining gap: no `filename` parameter is emitted.** This server does not
-persist the upload's original filename, and the spec permits omitting it
-("When the header is not supplied, or does not supply a filename, the local
-download response does not include a filename") — but it means a client
-cannot recover the original filename from a download response either. See
-`docs/todos/capability-gaps.md`.
+### Named downloads (R17, 0.12.40)
+
+`GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}` and the deprecated
+`/_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}` serve the same media as the
+two-segment routes (the router accepts one more non-empty segment; thumbnails take none), and
+their `Content-Disposition` names the file from the path, as the spec requires ("MUST contain
+the file name requested in the path"). The deprecated named route is frozen like the unnamed
+one: media uploaded after the freeze is 404 there (ADR-0068).
+
+`media::media_content_disposition()` (`src/media/security.cpp`) writes the header. A name that
+`media::media_filename_is_valid()` accepts (at most 255 bytes of well-formed UTF-8, no control
+characters, no `/` or `\`) is written as `filename="..."` (with `"` and `\` escaped) when it is
+printable ASCII, and as RFC 5987 `filename*=utf-8''<percent-encoded>` otherwise. Any other
+name is left out, so no byte a client chose can end or extend the header line (ADR-0211).
+Until 0.12.40 the router refused the third segment, so the named routes answered 404 for media
+that existed.
 
 ## Status Codes
 

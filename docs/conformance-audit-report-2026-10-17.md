@@ -31,7 +31,7 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R12 | P2 | Registration rejects an omitted username instead of generating one | Fixed 0.12.38 (ADR-0198) |
 | R13 | P2 | Local typing never expires; non-boolean `typing` is treated as true | Fixed 0.12.38 (ADR-0199) |
 | R15 | P2 | Unread counts ignore push-rule notify/highlight actions | Fixed 0.12.40 (ADR-0205) |
-| R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Open — media wave (0.12.40) |
+| R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Fixed 0.12.41 (ADR-0211) |
 | R19 | P2 | Push-rule mutation APIs are absent; delivery uses read-only defaults | Fixed 0.12.40 (ADR-0204) |
 | R20 | P2 | `POST /register` runs User-Interactive Authentication before the username checks | Open — unscheduled |
 | R14 | P3 | Failed push notifications are never retried (spec SHOULD) | Fixed 0.12.40 (ADR-0206) |
@@ -136,6 +136,6 @@ branch CI run 39053180514 shows OpenBSD at 58 Ok, 0 Fail.
 | 1 | 0.12.28 | R01, R02, R03, to-device message IDs |
 | 2 | 0.12.36 | R04, R05, R06, R18 (federation) |
 | 3 | 0.12.37 | R07, R08, R09, appservice ping and network directory, `create_room` appservice delivery |
-| 4 | 0.12.38 | R10, R11, R12, R13, R16 (client API); R17 moved to the media wave (0.12.40); R20 found |
+| 4 | 0.12.38 | R10, R11, R12, R13, R16 (client API); R17 moved to the media wave (0.12.41); R20 found |
 | 5 | 0.12.40 | R19, then R15 and R14 (push rules, counts, retry) |
 | 6 | — | Optional endpoint gaps, after a decision on each |

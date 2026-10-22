@@ -1552,6 +1552,28 @@ namespace
         return std::array<std::string_view, 2U>{server_name, media_id};
     }
 
+    // R17: a download route is {serverName}/{mediaId} or
+    // {serverName}/{mediaId}/{fileName}. The file name changes only the
+    // Content-Disposition the client API writes, so it is accepted here as one
+    // more non-empty segment and otherwise ignored. Thumbnails take no name.
+    [[nodiscard]] auto local_media_download_parts_with_name(std::string_view suffix)
+        -> std::optional<std::array<std::string_view, 2U>>
+    {
+        auto const path = suffix.substr(0U, suffix.find('?'));
+        auto const first = path.find('/');
+        auto const second = first == std::string_view::npos ? first : path.find('/', first + 1U);
+        if (second == std::string_view::npos)
+        {
+            return local_media_download_parts(suffix);
+        }
+        auto const file_name = path.substr(second + 1U);
+        if (file_name.empty() || file_name.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return local_media_download_parts(path.substr(0U, second));
+    }
+
     // Admin media routes (quarantine/release/remove) take a single path
     // segment with no server_name prefix, unlike the download/thumbnail
     // routes above. Strips any query string, then rejects anything that
@@ -5217,7 +5239,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     auto constexpr download_prefix = std::string_view{"/_matrix/media/v3/download/"};
     if (request.method == "GET" && starts_with(request.target, download_prefix))
     {
-        auto const parts = local_media_download_parts(path_suffix(request.target, download_prefix));
+        auto const parts = local_media_download_parts_with_name(path_suffix(request.target, download_prefix));
         if (!parts.has_value())
         {
             return response(404U, "route not found");
@@ -5257,7 +5279,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
     if (request.method == "GET" && starts_with(request.target, v1_download_prefix))
     {
-        auto const parts = local_media_download_parts(path_suffix(request.target, v1_download_prefix));
+        auto const parts = local_media_download_parts_with_name(path_suffix(request.target, v1_download_prefix));
         if (!parts.has_value())
         {
             return response(404U, "route not found");

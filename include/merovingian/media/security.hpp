@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -27,6 +28,23 @@ namespace merovingian::media
 //
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#serving-inline-content
 [[nodiscard]] auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool;
+
+// The longest file name, in bytes, that a Content-Disposition header names.
+inline constexpr std::size_t max_media_filename_bytes = 255U;
+
+// True when `filename` may be named in a Content-Disposition header: not empty,
+// at most max_media_filename_bytes of well-formed UTF-8, and free of control
+// characters and path separators.
+[[nodiscard]] auto media_filename_is_valid(std::string_view filename) noexcept -> bool;
+
+// The Content-Disposition value for media of `content_type`: `inline` when the
+// type is inline-safe, otherwise `attachment`, followed by the file name when
+// `filename` is valid (RFC 6266: a quoted string for printable ASCII, otherwise
+// `filename*=utf-8''` percent-encoding). An invalid or empty `filename` is left
+// out, so no caller-chosen byte can end or extend the header line.
+//
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaidfilename
+[[nodiscard]] auto media_content_disposition(std::string_view content_type, std::string_view filename) -> std::string;
 
 enum class MediaDisposition
 {

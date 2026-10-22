@@ -3,6 +3,7 @@
 
 #include "merovingian/media/security.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -27,22 +28,93 @@ auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool
     }
 
     static constexpr auto inline_safe = std::array{
-        std::string_view{"text/css"},        std::string_view{"text/plain"},
-        std::string_view{"text/csv"},        std::string_view{"application/json"},
+        std::string_view{"text/css"},
+        std::string_view{"text/plain"},
+        std::string_view{"text/csv"},
+        std::string_view{"application/json"},
         std::string_view{"application/ld+json"},
-        std::string_view{"image/jpeg"},      std::string_view{"image/gif"},
-        std::string_view{"image/png"},       std::string_view{"image/apng"},
-        std::string_view{"image/webp"},      std::string_view{"image/avif"},
-        std::string_view{"video/mp4"},       std::string_view{"video/webm"},
-        std::string_view{"video/ogg"},       std::string_view{"video/quicktime"},
-        std::string_view{"audio/mp4"},       std::string_view{"audio/webm"},
-        std::string_view{"audio/aac"},       std::string_view{"audio/mpeg"},
-        std::string_view{"audio/ogg"},       std::string_view{"audio/wave"},
-        std::string_view{"audio/wav"},       std::string_view{"audio/x-wav"},
-        std::string_view{"audio/x-pn-wav"},  std::string_view{"audio/flac"},
+        std::string_view{"image/jpeg"},
+        std::string_view{"image/gif"},
+        std::string_view{"image/png"},
+        std::string_view{"image/apng"},
+        std::string_view{"image/webp"},
+        std::string_view{"image/avif"},
+        std::string_view{"video/mp4"},
+        std::string_view{"video/webm"},
+        std::string_view{"video/ogg"},
+        std::string_view{"video/quicktime"},
+        std::string_view{"audio/mp4"},
+        std::string_view{"audio/webm"},
+        std::string_view{"audio/aac"},
+        std::string_view{"audio/mpeg"},
+        std::string_view{"audio/ogg"},
+        std::string_view{"audio/wave"},
+        std::string_view{"audio/wav"},
+        std::string_view{"audio/x-wav"},
+        std::string_view{"audio/x-pn-wav"},
+        std::string_view{"audio/flac"},
         std::string_view{"audio/x-flac"},
     };
     return std::ranges::find(inline_safe, media_type) != inline_safe.end();
+}
+
+auto media_filename_is_valid(std::string_view filename) noexcept -> bool
+{
+    if (filename.empty() || filename.size() > max_media_filename_bytes || !canonicaljson::utf8_is_valid(filename))
+    {
+        return false;
+    }
+    return std::ranges::none_of(filename, [](char c) {
+        auto const byte = static_cast<unsigned char>(c);
+        return byte < 0x20U || byte == 0x7FU || c == '/' || c == '\\';
+    });
+}
+
+auto media_content_disposition(std::string_view content_type, std::string_view filename) -> std::string
+{
+    auto disposition = std::string{content_type_is_inline_safe(content_type) ? "inline" : "attachment"};
+    if (!media_filename_is_valid(filename))
+    {
+        return disposition;
+    }
+    auto const printable_ascii = std::ranges::all_of(filename, [](char c) {
+        return static_cast<unsigned char>(c) >= 0x20U && static_cast<unsigned char>(c) < 0x7FU;
+    });
+    if (printable_ascii)
+    {
+        // RFC 6266 quoted-string: only `"` and `\` need escaping.
+        disposition += "; filename=\"";
+        for (auto const c : filename)
+        {
+            if (c == '"' || c == '\\')
+            {
+                disposition += '\\';
+            }
+            disposition += c;
+        }
+        disposition += '"';
+        return disposition;
+    }
+    // RFC 5987 ext-value. attr-char is ALPHA / DIGIT / "!" / "#" / "$" / "&" /
+    // "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"; every other byte is
+    // percent-encoded, so the value is printable ASCII whatever the name holds.
+    constexpr auto hex = std::string_view{"0123456789ABCDEF"};
+    constexpr auto attr_punctuation = std::string_view{"!#$&+-.^_`|~"};
+    disposition += "; filename*=utf-8''";
+    for (auto const c : filename)
+    {
+        auto const byte = static_cast<unsigned char>(c);
+        auto const alnum = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (alnum || (byte < 0x80U && attr_punctuation.find(c) != std::string_view::npos))
+        {
+            disposition += c;
+            continue;
+        }
+        disposition += '%';
+        disposition += hex[byte >> 4U];
+        disposition += hex[byte & 0x0FU];
+    }
+    return disposition;
 }
 
 namespace

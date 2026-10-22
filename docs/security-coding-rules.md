@@ -1006,6 +1006,12 @@ media-fetch-pool task.
   (ADR-0178).
   Source: `src/media/AGENTS.md`.
 
+- **A file name reaches `Content-Disposition` only through `media::media_content_disposition`,
+  which leaves out a name `media::media_filename_is_valid` refuses and encodes the rest.**
+  Why: the name comes from a client (or a remote server) and is written into a response
+  header; a CR or LF in it would split the response (ADR-0211).
+  Source: `src/media/AGENTS.md`.
+
 ## Platform hardening
 
 - **Check a sequence of irreversible restrictions in full before its first step.**
