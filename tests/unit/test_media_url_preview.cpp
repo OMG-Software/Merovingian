@@ -9,6 +9,8 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 
 namespace
 {
@@ -233,6 +235,46 @@ SCENARIO("The URL preview cache is bounded and expires entries", "[media][url-pr
             THEN("nothing is stored")
             {
                 REQUIRE(empty.size() == 0U);
+            }
+        }
+    }
+}
+
+// The cache's index holds iterators into its own list, so a copy would index the
+// source's list. Moving a std::list keeps its iterators valid; copying does not.
+SCENARIO("The URL preview cache cannot be copied, only moved", "[media][url-preview][preview]")
+{
+    GIVEN("the UrlPreviewCache type")
+    {
+        WHEN("its copy and move operations are inspected")
+        {
+            constexpr auto copy_constructible = std::is_copy_constructible_v<merovingian::media::UrlPreviewCache>;
+            constexpr auto copy_assignable = std::is_copy_assignable_v<merovingian::media::UrlPreviewCache>;
+            constexpr auto move_constructible = std::is_move_constructible_v<merovingian::media::UrlPreviewCache>;
+
+            THEN("copies are deleted and moves remain")
+            {
+                REQUIRE_FALSE(copy_constructible);
+                REQUIRE_FALSE(copy_assignable);
+                REQUIRE(move_constructible);
+            }
+        }
+
+        AND_GIVEN("a cache holding an entry")
+        {
+            auto cache = merovingian::media::UrlPreviewCache{};
+            cache.store("https://a.example/", {true, "a", 1000U}, 2U);
+
+            WHEN("it is moved")
+            {
+                auto moved = std::move(cache);
+
+                THEN("the moved-to cache finds the entry through its index")
+                {
+                    auto const found = moved.find("https://a.example/", 10U);
+                    REQUIRE(found.has_value());
+                    REQUIRE(found->body == "a");
+                }
             }
         }
     }

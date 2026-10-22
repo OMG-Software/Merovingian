@@ -63,6 +63,16 @@ struct OpenGraphData final
 class UrlPreviewCache final
 {
 public:
+    // The index holds iterators into the entry list. A copy would keep the
+    // source's iterators, so copies are deleted; a moved std::list keeps its
+    // iterators valid, so moves are kept.
+    UrlPreviewCache() = default;
+    UrlPreviewCache(UrlPreviewCache const&) = delete;
+    auto operator=(UrlPreviewCache const&) -> UrlPreviewCache& = delete;
+    UrlPreviewCache(UrlPreviewCache&&) = default;
+    auto operator=(UrlPreviewCache&&) -> UrlPreviewCache& = default;
+    ~UrlPreviewCache() = default;
+
     struct Entry final
     {
         bool ok{false};
