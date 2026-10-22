@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 namespace
 {
@@ -287,6 +288,42 @@ SCENARIO("a profile change succeeds when propagation cannot complete, and an ide
                     // profile propagation.
                     REQUIRE(seen.count == 2U);
                 }
+            }
+        }
+    }
+
+    // A stored profile field this server cannot serialise (here an avatar URL holding a byte that
+    // is not UTF-8) leaves no membership event to send. The field being set is still set.
+    GIVEN("Alice belongs to a room and her stored avatar URL cannot be serialised")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before profile propagation can be tested.
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        std::ignore = create_public_room(started.runtime, alice);
+        auto& store = started.runtime.homeserver.database.persistent_store;
+        // Fixture: a profile row whose avatar URL is not valid UTF-8, as no client request can write.
+        REQUIRE(merovingian::database::store_profile(store, {"@alice:example.org", {}, "mxc://example.org/\xff"}));
+        auto const events_before = store.events.size();
+
+        WHEN("Alice sets her display name")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/@alice:example.org/displayname", alice,
+                                  R"({"displayname":"Alice Liddell"})"});
+
+            THEN("the field is set and reported as set, and no membership event is stored")
+            {
+                // Spec MUST: 200 "The profile field was set."
+                REQUIRE(put.response.status == 200U);
+                auto const profile = merovingian::database::find_profile(store, "@alice:example.org");
+                // Fixture: the profile row is still held.
+                REQUIRE(profile.has_value());
+                // Spec MUST: the field the 200 reports as set is stored.
+                REQUIRE(profile->displayname == "Alice Liddell");
+                // Project policy (ADR-0182): an event that cannot be built is not sent; the request
+                // still succeeds.
+                REQUIRE(store.events.size() == events_before);
             }
         }
     }
