@@ -8108,13 +8108,14 @@ namespace
     // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search
     //
     // Searches `content.body` (m.room.message), `content.name` (m.room.name),
-    // and `content.topic` (m.room.topic) across rooms the caller is currently
-    // joined to. Encrypted rooms are never searched (spec: "The search will
+    // and `content.topic` (m.room.topic) across rooms the caller has been in,
+    // including rooms they have left (R16), each event subject to history
+    // visibility. Encrypted rooms are never searched (spec: "The search will
     // not include rooms that are end to end encrypted"). Matching is a
     // case-insensitive substring test, not stemmed/tokenised full text search
     // -- see docs/todos/capability-gaps.md for that and the other spec
-    // corners deliberately left out (rooms the caller has left; the MSC3765
-    // `content['m.topic']` extensible-topic representation).
+    // corner deliberately left out (the MSC3765 `content['m.topic']`
+    // extensible-topic representation).
 
     constexpr std::size_t kSearchDefaultPageLimit = 10U;
 
@@ -8442,11 +8443,11 @@ namespace
     // strictly before it), or nullopt for the first page.
     //
     // Bounding (see ClientApiLimits::max_search_events_scanned): candidate
-    // events -- the caller's joined, filter-allowed, unencrypted rooms -- are
-    // gathered and sorted newest-first once per request. That gather is
-    // O(k log k) where k is the caller's own visible event count: the same
-    // scope /messages already reads per room, just summed across every
-    // joined room, which is exactly the spec's defined search scope, and
+    // events -- in the filter-allowed, unencrypted rooms the caller has been
+    // in -- are gathered and sorted newest-first once per request. That gather
+    // is O(k log k) where k is the event count of those rooms: the same scope
+    // /messages already reads per room, just summed across every such room,
+    // which is exactly the spec's defined search scope, and
     // uses only cheap field comparisons (no JSON parsing). From the resume
     // point, at most `max_search_events_scanned` candidates are JSON-parsed
     // and text-matched per request -- the genuinely expensive step -- and the
@@ -8458,14 +8459,54 @@ namespace
     {
         auto const& store = rt.homeserver.database.persistent_store;
 
-        auto joined_rooms = std::unordered_set<std::string>{};
+        // Spec (Server Side Search): "all rooms that the user has been in, including those that
+        // they have left" (R16). room_read_access_for is the one predicate for that: `current`
+        // while joined, `as_of` after a leave, kick or ban that followed a join, `none` for a room
+        // never joined (an invite, a knock, a declined invite) or forgotten. One pass over the
+        // membership rows finds each room's current membership: a join is `current` at once, an
+        // invite or knock is never searched, and a leave or ban is judged by
+        // room_read_access_for only when one of its events would be returned, so the scans that
+        // call makes under runtime.mutex are bounded by the page, not by every room the user
+        // ever left.
+        auto latest_membership = std::unordered_map<std::string, database::PersistentMembership const*>{};
         for (auto const& membership : store.memberships)
         {
-            if (membership.user_id == user_id && membership.membership == "join")
+            if (membership.user_id != user_id)
             {
-                joined_rooms.insert(membership.room_id);
+                continue;
+            }
+            auto& latest = latest_membership[membership.room_id];
+            if (latest == nullptr || membership.stream_ordering >= latest->stream_ordering)
+            {
+                latest = &membership;
             }
         }
+        auto searchable_rooms = std::unordered_map<std::string, std::optional<sync::RoomReadAccess>>{};
+        for (auto const& [room_id, membership] : latest_membership)
+        {
+            if (membership->membership == "join")
+            {
+                searchable_rooms.emplace(room_id, sync::RoomReadAccess{sync::RoomReadKind::current, {}, 0U});
+            }
+            else if (membership->membership == "leave" || membership->membership == "ban")
+            {
+                searchable_rooms.emplace(room_id, std::nullopt);
+            }
+        }
+        // The room's access, judged on first use and kept for the request; nullptr when the
+        // caller may not search it.
+        auto const room_access = [&](std::string const& room_id) -> sync::RoomReadAccess const* {
+            auto const found = searchable_rooms.find(room_id);
+            if (found == searchable_rooms.end())
+            {
+                return nullptr;
+            }
+            if (!found->second.has_value())
+            {
+                found->second = sync::room_read_access_for(store, room_id, user_id);
+            }
+            return found->second->kind == sync::RoomReadKind::none ? nullptr : &*found->second;
+        };
 
         auto const state_index = build_state_index(store);
         auto encrypted_rooms_cache = std::unordered_map<std::string, bool>{};
@@ -8491,13 +8532,12 @@ namespace
         auto candidates = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            // Access control: never a room the caller is not currently joined
-            // to -- see the capability-gaps.md note on why this is join-only
-            // rather than the spec's full "including rooms you have left"
-            // scope. This is the single gate standing between this endpoint
-            // and a server-wide event disclosure, since unlike /messages the
-            // scan is not otherwise bounded to one room by the request path.
-            if (!joined_rooms.contains(event.room_id))
+            // Access control: never a room the caller has not been in. This is
+            // the gate standing between this endpoint and a server-wide event
+            // disclosure, since unlike /messages the scan is not otherwise
+            // bounded to one room by the request path. Within a room the caller
+            // has left, HistoryVisibility below withholds what was sent after.
+            if (!searchable_rooms.contains(event.room_id))
             {
                 continue;
             }
@@ -8592,8 +8632,9 @@ namespace
             {
                 continue;
             }
-            // Checked last: only an event that would be returned costs a visibility lookup.
-            if (!visibility.can_see(*candidate))
+            // Checked last: only an event that would be returned costs an access and a
+            // visibility lookup.
+            if (room_access(candidate->room_id) == nullptr || !visibility.can_see(*candidate))
             {
                 continue;
             }
@@ -8730,8 +8771,15 @@ namespace
             auto state = canonicaljson::Object{};
             for (auto const& room_id : rooms_in_page)
             {
+                // A room the caller has left gets its state as they left it, never
+                // later (R16): the same rule /messages applies.
+                auto const* access = room_access(room_id);
+                if (access == nullptr)
+                {
+                    continue;
+                }
                 state.push_back(json_member(
-                    room_id, json_arr(build_current_state_events_array(store, sync::EventTypeFilter{}, room_id))));
+                    room_id, json_arr(messages_state_events(store, sync::EventTypeFilter{}, room_id, *access))));
             }
             response.push_back(json_member("state", json_obj(std::move(state))));
         }

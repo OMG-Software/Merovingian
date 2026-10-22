@@ -377,6 +377,108 @@ SCENARIO("search never returns an event from a room the caller is not a member o
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Server Side Search
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search
+//
+// "The search API allows clients to perform full text search across events in all rooms that
+// the user has been in, including those that they have left. Only events that the user is
+// allowed to see will be searched, e.g. it won't include events in rooms that happened after you
+// left." Room History Visibility: "After a user has left a room, they may see any events which
+// they were allowed to see before they left the room, but no events received after they left."
+// Conformance audit R16.
+SCENARIO("search covers a room the caller has left, up to the point they left",
+         "[search][conformance][security][r16]")
+{
+    GIVEN("bob joined alice's room, saw a message and a room name, and left before more of both")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room = create_room(rt, alice, "public_chat");
+        join_room(rt, bob, room);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.name/", alice,
+                         R"({"name":"Name bob saw"})"})
+                    .response.status == 200U);
+        auto const before_leave =
+            send_text_message(rt, alice, room, "txn-before-leave", "the lighthouseword before bob left");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/leave", bob, "{}"})
+                    .response.status == 200U);
+        auto const after_leave =
+            send_text_message(rt, alice, room, "txn-after-leave", "the lighthouseword after bob left");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.name/", alice,
+                         R"({"name":"Name after bob left"})"})
+                    .response.status == 200U);
+
+        WHEN("bob searches for the term both messages share, asking for room state")
+        {
+            auto const room_events = search(rt, bob, body_for_term("lighthouseword", R"("include_state":true)"));
+
+            THEN("the message from before he left is found, the one from after is not")
+            {
+                auto const* results = object_member_as_array(room_events, "results");
+                REQUIRE(results != nullptr);
+                REQUIRE(results_contain_event(*results, before_leave)); // Spec: "including those that they have left"
+                REQUIRE_FALSE(results_contain_event(*results, after_leave)); // "won't include events ... after you left"
+                auto const* count = int_member(room_events, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 1);
+            }
+
+            THEN("the room state returned is the state as he left it, not the room's current state")
+            {
+                auto const* state = object_member_as_object(room_events, "state");
+                REQUIRE(state != nullptr);
+                auto const* room_state = object_member_as_array(*state, room);
+                REQUIRE(room_state != nullptr);
+                auto name = std::optional<std::string>{};
+                for (auto const& event : *room_state)
+                {
+                    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+                    auto const* type = object == nullptr ? nullptr : string_member(*object, "type");
+                    if (type == nullptr || *type != "m.room.name")
+                    {
+                        continue;
+                    }
+                    auto const* content = object_member_as_object(*object, "content");
+                    REQUIRE(content != nullptr);
+                    auto const* value = string_member(*content, "name");
+                    REQUIRE(value != nullptr);
+                    name = *value;
+                }
+                REQUIRE(name == std::optional<std::string>{"Name bob saw"});
+            }
+        }
+
+        WHEN("bob forgets the room and searches again")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/forget", bob, "{}"})
+                        .response.status == 200U);
+            auto const room_events = search(rt, bob, body_for_term("lighthouseword"));
+            auto const alice_events = search(rt, alice, body_for_term("lighthouseword"));
+
+            THEN("nothing from the forgotten room is returned to him, while alice still finds both")
+            {
+                // Spec (POST /forget): the user "will no longer be able to retrieve history for this room".
+                auto const* results = object_member_as_array(room_events, "results");
+                REQUIRE(results != nullptr);
+                REQUIRE(results->empty());
+                auto const* alice_results = object_member_as_array(alice_events, "results");
+                REQUIRE(alice_results != nullptr);
+                REQUIRE(results_contain_event(*alice_results, before_leave));
+                REQUIRE(results_contain_event(*alice_results, after_leave));
+            }
+        }
+    }
+}
+
 // Spec: "The search will not include rooms that are end to end encrypted."
 SCENARIO("search excludes events from end-to-end encrypted rooms", "[search][conformance][security]")
 {
