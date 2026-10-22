@@ -1,6 +1,5 @@
 Name:           merovingian
 Version:        0.12.37
-Version:        0.12.36
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -116,6 +115,7 @@ fi
 * Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.37-1
 - Send appservices invites to their virtual users, ephemeral data, and the events createRoom makes; add appservice ping and network directories.
 - Forward send_attempt to identity servers on requestToken.
+
 * Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.36-1
 - Fix federation conformance findings: restricted joins through this server as resident, every listed signing key checked, hash mismatches on membership endpoints redacted, m.tz profile queries.
 
