@@ -853,7 +853,9 @@ media-fetch-pool task.
   A new global account-data type past `server.client_api.max_global_account_data_per_user` is
   refused with `400 M_TOO_LARGE`; an update to a type the user holds is always allowed. Room
   account data is written only for a room the user holds a membership in, and a new type past
-  `server.client_api.max_room_account_data_per_room` in that room is refused the same way.
+  `server.client_api.max_room_account_data_per_room` in that room is refused the same way. The
+  `m.tag` and `m.fully_read` rows the tags and read-marker APIs write count towards that cap but
+  are never refused by it, so tagging and read markers keep working at the cap (ADR-0197).
   Caps refuse, never evict (ADR-0118).
   Why: account-data reads scan every row under the lock, so one user adding types without bound
   slowed every request that reads them (CWE-770; security audit run-1, ADR-0173). Room rows
