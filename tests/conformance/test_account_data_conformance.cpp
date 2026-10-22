@@ -61,6 +61,7 @@ constexpr auto alice_path = std::string_view{"%40alice%3Aexample.org"};
 
 [[nodiscard]] auto register_and_login(ClientServerRuntime& rt, std::string const& localpart) -> std::string
 {
+    // Fixture: registration must succeed before the user can log in.
     REQUIRE(
         call(rt, "POST", "/_matrix/client/v3/register", {}, registration_json(localpart, "CorrectHorse7!")).status ==
         200U);
@@ -68,9 +69,11 @@ constexpr auto alice_path = std::string_view{"%40alice%3Aexample.org"};
         call(rt, "POST", "/_matrix/client/v3/login", {},
              std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +
                  R"(:example.org"},"password":"CorrectHorse7!","device_id":")" + localpart + R"(_DEV"})");
+    // Fixture: login must succeed so later requests are authenticated.
     REQUIRE(login.status == 200U);
     auto const body = parse_object(login.body);
     auto const* token = string_member(body, "access_token");
+    // Fixture: the login response must carry the access token later requests use.
     REQUIRE(token != nullptr);
     return *token;
 }
@@ -78,9 +81,11 @@ constexpr auto alice_path = std::string_view{"%40alice%3Aexample.org"};
 [[nodiscard]] auto create_public_room(ClientServerRuntime& rt, std::string const& token) -> std::string
 {
     auto const created = call(rt, "POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})");
+    // Fixture: room creation must succeed before room account data is exercised.
     REQUIRE(created.status == 200U);
     auto const body = parse_object(created.body);
     auto const* room_id = string_member(body, "room_id");
+    // Fixture: the room-creation response must carry the room ID.
     REQUIRE(room_id != nullptr);
     return *room_id;
 }
@@ -109,6 +114,7 @@ constexpr auto alice_path = std::string_view{"%40alice%3Aexample.org"};
                                             std::string const& room_id) -> merovingian::canonicaljson::Array
 {
     auto const synced = call(rt, "GET", "/_matrix/client/v3/sync", token);
+    // Fixture: the sync must succeed for its account data to be read.
     REQUIRE(synced.status == 200U);
     auto const body = parse_object(synced.body);
     auto const* rooms = object_member_as_object(body, "rooms");
@@ -155,6 +161,7 @@ SCENARIO("global account data that is not a JSON object is refused and not store
     GIVEN("a logged-in user")
     {
         auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const token = register_and_login(rt, "alice");
@@ -165,8 +172,11 @@ SCENARIO("global account data that is not a JSON object is refused and not store
 
             THEN("the server answers 400 M_NOT_JSON and stores nothing")
             {
+                // Spec MUST: a body that is not a JSON object is refused with 400.
                 REQUIRE(refused.status == 400U);
+                // Spec MUST: a request that did not contain valid JSON is M_NOT_JSON.
                 REQUIRE(errcode_of(refused) == "M_NOT_JSON");
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", global_url(alice_path, "org.example.bad"), token).status == 404U);
             }
         }
@@ -179,14 +189,23 @@ SCENARIO("global account data that is not a JSON object is refused and not store
 
             THEN("each is refused with 400 M_BAD_JSON and nothing is stored")
             {
+                // Spec MUST: a body that is not a JSON object is refused with 400.
                 REQUIRE(array.status == 400U);
+                // Spec MUST: valid JSON that is malformed in some way is M_BAD_JSON.
                 REQUIRE(errcode_of(array) == "M_BAD_JSON");
+                // Spec MUST: a body that is not a JSON object is refused with 400.
                 REQUIRE(string.status == 400U);
+                // Spec MUST: valid JSON that is malformed in some way is M_BAD_JSON.
                 REQUIRE(errcode_of(string) == "M_BAD_JSON");
+                // Spec MUST: a body that is not a JSON object is refused with 400.
                 REQUIRE(number.status == 400U);
+                // Spec MUST: valid JSON that is malformed in some way is M_BAD_JSON.
                 REQUIRE(errcode_of(number) == "M_BAD_JSON");
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", global_url(alice_path, "org.example.array"), token).status == 404U);
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", global_url(alice_path, "org.example.string"), token).status == 404U);
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", global_url(alice_path, "org.example.number"), token).status == 404U);
             }
         }
@@ -198,12 +217,16 @@ SCENARIO("global account data that is not a JSON object is refused and not store
 
             THEN("it is stored and read back")
             {
+                // Spec MUST: a JSON object body is stored (200).
                 REQUIRE(stored.status == 200U);
                 auto const fetched = call(rt, "GET", global_url(alice_path, "org.example.good"), token);
+                // Spec MUST: GET returns the stored account data content (200).
                 REQUIRE(fetched.status == 200U);
                 auto const body = parse_object(fetched.body);
                 auto const* value = string_member(body, "key");
+                // Spec MUST: the content is returned as it was set.
                 REQUIRE(value != nullptr);
+                // Spec MUST: the content is returned as it was set.
                 REQUIRE(*value == "value");
             }
         }
@@ -223,6 +246,7 @@ SCENARIO("server-managed account data types are refused with 405 M_BAD_JSON glob
     GIVEN("a logged-in user joined to a room")
     {
         auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const token = register_and_login(rt, "alice");
@@ -242,10 +266,14 @@ SCENARIO("server-managed account data types are refused with 405 M_BAD_JSON glob
             {
                 for (auto const* response : {&global_read, &global_push, &room_read, &room_push})
                 {
+                    // Spec MUST: setting a server-managed type is rejected with a 405 error response.
                     REQUIRE(response->status == 405U);
+                    // Spec MUST: the 405 errcode is M_BAD_JSON.
                     REQUIRE(errcode_of(*response) == "M_BAD_JSON");
                 }
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", global_url(alice_path, "m.fully_read"), token).status == 404U);
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", room_url(alice_path, room_id, "m.push_rules"), token).status == 404U);
             }
         }
@@ -264,16 +292,20 @@ SCENARIO("a server-managed room account data type is readable through the room a
     GIVEN("a user who has set their fully-read marker in a room through /read_markers")
     {
         auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const token = register_and_login(rt, "alice");
         auto const room_id = create_public_room(rt, token);
         auto const sent = call(rt, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn1", token,
                                R"({"msgtype":"m.text","body":"hello"})");
+        // Fixture: a message must be sent for the read marker to point at.
         REQUIRE(sent.status == 200U);
         auto const sent_body = parse_object(sent.body);
         auto const* event_id = string_member(sent_body, "event_id");
+        // Fixture: the send response must carry the event ID.
         REQUIRE(event_id != nullptr);
+        // Fixture: the fully-read marker is set through /read_markers.
         REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + room_id + "/read_markers", token,
                      R"({"m.fully_read":")" + *event_id + R"("})")
                     .status == 200U);
@@ -284,10 +316,13 @@ SCENARIO("a server-managed room account data type is readable through the room a
 
             THEN("the server returns the marker's content")
             {
+                // Spec MUST: servers must allow clients to read the server-managed types as normal (200).
                 REQUIRE(fetched.status == 200U);
                 auto const body = parse_object(fetched.body);
                 auto const* marker = string_member(body, "event_id");
+                // Spec MUST: m.fully_read content carries event_id.
                 REQUIRE(marker != nullptr);
+                // Spec MUST: the marker read back is the one that was set.
                 REQUIRE(*marker == *event_id);
             }
         }
@@ -312,6 +347,7 @@ SCENARIO("room account data is stored, read back, delivered in the room's /sync 
     GIVEN("a logged-in user joined to two rooms")
     {
         auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const token = register_and_login(rt, "alice");
@@ -325,13 +361,18 @@ SCENARIO("room account data is stored, read back, delivered in the room's /sync 
 
             THEN("PUT answers 200 {} and GET on that room returns the content")
             {
+                // Spec MUST: PUT room account data answers 200.
                 REQUIRE(stored.status == 200U);
+                // Spec MUST: the 200 response body is {}.
                 REQUIRE(parse_object(stored.body).empty());
                 auto const fetched = call(rt, "GET", room_url(alice_path, room_id, "org.example.custom"), token);
+                // Spec MUST: GET returns the account data content for the room and type (200).
                 REQUIRE(fetched.status == 200U);
                 auto const body = parse_object(fetched.body);
                 auto const* answer = int_member(body, "answer");
+                // Spec MUST: the content is returned as it was set.
                 REQUIRE(answer != nullptr);
+                // Spec MUST: the content is returned as it was set.
                 REQUIRE(*answer == 42);
             }
 
@@ -339,18 +380,25 @@ SCENARIO("room account data is stored, read back, delivered in the room's /sync 
             {
                 auto const events = synced_room_account_data(rt, token, room_id);
                 auto const* content = event_content_of_type(events, "org.example.custom");
+                // Spec MUST: room account data is delivered in the room's /sync account_data.
                 REQUIRE(content != nullptr);
                 auto const* answer = int_member(*content, "answer");
+                // Spec MUST: the synced event carries the content as it was set.
                 REQUIRE(answer != nullptr);
+                // Spec MUST: the synced event carries the content as it was set.
                 REQUIRE(*answer == 42);
             }
 
             THEN("neither the global account data nor the other room has the type")
             {
+                // Spec MUST: room account data is not global account data, so the global GET finds nothing (404).
                 REQUIRE(call(rt, "GET", global_url(alice_path, "org.example.custom"), token).status == 404U);
                 auto const other = call(rt, "GET", room_url(alice_path, other_room_id, "org.example.custom"), token);
+                // Spec MUST: account data is scoped to one room, so another room has none (404).
                 REQUIRE(other.status == 404U);
+                // Spec MUST: no account data for this user, room and type is M_NOT_FOUND.
                 REQUIRE(errcode_of(other) == "M_NOT_FOUND");
+                // Spec MUST: another room's /sync account_data does not carry the type.
                 REQUIRE(event_content_of_type(synced_room_account_data(rt, token, other_room_id),
                                               "org.example.custom") == nullptr);
             }
@@ -358,30 +406,38 @@ SCENARIO("room account data is stored, read back, delivered in the room's /sync 
 
         WHEN("the client sets a global type and reads the same type from a room")
         {
+            // Fixture: alice sets a global type first.
             REQUIRE(call(rt, "PUT", global_url(alice_path, "org.example.global"), token, R"({"g":1})").status == 200U);
             auto const fetched = call(rt, "GET", room_url(alice_path, room_id, "org.example.global"), token);
 
             THEN("the room read does not fall back to the global value")
             {
+                // Spec MUST: "There is no inheritance mechanism", so the room read does not fall back (404).
                 REQUIRE(fetched.status == 404U);
+                // Spec MUST: no account data for this user, room and type is M_NOT_FOUND.
                 REQUIRE(errcode_of(fetched) == "M_NOT_FOUND");
             }
         }
 
         WHEN("the client updates a room type it already holds")
         {
+            // Fixture: alice sets the room type once.
             REQUIRE(call(rt, "PUT", room_url(alice_path, room_id, "org.example.custom"), token, R"({"v":1})").status ==
                     200U);
+            // Spec MUST: setting the same room type again answers 200.
             REQUIRE(call(rt, "PUT", room_url(alice_path, room_id, "org.example.custom"), token, R"({"v":2})").status ==
                     200U);
 
             THEN("GET returns the latest content")
             {
                 auto const fetched = call(rt, "GET", room_url(alice_path, room_id, "org.example.custom"), token);
+                // Spec MUST: GET returns the room account data (200).
                 REQUIRE(fetched.status == 200U);
                 auto const body = parse_object(fetched.body);
                 auto const* version = int_member(body, "v");
+                // Spec MUST: the content is returned as it was set.
                 REQUIRE(version != nullptr);
+                // Spec MUST: the latest PUT replaces the earlier content.
                 REQUIRE(*version == 2);
             }
         }
@@ -402,6 +458,7 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
     GIVEN("two logged-in users, alice joined to a room")
     {
         auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const alice = register_and_login(rt, "alice");
@@ -415,11 +472,17 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
 
             THEN("they are refused with 400 M_NOT_JSON and 400 M_BAD_JSON, and nothing is stored")
             {
+                // Spec MUST: a body that is not a JSON object is refused with 400.
                 REQUIRE(not_json.status == 400U);
+                // Spec MUST: a request that did not contain valid JSON is M_NOT_JSON.
                 REQUIRE(errcode_of(not_json) == "M_NOT_JSON");
+                // Spec MUST: a body that is not a JSON object is refused with 400.
                 REQUIRE(not_object.status == 400U);
+                // Spec MUST: valid JSON that is malformed in some way is M_BAD_JSON.
                 REQUIRE(errcode_of(not_object) == "M_BAD_JSON");
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", room_url(alice_path, room_id, "org.example.a"), alice).status == 404U);
+                // Spec MUST: a refused PUT stores nothing, so GET finds no data (404).
                 REQUIRE(call(rt, "GET", room_url(alice_path, room_id, "org.example.b"), alice).status == 404U);
             }
         }
@@ -433,15 +496,20 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
 
             THEN("both are refused with 400 M_INVALID_PARAM")
             {
+                // Spec MUST: a roomId that is not a valid room ID is refused with 400.
                 REQUIRE(put.status == 400U);
+                // Spec MUST: an invalid room ID is M_INVALID_PARAM.
                 REQUIRE(errcode_of(put) == "M_INVALID_PARAM");
+                // Spec MUST: a roomId that is not a valid room ID is refused with 400.
                 REQUIRE(get.status == 400U);
+                // Spec MUST: an invalid room ID is M_INVALID_PARAM.
                 REQUIRE(errcode_of(get) == "M_INVALID_PARAM");
             }
         }
 
         WHEN("bob reads or writes alice's room account data")
         {
+            // Fixture: alice sets room account data first.
             REQUIRE(call(rt, "PUT", room_url(alice_path, room_id, "org.example.d"), alice, R"({"d":1})").status ==
                     200U);
             auto const get = call(rt, "GET", room_url(alice_path, room_id, "org.example.d"), bob);
@@ -449,15 +517,22 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
 
             THEN("both are refused with 403 M_FORBIDDEN and alice's data is unchanged")
             {
+                // Spec MUST: a token not authorised for this user's account data is refused with 403.
                 REQUIRE(get.status == 403U);
+                // Spec MUST: the 403 errcode is M_FORBIDDEN.
                 REQUIRE(errcode_of(get) == "M_FORBIDDEN");
+                // Spec MUST: a token not authorised for this user's account data is refused with 403.
                 REQUIRE(put.status == 403U);
+                // Spec MUST: the 403 errcode is M_FORBIDDEN.
                 REQUIRE(errcode_of(put) == "M_FORBIDDEN");
                 auto const fetched = call(rt, "GET", room_url(alice_path, room_id, "org.example.d"), alice);
+                // Spec MUST: the owner still reads the data (200).
                 REQUIRE(fetched.status == 200U);
                 auto const body = parse_object(fetched.body);
                 auto const* value = int_member(body, "d");
+                // Spec MUST: the content is returned as it was set.
                 REQUIRE(value != nullptr);
+                // Spec MUST: a refused PUT changes nothing, so the owner's content is unchanged.
                 REQUIRE(*value == 1);
             }
         }
@@ -468,7 +543,9 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
 
             THEN("the server answers 404 M_NOT_FOUND")
             {
+                // Spec MUST: no account data for this user, room and type is a 404.
                 REQUIRE(fetched.status == 404U);
+                // Spec MUST: the 404 errcode is M_NOT_FOUND.
                 REQUIRE(errcode_of(fetched) == "M_NOT_FOUND");
             }
         }

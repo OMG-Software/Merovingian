@@ -392,6 +392,7 @@ SCENARIO("search covers a room the caller has left, up to the point they left", 
     GIVEN("bob joined alice's room, saw a message and a room name, and left before more of both")
     {
         auto started = merovingian::homeserver::start_client_server(search_config());
+        // Fixture: the homeserver must start.
         REQUIRE(started.started);
         auto& rt = started.runtime;
 
@@ -399,17 +400,20 @@ SCENARIO("search covers a room the caller has left, up to the point they left", 
         auto const bob = register_and_login(rt, "bob");
         auto const room = create_room(rt, alice, "public_chat");
         join_room(rt, bob, room);
+        // Fixture: alice names the room before bob leaves.
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.name/", alice,
                          R"({"name":"Name bob saw"})"})
                     .response.status == 200U);
         auto const before_leave =
             send_text_message(rt, alice, room, "txn-before-leave", "the lighthouseword before bob left");
+        // Fixture: bob must leave the room.
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/leave", bob, "{}"})
                     .response.status == 200U);
         auto const after_leave =
             send_text_message(rt, alice, room, "txn-after-leave", "the lighthouseword after bob left");
+        // Fixture: alice renames the room after bob left.
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.name/", alice,
                          R"({"name":"Name after bob left"})"})
@@ -422,20 +426,26 @@ SCENARIO("search covers a room the caller has left, up to the point they left", 
             THEN("the message from before he left is found, the one from after is not")
             {
                 auto const* results = object_member_as_array(room_events, "results");
+                // Spec MUST: room_events carries a results array.
                 REQUIRE(results != nullptr);
-                REQUIRE(results_contain_event(*results, before_leave)); // Spec: "including those that they have left"
-                REQUIRE_FALSE(
-                    results_contain_event(*results, after_leave)); // "won't include events ... after you left"
+                // Spec MUST: search covers "all rooms that the user has been in, including those that they have left".
+                REQUIRE(results_contain_event(*results, before_leave));
+                // Spec MUST: only visible events are searched, so nothing that "happened after you left".
+                REQUIRE_FALSE(results_contain_event(*results, after_leave));
                 auto const* count = int_member(room_events, "count");
+                // Spec MUST: room_events carries count, the number of results.
                 REQUIRE(count != nullptr);
+                // Spec MUST: only the event bob was allowed to see is counted.
                 REQUIRE(*count == 1);
             }
 
             THEN("the room state returned is the state as he left it, not the room's current state")
             {
                 auto const* state = object_member_as_object(room_events, "state");
+                // Spec MUST: include_state returns a state object keyed by room ID.
                 REQUIRE(state != nullptr);
                 auto const* room_state = object_member_as_array(*state, room);
+                // Spec MUST: include_state covers the rooms in the results, including a left room.
                 REQUIRE(room_state != nullptr);
                 auto name = std::optional<std::string>{};
                 for (auto const& event : *room_state)
@@ -447,17 +457,22 @@ SCENARIO("search covers a room the caller has left, up to the point they left", 
                         continue;
                     }
                     auto const* content = object_member_as_object(*object, "content");
+                    // Spec MUST: a state event carries content.
                     REQUIRE(content != nullptr);
                     auto const* value = string_member(*content, "name");
+                    // Spec MUST: m.room.name content carries name.
                     REQUIRE(value != nullptr);
                     name = *value;
                 }
+                // Spec MUST: a user who left "may see any events which they were allowed to see before they left", not
+                // later state.
                 REQUIRE(name == std::optional<std::string>{"Name bob saw"});
             }
         }
 
         WHEN("bob forgets the room and searches again")
         {
+            // Fixture: bob forgets the room he left.
             REQUIRE(merovingian::homeserver::handle_client_server_request(
                         rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/forget", bob, "{}"})
                         .response.status == 200U);
@@ -466,13 +481,17 @@ SCENARIO("search covers a room the caller has left, up to the point they left", 
 
             THEN("nothing from the forgotten room is returned to him, while alice still finds both")
             {
-                // Spec (POST /forget): the user "will no longer be able to retrieve history for this room".
                 auto const* results = object_member_as_array(room_events, "results");
+                // Spec MUST: room_events carries a results array.
                 REQUIRE(results != nullptr);
+                // Spec MUST: after /forget the user "will no longer be able to retrieve history for this room".
                 REQUIRE(results->empty());
                 auto const* alice_results = object_member_as_array(alice_events, "results");
+                // Spec MUST: room_events carries a results array.
                 REQUIRE(alice_results != nullptr);
+                // Spec MUST: a joined member still finds the message sent before bob left.
                 REQUIRE(results_contain_event(*alice_results, before_leave));
+                // Spec MUST: a joined member still finds the message sent after bob left.
                 REQUIRE(results_contain_event(*alice_results, after_leave));
             }
         }
