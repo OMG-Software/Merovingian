@@ -1,3 +1,6 @@
+## 0.12.38
+
+Conformance audit (2026-10-17) wave 4: the Client-Server API findings R10, R11, R12, R13 and R16.
 ## 0.12.37
 
 Conformance audit wave 3: the Application Service and Identity Service findings R07, R08 and R09,
