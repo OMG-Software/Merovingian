@@ -302,18 +302,37 @@ opt-in escape hatch from the https-only rule above, defaulting to `false`
 for every existing caller (federation, the push-gateway client, the
 identity-server client all stay https-only with no way to override it).
 Setting it to `true` additionally permits `http://` for that one request.
-The only sanctioned caller is `appservice::AppserviceClient`
-(`src/appservice/appservice_client.cpp`): an appservice registration file's
-`url` is operator-configured — a local filesystem artifact the operator
-wrote, not something a network peer can influence — and the Application
-Service API's own canonical registration example (and most real-world
-bridges) gives a plain `http://127.0.0.1:...` URL. When set, host
-resolution also intentionally bypasses `CachedServerDiscovery`'s
-private/loopback-address rejection (via `.upstream().lookup_addresses()`
-directly) for the same reason: that rejection exists specifically for
-attacker/client-influenced destinations, which an appservice URL is not.
-TLS verification (`CURLOPT_SSL_VERIFYPEER`/`VERIFYHOST`) is unaffected —
-still on unconditionally whenever the connection does end up being TLS.
+There are exactly two sanctioned callers, matching the comment on the field
+in `include/merovingian/http/outbound_client.hpp`:
+
+1. `appservice::AppserviceClient` (`src/appservice/appservice_client.cpp`):
+   an appservice registration file's `url` is operator-configured — a local
+   filesystem artifact the operator wrote, not something a network peer can
+   influence — and the Application Service API's own canonical registration
+   example (and most real-world bridges) gives a plain
+   `http://127.0.0.1:...` URL. This caller also intentionally bypasses
+   `CachedServerDiscovery`'s private/loopback-address rejection (via
+   `.upstream().lookup_addresses()` directly) for the same reason: that
+   rejection exists specifically for attacker/client-influenced
+   destinations, which an appservice URL is not. The bypass is
+   `AppserviceClient`'s own code, not an effect of the flag.
+2. A URL preview hop (ADR-0213), made only through `gated_fetch` in
+   `src/homeserver/url_preview_service.cpp`: the page, each redirect it
+   follows itself, and the `og:image`. The URL is client-named, so the
+   opposite of the appservice case applies: every hop's host is resolved
+   and refused if any address is private, loopback, link-local, CGNAT,
+   reserved or in `security.federation.deny_ip_ranges`, and the connection
+   is pinned to exactly the checked addresses (`CURLOPT_RESOLVE` plus the
+   per-socket peer check), so a second DNS answer cannot redirect it. The
+   request carries no credential, and its response is treated as hostile
+   whether it came over TLS or not. `http` is allowed only so that
+   cleartext sites can be previewed; it adds no destination the gate would
+   otherwise refuse.
+
+Every other caller (federation, the push-gateway client, the
+identity-server client) must leave it `false`. TLS verification
+(`CURLOPT_SSL_VERIFYPEER`/`VERIFYHOST`) is unaffected — still on
+unconditionally whenever the connection does end up being TLS.
 
 `perform()` is libcurl-backed. Each request runs with the following
 non-negotiable defaults so federation traffic cannot regress its security

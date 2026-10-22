@@ -766,7 +766,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
 - **An upload's `filename` is validated at upload (`400 M_INVALID_PARAM` when
   `media::media_filename_is_valid` refuses it), so what is stored is what the client sent.**
   Why: the spec requires the download to carry the same filename, and a stored name later lands in
-  a header (ADR-0211).
+  a response header, where a CR or LF would split the response (CWE-113 Improper Neutralization
+  of CRLF Sequences in HTTP Headers) (ADR-0211).
   Source: `src/media/AGENTS.md`.
 
 - **Accepted client sockets must be `SOCK_CLOEXEC`** (both the plain-HTTP and TLS accept
@@ -1026,15 +1027,17 @@ media-fetch-pool task.
 - **A file name reaches `Content-Disposition` only through `media::media_content_disposition`,
   which leaves out a name `media::media_filename_is_valid` refuses and encodes the rest.**
   Why: the name comes from a client (or a remote server) and is written into a response
-  header; a CR or LF in it would split the response (ADR-0211).
+  header; a CR or LF in it would split the response (CWE-113 Improper Neutralization of CRLF
+  Sequences in HTTP Headers) (ADR-0211).
   Source: `src/media/AGENTS.md`.
 
 - **A download that waits for a pending upload is admitted before it waits: at most
-  `media_fetch_threads - 1` waits at once (none with a single worker) (half for one requester), and an ADR-0079 slot when it
-  waits on a request thread; otherwise it answers `504 M_NOT_YET_UPLOADED` at once.**
+  `media_fetch_threads - 1` waits at once (none with a single worker) (half for one requester),
+  and an ADR-0079 slot when it waits on a request thread; otherwise it answers
+  `504 M_NOT_YET_UPLOADED` at once.**
   Why: a wait holds a worker for up to 20 s, and a client can create pending IDs freely; uncapped
   waits fill the media fetch pool and starve remote fetches, or hold main-pool workers with no
-  admission (ADR-0212).
+  admission (CWE-770 Allocation of Resources Without Limits or Throttling) (ADR-0212).
   Source: `src/homeserver/AGENTS.md`.
 
 ## Platform hardening
