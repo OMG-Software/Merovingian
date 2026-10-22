@@ -244,12 +244,36 @@ constexpr auto max_receipt_thread_id_bytes = std::size_t{255U};
 // without bound. A "*" device counts as one delivery.
 constexpr auto max_inbound_direct_to_device_deliveries = std::size_t{1000U};
 
+// Typing expiry (conformance audit R13, ADR-0199). Spec (PUT /rooms/{roomId}/typing/{userId}):
+// "the user is typing for the next N milliseconds where N is the value specified in the timeout
+// key". A request without a timeout gets the default; a longer one is cut to the ceiling, so no
+// client can make its typing last indefinitely. A federated m.typing EDU carries no timeout, so a
+// remote user's typing lasts federation_typing_timeout from the latest EDU that set it.
+constexpr auto default_typing_timeout = std::chrono::milliseconds{30'000};
+constexpr auto max_typing_timeout = std::chrono::milliseconds{120'000};
+constexpr auto federation_typing_timeout = std::chrono::milliseconds{60'000};
+
 struct InboundTypingUser final
 {
     std::string room_id{};
     std::string user_id{};
     bool typing{false};
     std::uint64_t stream_id{0U};
+    // When this typing stops on its own. The default never expires; every path that sets
+    // `typing` to true sets it.
+    std::chrono::steady_clock::time_point expires_at{std::chrono::steady_clock::time_point::max()};
+};
+
+// What expire_typing changed.
+struct TypingExpiry final
+{
+    // Some room's typing users changed, so its typing stream position advanced.
+    bool changed{false};
+    // This server's own users whose typing expired: remote servers in their rooms are told
+    // they stopped.
+    std::vector<InboundTypingUser> expired_local{};
+    // The earliest expiry still pending, if any.
+    std::optional<std::chrono::steady_clock::time_point> next_expiry{};
 };
 
 // RAII scope guard that wires the active `LocalDatabase` into the
@@ -566,6 +590,11 @@ auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void;
 [[nodiscard]] auto room_typing_stream_id_for(HomeserverRuntime const& rt, std::string_view room_id) -> std::uint64_t;
 [[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
                                                            std::vector<std::string> const& previous) -> std::uint64_t;
+// Removes every typing entry whose expiry is at or before `now`, and advances the typing stream
+// position of each room whose typing users changed, so /sync and sliding sync report the room's
+// new (possibly empty) m.typing list (R13, ADR-0199). The caller holds runtime.mutex, wakes
+// sync waiters when `changed`, and tells remote servers about `expired_local`.
+[[nodiscard]] auto expire_typing(HomeserverRuntime& rt, std::chrono::steady_clock::time_point now) -> TypingExpiry;
 
 struct RuntimeStartOptions final
 {

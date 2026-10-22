@@ -352,6 +352,7 @@ shell = find_program('sh')
       'conformance/test_canonicaljson_serializer.cpp',
       'conformance/test_client_server_conformance.cpp',
       'conformance/test_token_expiry_conformance.cpp',
+      'conformance/test_typing_conformance.cpp',
       'conformance/test_3pid_invite_conformance.cpp',
       'conformance/test_event_auth_rules.cpp',
       'conformance/test_event_auth_legacy_boundaries.cpp',

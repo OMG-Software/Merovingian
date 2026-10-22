@@ -807,6 +807,23 @@ struct ListenerBinding final
             appservice_delivery_job.wake();
         };
     }
+    // Ends typing whose timeout has passed (audit R13, ADR-0199), so a client or remote server
+    // that never sends typing:false cannot leave a user typing for good. It runs again at the
+    // next pending expiry, at most every 5 s, and only ever touches `runtime`, which outlives
+    // this function. Declared after the pools so it is stopped and joined before them.
+    auto typing_expiry_job = merovingian::homeserver::PeriodicJob{
+        "typing-expiry", [&runtime](merovingian::homeserver::StopFlag const&) {
+            return merovingian::homeserver::expire_typing_notifications(runtime, std::chrono::steady_clock::now());
+        }};
+    if (!typing_expiry_job.start())
+    {
+        LOG_CRITICAL("Typing expiry thread failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 

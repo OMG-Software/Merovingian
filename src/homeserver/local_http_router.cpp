@@ -1694,9 +1694,13 @@ namespace
                 });
                 if (typing)
                 {
+                    // The EDU carries no timeout: the typing lasts federation_typing_timeout
+                    // from this EDU, and the sender's next refresh extends it (R13, ADR-0199).
+                    auto const expires_at = std::chrono::steady_clock::now() + federation_typing_timeout;
                     if (existing != rt->typing_users.end())
                     {
                         existing->typing = true;
+                        existing->expires_at = expires_at;
                     }
                     else
                     {
@@ -1707,7 +1711,7 @@ namespace
                         {
                             rt->typing_users.erase(rt->typing_users.begin());
                         }
-                        rt->typing_users.push_back({room_id, user_id, true, std::uint64_t{0U}});
+                        rt->typing_users.push_back({room_id, user_id, true, std::uint64_t{0U}, expires_at});
                     }
                 }
                 else

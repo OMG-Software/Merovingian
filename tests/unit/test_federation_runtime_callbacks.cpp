@@ -1611,6 +1611,59 @@ SCENARIO("Typing state stays bounded when a peer floods a room it is legitimatel
     }
 }
 
+// Conformance audit R13 (ADR-0199). A typing EDU carries no timeout, so a remote user's typing
+// would stay forever if their server never sent typing:false. It expires after
+// federation_typing_timeout instead, and each later EDU refreshes it.
+SCENARIO("A remote user's typing expires when their server stops refreshing it",
+         "[homeserver][federation][typing][r13]")
+{
+    GIVEN("a remote user typing in a room this server is in")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-expiry-seed", {"!room:matrix.example.org"});
+        auto const response = merovingian::homeserver::handle_federation_http_request(
+            *runtime, edu_request(origin, key_id, "txn-typing-expiry", "m.typing",
+                                  typing_content("!room:matrix.example.org", "@remote:matrix.example.org")));
+        REQUIRE(response.status == 200U);
+        REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
+                std::vector<std::string>{"@remote:matrix.example.org"});
+        auto const stream_before =
+            merovingian::homeserver::room_typing_stream_id_for(*runtime, "!room:matrix.example.org");
+
+        WHEN("less than the federation typing timeout passes")
+        {
+            auto const expiry = merovingian::homeserver::expire_typing(
+                *runtime, std::chrono::steady_clock::now() + merovingian::homeserver::federation_typing_timeout -
+                              std::chrono::seconds{5});
+
+            THEN("the user is still typing")
+            {
+                REQUIRE_FALSE(expiry.changed);
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
+                        std::vector<std::string>{"@remote:matrix.example.org"});
+            }
+        }
+
+        WHEN("the federation typing timeout passes with no refresh")
+        {
+            auto const expiry = merovingian::homeserver::expire_typing(
+                *runtime, std::chrono::steady_clock::now() + merovingian::homeserver::federation_typing_timeout +
+                              std::chrono::seconds{1});
+
+            THEN("the user stops typing, the room's typing position advances, and no stop is sent for them")
+            {
+                REQUIRE(expiry.changed);
+                REQUIRE(expiry.expired_local.empty());
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org")
+                            .empty());
+                REQUIRE(merovingian::homeserver::room_typing_stream_id_for(*runtime, "!room:matrix.example.org") >
+                        stream_before);
+            }
+        }
+    }
+}
+
 SCENARIO("A receipt EDU skips rooms this server is not in without discarding the rest",
          "[homeserver][federation][receipt][security]")
 {

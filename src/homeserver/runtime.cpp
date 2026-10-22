@@ -585,6 +585,46 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     return new_id;
 }
 
+[[nodiscard]] auto expire_typing(HomeserverRuntime& rt, std::chrono::steady_clock::time_point now) -> TypingExpiry
+{
+    auto expiry = TypingExpiry{};
+    auto rooms = std::vector<std::string>{};
+    for (auto const& entry : rt.typing_users)
+    {
+        if (entry.typing && entry.expires_at <= now && std::ranges::find(rooms, entry.room_id) == rooms.end())
+        {
+            rooms.push_back(entry.room_id);
+        }
+    }
+    auto const local_suffix = ":" + rt.config.server().server_name;
+    for (auto const& room_id : rooms)
+    {
+        auto const previous = current_typing_users_in_room(rt, room_id);
+        for (auto const& entry : rt.typing_users)
+        {
+            if (entry.room_id == room_id && entry.typing && entry.expires_at <= now &&
+                entry.user_id.ends_with(local_suffix))
+            {
+                expiry.expired_local.push_back(entry);
+            }
+        }
+        std::erase_if(rt.typing_users, [&room_id, now](InboundTypingUser const& entry) {
+            return entry.room_id == room_id && entry.typing && entry.expires_at <= now;
+        });
+        std::ignore = update_room_typing_stream_id_if_changed(rt, room_id, previous);
+        expiry.changed = true;
+    }
+    for (auto const& entry : rt.typing_users)
+    {
+        if (entry.typing && entry.expires_at != std::chrono::steady_clock::time_point::max() &&
+            (!expiry.next_expiry.has_value() || entry.expires_at < *expiry.next_expiry))
+        {
+            expiry.next_expiry = entry.expires_at;
+        }
+    }
+    return expiry;
+}
+
 auto bootstrap_local_database(config::Config const& config) -> LocalDatabase
 {
     return bootstrap_local_database(config, {});

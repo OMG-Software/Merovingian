@@ -715,6 +715,86 @@ SCENARIO("POST /register with inhibit_login:true returns only user_id", "[confor
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: POST /_matrix/client/v3/register
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
+//
+// Request body, `username`: "The basis for the localpart of the desired Matrix ID. If omitted,
+// the homeserver MUST generate a Matrix ID local part." "Any user ID returned by this API must
+// conform to the grammar given in the Matrix specification." Conformance audit R12.
+SCENARIO("POST /register without a username generates a Matrix ID local part",
+         "[conformance][client-server][register][r12]")
+{
+    GIVEN("a running client-server with token-gated registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const no_username_body = std::string{
+            R"({"password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"};
+
+        WHEN("two registrations omit username")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/register", {}, no_username_body});
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/register", {}, no_username_body});
+
+            THEN("each gets a distinct, grammatical user ID on this server and a working session")
+            {
+                REQUIRE(first.response.status == 200U); // Spec MUST: generate a local part.
+                REQUIRE(second.response.status == 200U);
+                auto const first_body = parse_object(first.response.body);
+                auto const second_body = parse_object(second.response.body);
+                auto const* first_user = string_member(first_body, "user_id");
+                auto const* second_user = string_member(second_body, "user_id");
+                REQUIRE(first_user != nullptr);
+                REQUIRE(second_user != nullptr);
+                REQUIRE(*first_user != *second_user);
+                for (auto const* user_id : {first_user, second_user})
+                {
+                    // Spec MUST: the returned user ID conforms to the user identifier grammar,
+                    // whose localpart is drawn from a-z, 0-9, ".", "_", "=", "-", "/" and "+".
+                    REQUIRE(user_id->starts_with("@"));
+                    REQUIRE(user_id->ends_with(":example.org"));
+                    auto const localpart = user_id->substr(1U, user_id->size() - 1U - std::string_view{":example.org"}.size());
+                    REQUIRE(!localpart.empty());
+                    REQUIRE(std::ranges::all_of(localpart, [](char c) {
+                        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '=' ||
+                               c == '-' || c == '/' || c == '+';
+                    }));
+                }
+                auto const* token = string_member(first_body, "access_token");
+                REQUIRE(token != nullptr);
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", *token, {}});
+                REQUIRE(whoami.response.status == 200U);
+                auto const whoami_body = parse_object(whoami.response.body);
+                auto const* whoami_user = string_member(whoami_body, "user_id");
+                REQUIRE(whoami_user != nullptr);
+                REQUIRE(*whoami_user == *first_user);
+            }
+        }
+
+        WHEN("a registration names an empty username")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/register", {},
+                 R"({"username":"","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+
+            THEN("it is refused as an invalid user name, not treated as omitted")
+            {
+                // Spec: 400 M_INVALID_USERNAME "The desired user ID is not a valid user name."
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_USERNAME");
+            }
+        }
+    }
+}
+
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
 //
 // The device created by registration is a real session and MUST appear in

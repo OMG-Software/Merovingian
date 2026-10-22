@@ -220,6 +220,13 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
 [[nodiscard]] auto set_global_account_data_within_cap(ClientServerRuntime& runtime,
                                                       database::PersistentAccountData data,
                                                       std::size_t max_global_types) -> database::CappedAccountDataStore;
+// Expires typing whose timeout has passed at `now` (R13, ADR-0199): wakes sync waiters when a
+// room's typing users changed, and sends m.typing typing:false to the remote servers in the room
+// of each local user whose typing expired. Takes runtime.mutex itself. Returns how long to wait
+// before the next call: until the earliest pending expiry, between 250 ms and 5 s. main.cpp runs
+// it on the "typing-expiry" PeriodicJob; tests call it with a chosen clock.
+[[nodiscard]] auto expire_typing_notifications(ClientServerRuntime& runtime, std::chrono::steady_clock::time_point now)
+    -> std::chrono::milliseconds;
 // set_account_data for a room row, refused past `max_room_types` distinct types the user holds in
 // that room (R10, ADR-0197).
 [[nodiscard]] auto set_room_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,

@@ -512,6 +512,36 @@ namespace
         return id.value_or("merovingian-fallback-device-id");
     }
 
+    // A localpart for a registration that omitted `username` (R12, ADR-0198): 64 random bits
+    // as lowercase hex, which the user ID grammar accepts. A candidate that is reserved, held
+    // by an existing account, or inside an application service's namespace (exclusive, or its
+    // sender) is drawn again. Nullopt only when the random source fails or every draw collides.
+    [[nodiscard]] auto generate_registration_localpart(HomeserverRuntime const& runtime) -> std::optional<std::string>
+    {
+        auto constexpr max_draws = 8;
+        auto const& server_name = runtime.config.server().server_name;
+        for (auto draw = 0; draw < max_draws; ++draw)
+        {
+            auto candidate = crypto::secure_random_hex(8U);
+            if (!candidate.has_value())
+            {
+                return std::nullopt;
+            }
+            auto const user_id = "@" + *candidate + ":" + server_name;
+            auto const taken = std::ranges::any_of(runtime.database.users, [&user_id](auto const& user) {
+                return user.user_id == user_id;
+            });
+            if (taken || !auth::localpart_is_valid_new(*candidate) || auth::localpart_is_reserved(*candidate) ||
+                runtime.appservices.user_namespace_exclusively_owned_by_other(user_id, {}) ||
+                runtime.appservices.is_sender_user_id(user_id, server_name))
+            {
+                continue;
+            }
+            return candidate;
+        }
+        return std::nullopt;
+    }
+
     // Thin builder facade over the project's canonical JSON value model.
     // Response paths construct a Value tree and hand it to serialize_canonical
     // so escaping (including control characters as \u00XX) is handled by the
@@ -653,7 +683,9 @@ namespace
 
     struct MatrixRegisterBody final
     {
-        std::string localpart{};
+        // Absent when the client omitted `username`: the server then generates the
+        // localpart (R12). Present but empty is a client error, not an omission.
+        std::optional<std::string> localpart{};
         std::string password{};
         std::string registration_token{};
         std::string device_id{};
@@ -1552,8 +1584,9 @@ namespace
         }
         auto const* password = string_member(*object, "password");
         // Application Service registrations are passwordless — see
-        // MatrixRegisterBody::is_appservice_registration.
-        if (username == nullptr || (password == nullptr && !is_appservice_registration))
+        // MatrixRegisterBody::is_appservice_registration. `username` is optional
+        // (spec: "If omitted, the homeserver MUST generate a Matrix ID local part").
+        if (password == nullptr && !is_appservice_registration)
         {
             return std::nullopt;
         }
@@ -1568,7 +1601,7 @@ namespace
         auto const* device_id = string_member(*object, "device_id");
         auto const* display_name = string_member(*object, "initial_device_display_name");
         auto const* inhibit_login = boolean_member(*object, "inhibit_login");
-        return MatrixRegisterBody{*username,
+        return MatrixRegisterBody{username == nullptr ? std::nullopt : std::optional<std::string>{*username},
                                   password == nullptr ? std::string{} : *password,
                                   token == nullptr ? std::string{} : *token,
                                   device_id == nullptr ? std::string{} : *device_id,
@@ -11011,18 +11044,28 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_resp(req, rt, 401U, uia_challenge);
             }
         }
-        auto const body = parse_register_body(req.body);
+        auto body = parse_register_body(req.body);
         if (!body.has_value())
         {
-            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must contain username and password");
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must contain a password");
         }
-        if (!auth::localpart_is_valid_new(body->localpart))
+        // Spec (POST /register, `username`): "If omitted, the homeserver MUST generate a
+        // Matrix ID local part" (conformance audit R12, ADR-0198).
+        if (!body->localpart.has_value())
+        {
+            body->localpart = generate_registration_localpart(rt.homeserver);
+            if (!body->localpart.has_value())
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "could not generate a user ID");
+            }
+        }
+        if (!auth::localpart_is_valid_new(*body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
         }
         // The server's own localparts (the remote media cache owner) are never given to an
         // account; answer as for a name already in use (security audit run-1).
-        if (auth::localpart_is_reserved(body->localpart))
+        if (auth::localpart_is_reserved(*body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
         }
@@ -11032,14 +11075,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // as exclusive." This path is reached only for an ordinary
         // (non-appservice) registration — the m.login.application_service
         // branch above already returned.
-        if (auto const desired_user_id = "@" + body->localpart + ":" + rt.homeserver.config.server().server_name;
+        if (auto const desired_user_id = "@" + *body->localpart + ":" + rt.homeserver.config.server().server_name;
             rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}) ||
             rt.homeserver.appservices.is_sender_user_id(desired_user_id, rt.homeserver.config.server().server_name))
         {
             return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
         }
         auto const result =
-            register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
+            register_local_user(rt.homeserver, *body->localpart, body->password, body->registration_token);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
@@ -14847,22 +14890,48 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
                 }
-                // Parse the request body for the typing bool (spec-required) and
-                // optional timeout.  Default to true when body is absent so legacy
-                // clients that omit it remain compatible, but honour the parsed
-                // value when present.
-                auto is_typing = true;
+                // Spec: `typing` is a required boolean and `timeout` an integer number of
+                // milliseconds. A body that is not a JSON object, a missing or non-boolean
+                // `typing`, or a timeout that is not a non-negative integer is refused and
+                // changes nothing (conformance audit R13).
+                auto const parsed_body = canonicaljson::parse_lossless(req.body);
+                if (parsed_body.error != canonicaljson::ParseError::none)
                 {
-                    auto const body_obj = parsed_json_object(req.body);
-                    if (body_obj.has_value())
-                    {
-                        auto const* typing_val = boolean_member(*body_obj, "typing");
-                        if (typing_val != nullptr)
-                        {
-                            is_typing = *typing_val;
-                        }
-                    }
+                    return dispatch_err(req, rt, 400U, "M_NOT_JSON", "typing body must be valid JSON");
                 }
+                auto const* body_obj = std::get_if<canonicaljson::Object>(&parsed_body.value.storage());
+                if (body_obj == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "typing body must be a JSON object");
+                }
+                auto const* typing_member = object_member(*body_obj, "typing");
+                if (typing_member == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "typing is required");
+                }
+                auto const* typing_val = std::get_if<bool>(&typing_member->storage());
+                if (typing_val == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "typing must be a boolean");
+                }
+                auto const is_typing = *typing_val;
+                // The typing lasts `timeout` ms, the default when it is absent, and never
+                // longer than max_typing_timeout (ADR-0199).
+                auto timeout = default_typing_timeout;
+                if (auto const* timeout_member = object_member(*body_obj, "timeout"); timeout_member != nullptr)
+                {
+                    auto const* timeout_val = integer_member(*body_obj, "timeout");
+                    if (timeout_val == nullptr)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "timeout must be an integer");
+                    }
+                    if (*timeout_val < 0)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "timeout must not be negative");
+                    }
+                    timeout = std::min(std::chrono::milliseconds{*timeout_val}, max_typing_timeout);
+                }
+                auto const expires_at = std::chrono::steady_clock::now() + timeout;
                 log_diagnostic("room.typing.accepted",
                                {
                                    {"actor",   *user,           false},
@@ -14900,11 +14969,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     if (existing != rt.homeserver.typing_users.end())
                     {
                         existing->typing = is_typing;
+                        existing->expires_at = expires_at;
                     }
                     else if (is_typing)
                     {
                         rt.homeserver.typing_users.push_back(
-                            {typing->room_id, std::string{*user}, true, std::uint64_t{0U}});
+                            {typing->room_id, std::string{*user}, true, std::uint64_t{0U}, expires_at});
                     }
                     auto const room_stream_id =
                         update_room_typing_stream_id_if_changed(rt.homeserver, typing->room_id, previous_users);
@@ -16509,6 +16579,44 @@ auto set_global_account_data_within_cap(ClientServerRuntime& runtime, database::
         std::ignore = ensure_sync_notifier(runtime);
     }
     return outcome;
+}
+
+auto expire_typing_notifications(ClientServerRuntime& runtime, std::chrono::steady_clock::time_point now)
+    -> std::chrono::milliseconds
+{
+    auto constexpr shortest_wait = std::chrono::milliseconds{250};
+    auto constexpr longest_wait = std::chrono::milliseconds{5000};
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const expiry = expire_typing(runtime.homeserver, now);
+    if (expiry.changed)
+    {
+        // Publishes the new typing stream position, waking /sync and sliding-sync waiters.
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    // Remote servers learnt of this typing from our EDU and have no timeout of their own for
+    // it, so they are told it stopped, as when the user sends typing:false.
+    for (auto const& entry : expiry.expired_local)
+    {
+        auto const room = std::ranges::find_if(runtime.homeserver.database.rooms, [&entry](LocalRoom const& r) {
+            return r.room_id == entry.room_id;
+        });
+        if (room == runtime.homeserver.database.rooms.end())
+        {
+            continue;
+        }
+        auto const edu_content = json_serialize(json_obj({
+            json_member("room_id", json_str(entry.room_id)),
+            json_member("user_id", json_str(entry.user_id)),
+            json_member("typing", canonicaljson::Value{false}),
+        }));
+        std::ignore = dispatch_outbound_edu(runtime.homeserver, *room, "m.typing", edu_content);
+    }
+    if (!expiry.next_expiry.has_value())
+    {
+        return longest_wait;
+    }
+    auto const until_next = std::chrono::duration_cast<std::chrono::milliseconds>(*expiry.next_expiry - now);
+    return std::clamp(until_next, shortest_wait, longest_wait);
 }
 
 auto set_room_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
