@@ -6067,12 +6067,13 @@ namespace
     // "the number of unread messages a user has across all of the rooms they
     // are a member of." Reuses the same per-room read-receipt baseline and
     // push-rule classifier /sync's unread_notifications block uses (R15); no
-    // second unread implementation.
-    [[nodiscard]] auto total_unread_count(HomeserverRuntime const& runtime, std::string_view user_id) -> std::uint32_t
+    // second unread implementation. `ruleset` is the one the caller already
+    // loaded for `user_id`, so it is not read again under runtime.mutex.
+    [[nodiscard]] auto total_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,
+                                          push::PushRuleset const& ruleset) -> std::uint32_t
     {
         auto const& store = runtime.database.persistent_store;
-        auto const unread = PushRuleUnreadClassifier{
-            store, user_id, static_cast<std::size_t>(runtime.config.server().client_api.max_push_rules_per_user)};
+        auto const unread = PushRuleUnreadClassifier{store, user_id, ruleset};
         auto total = std::uint64_t{0U};
         for (auto const& membership : store.memberships)
         {
@@ -6327,7 +6328,7 @@ namespace
                 pushers.resize(max_pushers_per_delivery);
             }
 
-            auto const unread = total_unread_count(runtime, member);
+            auto const unread = total_unread_count(runtime, member, ruleset);
             for (auto const& pusher : pushers)
             {
                 if (pusher.kind != "http" || pusher.data_url.empty())

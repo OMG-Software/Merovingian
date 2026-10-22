@@ -34,6 +34,9 @@ class PushRuleUnreadClassifier final : public sync::UnreadEventClassifier
 {
 public:
     PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user, std::size_t max_user_rules);
+    // With `ruleset` already loaded for `user` (load_push_ruleset), so a caller that has it does not
+    // read and validate the user's rules a second time under runtime.mutex.
+    PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user, push::PushRuleset ruleset);
 
     [[nodiscard]] auto counted_after(std::string_view room_id) const -> std::optional<std::uint64_t> override;
     [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event) const

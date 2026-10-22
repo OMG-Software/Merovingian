@@ -84,6 +84,14 @@ PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore con
 {
 }
 
+PushRuleUnreadClassifier::PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user,
+                                                   push::PushRuleset ruleset)
+    : store_{store}
+    , user_{user}
+    , ruleset_{std::move(ruleset)}
+{
+}
+
 auto PushRuleUnreadClassifier::counted_after(std::string_view room_id) const -> std::optional<std::uint64_t>
 {
     return room(room_id).joined_after;
