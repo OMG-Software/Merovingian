@@ -652,6 +652,29 @@ quickly finding everything a given `AGENTS.md` file contributed.
   audit run-1, `sp02.appservice-regex-compile-under-mutex`).
   Source: `src/appservice/AGENTS.md`.
 
+- **The events queued for one appservice are capped (`appservice.max_queued_events`), and a refused event
+  is counted, logged and audited, never silent.** `enqueue_appservice_delivery` skips an appservice
+  whose queue is at the cap, increments `appservice_outbox_dropped`, and reports the first refusal and
+  every thousandth after it at warning level (which writes an `appservice.outbox.full` audit row
+  naming the appservice).
+  Why: the outbox of a bridge that never returns would otherwise grow with all the traffic of every
+  room it is interested in, without bound, in the database and in memory (CWE-770; ADR-0191).
+  Source: `src/homeserver/AGENTS.md`, `src/appservice/AGENTS.md`.
+
+- **Ephemeral data for an appservice is in memory, coalesced by key and bounded, and its
+  per-update work is budgeted.** At most 512 items per appservice, 100 per transaction, and 20000
+  member-against-namespace matches per presence update (finding the subject's rooms is not charged, so
+  rooms the subject is not in cannot use the budget up).
+  Why: typing, receipts and presence arrive far more often than events, from federation too; an
+  unbounded or per-member-per-update cost under `runtime.mutex` is a denial of service (CWE-400;
+  ADR-0190).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **The appservice ping takes a slot in the client-outbound budget before its outbound call**, as the
+  `/thirdparty/*` lookups do (ADR-0181).
+  Why: it holds a request-pool thread for up to the appservice timeout (ADR-0079).
+  Source: `src/homeserver/AGENTS.md`.
+
 ## Identity Service client
 
 - **Every Identity Service host must resolve to SSRF-safe pinned addresses via
@@ -682,6 +705,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   would let a user bind an address they do not own (AUTH-5), after which the
   real owner is refused `M_THREEPID_IN_USE`.
   Source: `src/identity/AGENTS.md`, `docs/auth-identity.md`.
+
+- **An `id_access_token` is validated at the client-server boundary before it is forwarded
+  (`identity::id_access_token_is_valid`: printable ASCII, no space, at most 4096 bytes).** A violation is
+  `400 M_INVALID_PARAM`; no identity-server call is made. This is in addition to the outbound client's
+  own header check (ADR-0180), which stays the control every outbound header passes.
+  Why: the token arrives as a JSON string, so after unescaping it can hold CR and LF, and it becomes the
+  `Authorization` header of a call to the identity server (CWE-113; security audit run-1,
+  `sp02.is-token-crlf-header-injection`).
+  Source: `src/identity/AGENTS.md`.
 
 ## HTTP and network boundary
 

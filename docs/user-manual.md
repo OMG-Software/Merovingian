@@ -607,6 +607,7 @@ See [ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md).
 | `connect_timeout_seconds` | `10` | 1..120 |
 | `total_timeout_seconds` | `30` | 1..300 |
 | `response_max_size` | `16MiB` | 1 byte..64MiB |
+| `max_queued_events` | `100000` | 1..10,000,000 |
 
 Application-service connect timeout must not exceed its total timeout. Byte sizes accept the existing binary size syntax. Zero and unlimited values are rejected for these operational bounds. Matrix transaction maxima (50 PDUs/100 EDUs), event-format limits, cryptographic validity rules and parser/sandbox structural ceilings remain fixed. The defaults are deployment starting points, not a verified 100-user throughput promise.
 
@@ -1174,6 +1175,7 @@ exclusivity) is inert.
 | Key | Default | When to change |
 |---|---|---|
 | `appservice.registration_files` | (empty) | Comma-separated list of paths to appservice registration documents. Each file is first parsed as a bounded block-style YAML subset; if that fails, JSON is tried as a fallback. Comments and plain (unquoted) scalars are supported. Anchors, aliases, tags, block scalars, tabs, document markers, and non-empty flow collections are unsupported. See a real bridge's documentation for its required `as_token`/`hs_token`/`sender_localpart`/`namespaces` fields, or the example in `docs/matrix-v1.19-spec/application-service-api.md#registration`. **Requires restart** — the registry is parsed once at startup and never re-read on `SIGHUP`. |
+| `appservice.max_queued_events` | `100000` | The most events queued for one appservice (the `appservice_outbox` table). A bridge that is down keeps accumulating the events it is interested in; at this cap further events for that appservice are **not queued**, counted in `merovingian_appservice_outbox_dropped_total{appservice_id}`, and the first refusal and every thousandth after it is logged at warning level and written to the audit log as `appservice.outbox.full` naming the appservice. The oldest events are kept, so a bridge that returns still receives them in order, but it misses the events that arrived while the queue was full and must resynchronise another way (ADR-0191). Raise it only for a bridge you expect to be down for a very long time. **Requires restart.** |
 
 A registration file with a duplicate `id` or `as_token` against another
 configured registration is rejected — per spec this MUST be unique — and
@@ -1193,9 +1195,38 @@ Account Management endpoints (`/account/password`, `/account/deactivate`,
 `/account/3pid*`); only `GET /account/whoami` accepts assertion.
 
 Outbound delivery (`PUT /_matrix/app/v1/transactions/{txnId}`) is wired into
-the event pipeline. The outbound query hooks (`GET /_matrix/app/v1/users/
-{userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) exist but are not yet
-invoked from any local-miss call site. `/_matrix/client/v3/thirdparty/*`
+the event pipeline: every event is queued durably, one event per transaction,
+for each appservice interested in it. An appservice is interested in an event
+when the sender, or the `state_key` of an `m.room.member` event (an invite,
+kick or ban names its target there, so a virtual user is told it was invited
+before it joins), is a local user in its `users` namespaces, when a user
+joined to the room is, or when the room matches its `rooms` or `aliases`
+namespaces (any alias of the room). `POST /createRoom` queues the events it
+creates (create, membership, power levels, join rules, ...) like any other. A
+registration with `receive_ephemeral: true` also receives `m.typing`,
+`m.receipt` and `m.presence` data in the transaction's `ephemeral` array: typing and receipts for
+rooms it is interested in (a private read receipt only for a user in its
+namespaces), presence for users in its namespaces or sharing a room with one of
+its users. Ephemeral data is held in memory, at most 512 items per appservice,
+the latest per room, user or receipt slot, so it is not redelivered after an
+outage or a restart (ADR-0190).
+
+An appservice can test the connection with `POST
+/_matrix/client/v1/appservice/{appserviceId}/ping`, authenticated with its
+own `as_token`; the homeserver calls `POST /_matrix/app/v1/ping` on the
+registered `url` and answers `{"duration_ms": N}`, or `400 M_URL_NOT_SET`,
+`403 M_FORBIDDEN`, `502 M_CONNECTION_FAILED`, `502 M_BAD_STATUS` (with the
+appservice's `status` and `body`) or `504 M_CONNECTION_TIMEOUT`. The call is
+bounded by `appservice.total_timeout_seconds`. An appservice can publish a room to the
+directory of one of the protocols it declares with `PUT
+/_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}`, and
+`POST /publicRooms` lists those rooms for `third_party_instance_id` (the
+`instance_id` from `GET /thirdparty/protocol/{protocol}`) or together with the
+ordinary directory for `include_all_networks`. The outbound query hooks (`GET /_matrix/app/v1/users/
+{userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) are called on a local miss
+inside the owning appservice's namespace. Every client request that makes the server
+call an appservice (the ping, and the `GET /thirdparty/*` lookups) first takes a slot in the
+client-outbound budget (ADR-0079) and is answered `429 M_LIMIT_EXCEEDED` when none is free. `/_matrix/client/v3/thirdparty/*`
 (`protocols`, `protocol/{protocol}`, `location`, `location/{protocol}`,
 `user`, `user/{protocol}`) is implemented, backed by the outbound
 `GET /_matrix/app/v1/thirdparty/*` calls to every appservice that declares a

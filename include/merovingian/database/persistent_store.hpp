@@ -800,6 +800,17 @@ struct PersistentAppserviceOutboxEntry final
     std::string event_id{};
 };
 
+// A room an appservice has published to the directory of one of its networks (protocols) with PUT
+// /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId} (ADR-0192). Independent of
+// `LocalRoom::directory_public`, the homeserver's own published room directory. Primary key
+// (appservice_id, network_id, room_id).
+struct PersistentAppserviceDirectoryEntry final
+{
+    std::string appservice_id{};
+    std::string network_id{};
+    std::string room_id{};
+};
+
 // A federation PDU this server could not yet place in the room's event graph
 // (a prev_event, auth_event or the state before it is unknown) and has kept,
 // as received, to try again (R03, ADR-0165). `pdu_json` is the exact envelope
@@ -967,6 +978,7 @@ struct PersistentStore final
         , login_tokens{other.login_tokens}
         , appservice_txn_cursors{other.appservice_txn_cursors}
         , appservice_outbox{other.appservice_outbox}
+        , appservice_directory{other.appservice_directory}
         , deferred_pdus{other.deferred_pdus}
         , state_groups{other.state_groups}
         , state_group_state{other.state_group_state}
@@ -1050,6 +1062,7 @@ struct PersistentStore final
         login_tokens = other.login_tokens;
         appservice_txn_cursors = other.appservice_txn_cursors;
         appservice_outbox = other.appservice_outbox;
+        appservice_directory = other.appservice_directory;
         deferred_pdus = other.deferred_pdus;
         state_groups = other.state_groups;
         state_group_state = other.state_group_state;
@@ -1158,6 +1171,9 @@ struct PersistentStore final
     // Events queued for appservices, kept sorted by (appservice_id, stream_ordering). See
     // PersistentAppserviceOutboxEntry.
     std::vector<PersistentAppserviceOutboxEntry> appservice_outbox{};
+    // Rooms appservices have published to their networks' directories (ADR-0192). Write through
+    // set_appservice_directory_entry so the row and this mirror stay in step.
+    std::vector<PersistentAppserviceDirectoryEntry> appservice_directory{};
     // Federation PDUs retained for a retry (R03, ADR-0165). Bounded by the
     // max_deferred_pdu* constants; write through upsert_deferred_pdu and
     // remove_deferred_pdu so the bounds and the database row stay in step.
@@ -1805,6 +1821,21 @@ enum class CappedAccountDataStore
 // nothing. False for an empty appservice_id or event_id, or a backend write
 // failure (nothing is queued in memory then).
 [[nodiscard]] auto enqueue_appservice_event(PersistentStore& store, PersistentAppserviceOutboxEntry entry) -> bool;
+// Publishes (`listed`) or unpublishes a room in one network's directory of an appservice. Idempotent: listing
+// a room already listed, or unlisting one that is not, succeeds and changes nothing. False for an empty
+// identifier or a backend write failure (memory is unchanged then).
+[[nodiscard]] auto set_appservice_directory_entry(PersistentStore& store, PersistentAppserviceDirectoryEntry entry,
+                                                  bool listed) -> bool;
+// True when `room_id` is listed in the directory of `network_id` of `appservice_id`.
+[[nodiscard]] auto appservice_directory_contains(PersistentStore const& store, std::string_view appservice_id,
+                                                 std::string_view network_id, std::string_view room_id) -> bool;
+// How many rows are queued for `appservice_id` (ADR-0191: the per-appservice cap is checked
+// against this). Two binary searches over the sorted outbox, so cheap enough to call per event.
+[[nodiscard]] auto count_appservice_outbox_entries(PersistentStore const& store, std::string_view appservice_id)
+    -> std::size_t;
+// True when the row `(appservice_id, stream_ordering)` is already queued.
+[[nodiscard]] auto has_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id,
+                                               std::uint64_t stream_ordering) -> bool;
 // The queued row with the lowest stream_ordering for `appservice_id`, or
 // nullopt when its queue is empty.
 [[nodiscard]] auto find_first_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id)

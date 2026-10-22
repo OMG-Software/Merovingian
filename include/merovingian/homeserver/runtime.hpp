@@ -136,6 +136,39 @@ struct AppserviceDeliveryBackoff final
     std::chrono::milliseconds delay{0};
 };
 
+// Ephemeral data (m.typing, m.receipt, m.presence) waiting to ride the next transaction to one
+// appservice that set `receive_ephemeral` (R08, ADR-0190). In memory only and bounded: ephemeral
+// data describes the present, so a restart or an overflow loses nothing worth keeping, and
+// persisting it would put one database write behind every typing indicator.
+//
+// `key` is what makes two items the same fact about the present (one room's typing list, one
+// user's presence, one user's receipt of one type in one thread). A newer item with the same key
+// replaces the older one, so a chatty room cannot fill the queue with states already superseded.
+struct AppserviceEphemeralItem final
+{
+    std::string key{};
+    std::string json{}; // one serialized client-format event, `room_id` included when room-scoped
+};
+
+struct AppserviceEphemeralQueue final
+{
+    std::deque<AppserviceEphemeralItem> items{};
+    // Items discarded because the queue was full, since the process started (a metric).
+    std::uint64_t dropped{0U};
+};
+
+// The ephemeral items attached to the transaction currently in flight for one appservice, kept so
+// that a retry under the same transaction ID carries exactly the same items ("MUST NOT alter ...
+// events they were going to send within that transaction ID on retries"). `events_free` marks a
+// transaction that carries no event (ephemeral data alone); its ID comes from the cursor's
+// next_txn_id and it is never persisted, so a restart forgets it.
+struct AppservicePendingEphemeral final
+{
+    std::uint64_t txn_id{0U};
+    bool events_free{false};
+    std::vector<std::string> items{};
+};
+
 struct LocalRoom final
 {
     std::string room_id{};
@@ -335,6 +368,14 @@ struct HomeserverRuntime final
     // The drainer's retry state per appservice, keyed by registration id. In memory only: after
     // a restart the first attempt is immediate. Guarded by `mutex`.
     std::map<std::string, AppserviceDeliveryBackoff, std::less<>> appservice_delivery_backoff{};
+    // Ephemeral data queued per appservice, keyed by registration id (R08, ADR-0190). Only
+    // appservices with `receive_ephemeral` and a url ever have an entry. Guarded by `mutex`.
+    std::map<std::string, AppserviceEphemeralQueue, std::less<>> appservice_ephemeral{};
+    // The ephemeral items of the transaction in flight per appservice. Guarded by `mutex`.
+    std::map<std::string, AppservicePendingEphemeral, std::less<>> appservice_pending_ephemeral{};
+    // Events NOT queued for an appservice because its outbox was at
+    // appservice.max_queued_events, since the process started (ADR-0191). Guarded by `mutex`.
+    std::map<std::string, std::uint64_t, std::less<>> appservice_outbox_dropped{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Installed by main when security.federation.enabled is true. Verifies and
     // routes inbound federation, including explicit main-process bypasses.

@@ -96,7 +96,9 @@ SCENARIO("Operational limits reject disabled bounds, malformed sizes and excessi
             "security.federation.backfill.timeout=301s\n", "security.federation.key_resolution_cache_entries=0\n",
             "security.federation.pending_join_max_size=0\n", "server.push.max_in_flight_deliveries=0\n",
             "security.federation.max_transaction_size=65MiB\n", "appservice.connect_timeout_seconds=0\n",
-            "appservice.connect_timeout_seconds=31\n", "appservice.response_max_size=unlimited\n");
+            "appservice.connect_timeout_seconds=31\n", "appservice.response_max_size=unlimited\n",
+            "appservice.max_queued_events=0\n", "appservice.max_queued_events=10000001\n",
+            "appservice.max_queued_events=lots\n");
 
         WHEN("the configuration is parsed and validated")
         {
@@ -288,6 +290,42 @@ SCENARIO("E2EE key and filter caps reject zero, malformed and excessive values",
             THEN("the operator gets an error instead of an unusable or unbounded cap")
             {
                 REQUIRE((!parsed.findings.empty() || !findings.empty()));
+            }
+        }
+    }
+}
+
+// ADR-0191: an appservice that never returns must not grow its queue without bound, so the queue has
+// a cap that defaults to 100000 rows per appservice and is tunable (restart required).
+SCENARIO("The per-appservice outbox cap defaults to 100000 and is tunable",
+         "[config][operational-limits][r01][adr-0191]")
+{
+    GIVEN("no appservice configuration at all")
+    {
+        THEN("the cap is 100000 and valid")
+        {
+            auto const config = merovingian::config::Config{};
+            REQUIRE(config.appservice().max_queued_events == 100000U);
+        }
+    }
+
+    GIVEN("an operator who lowers the cap")
+    {
+        auto const parsed = merovingian::config::parse_key_value_config("appservice.max_queued_events=250\n");
+
+        WHEN("the configuration is parsed and compared with the current deployment")
+        {
+            auto const plan = merovingian::config::build_reload_plan(merovingian::config::Config{}, parsed.config);
+            auto const requires_restart = std::ranges::any_of(plan.changes(), [](auto const& change) {
+                return change.key == "appservice.max_queued_events" &&
+                       change.policy == merovingian::config::ReloadPolicy::restart_required;
+            });
+
+            THEN("the new cap is used and the change is not claimed to be hot-reloadable")
+            {
+                REQUIRE(parsed.findings.empty());
+                REQUIRE(parsed.config.appservice().max_queued_events == 250U);
+                REQUIRE(requires_restart);
             }
         }
     }

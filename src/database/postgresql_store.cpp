@@ -1595,6 +1595,23 @@ namespace
             }
         }
 
+        if (table_load_profile_includes("appservice_directory", profile))
+        {
+            auto directory_result = query_rows(connection, "postgresql_load_appservice_directory",
+                                               "SELECT appservice_id, network_id, room_id FROM appservice_directory");
+            if (!directory_result.ok)
+            {
+                return false;
+            }
+            for (auto const& row : directory_result.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.appservice_directory.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
         if (table_load_profile_includes("sync_stream_watermark", profile))
         {
             auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",

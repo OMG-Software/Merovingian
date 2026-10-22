@@ -306,3 +306,28 @@ add an "already delivered" check to the enqueue: stream orderings commit out of 
 primary key is the only dedupe. A transaction's ID and event are written to the cursor before the send; do not
 rebuild a transaction from anything but its stored event. Clear the wake hook under `runtime.mutex` before stopping
 the job.
+
+- **Every stored event is queued once, by the code that stored it.** `queue_event_for_appservices` (room_service.cpp)
+  wraps `enqueue_appservice_delivery` and passes the `state_key` of a membership event as `member_event_target` (R07).
+  Send, each membership transition, the third-party invite made on join, federation PDUs and `createRoom` all call it.
+  The federation `/invite` handler, for a room this server is not in, stores the invite as an outlier with no
+  `LocalRoom` and calls the `room_id` overload of `enqueue_appservice_delivery` with the invitee as target: no
+  transaction will bring that event again, so it is the only chance an appservice has to see its user invited.
+  `createRoom` collects what it stores in a `CreatedEventQueue` whose destructor queues the events, so every exit path
+  queues them and the room's alias exists when interest is judged. A new path that stores a client-visible event
+  must call it too.
+- **A queue is capped** (`appservice.max_queued_events`, ADR-0191): the newest event is refused, counted in
+  `appservice_outbox_dropped`, and the first refusal and every thousandth is logged at warning level and audited
+  (`appservice.outbox.full`). Do not evict the oldest row; it may be the transaction on the cursor.
+- **Ephemeral data** (`appservice_ephemeral.cpp`, ADR-0190) is in memory only: `queue_appservice_typing` (called from
+  `update_room_typing_stream_id_if_changed`), `queue_appservice_receipt` and `queue_appservice_presence` (called after
+  the store write, local and federated) coalesce by key into `HomeserverRuntime::appservice_ephemeral`, bounded per
+  appservice. The drainer attaches up to 100 items to the next transaction and keeps them in
+  `appservice_pending_ephemeral` so a retry under the same ID carries the same items; with no event queued it sends an
+  events-free transaction whose ID comes from `next_txn_id`. Never persist it and never queue it for `url: null`.
+- **Ping and the network directory** (`client_server.cpp`) act on the appservice named by the masquerade token
+  (`decode_masquerade_token`), never on a path parameter alone: `POST /_matrix/client/v1/appservice/{appserviceId}/ping`
+  and `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}` answer `403 M_FORBIDDEN` to a token that
+  is not an appservice's. The ping holds an ADR-0079 slot and releases `runtime.mutex` for the call. The directory
+  entry needs a protocol the registration declares and a room the appservice is interested in; it is persisted
+  (`appservice_directory`, ADR-0192).

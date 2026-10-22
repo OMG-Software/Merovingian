@@ -23,9 +23,9 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R04 | P2 | Resident restricted-room joins fail at template creation and resident signing | Fixed 0.12.36 (ADR-0184, ADR-0185) |
 | R05 | P2 | Relayed PDU signature checks use only the first key ID listed | Fixed 0.12.36 (ADR-0183) |
 | R06 | P2 | Direct membership endpoints reject a hash mismatch instead of redacting | Fixed 0.12.36 |
-| R07 | P2 | Appservices miss invites to their own virtual users | Open — wave 3 |
-| R08 | P2 | `receive_ephemeral` is parsed but no ephemeral data is sent | Open — wave 3 |
-| R09 | P2 | Identity-server `requestToken` calls drop `send_attempt` | Open — wave 3 |
+| R07 | P2 | Appservices miss invites to their own virtual users | Fixed 0.12.37 |
+| R08 | P2 | `receive_ephemeral` is parsed but no ephemeral data is sent | Fixed 0.12.37 (ADR-0190) |
+| R09 | P2 | Identity-server `requestToken` calls drop `send_attempt` | Fixed 0.12.37 |
 | R10 | P2 | Room-scoped account data GET/PUT are absent | Open — wave 4 |
 | R11 | P2 | Global account data accepts non-object and malformed JSON | Open — wave 4 |
 | R12 | P2 | Registration rejects an omitted username instead of generating one | Open — wave 4 |
@@ -66,11 +66,20 @@ interoperability or validation defect; **P3** lower priority or recommendation l
   ("If all signatures from known unexpired keys ... are found to be valid"; ADR-0183).
 - The `make_join` template provider read room state without the runtime lock.
 
-### Found while fixing R01 (open)
+### Found while fixing R01 (fixed in 0.12.37)
 
 - `create_room` never queues its own events (create, member, power levels, join rules…) for
-  appservices; only `send_event`, membership transitions and federation PDUs do. Wave 3.
-- The outbox of an appservice that never returns grows without bound (ADR-0163).
+  appservices; only `send_event`, membership transitions and federation PDUs do. Fixed 0.12.37.
+- The outbox of an appservice that never returns grows without bound (ADR-0163). Fixed 0.12.37:
+  capped by `appservice.max_queued_events` (ADR-0191).
+
+### Found while fixing R07 and R08 (fixed in 0.12.37)
+
+- An invite received on `PUT /_matrix/federation/v2/invite` for a room this server is not in (the
+  usual way a remote user invites a bridged user) was stored without being queued for appservices,
+  and no transaction brings it again.
+- The m.presence a profile change sends was not offered to appservices.
+- The ping dropped an empty `transaction_id` instead of copying it.
 
 ## Additional endpoint and feature gaps
 
@@ -79,8 +88,8 @@ unsupported, not as a violation.
 
 | Surface | Status |
 |---------|--------|
-| `POST /_matrix/client/v1/appservice/{appserviceId}/ping` | Open — wave 3 |
-| `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}` | Open — wave 3 |
+| `POST /_matrix/client/v1/appservice/{appserviceId}/ping` | Fixed 0.12.37 |
+| `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}` | Fixed 0.12.37 (ADR-0192) |
 | `GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event` | Open — wave 6 (to decide) |
 | `POST /_matrix/media/v1/create` and `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}` | Open — wave 6 (to decide) |
 | `GET /_matrix/client/v1/media/preview_url` | Open — wave 6 (optional; SSRF boundary) |
@@ -111,7 +120,7 @@ branch CI run 39053180514 shows OpenBSD at 58 Ok, 0 Fail.
 |------|---------|----------|
 | 1 | 0.12.28 | R01, R02, R03, to-device message IDs |
 | 2 | 0.12.36 | R04, R05, R06, R18 (federation) |
-| 3 | — | R07, R08, R09, appservice ping and network directory, `create_room` appservice delivery |
+| 3 | 0.12.37 | R07, R08, R09, appservice ping and network directory, `create_room` appservice delivery |
 | 4 | — | R10, R11, R12, R13, R16, R17 (client API) |
 | 5 | — | R19, then R15 and R14 (push rules, counts, retry) |
 | 6 | — | Optional endpoint gaps, after a decision on each |

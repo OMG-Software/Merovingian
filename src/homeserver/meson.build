@@ -1,5 +1,6 @@
 homeserver_sources = files(
   'appservice_delivery.cpp',
+  'appservice_ephemeral.cpp',
   'auth_service.cpp',
   'client_outbound_proxy.cpp',
   'client_server.cpp',

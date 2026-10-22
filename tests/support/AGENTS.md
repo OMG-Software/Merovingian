@@ -6,6 +6,8 @@ Shared test utilities used across unit, conformance, and integration tests.
 
 | File | Purpose |
 |---|---|
+| `appservice_test_config.hpp` | `TestAppservice` and `appservice_test_config()`: write registration files for appservices with the as_token `as-token-<id>`, hs_token `hs-token-<id>` and sender `_<id>_bot`, and build a `Config` that loads them (token registration on, in-memory database). Adjust the returned `Config` (for example `appservice().max_queued_events`) before starting the runtime |
+| `mock_appservice.hpp` | `MockAppservice`: a loopback plain-HTTP appservice that records every request (method, target, `Authorization`, body), answers with a settable global status or per-target-prefix answers, and can `go_silent()` to make the homeserver's outbound timeout fire. Like `tls_mock_server.hpp` it breaks the no-I/O rule because conformance and integration suites share it |
 | `joining_threads.hpp` | `JoiningThreads`: a set of `std::thread`s all joined on scope exit, or earlier with `join()` when a scenario asserts on what the threads did. Use it instead of `std::jthread`, which the libc++ on FreeBSD and OpenBSD does not provide |
 | `json_test_support.hpp` | JSON assertion helpers: `require_json_key()`, `parse_or_fail()` |
 | `master_key.hpp` | Deterministic Ed25519 key pair for signing in tests; do not use in production |

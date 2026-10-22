@@ -348,7 +348,14 @@ trusted `id_server` is supplied, not just persist locally:
   M_THREEPID_MEDIUM_NOT_SUPPORTED` (before AUTH-5 it minted a local session
   that was already marked validated and sent nothing). Fail closed with `502` on
   transport error or a malformed IS response; `403` when `id_server` is not
-  trusted; `400 M_BAD_JSON` when only one of the pair is supplied.
+  trusted; `400 M_BAD_JSON` when only one of the pair is supplied. The client's
+  `send_attempt` is forwarded in the IS request body (R09; the IS "will only send
+  an email if the send_attempt is a number greater than the most recent one which
+  it has seen"), and an `id_access_token` that is not printable ASCII without
+  spaces of at most 4096 bytes is `400 M_INVALID_PARAM` on this, the `bind`, the
+  deprecated `/account/3pid` and the 3PID invite routes, before any IS call
+  (`identity::id_access_token_is_valid`, sp02, ADR-0180): it becomes the
+  `Authorization` header of the IS call.
 
 - **`bind`** (`/account/3pid/bind`, plus the deprecated `/account/3pid`) - after
   the identity server has confirmed the session validated (below) and the

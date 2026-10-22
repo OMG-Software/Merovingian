@@ -35,6 +35,8 @@
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/homeserver/appservice_delivery.hpp"
+#include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
@@ -52,6 +54,7 @@
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/security.hpp"
+#include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -1764,6 +1767,11 @@ namespace
                at + 1U < email.size() && email.find(' ') == std::string_view::npos;
     }
 
+    // M_INVALID_PARAM text for an id_access_token that identity::id_access_token_is_valid refuses. The
+    // token becomes the Authorization header of an identity-server call (sp02).
+    constexpr auto invalid_id_access_token_message =
+        std::string_view{"id_access_token must be printable ASCII without spaces, at most 4096 bytes"};
+
     [[nodiscard]] auto country_code_is_valid(std::string_view country) noexcept -> bool
     {
         return country.size() == 2U && std::ranges::all_of(country, [](char const value) {
@@ -3249,6 +3257,29 @@ namespace
             return std::string{unmatched};
         }
 
+        // Application Service API: the room directory of a network, and the ping an appservice asks for.
+        // Both carry identifiers in the path; neither may mint a bucket per identifier (ADR-0092).
+        auto constexpr appservice_directory_prefix = std::string_view{"/_matrix/client/v3/directory/list/appservice/"};
+        if (starts_with(out, appservice_directory_prefix))
+        {
+            auto normalized = replace_two_tail_segments(
+                appservice_directory_prefix, std::string_view{out}.substr(appservice_directory_prefix.size()),
+                "{networkId}", "{roomId}");
+            return normalized.empty() ? std::string{unmatched} : normalized;
+        }
+        auto constexpr appservice_ping_route_prefix = std::string_view{"/_matrix/client/v1/appservice/"};
+        if (starts_with(out, appservice_ping_route_prefix))
+        {
+            auto const rest = std::string_view{out}.substr(appservice_ping_route_prefix.size());
+            auto const slash = rest.find('/');
+            if (slash != std::string_view::npos && has_one_segment(rest.substr(0U, slash)) &&
+                rest.substr(slash) == "/ping")
+            {
+                return std::string{appservice_ping_route_prefix} + "{appserviceId}/ping";
+            }
+            return std::string{unmatched};
+        }
+
         auto constexpr to_device_prefix = std::string_view{"/_matrix/client/v3/sendToDevice/"};
         if (starts_with(out, to_device_prefix))
         {
@@ -3468,6 +3499,17 @@ namespace
         // the spec table exactly instead of approximating it.
         auto const request_path_only = std::string_view{req.target}.substr(0U, req.target.find('?'));
         if (req.method == "GET" && starts_with(request_path_only, "/_matrix/client/v3/thirdparty/"))
+        {
+            return http::RateLimitDecision{.allowed = true};
+        }
+        // Application Service API: the ping and the room directory of a network are documented
+        // "Rate-limited: No". That holds only for a request the dispatcher has already verified as an
+        // appservice's (it swapped the as_token for the masquerade token); anyone else calling the same
+        // paths is limited like any other unauthenticated caller.
+        if (appservice::decode_masquerade_token(req.access_token).has_value() &&
+            ((req.method == "POST" && starts_with(request_path_only, "/_matrix/client/v1/appservice/") &&
+              request_path_only.ends_with("/ping")) ||
+             (req.method == "PUT" && starts_with(request_path_only, "/_matrix/client/v3/directory/list/appservice/"))))
         {
             return http::RateLimitDecision{.allowed = true};
         }
@@ -3793,11 +3835,60 @@ namespace
         });
     }
 
+    // The prefix of every `instance_id` minted for one protocol of one appservice (ADR-0192):
+    // `<registration id>:<protocol>:`, both parts percent-encoded so the colons between them are the
+    // only colons and a registration id or protocol containing one cannot make two pairs collide.
+    [[nodiscard]] auto thirdparty_instance_id_prefix(std::string_view registration_id, std::string_view protocol)
+        -> std::string
+    {
+        return core::percent_encode_path_component(registration_id) + ":" +
+               core::percent_encode_path_component(protocol) + ":";
+    }
+
+    // Resolves a `third_party_instance_id` to the (appservice id, protocol) directory network it names:
+    // an id minted by thirdparty_protocol_json for a protocol a registration declares, followed by the
+    // instance index. Nullopt for anything else.
+    [[nodiscard]] auto directory_network_for_instance_id(appservice::AppserviceRegistry const& registry,
+                                                         std::string_view instance_id)
+        -> std::optional<std::pair<std::string, std::string>>
+    {
+        for (auto const& registration : registry.all())
+        {
+            for (auto const& protocol : registration.protocols)
+            {
+                auto const prefix = thirdparty_instance_id_prefix(registration.id, protocol);
+                if (!instance_id.starts_with(prefix))
+                {
+                    continue;
+                }
+                auto const index = instance_id.substr(prefix.size());
+                if (!index.empty() && std::ranges::all_of(index, [](char const digit) {
+                        return digit >= '0' && digit <= '9';
+                    }))
+                {
+                    return std::pair{registration.id, protocol};
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Which rooms POST /publicRooms lists (Client-Server API, "Listing rooms"): the homeserver's own
+    // published directory by default; one third-party network's directory when the request names it
+    // with `third_party_instance_id`; both together, plus every network's, with `include_all_networks`.
+    struct PublicRoomsScope final
+    {
+        bool include_all_networks{false};
+        // The (appservice id, protocol) a `third_party_instance_id` resolved to; empty strings for an
+        // id that names no network, which lists nothing.
+        std::optional<std::pair<std::string, std::string>> network{};
+    };
+
     // Spec: GET/POST /_matrix/client/v3/publicRooms
     // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
     [[nodiscard]] auto public_rooms_filtered_json(ClientServerRuntime const& rt, std::string const& filter_term,
-                                                  std::optional<std::size_t> limit, std::size_t since_offset)
-        -> std::string
+                                                  std::optional<std::size_t> limit, std::size_t since_offset,
+                                                  PublicRoomsScope const& scope = {}) -> std::string
     {
         auto const icase_contains = [](std::string_view haystack, std::string_view needle) noexcept -> bool {
             return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
@@ -3809,11 +3900,28 @@ namespace
         auto const& store = rt.homeserver.database.persistent_store;
         auto const index = build_state_index(store);
 
+        // Rooms an appservice published to the networks in scope, found once rather than per room.
+        auto network_rooms = std::unordered_set<std::string_view>{};
+        for (auto const& entry : store.appservice_directory)
+        {
+            if (scope.include_all_networks ||
+                (scope.network.has_value() && entry.appservice_id == scope.network->first &&
+                 entry.network_id == scope.network->second))
+            {
+                network_rooms.insert(entry.room_id);
+            }
+        }
+
         auto all_rooms = std::vector<canonicaljson::Object>{};
         for (auto const& room : rt.homeserver.database.rooms)
         {
             auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
-            if (!room.directory_public)
+            // A request that names one network lists only that network's rooms ("Can only be used if
+            // include_all_networks is false"); otherwise the homeserver's own directory is listed, with
+            // every network's rooms added for include_all_networks.
+            auto const listed =
+                (!scope.network.has_value() && room.directory_public) || network_rooms.contains(room.room_id);
+            if (!listed)
                 continue;
 
             auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
@@ -4106,10 +4214,12 @@ namespace
         receipt.event_id = std::string{event_id};
         receipt.ts = ts > 0 ? static_cast<std::uint64_t>(ts) : 0U;
         receipt.thread_id = std::string{thread_id};
-        if (!database::store_receipt(runtime.homeserver.database.persistent_store, std::move(receipt)))
+        if (!database::store_receipt(runtime.homeserver.database.persistent_store, receipt))
         {
             return false;
         }
+        // Appservices that receive ephemeral data are told once the receipt is durable (R08).
+        queue_appservice_receipt(runtime.homeserver, receipt);
         if (runtime.sync_notifier != nullptr)
         {
             runtime.sync_notifier->publish(runtime.homeserver.database.next_stream_ordering - 1U,
@@ -9709,11 +9819,14 @@ namespace
     // each instance. Spec: "This field is added to the response ... by the
     // homeserver" — `instance_id` therefore does not exist on
     // ThirdPartyProtocolInstance at all (see its doc comment); it is
-    // `<registration id>:<instance index>`, which is unique across the whole
-    // homeserver because registration `id`s are enforced unique at load time
-    // (validate_registrations, appservice/AGENTS.md).
+    // `<registration id>:<protocol>:<instance index>` (thirdparty_instance_id_prefix), which is
+    // unique across the whole homeserver because registration `id`s are enforced unique at load time
+    // (validate_registrations, appservice/AGENTS.md) and the protocol is part of it. A client echoes
+    // it back as `third_party_instance_id`, which resolves to the directory network it names
+    // (directory_network_for_instance_id, ADR-0192).
     [[nodiscard]] auto thirdparty_protocol_json(appservice::ThirdPartyProtocol const& protocol,
-                                                std::string const& registration_id) -> canonicaljson::Value
+                                                std::string const& registration_id, std::string_view protocol_name)
+        -> canonicaljson::Value
     {
         auto field_types = canonicaljson::Object{};
         for (auto const& [field_name, field_type] : protocol.field_types)
@@ -9736,8 +9849,9 @@ namespace
             {
                 instance_members.push_back(json_member("icon", json_str(instance.icon)));
             }
-            instance_members.push_back(
-                json_member("instance_id", json_str(registration_id + ":" + std::to_string(index))));
+            instance_members.push_back(json_member(
+                "instance_id",
+                json_str(thirdparty_instance_id_prefix(registration_id, protocol_name) + std::to_string(index))));
             instance_members.push_back(json_member("network_id", json_str(instance.network_id)));
             instances.emplace_back(json_obj(std::move(instance_members)));
         }
@@ -10549,6 +10663,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // the requestToken to the named (operator-trusted) identity server, which
         // runs the real email-validation flow and issues its own sid. The pair must
         // both be present or both absent; a lone field is a bad request.
+        if (body->id_access_token.has_value() &&
+            !merovingian::identity::id_access_token_is_valid(*body->id_access_token))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+        }
         if (body->id_server.has_value() != body->id_access_token.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
@@ -10583,7 +10702,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
                     rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
                 return id_client.request_email_token(base_url, id_access_token, client_secret, email,
-                                                     next_link.has_value() ? *next_link : std::string_view{});
+                                                     next_link.has_value() ? *next_link : std::string_view{},
+                                                     body->send_attempt);
             }();
             if (!is_result.ok)
             {
@@ -10647,6 +10767,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         // IS delegation: see register/email/requestToken for the full rationale. The
         // pair (id_server, id_access_token) must both be present or both absent.
+        if (body->id_access_token.has_value() &&
+            !merovingian::identity::id_access_token_is_valid(*body->id_access_token))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+        }
         if (body->id_server.has_value() != body->id_access_token.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
@@ -10682,7 +10807,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
                     rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
                 return id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
-                                                      next_link.has_value() ? *next_link : std::string_view{});
+                                                      next_link.has_value() ? *next_link : std::string_view{},
+                                                      body->send_attempt);
             }();
             if (!is_result.ok)
             {
@@ -11346,6 +11472,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 "third-party identifier is already associated with an account");
         }
         // IS delegation: see register/email/requestToken for the full rationale.
+        if (body->id_access_token.has_value() &&
+            !merovingian::identity::id_access_token_is_valid(*body->id_access_token))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+        }
         if (body->id_server.has_value() != body->id_access_token.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
@@ -11379,7 +11510,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
                     rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
                 return id_client.request_email_token(base_url, id_access_token, client_secret, email,
-                                                     next_link.has_value() ? *next_link : std::string_view{});
+                                                     next_link.has_value() ? *next_link : std::string_view{},
+                                                     body->send_attempt);
             }();
             if (!is_result.ok)
             {
@@ -11445,6 +11577,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 "third-party identifier is already associated with an account");
         }
         // IS delegation: see register/email/requestToken for the full rationale.
+        if (body->id_access_token.has_value() &&
+            !merovingian::identity::id_access_token_is_valid(*body->id_access_token))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+        }
         if (body->id_server.has_value() != body->id_access_token.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
@@ -11479,7 +11616,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
                     rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
                 return id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
-                                                      next_link.has_value() ? *next_link : std::string_view{});
+                                                      next_link.has_value() ? *next_link : std::string_view{},
+                                                      body->send_attempt);
             }();
             if (!is_result.ok)
             {
@@ -11587,6 +11725,174 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
     }
 
+    // POST /_matrix/client/v1/appservice/{appserviceId}/ping — Application Service API v1.19, "Pinging".
+    // ../../docs/matrix-v1.19-spec/application-service-api.md#post_matrixclientv1appserviceappserviceidping
+    //
+    // "This API requires the use of an application service access token (as_token) ... This API cannot be
+    // invoked by users who are not identified as application services. Additionally, the appservice ID in
+    // the path must be the same as the appservice whose as_token is being used." The masquerade token the
+    // dispatcher substituted for a verified as_token names that appservice; a user's token has none.
+    auto constexpr appservice_ping_prefix = std::string_view{"/_matrix/client/v1/appservice/"};
+    auto constexpr appservice_ping_suffix = std::string_view{"/ping"};
+    if (req.method == "POST" && starts_with(request_path, appservice_ping_prefix) &&
+        request_path.size() > appservice_ping_prefix.size() + appservice_ping_suffix.size() &&
+        request_path.ends_with(appservice_ping_suffix) &&
+        request_path
+                .substr(appservice_ping_prefix.size(),
+                        request_path.size() - appservice_ping_prefix.size() - appservice_ping_suffix.size())
+                .find('/') == std::string_view::npos)
+    {
+        auto const encoded_id =
+            request_path.substr(appservice_ping_prefix.size(),
+                                request_path.size() - appservice_ping_prefix.size() - appservice_ping_suffix.size());
+        auto const appservice_id = core::percent_decode_path_component(encoded_id);
+        auto const asserted = appservice::decode_masquerade_token(req.access_token);
+        auto const* const registration = rt.homeserver.appservices.find_by_id(appservice_id);
+        if (!asserted.has_value() || asserted->appservice_id != appservice_id || registration == nullptr)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "only the application service named in the path may ping it, with its own as_token");
+        }
+        // "An optional transaction ID that is passed through": absent stays absent, and anything given,
+        // the empty string included, is copied as it is.
+        auto transaction_id = std::optional<std::string>{};
+        if (!req.body.empty())
+        {
+            auto const body = parsed_json_object(req.body);
+            if (!body.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "ping body must be a JSON object");
+            }
+            if (auto const* member = object_member(*body, "transaction_id"); member != nullptr)
+            {
+                auto const* text = std::get_if<std::string>(&member->storage());
+                if (text == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "transaction_id must be a string");
+                }
+                transaction_id = *text;
+            }
+        }
+        if (!registration->url.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_URL_NOT_SET", "the application service has no url configured");
+        }
+        if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+        {
+            return dispatch_err(req, rt, 502U, "M_CONNECTION_FAILED", "this server cannot make outbound requests");
+        }
+        // ADR-0079: the call holds a request-pool thread for up to the appservice timeout.
+        auto const proxy_slot = admit_client_proxy(rt, req);
+        if (!proxy_slot.has_value())
+        {
+            return client_proxy_refused(req, rt);
+        }
+        auto client = appservice::AppserviceClient{*rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                                                   rt.homeserver.config.appservice()};
+        auto const ping = [&] {
+            // runtime.mutex is released for the whole call and taken back before anything below reads
+            // reloadable runtime state (dispatch_resp reads rt.cors).
+            auto const released = merovingian::homeserver::RuntimeLockRelease{guard};
+            return client.ping(*registration, transaction_id);
+        }();
+        switch (ping.failure)
+        {
+        case appservice::AppservicePingFailure::none:
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(json_obj({json_member("duration_ms", json_int(ping.duration_ms))})));
+        case appservice::AppservicePingFailure::url_not_set:
+            return dispatch_err(req, rt, 400U, "M_URL_NOT_SET", "the application service has no url configured");
+        case appservice::AppservicePingFailure::connection_timeout:
+            return dispatch_err(req, rt, 504U, "M_CONNECTION_TIMEOUT", "Connection to application service timed out");
+        case appservice::AppservicePingFailure::connection_failed:
+            return dispatch_err(req, rt, 502U, "M_CONNECTION_FAILED", "Failed to connect to application service");
+        case appservice::AppservicePingFailure::bad_status: {
+            // `status` and `body` aid debugging; the body is untrusted text, so it is bounded and made
+            // well-formed UTF-8 before it goes into JSON.
+            auto members = canonicaljson::Object{};
+            members.push_back(
+                json_member("body", json_str(observability::bounded_utf8(ping.body, appservice::max_ping_body_bytes))));
+            members.push_back(json_member("errcode", json_str("M_BAD_STATUS")));
+            members.push_back(json_member("error", json_str("Ping returned status " + std::to_string(ping.status))));
+            members.push_back(json_member("status", json_int(static_cast<std::int64_t>(ping.status))));
+            return dispatch_resp(req, rt, 502U, json_serialize(json_obj(std::move(members))));
+        }
+        }
+        return dispatch_err(req, rt, 502U, "M_CONNECTION_FAILED", "Failed to connect to application service");
+    }
+
+    // PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId} — Application Service API v1.19,
+    // "Published room directories". ../../docs/matrix-v1.19-spec/application-service-api.md#published-room-directories
+    //
+    // "Updates the visibility of a given room in the application service's published room directory ...
+    // This API requires the use of an application service access token (as_token) instead of a typical
+    // client's access_token. This API cannot be invoked by users who are not identified as application
+    // services." `networkId` is "The protocol (network) ID to update the room list for. This would have
+    // been provided by the application service as being listed as a supported protocol." The spec lists
+    // no failure status; the refusals here are the fail-closed readings (ADR-0192): a protocol the
+    // appservice does not declare is 404, and the appservice must be interested in the room, or it could
+    // list any private room's metadata in a public directory.
+    auto constexpr appservice_directory_prefix = std::string_view{"/_matrix/client/v3/directory/list/appservice/"};
+    if (req.method == "PUT" && starts_with(request_path, appservice_directory_prefix) &&
+        std::ranges::count(request_path.substr(appservice_directory_prefix.size()), '/') == 1)
+    {
+        auto const rest = request_path.substr(appservice_directory_prefix.size());
+        auto const slash = rest.find('/');
+        auto const raw_network = rest.substr(0U, slash);
+        auto const raw_room = rest.substr(slash + 1U);
+        auto const asserted = appservice::decode_masquerade_token(req.access_token);
+        auto const* const registration =
+            asserted.has_value() ? rt.homeserver.appservices.find_by_id(asserted->appservice_id) : nullptr;
+        if (registration == nullptr)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "only an application service may change an application service room directory");
+        }
+        if (raw_network.empty() || raw_room.empty() || core::path_component_contains_nul(raw_network) ||
+            core::path_component_contains_nul(raw_room))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "networkId and roomId must be non-empty");
+        }
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "body must be a JSON object");
+        }
+        auto const* visibility = string_member(*body, "visibility");
+        if (visibility == nullptr || (*visibility != "public" && *visibility != "private"))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "visibility must be 'public' or 'private'");
+        }
+        auto const network_id = core::percent_decode_path_component(raw_network);
+        auto const room_id = core::percent_decode_path_component(raw_room);
+        if (std::ranges::find(registration->protocols, network_id) == registration->protocols.end())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND",
+                                "the application service does not declare that protocol (network)");
+        }
+        auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](LocalRoom const& room) {
+            return room.room_id == room_id;
+        });
+        if (room_it == rt.homeserver.database.rooms.end())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+        }
+        auto const aliases = appservice_room_aliases(rt.homeserver, room_id);
+        auto const interested = appservice::registration_interested_in_room_event(
+            *registration, rt.homeserver.config.server().server_name,
+            {.room_id = room_id, .room_aliases = aliases, .room_members = room_it->members});
+        if (!interested)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "the application service has no interest in that room");
+        }
+        if (!database::set_appservice_directory_entry(rt.homeserver.database.persistent_store,
+                                                      {registration->id, network_id, room_id}, *visibility == "public"))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "directory visibility persistence failed");
+        }
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+
     // Spec: POST /_matrix/client/v3/publicRooms
     // ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
     if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
@@ -11595,6 +11901,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto limit = std::optional<std::size_t>{};
         auto since_raw = std::string{};      // raw string; forwarded as-is to remote
         auto since_offset = std::size_t{0U}; // parsed integer for local pagination
+        auto include_all_networks = false;
+        auto third_party_instance_id = std::string{};
 
         if (auto const body = parsed_json_object(req.body); body.has_value())
         {
@@ -11606,6 +11914,33 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
                         filter_term = *term;
                 }
+            }
+            // Spec: `include_all_networks` is "Whether or not to include all known networks/protocols from
+            // application services on the homeserver. Defaults to false." and `third_party_instance_id` is
+            // "The specific third-party network/protocol to request from the homeserver. Can only be used
+            // if include_all_networks is false."
+            if (auto const* networks = object_member(*body, "include_all_networks"); networks != nullptr)
+            {
+                auto const* flag = std::get_if<bool>(&networks->storage());
+                if (flag == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "include_all_networks must be a boolean");
+                }
+                include_all_networks = *flag;
+            }
+            if (auto const* instance = object_member(*body, "third_party_instance_id"); instance != nullptr)
+            {
+                auto const* text = std::get_if<std::string>(&instance->storage());
+                if (text == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "third_party_instance_id must be a string");
+                }
+                third_party_instance_id = *text;
+            }
+            if (include_all_networks && !third_party_instance_id.empty())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "third_party_instance_id can only be used if include_all_networks is false");
             }
             if (auto const* lv = object_member(*body, "limit"); lv != nullptr)
             {
@@ -11643,17 +11978,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto secret = core::SecretBuffer{rt.homeserver.database.signing_secret_key.bytes()};
             auto const opt_since = since_raw.empty() ? std::nullopt : std::make_optional<std::string_view>(since_raw);
-            // Use POST when filter_term is set so servers supporting
-            // POST /_matrix/federation/v1/publicRooms can apply the filter.
-            // Fall back to GET for unfiltered requests (wider server compatibility).
+            // Use POST when the request carries anything GET cannot (a filter, or a network choice) so a
+            // server supporting POST /_matrix/federation/v1/publicRooms can apply it. Fall back to GET for
+            // unfiltered requests (wider server compatibility).
             auto fed_body = std::string{};
-            auto const fed_method = filter_term.empty() ? std::string_view{"GET"} : std::string_view{"POST"};
-            if (!filter_term.empty())
+            auto const names_a_network = include_all_networks || !third_party_instance_id.empty();
+            auto const use_post = !filter_term.empty() || names_a_network;
+            auto const fed_method = use_post ? std::string_view{"POST"} : std::string_view{"GET"};
+            if (use_post)
             {
-                auto filter_obj = canonicaljson::Object{};
-                filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
                 auto body_obj = canonicaljson::Object{};
-                body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
+                if (!filter_term.empty())
+                {
+                    auto filter_obj = canonicaljson::Object{};
+                    filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
+                    body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
+                }
+                if (include_all_networks)
+                    body_obj.push_back(json_member("include_all_networks", json_bool(true)));
+                if (!third_party_instance_id.empty())
+                    body_obj.push_back(json_member("third_party_instance_id", json_str(third_party_instance_id)));
                 if (limit.has_value())
                     body_obj.push_back(json_member("limit", json_int(static_cast<std::int64_t>(*limit))));
                 if (!since_raw.empty())
@@ -11674,7 +12018,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
         }
-        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset));
+        auto scope = PublicRoomsScope{};
+        scope.include_all_networks = include_all_networks;
+        if (!third_party_instance_id.empty())
+        {
+            // An id that names no network of any registered appservice lists nothing, rather than
+            // falling back to the homeserver's own directory the client did not ask for.
+            scope.network = directory_network_for_instance_id(rt.homeserver.appservices, third_party_instance_id)
+                                .value_or(std::pair<std::string, std::string>{});
+        }
+        return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset, scope));
     }
 
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
@@ -12112,6 +12465,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                 "3PID bind body must contain client_secret, sid, id_server, and id_access_token");
         }
+        if (!merovingian::identity::id_access_token_is_valid(body->id_access_token))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+        }
         // Spec: identity-service-api.md section 3pid/bind. The identity server is
         // the authority for the 3PID: it must report the session validated, and
         // then bind it, before anything is recorded locally (AUTH-5).
@@ -12134,6 +12491,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             client_secret->empty() || sid->empty() || id_server->empty() || id_access_token->empty())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "three_pid_creds must be complete");
+        }
+        if (!merovingian::identity::id_access_token_is_valid(*id_access_token))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
         }
         // The deprecated route carries the same contract as /account/3pid/bind.
         return bind_validated_threepid(req, rt, *user, *sid, *client_secret, *id_server, *id_access_token);
@@ -12664,7 +13025,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             if (result.ok && result.found)
                             {
                                 protocols_obj.push_back(json_member(
-                                    protocol_name, thirdparty_protocol_json(result.protocol, registration.id)));
+                                    protocol_name,
+                                    thirdparty_protocol_json(result.protocol, registration.id, protocol_name)));
                             }
                         }
                     }
@@ -12710,8 +13072,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
             }
-            return dispatch_resp(req, rt, 200U,
-                                 json_serialize(thirdparty_protocol_json(result.protocol, owner_ptr->id)));
+            return dispatch_resp(
+                req, rt, 200U, json_serialize(thirdparty_protocol_json(result.protocol, owner_ptr->id, protocol_name)));
         }
 
         auto constexpr location_protocol_prefix = std::string_view{"/_matrix/client/v3/thirdparty/location/"};
@@ -14695,6 +15057,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                     "invite body must not mix user_id and id_server/medium/address");
             }
+            if (body->id_access_token.has_value() &&
+                !merovingian::identity::id_access_token_is_valid(*body->id_access_token))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", invalid_id_access_token_message);
+            }
 
             if (has_user_id)
             {
@@ -16035,10 +16402,12 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
 auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool
 {
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
-    auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, std::move(state));
+    auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, state);
     if (stored)
     {
         std::ignore = ensure_sync_notifier(runtime);
+        // Appservices that receive ephemeral data are told (R08).
+        queue_appservice_presence(runtime.homeserver, state);
     }
     return stored;
 }

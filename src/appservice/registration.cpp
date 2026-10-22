@@ -219,23 +219,30 @@ auto appservice_owns_user(AppserviceRegistration const& registration, std::strin
 }
 
 auto registration_interested_in_room_event(AppserviceRegistration const& registration, std::string_view server_name,
-                                           std::string_view room_id, std::string_view room_alias,
-                                           std::string_view sender,
-                                           std::vector<std::string> const& room_members) noexcept -> bool
+                                           EventInterestFacts const& facts) noexcept -> bool
 {
-    if (any_namespace_matches(registration.namespaces.rooms, room_id))
+    if (any_namespace_matches(registration.namespaces.rooms, facts.room_id))
     {
         return true;
     }
-    if (!room_alias.empty() && any_namespace_matches(registration.namespaces.aliases, room_alias))
+    if (std::ranges::any_of(facts.room_aliases, [&registration](std::string const& alias) {
+            return !alias.empty() && any_namespace_matches(registration.namespaces.aliases, alias);
+        }))
     {
         return true;
     }
-    if (appservice_owns_user(registration, server_name, sender))
+    // appservice_owns_user is false for a user on another server, so a remote user matching a
+    // users namespace never makes the appservice interested on its own.
+    if (appservice_owns_user(registration, server_name, facts.sender))
     {
         return true;
     }
-    return std::ranges::any_of(room_members, [&registration, server_name](std::string const& member) {
+    if (!facts.member_event_target.empty() &&
+        appservice_owns_user(registration, server_name, facts.member_event_target))
+    {
+        return true;
+    }
+    return std::ranges::any_of(facts.room_members, [&registration, server_name](std::string const& member) {
         return appservice_owns_user(registration, server_name, member);
     });
 }
@@ -458,7 +465,8 @@ auto AppserviceRegistry::find_by_id(std::string_view id) const noexcept -> Appse
     return it == m_registrations.end() ? nullptr : &(*it);
 }
 
-auto AppserviceRegistry::is_sender_user_id(std::string_view user_id, std::string_view server_name) const noexcept -> bool
+auto AppserviceRegistry::is_sender_user_id(std::string_view user_id, std::string_view server_name) const noexcept
+    -> bool
 {
     return std::ranges::any_of(m_registrations, [user_id, server_name](AppserviceRegistration const& reg) {
         return sender_user_id(reg, server_name) == user_id;
@@ -466,7 +474,7 @@ auto AppserviceRegistry::is_sender_user_id(std::string_view user_id, std::string
 }
 
 auto AppserviceRegistry::user_namespace_exclusively_owned_by_other(std::string_view user_id,
-                                                                 std::string_view excluded_id) const noexcept -> bool
+                                                                   std::string_view excluded_id) const noexcept -> bool
 {
     return std::ranges::any_of(m_registrations, [user_id, excluded_id](AppserviceRegistration const& reg) {
         return reg.id != excluded_id && any_exclusive_namespace_matches(reg.namespaces.users, user_id);
@@ -525,9 +533,9 @@ namespace
     // boot-time check can do, and a false "conflict" that refuses to start a
     // correct deployment would be worse than the gap. This catches the
     // realistic operator error: two bridges shipping the same pattern.
-    auto report_exclusive_namespace_conflicts(std::vector<Namespace> const& first,
-                                              std::vector<Namespace> const& second, std::string_view kind,
-                                              std::string_view first_id, std::string_view second_id,
+    auto report_exclusive_namespace_conflicts(std::vector<Namespace> const& first, std::vector<Namespace> const& second,
+                                              std::string_view kind, std::string_view first_id,
+                                              std::string_view second_id,
                                               std::vector<AppserviceRegistrationFinding>& findings) -> void
     {
         for (auto const& left : first)
@@ -556,8 +564,8 @@ namespace
     // namespace. A registration's own sender legitimately sits inside its own
     // exclusive namespace, so self-comparison is never performed by the caller.
     auto report_sender_encroachment(AppserviceRegistration const& owner, AppserviceRegistration const& intruder,
-                                    std::string_view server_name,
-                                    std::vector<AppserviceRegistrationFinding>& findings) -> void
+                                    std::string_view server_name, std::vector<AppserviceRegistrationFinding>& findings)
+        -> void
     {
         auto const intruder_sender = sender_user_id(intruder, server_name);
         if (!any_exclusive_namespace_matches(owner.namespaces.users, intruder_sender))
@@ -565,14 +573,14 @@ namespace
             return;
         }
         findings.push_back({intruder.id, "sender_localpart user '" + intruder_sender +
-                                             "' falls inside the exclusive users namespace of appservice '" +
-                                             owner.id + "'"});
+                                             "' falls inside the exclusive users namespace of appservice '" + owner.id +
+                                             "'"});
     }
 
 } // namespace
 
-auto validate_registrations(std::vector<AppserviceRegistration> const& registrations,
-                            std::string_view server_name) -> std::vector<AppserviceRegistrationFinding>
+auto validate_registrations(std::vector<AppserviceRegistration> const& registrations, std::string_view server_name)
+    -> std::vector<AppserviceRegistrationFinding>
 {
     auto findings = std::vector<AppserviceRegistrationFinding>{};
 
@@ -624,8 +632,7 @@ auto validate_registrations(std::vector<AppserviceRegistration> const& registrat
     return findings;
 }
 
-auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name)
-    -> LoadRegistrationsResult
+auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name) -> LoadRegistrationsResult
 {
     auto result = LoadRegistrationsResult{};
     auto loaded = std::vector<AppserviceRegistration>{};

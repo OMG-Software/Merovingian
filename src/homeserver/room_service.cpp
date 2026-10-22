@@ -29,6 +29,7 @@
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/appservice_delivery.hpp"
+#include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
@@ -241,6 +242,21 @@ namespace
         // it) re-derive it from store.state.
         std::string room_version{};
     };
+
+    // Queues a stored event for every appservice interested in it (R07, R01). The target of a
+    // membership event is its state_key, which is how an appservice is told about an invite to one
+    // of its virtual users who is not yet in the room. Every path that stores a client-visible event
+    // calls this once the event is stored: send_event, each membership transition, the third-party
+    // invite on join, the events createRoom makes, and federation PDUs.
+    auto queue_event_for_appservices(HomeserverRuntime& runtime, LocalRoom const& room, ComposedEvent const& composed,
+                                     std::string_view sender) -> void
+    {
+        auto const member_event_target = composed.event_type == "m.room.member" && composed.state_key.has_value()
+                                             ? std::string_view{*composed.state_key}
+                                             : std::string_view{};
+        enqueue_appservice_delivery(runtime, room, composed.event_id, composed.stream_ordering, sender,
+                                    member_event_target);
+    }
 
     // Why compose_signed_event produced no event. too_large means the event would
     // break the spec's size limits (CSAZ-9) and is the client's to fix, so callers
@@ -1927,11 +1943,75 @@ namespace
         });
     }
 
+    // The events one createRoom stored, queued for appservices when it ends, however it ends (the
+    // create, membership, power level and join rule events a client sees in /sync are events like
+    // any other and an interested appservice is owed them). They are queued at the end rather than
+    // one by one because the room's alias, which an appservice's `aliases` namespace is matched
+    // against, is recorded part way through; and on every exit because a createRoom that fails after
+    // storing some events still leaves the room and those events behind.
+    class CreatedEventQueue final
+    {
+    public:
+        CreatedEventQueue(HomeserverRuntime& runtime, std::string_view room_id, std::string_view sender)
+            : m_runtime{runtime}
+            , m_room_id{room_id}
+            , m_sender{sender}
+        {
+        }
+
+        CreatedEventQueue(CreatedEventQueue const&) = delete;
+        auto operator=(CreatedEventQueue const&) -> CreatedEventQueue& = delete;
+        CreatedEventQueue(CreatedEventQueue&&) = delete;
+        auto operator=(CreatedEventQueue&&) -> CreatedEventQueue& = delete;
+
+        ~CreatedEventQueue()
+        {
+            try
+            {
+                // Recursive: createRoom holds runtime.mutex, and enqueue takes it itself.
+                auto const* const room = find_room(m_runtime.database, m_room_id);
+                if (room == nullptr)
+                {
+                    return;
+                }
+                for (auto const& event : m_events)
+                {
+                    enqueue_appservice_delivery(m_runtime, *room, event.event_id, event.stream_ordering, m_sender,
+                                                event.member_event_target);
+                }
+            }
+            catch (...)
+            {
+                LOG_WARNING("createRoom could not queue its events for appservices; room_id=" + m_room_id);
+            }
+        }
+
+        auto add(ComposedEvent const& composed) -> void
+        {
+            m_events.push_back(
+                {composed.event_id, composed.stream_ordering,
+                 composed.event_type == "m.room.member" ? composed.state_key.value_or(std::string{}) : std::string{}});
+        }
+
+    private:
+        struct Stored final
+        {
+            std::string event_id{};
+            std::uint64_t stream_ordering{0U};
+            std::string member_event_target{};
+        };
+
+        HomeserverRuntime& m_runtime;
+        std::string m_room_id{};
+        std::string m_sender{};
+        std::vector<Stored> m_events{};
+    };
+
     // Returns none once the event is stored. rejected also covers a persistence
     // failure; create_room only needs to tell too_large (400) from the rest (500).
     [[nodiscard]] auto emit_initial_state_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                                std::string_view sender, std::string const& event_json)
-        -> ComposeFailure
+                                                std::string_view sender, std::string const& event_json,
+                                                CreatedEventQueue& created) -> ComposeFailure
     {
         auto const composition = compose_signed_event(runtime, room_id, sender, event_json);
         if (!composition.event.has_value())
@@ -1939,8 +2019,12 @@ namespace
             // compose_signed_event already emitted a diagnostic.
             return composition.failure;
         }
-        return persist_composed_event(runtime, room_id, sender, *composition.event) ? ComposeFailure::none
-                                                                                    : ComposeFailure::rejected;
+        if (!persist_composed_event(runtime, room_id, sender, *composition.event))
+        {
+            return ComposeFailure::rejected;
+        }
+        created.add(*composition.event);
+        return ComposeFailure::none;
     }
 
     // Upserts m.direct global account data for `user_id` to record that
@@ -3099,6 +3183,9 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return server_failure("room persistence failed");
     }
     runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}, options.directory_public});
+    // Declared before any event is emitted so that its destructor, which runs on every way out of
+    // this function, queues what was stored for interested appservices.
+    auto created_events = CreatedEventQueue{runtime, room_id, *user_id};
 
     // Set when an initial state event is refused for the spec's size limits, so
     // the request answers 400 M_TOO_LARGE rather than a 500 (CSAZ-9).
@@ -3114,7 +3201,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         {
             return false;
         }
-        auto const failure = emit_initial_state_event(runtime, room_id, *user_id, *serialized);
+        auto const failure = emit_initial_state_event(runtime, room_id, *user_id, *serialized, created_events);
         initial_state_too_large = initial_state_too_large || failure == ComposeFailure::too_large;
         return failure == ComposeFailure::none;
     };
@@ -3223,9 +3310,18 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
 
     // In room v12 the create event was composed up-front to derive the room ID, so
     // persist that exact event; earlier versions compose and persist it here.
-    auto const create_persisted = create_defines_room_id
-                                      ? persist_composed_event(runtime, room_id, *user_id, *precomposed_create)
-                                      : emit_state("m.room.create", std::move(create_content));
+    auto const create_persisted = [&]() -> bool {
+        if (!create_defines_room_id)
+        {
+            return emit_state("m.room.create", std::move(create_content));
+        }
+        if (!persist_composed_event(runtime, room_id, *user_id, *precomposed_create))
+        {
+            return false;
+        }
+        created_events.add(*precomposed_create);
+        return true;
+    }();
     if (!create_persisted || !emit_state("m.room.member", std::move(creator_member), *user_id) ||
         !emit_state("m.room.power_levels", std::move(power_levels)))
     {
@@ -5073,6 +5169,9 @@ namespace
                 return make_operation_result(false, {}, "third-party invite event persistence failed", 500U);
             }
             room->events.push_back(composed_invite->json);
+            // The invite is an m.room.member event for `user_id`, who may be one of an
+            // appservice's virtual users; it was stored here and nowhere else queued it.
+            queue_event_for_appservices(runtime, *room, *composed_invite, inviter_id);
         }
 
         // Audit R04 (ADR-0185): a join into a restricted room this server is
@@ -6649,7 +6748,7 @@ namespace
         {
             dispatch_push_deliveries(runtime, std::move(deliveries));
         }
-        enqueue_appservice_delivery(runtime, room, composed.event_id, composed.stream_ordering, sender);
+        queue_event_for_appservices(runtime, room, composed, sender);
     }
 
 } // namespace
@@ -6912,7 +7011,7 @@ namespace
     {
         dispatch_push_deliveries(runtime, std::move(deliveries));
     }
-    enqueue_appservice_delivery(runtime, *room, composed->event_id, composed->stream_ordering, *user_id);
+    queue_event_for_appservices(runtime, *room, *composed, *user_id);
     return make_operation_result(true, composed->event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -7039,7 +7138,12 @@ namespace
     });
     auto presence = current != mutable_store.presence_states.end() ? *current : database::PersistentPresence{};
     presence.user_id = *user_id;
-    auto const presence_sent = database::upsert_presence(mutable_store, std::move(presence));
+    auto const presence_sent = database::upsert_presence(mutable_store, presence);
+    if (presence_sent)
+    {
+        // Appservices that receive ephemeral data are sent the new profile the same way (R08).
+        queue_appservice_presence(runtime, presence);
+    }
     if (presence_sent && runtime.sync_notifier != nullptr)
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, mutable_store.next_sync_stream_id);
@@ -7108,7 +7212,7 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     {
         dispatch_push_deliveries(runtime, std::move(deliveries));
     }
-    enqueue_appservice_delivery(runtime, *room, composed.event_id, composed.stream_ordering, envelope.sender);
+    queue_event_for_appservices(runtime, *room, composed, envelope.sender);
 }
 
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,
