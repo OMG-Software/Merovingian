@@ -425,6 +425,40 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
             }
         }
     }
+
+    // The table's named-download rows vary mediaId and fileName; these vary only the server, so a
+    // normalizer that stopped coalescing {server} would mint a bucket per remote server. A template
+    // can appear once in the table (its bucket is shared across rows), hence a fresh runtime here.
+    GIVEN("a one-request cap on each named download template, and paths that differ only in the server")
+    {
+        auto const server_cases = std::vector<RouteCase>{
+            {"/_matrix/client/v1/media/download/{server}/{mediaId}/{fileName}",
+             "/_matrix/client/v1/media/download/example.org/one/a.png", "/_matrix/client/v1/media/download/other.example/one/a.png"},
+            {"/_matrix/media/v3/download/{server}/{mediaId}/{fileName}",
+             "/_matrix/media/v3/download/example.org/one/a.png",        "/_matrix/media/v3/download/other.example/one/a.png"       },
+        };
+        auto policies = RatePolicies{};
+        for (auto const& route : server_cases)
+        {
+            policies.emplace(route.route_template, merovingian::http::RateLimitPolicy{1U, 60U});
+        }
+        auto started = start_with_limits(std::move(policies));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("each named download route is called once per server")
+        {
+            THEN("both servers share the template's bucket: the first call is admitted and the second refused")
+            {
+                for (auto const& route : server_cases)
+                {
+                    INFO(route.route_template);
+                    CHECK(request(runtime, route.first_path) != 429U);
+                    CHECK(request(runtime, route.second_path) == 429U);
+                }
+            }
+        }
+    }
 }
 
 SCENARIO("HTTP-3 applies a built-in prefix cap to a path that normalizes to the shared fallback",
