@@ -391,13 +391,6 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
          "/_matrix/client/v1/appservice/two/ping"                                                                                                                                                                                              },
         {"/_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}",
          "/_matrix/client/v3/directory/list/appservice/irc/%21a%3Aexample.org",                                                              "/_matrix/client/v3/directory/list/appservice/gitter/%21b%3Aexample.org"                          },
-        // R19 (ADR-0204): the push rule mutation routes share the read routes' templates.
-        {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}",                     "/_matrix/client/v3/pushrules/global/content/one",
-         "/_matrix/client/v3/pushrules/global/room/%21two%3Aexample.org"                                                                                                                                                                       },
-        {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}/actions",
-         "/_matrix/client/v3/pushrules/global/override/.m.rule.master/actions",                                                              "/_matrix/client/v3/pushrules/global/content/two/actions"                                         },
-        {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}/enabled",
-         "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled",                                                              "/_matrix/client/v3/pushrules/global/sender/%40two%3Aexample.org/enabled"                         },
     };
 
     GIVEN("a one-request operator cap keyed on each route template")
@@ -486,6 +479,89 @@ SCENARIO("HTTP-3 bucket eviction keeps recently used buckets and removes the lea
                 CHECK_FALSE(engine.check("ip-a", "/unknown", {}).allowed);
                 CHECK(engine.check("ip-b", "/unknown", {}).allowed);
                 CHECK(engine.ip_bucket_count() == 3U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19, "Push Rules: API"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#push-rules-api
+//
+// Every push-rule endpoint is documented "Rate-limited: No" except
+// PUT /pushrules/global/{kind}/{ruleId} ("Rate-limited: Yes"). The exempt routes never answer
+// 429, however exhausted their bucket; the limited one shares one bucket across rule IDs.
+SCENARIO("HTTP-3 rate-limits only the push-rule route the spec marks rate-limited",
+         "[security][http][http-3][rate-limit][r19]")
+{
+    GIVEN("a one-request cap on every push-rule route and a registered user")
+    {
+        auto started = start_with_limits({
+            {"/_matrix/client/v3/pushrules/",                               {1U, 60U}},
+            {"/_matrix/client/v3/pushrules/global/",                        {1U, 60U}},
+            {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}",         {1U, 60U}},
+            {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}/actions", {1U, 60U}},
+            {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}/enabled", {1U, 60U}},
+        });
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("http3-pushrules", "CorrectHorse7!")});
+        REQUIRE(registration.response.status == 200U);
+        auto const token = access_token(registration.response.body);
+        auto const send = [&runtime, &token](std::string method, std::string target, std::string body = {}) {
+            auto req =
+                merovingian::homeserver::LocalHttpRequest{std::move(method), std::move(target), token, std::move(body)};
+            req.remote_addr = "192.0.2.44";
+            return merovingian::homeserver::handle_client_server_request(runtime, req).response.status;
+        };
+
+        WHEN("each exempt route is called three times")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            for (auto round = 0; round < 3; ++round)
+            {
+                statuses.push_back(send("GET", "/_matrix/client/v3/pushrules/"));
+                statuses.push_back(send("GET", "/_matrix/client/v3/pushrules/global/"));
+                statuses.push_back(send("GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master"));
+                statuses.push_back(send("GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/actions"));
+                statuses.push_back(send("GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled"));
+                statuses.push_back(send("PUT", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled",
+                                        R"({"enabled":false})"));
+                statuses.push_back(send("PUT", "/_matrix/client/v3/pushrules/global/underride/.m.rule.message/actions",
+                                        R"({"actions":["notify"]})"));
+                statuses.push_back(send("DELETE", "/_matrix/client/v3/pushrules/global/content/absent"));
+            }
+
+            THEN("none of them is refused with 429")
+            {
+                // Spec: "Rate-limited: No" for each of these endpoints.
+                for (auto const status : statuses)
+                {
+                    CHECK(status != 429U);
+                }
+            }
+        }
+
+        WHEN("rules are put under three different IDs, one of them named \"enabled\"")
+        {
+            auto const first =
+                send("PUT", "/_matrix/client/v3/pushrules/global/content/one", R"({"pattern":"a","actions":[]})");
+            auto const second =
+                send("PUT", "/_matrix/client/v3/pushrules/global/room/%21two%3Aexample.org", R"({"actions":[]})");
+
+            // A rule named like an attribute is still a rule PUT, not an exempt attribute PUT.
+            auto const named_enabled =
+                send("PUT", "/_matrix/client/v3/pushrules/global/content/enabled", R"({"pattern":"b","actions":[]})");
+
+            THEN("the later two share the first's exhausted bucket")
+            {
+                // Spec: PUT /pushrules/global/{kind}/{ruleId} is "Rate-limited: Yes".
+                CHECK(first == 200U);
+                CHECK(second == 429U);
+                CHECK(named_enabled == 429U);
             }
         }
     }

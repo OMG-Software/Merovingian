@@ -3496,6 +3496,24 @@ namespace
         {
             return http::RateLimitDecision{.allowed = true};
         }
+        // Push Rules API: every endpoint is documented "Rate-limited: No" except
+        // PUT /pushrules/global/{kind}/{ruleId} ("Rate-limited: Yes"), which keeps its bucket. The
+        // writes the exemption covers (`/enabled`, `/actions`, DELETE) change one bounded rule
+        // (ADR-0204). An attribute PUT names kind, rule and attribute, so a rule that is itself named
+        // "enabled" or "actions" is still a rule PUT.
+        if (starts_with(request_path_only, "/_matrix/client/v3/pushrules/"))
+        {
+            auto constexpr global_prefix = std::string_view{"/_matrix/client/v3/pushrules/global/"};
+            auto const tail = starts_with(request_path_only, global_prefix)
+                                  ? request_path_only.substr(global_prefix.size())
+                                  : std::string_view{};
+            auto const attribute_put = req.method == "PUT" && std::ranges::count(tail, '/') >= 2 &&
+                                       (tail.ends_with("/enabled") || tail.ends_with("/actions"));
+            if (req.method == "GET" || req.method == "DELETE" || attribute_put)
+            {
+                return http::RateLimitDecision{.allowed = true};
+            }
+        }
         // Application Service API: the ping and the room directory of a network are documented
         // "Rate-limited: No". That holds only for a request the dispatcher has already verified as an
         // appservice's (it swapped the as_token for the masquerade token); anyone else calling the same

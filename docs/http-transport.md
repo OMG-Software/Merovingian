@@ -677,6 +677,11 @@ Two independent wall-clock token-bucket tiers are maintained:
 - **Per-user**, keyed by `(authenticated_user_id, normalized_route)` for
   requests that present a valid access token.
 
+Client-server endpoints the spec documents as "Rate-limited: No" bypass both tiers in
+`allow()` (`client_server.cpp`): the `GET /thirdparty/*` lookups, an appservice's own ping
+and network-directory calls, and every push-rule endpoint except
+`PUT /pushrules/global/{kind}/{ruleId}`, which is "Rate-limited: Yes" and keeps its bucket.
+
 Both bucket tables hash their keys with `http::BucketKeyHash` — keyed BLAKE2b
 through `crypto::generic_hash_bytes`, under a per-process random key — not
 `std::hash<std::string>`. Bucket keys are attacker-influenceable, and the

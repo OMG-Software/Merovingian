@@ -54,6 +54,10 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   examines at most 4000 unread events (ADR-0207). `/sync` unread counts stay exact. Rejected and
   soft-failed events no longer count as unread, and a rejected leave no longer ends a user's join
   for counting.
+- **FIXED (PR #523 review, spec rate limits):** the push-rule endpoints the spec documents as
+  "Rate-limited: No" (all `GET`, `DELETE`, and `PUT .../enabled` and `.../actions`) could be answered
+  429; they now bypass the rate limiter. `PUT /pushrules/global/{kind}/{ruleId}` ("Rate-limited:
+  Yes") keeps its bucket, including for a rule named `enabled` or `actions`.
 
 ## 0.12.39
 
