@@ -492,8 +492,7 @@ value. Test fixtures that do not exercise persistence select it through
   *remote* user is removed, never a local user's. Main only: the table is not in
   `federation_worker_table_allowlist`.
 - Schema version `26` (`migrations/026_media_upload_names_and_pending_uploads.sql`) changes the
-  media tables. (The conformance waves reserved slot `029` for it; it is numbered after whatever
-  lands first, because the migration runner refuses a gap in the chain.)
+  media tables.
   - `media.upload_name` (`TEXT NOT NULL DEFAULT ''`, ADR-0211) is the upload's `filename`
     (or the remote server's `Content-Disposition` filename), served back in
     `Content-Disposition`.

@@ -46,9 +46,10 @@ Chosen option: "validate, refuse or leave out, encode".
   `\`) when it is printable ASCII. Otherwise it writes `filename*=utf-8''<percent-encoded>`,
   keeping RFC 5987 `attr-char` and encoding every other byte. The header value is therefore
   always printable ASCII.
-* Inside the process the stored name crosses from the local router to the client API
-  percent-encoded, in an internal header the client API never copies to the wire. No other code
-  writes a file name into `Content-Disposition`.
+* Inside the process the stored name crosses from the local router to the client API in
+  `LocalHttpResponse::media_filename`, a field like `errcode`, never a header, so no caller that
+  writes a local-router response to the wire can leak it. No other code writes a file name into
+  `Content-Disposition`.
 
 ### Positive Consequences
 

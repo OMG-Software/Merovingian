@@ -36,6 +36,13 @@ Media part of the conformance audit (2026-10-17): R17 and the wave-6 media endpo
   image). HTML is scanned by a bounded `og:*`/`<title>` extractor outside the runtime lock; the
   image is stored through the upload pipeline; every failure is the same `502`. Previews run on the
   media fetch pool, are rate limited per user, and are cached by URL (ADR-0213, ADR-0214).
+- **Review fixes (PR #524):** a download waiting for a pending upload is admitted first: at most
+  `media_fetch_threads - 1` waits at once (half for one requester), and on a request thread an
+  ADR-0079 client-outbound slot too; otherwise `504 M_NOT_YET_UPLOADED` at once, so waits cannot
+  fill the media fetch pool or hold main-pool workers. An upload the server fails to store answers
+  `500 M_UNKNOWN`, not `M_BAD_REQUEST`. The stored filename crosses from the local router to the
+  client API in a response field, not an internal header. `UrlPreviewCache` cannot be copied
+  (its index holds iterators into its own list). URL previews use the shared UTF-8 validator.
 - **Migration** `026_media_upload_names_and_pending_uploads.sql` (schema v26): `media.upload_name`
   and the `media_pending_uploads` table. It follows wave 3's `025_appservice_directory.sql`.
 
