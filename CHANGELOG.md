@@ -27,6 +27,15 @@ Conformance audit (2026-10-17) wave 4: the Client-Server API findings R10, R11, 
   the user has been in, including rooms left, kicked or banned from after a join, each event still
   judged by history visibility, so nothing sent after the user left is returned. `include_state`
   gives a left room's state as of the leave. Forgotten rooms, invites and knocks are not searched.
+- **FIXED (data race, found in review):** the federated `m.typing` EDU sink, which the dispatcher
+  runs without `runtime.mutex`, read and wrote typing state unlocked, racing the client typing
+  route, `/sync` and the new typing-expiry job. It now takes the lock itself.
+- **R12 follow-up:** a `username` (or legacy `user`) that is present but not a string is now
+  `400 M_BAD_JSON`, not treated as omitted, so it no longer creates an account with a generated ID.
+- **R13 follow-up:** setting a user typing wakes the typing-expiry job, so a deadline shorter than
+  the job's current sleep (up to 5 s) is no longer missed.
+- **R20 (open):** `POST /register` runs User-Interactive Authentication before the username checks
+  the spec says must come first; recorded in the audit report, not yet scheduled.
 - **Tests:** new `tests/conformance/test_account_data_conformance.cpp` and
   `tests/conformance/test_typing_conformance.cpp`; new scenarios for `/register` without
   `username`, `/search` of a left and a forgotten room, the room account-data caps, the room
