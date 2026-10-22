@@ -7824,10 +7824,14 @@ SCENARIO("GET /v1/media/preview_url validates its parameters when URL previews a
 
             THEN("each is refused with 400")
             {
+                // Spec MUST: `url` is "Required"; M_MISSING_PARAM is "A required parameter was missing".
                 REQUIRE(missing.response.status == 400U);
                 REQUIRE(*string_member(parse_object(missing.response.body), "errcode") == "M_MISSING_PARAM");
+                // Spec MUST: M_INVALID_PARAM is "A parameter that was specified has the wrong value";
+                // Project policy: only http and https URLs are previewed (ADR-0213).
                 REQUIRE(scheme.response.status == 400U);
                 REQUIRE(*string_member(parse_object(scheme.response.body), "errcode") == "M_INVALID_PARAM");
+                // Spec MUST: `ts` is an integer, so a string is "the wrong value" (M_INVALID_PARAM).
                 REQUIRE(ts.response.status == 400U);
                 REQUIRE(*string_member(parse_object(ts.response.body), "errcode") == "M_INVALID_PARAM");
             }
@@ -7840,6 +7844,7 @@ SCENARIO("GET /v1/media/preview_url validates its parameters when URL previews a
 
             THEN("it is refused as unauthenticated")
             {
+                // Spec MUST: "Requires authentication: Yes"; missing credentials return 401.
                 REQUIRE(response.response.status == 401U);
             }
         }

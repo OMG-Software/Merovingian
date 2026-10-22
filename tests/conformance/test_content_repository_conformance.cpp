@@ -169,6 +169,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId}/{fileName} serves existi
     GIVEN("a user who uploaded a PNG")
     {
         auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
         REQUIRE(started.started);
         auto const token = login(started.runtime, "alice");
         auto const media_id = upload(started.runtime, token, "/_matrix/media/v3/upload");
@@ -277,6 +278,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} names pre-fre
     GIVEN("a user who uploaded a PNG after the freeze")
     {
         auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
         REQUIRE(started.started);
         auto const token = login(started.runtime, "bob");
         auto const media_id = upload(started.runtime, token, "/_matrix/media/v3/upload");
@@ -300,6 +302,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} names pre-fre
             auto const record = std::ranges::find_if(records, [&media_id](auto const& current) {
                 return current.media_id == media_id;
             });
+            // Fixture: the upload's record exists, so it can be marked as predating the freeze.
             REQUIRE(record != records.end());
             record->legacy_endpoint_visible = true;
 
@@ -332,6 +335,7 @@ SCENARIO("Downloads give back the filename the upload was made with", "[conforma
     GIVEN("one upload made with ?filename= and one made without")
     {
         auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
         REQUIRE(started.started);
         auto const token = login(started.runtime, "alice");
         auto const named = upload(started.runtime, token, "/_matrix/media/v3/upload?filename=cat%20photo.png");
@@ -365,6 +369,8 @@ SCENARIO("Downloads give back the filename the upload was made with", "[conforma
 
             THEN("the caller's file name replaces the upload's")
             {
+                // Spec MUST: the {fileName} route serves the content and its Content-Disposition "MUST contain
+                // the file name requested in the path", not the upload's filename.
                 REQUIRE(renamed.response.status == 200U);
                 REQUIRE(header_value(renamed.response, "Content-Disposition") ==
                         std::optional<std::string>{R"(inline; filename="renamed.png")"});
@@ -375,6 +381,7 @@ SCENARIO("Downloads give back the filename the upload was made with", "[conforma
     GIVEN("an upload whose filename carries a control character")
     {
         auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
         REQUIRE(started.started);
         auto const token = login(started.runtime, "alice");
 
@@ -389,6 +396,8 @@ SCENARIO("Downloads give back the filename the upload was made with", "[conforma
 
             THEN("it is refused, so no header can be injected through it")
             {
+                // Project policy: an unsafe filename is refused, so the stored name is the one sent (ADR-0211);
+                // M_INVALID_PARAM is "A parameter that was specified has the wrong value".
                 REQUIRE(response.response.status == 400U);
                 REQUIRE(errcode_of(response) == "M_INVALID_PARAM");
             }
@@ -412,6 +421,7 @@ SCENARIO("POST /media/v1/create reserves an mxc:// URI that expires",
     GIVEN("a logged-in user")
     {
         auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
         REQUIRE(started.started);
         auto const token = login(started.runtime, "alice");
 
@@ -426,9 +436,12 @@ SCENARIO("POST /media/v1/create reserves an mxc:// URI that expires",
             {
                 // Spec MUST: content_uri is required.
                 auto const media_id = created_media_id(response);
+                // Spec MUST: content_uri is "Required".
                 REQUIRE_FALSE(media_id.empty());
                 auto const body = parse_object(response.response.body);
                 auto const* expires = int_member(body, "unused_expires_at");
+                // Spec MUST: unused_expires_at, the time "the generated media id will expire, if media is not
+                // uploaded".
                 REQUIRE(expires != nullptr);
                 // Spec SHOULD: the recommended default expiration is 24 hours.
                 auto const day_ms = std::int64_t{24} * 60 * 60 * 1000;
@@ -446,6 +459,8 @@ SCENARIO("POST /media/v1/create reserves an mxc:// URI that expires",
 
             THEN("the one past the limit is refused with 429 M_LIMIT_EXCEEDED")
             {
+                // Spec SHOULD: the server "should limit the number of concurrent pending media uploads"; below the
+                // limit, create succeeds.
                 REQUIRE(first.response.status == 200U);
                 REQUIRE(second.response.status == 200U);
                 // Spec SHOULD: 429 M_LIMIT_EXCEEDED for too many pending uploads.
@@ -455,11 +470,14 @@ SCENARIO("POST /media/v1/create reserves an mxc:// URI that expires",
 
             AND_WHEN("one of the pending uploads is completed")
             {
+                // Spec MUST: PUT /upload/{serverName}/{mediaId} answers 200 "The upload was successful".
                 REQUIRE(put_upload(started.runtime, token, created_media_id(first)).response.status == 200U);
                 auto const after = create(started.runtime, token);
 
                 THEN("a completed upload is no longer pending, so another URI can be created")
                 {
+                    // Spec SHOULD: a pending upload is a URI "where (a) the media has not yet been uploaded", so a
+                    // completed one no longer counts.
                     REQUIRE(after.response.status == 200U);
                 }
             }
@@ -471,6 +489,7 @@ SCENARIO("POST /media/v1/create reserves an mxc:// URI that expires",
 
             THEN("the request is refused as unauthenticated")
             {
+                // Spec MUST: "Requires authentication: Yes"; missing credentials return 401.
                 REQUIRE(response.response.status == 401U);
             }
         }
@@ -494,6 +513,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
     GIVEN("alice has reserved an mxc:// URI and bob is another user")
     {
         auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
         REQUIRE(started.started);
         auto const alice = login(started.runtime, "alice");
         auto const bob = login(started.runtime, "bob");
@@ -509,6 +529,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body == "{}");
                 auto const downloaded = download(started.runtime, alice, media_id);
+                // Spec MUST: the uploaded content is served at the reserved URI.
                 REQUIRE(downloaded.response.status == 200U);
                 REQUIRE(downloaded.response.body == png_bytes);
             }
@@ -519,6 +540,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
 
                 THEN("the server refuses to overwrite it with 409 M_CANNOT_OVERWRITE_MEDIA")
                 {
+                    // Spec MUST: 409 M_CANNOT_OVERWRITE_MEDIA, "a media ID that already has content".
                     REQUIRE(again.response.status == 409U);
                     REQUIRE(errcode_of(again) == "M_CANNOT_OVERWRITE_MEDIA");
                 }
@@ -529,12 +551,15 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
         {
             auto const response = put_upload(started.runtime, bob, media_id);
 
-            THEN("it is refused with 403 M_FORBIDDEN and nothing is stored")
+            THEN("it is refused with 403 M_FORBIDDEN, and alice can still upload to it")
             {
+                // Spec MUST: 403 M_FORBIDDEN when "The request comes from a different user than the one that
+                // called POST /_matrix/media/v1/create".
                 REQUIRE(response.response.status == 403U);
                 REQUIRE(errcode_of(response) == "M_FORBIDDEN");
-                REQUIRE(merovingian::media::find_local_media_record(started.runtime.homeserver.media_repository,
-                                                                    media_id) == nullptr);
+                // Spec MUST: nothing was stored, or alice's upload would be 409 M_CANNOT_OVERWRITE_MEDIA ("a
+                // media ID that already has content").
+                REQUIRE(put_upload(started.runtime, alice, media_id).response.status == 200U);
             }
         }
 
@@ -544,6 +569,8 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
 
             THEN("it is refused with 404 M_NOT_FOUND")
             {
+                // Spec MUST: 404 M_NOT_FOUND, "The user has provided an invalid MXC ID" (not created with POST
+                // /create).
                 REQUIRE(response.response.status == 404U);
                 REQUIRE(errcode_of(response) == "M_NOT_FOUND");
             }
@@ -560,6 +587,8 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
 
             THEN("it is refused with 404 M_NOT_FOUND")
             {
+                // Spec MUST: 404 M_NOT_FOUND, "The user has provided an invalid MXC ID" (not created with POST
+                // /create).
                 REQUIRE(response.response.status == 404U);
                 REQUIRE(errcode_of(response) == "M_NOT_FOUND");
             }
@@ -583,13 +612,16 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
             started.runtime.homeserver.media_repository.config.max_upload_bytes = 4U;
             auto const response = put_upload(started.runtime, alice, media_id);
 
-            THEN("it is refused with 413 M_TOO_LARGE and the URI stays reserved")
+            THEN("it is refused with 413 M_TOO_LARGE and the URI stays reserved without content")
             {
+                // Spec MUST: 413 M_TOO_LARGE, "The uploaded content is too large for the server".
                 REQUIRE(response.response.status == 413U);
                 REQUIRE(errcode_of(response) == "M_TOO_LARGE");
-                REQUIRE(merovingian::media::find_pending_media_upload(
-                            started.runtime.homeserver.media_repository, media_id,
-                            merovingian::media::remote_media_cache_now_ms()) != nullptr);
+                // Spec MUST: a reserved URI without content downloads as 504 M_NOT_YET_UPLOADED, "The content is
+                // not yet available"; an unknown or expired one would be 404.
+                auto const downloaded = download(started.runtime, alice, media_id + "?timeout_ms=0");
+                REQUIRE(downloaded.response.status == 504U);
+                REQUIRE(errcode_of(downloaded) == "M_NOT_YET_UPLOADED");
             }
         }
 
@@ -601,6 +633,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} fills a reserved URI exact
 
             THEN("it is refused with 403 M_FORBIDDEN")
             {
+                // Spec MUST: 403 M_FORBIDDEN, "The server does not permit the file type".
                 REQUIRE(response.response.status == 403U);
                 REQUIRE(errcode_of(response) == "M_FORBIDDEN");
             }
@@ -624,6 +657,7 @@ SCENARIO("Downloading reserved media before its upload waits up to timeout_ms, t
     GIVEN("alice has reserved an mxc:// URI and not uploaded to it")
     {
         auto started = merovingian::homeserver::start_client_server(content_config());
+        // Fixture: the server starts.
         REQUIRE(started.started);
         auto const alice = login(started.runtime, "alice");
         auto const media_id = created_media_id(create(started.runtime, alice));
@@ -634,6 +668,8 @@ SCENARIO("Downloading reserved media before its upload waits up to timeout_ms, t
 
             THEN("the server answers 504 M_NOT_YET_UPLOADED")
             {
+                // Spec MUST: 504 M_NOT_YET_UPLOADED, "The content is not yet available" (timeout_ms=0 waits for
+                // nothing).
                 REQUIRE(response.response.status == 504U);
                 REQUIRE(errcode_of(response) == "M_NOT_YET_UPLOADED");
             }
@@ -647,6 +683,8 @@ SCENARIO("Downloading reserved media before its upload waits up to timeout_ms, t
 
             THEN("the server waits about that long and then answers 504 M_NOT_YET_UPLOADED")
             {
+                // Spec MUST: 504 M_NOT_YET_UPLOADED, "The content is not yet available". Project policy: the server
+                // waits up to timeout_ms, how long the client "is willing to wait", before answering.
                 REQUIRE(response.response.status == 504U);
                 REQUIRE(errcode_of(response) == "M_NOT_YET_UPLOADED");
                 REQUIRE(waited >= std::chrono::milliseconds{100});
@@ -689,6 +727,7 @@ SCENARIO("Downloading reserved media before its upload waits up to timeout_ms, t
 
             THEN("the waiting download is served the content")
             {
+                // Spec MUST: content uploaded during the wait is served to the waiting download.
                 REQUIRE(uploaded.response.status == 200U);
                 REQUIRE(waiter_status == 200U);
                 REQUIRE(waiter_body == png_bytes);
@@ -702,6 +741,8 @@ SCENARIO("Downloading reserved media before its upload waits up to timeout_ms, t
 
             THEN("it is answered 504 at once, since the federation path has no pool to wait on")
             {
+                // Project policy: the federation route has no pool to wait on and answers 504 at once, which the
+                // spec allows ("The content repository MAY respond before the timeout").
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.status == 504U);
             }
