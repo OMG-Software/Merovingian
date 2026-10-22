@@ -1,3 +1,7 @@
+## 0.12.40
+
+Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-report-2026-10-17.md`.
+
 ## 0.12.39
 
 Indexes the in-memory event store by event ID and by stream order (ADR-0215). Deferred from the
