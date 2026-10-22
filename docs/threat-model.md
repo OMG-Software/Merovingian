@@ -2468,7 +2468,9 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   CGNAT, NAT64, multicast, reserved or in `security.federation.deny_ip_ranges` (IPv4 and IPv6),
   then pinned to the checked addresses; redirects followed by our gate (at most 5), never by the
   HTTP client; one deadline (at most 30 s) and byte caps on page and image; the same `502` for
-  every failure so the endpoint is not an oracle; per-user rate limit and the media fetch pool's
+  every failure to fetch the target, so the endpoint is not an oracle (answers given before any
+  fetch, such as `404` while disabled or `429` from admission, say nothing about the target);
+  per-user rate limit and the media fetch pool's
   admission caps; failures cached. Fetched HTML is only scanned by a bounded, non-recursive
   `og:*`/`<title>` extractor that runs nothing; the image goes through the upload pipeline (MIME
   policy, quarantine, size cap, the requester's quota) (ADR-0213, ADR-0214). **Residual risk:**

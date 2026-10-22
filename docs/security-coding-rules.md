@@ -756,8 +756,11 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (`gated_fetch` in `src/homeserver/url_preview_service.cpp`).** It resolves and checks every
   hop, redirects and images included, pins the connection to the checked addresses, and follows
   redirects itself. Its use of `allow_cleartext_http` is the second, and last, sanctioned one: the
-  request carries no credential and the address pin applies to cleartext too. Every failure
-  answers the same `502`.
+  request carries no credential and the address pin applies to cleartext too. Every failure to
+  fetch the target (refused address, unknown name, timeout, size, redirects, HTTP error) answers
+  the same `502 M_UNKNOWN`. Answers given before any fetch keep their own status and say nothing
+  about the target: `400` for bad parameters, `404` while previews are disabled, `429` from the
+  rate limit or admission caps (the full list is in `docs/media-repository.md`).
   Why: a client-named URL is the classic SSRF vector; checking only the first hop, letting the
   HTTP client follow redirects, or resolving twice (DNS rebinding) each reopens it, and distinct
   errors turn the endpoint into an internal-network oracle (ADR-0213).

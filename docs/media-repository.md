@@ -422,8 +422,24 @@ design is ADR-0213; in short:
   nothing (`media::extract_open_graph`). Other content previews as `{}`.
 - The `og:image` is stored through the upload pipeline as the requesting user's media and
   returned as an `mxc://` URI with `matrix:image:size`; a refused or quarantined image is left out.
-- Any failure answers the same `502 M_UNKNOWN`, so the endpoint does not reveal which internal
-  names resolve or which addresses answer.
+- Every failure to fetch the target answers the same `502 M_UNKNOWN`, so the endpoint does not
+  reveal which internal names resolve or which addresses answer: a refused address, an unknown
+  name, a timeout, a size cap, too many redirects, an HTTP error, a cached failure, or a coalesced
+  wait that ended without a result. Answers that come before any fetch say nothing about the
+  target and keep their own status:
+
+  | Status | When |
+  | --- | --- |
+  | `200` | The preview; `{}` for content that is not HTML |
+  | `400 M_MISSING_PARAM` | No `url` |
+  | `400 M_INVALID_PARAM` | `url` is not an absolute `http`/`https` URL of at most 2048 bytes, or `ts` is not an integer |
+  | `401` | No valid access token |
+  | `404 M_UNRECOGNIZED` | Previews are disabled (`security.media.url_preview_enabled`) |
+  | `429 M_LIMIT_EXCEEDED` | The per-user rate limit, the media fetch pool's admission caps, or, on a server with no media fetch pool, no ADR-0079 client-outbound slot |
+  | `503 M_UNKNOWN` | The server is shutting down and the handoff to the media fetch pool cannot run |
+
+  The deferral to the media fetch pool is internal: the transport replaces it with the pool's
+  answer, so a client never sees it.
 - The work runs on the media fetch pool, never on a main-pool thread, and DNS, every request
   and the HTML parse release the runtime mutex. Results, failures included (for at most 5 minutes), are cached in
   memory by URL (`url_preview_cache_ttl_seconds`, `url_preview_cache_max_entries`), and concurrent
