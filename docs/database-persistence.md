@@ -1015,8 +1015,8 @@ persisted and hydrated.
   `database.runtime_role` for runtime access. Live role scenarios run in the
   `postgres-integration` workflow because they require PostgreSQL and the role
   environment variables. See `packaging/postgresql/provision-roles.sql`.
-- Generic user push-rule mutation and persistence remain unimplemented; the
-  schema's `push_rules` table is unused. The configuration key
+- The schema's v1 `push_rules` table is unused: push rules are kept as `m.push_rules`
+  account data (ADR-0204, see above). The configuration key
   `server.identity_server.allowed_bind_domains` is accepted but currently read
   by no bind or `requestToken` path, so it is not enforced.
 

@@ -2167,9 +2167,10 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   it was sent (rule 2 from their own membership timeline, undeterminable means denied), and
   `shared` or `world_readable` history from that period is not shown to later joiners or
   peekers until state is recorded for it. The unread counts
-  (`notification_count`, `highlight_count`, and the `by_notification_count` room ordering)
-  still count every event after the user's read receipt without the filter, so a newcomer to a
-  `joined` room can learn how many messages preceded their join (never their content). `/notifications` rows are
+  (`notification_count`, `highlight_count`, and the `by_notification_count` room ordering) do not
+  go through the filter, but since 0.12.39 they count only events after the start of the user's
+  current join (ADR-0205), so they no longer reveal how many messages preceded it. What remains is
+  that a user who left and rejoined is not counted the events they could see before leaving. `/notifications` rows are
   returned as recorded: they were created for a user who was joined at delivery, and are not
   re-filtered. `/messages` examines at most `server.client_api.max_messages_events_examined`
   (default 10,000) events per
