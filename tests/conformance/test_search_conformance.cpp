@@ -498,6 +498,59 @@ SCENARIO("search covers a room the caller has left, up to the point they left", 
     }
 }
 
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Server Side Search; Room History Visibility, Server Behaviour
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#room-history-visibility
+//
+// Search returns "Only events that the user is allowed to see". The server behaviour's first
+// rule is "If the history_visibility was set to world_readable, allow", for any user, joined or
+// not: "In all cases except world_readable, a user needs to join a room to view events". A user
+// who left a world_readable room is therefore allowed to see what was sent after, as anyone is,
+// and search must not hide it behind the departure boundary that applies to the other values
+// (ADR-0084: HistoryVisibility is the one rule; PR #522 review).
+SCENARIO("search of a left world_readable room follows the world_readable rule", "[search][conformance][security][r16]")
+{
+    GIVEN("bob joined alice's world_readable room and left it, and alice wrote after he left")
+    {
+        auto started = merovingian::homeserver::start_client_server(search_config());
+        // Fixture: the homeserver must start.
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto const alice = register_and_login(rt, "alice");
+        auto const bob = register_and_login(rt, "bob");
+        auto const room = create_room(rt, alice, "public_chat");
+        // Fixture: alice makes the room's history world_readable before bob joins.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + room + "/state/m.room.history_visibility/", alice,
+                         R"({"history_visibility":"world_readable"})"})
+                    .response.status == 200U);
+        join_room(rt, bob, room);
+        auto const before_leave = send_text_message(rt, alice, room, "txn-wr-before", "the beaconword before bob left");
+        // Fixture: bob must leave the room.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/leave", bob, "{}"})
+                    .response.status == 200U);
+        auto const after_leave = send_text_message(rt, alice, room, "txn-wr-after", "the beaconword after bob left");
+
+        WHEN("bob searches for the term both messages share")
+        {
+            auto const room_events = search(rt, bob, body_for_term("beaconword"));
+
+            THEN("both are returned, as world_readable allows anyone to see them")
+            {
+                auto const* results = object_member_as_array(room_events, "results");
+                // Spec MUST: room_events carries a results array.
+                REQUIRE(results != nullptr);
+                // Spec MUST: search covers rooms the user has left, so the earlier message is found.
+                REQUIRE(results_contain_event(*results, before_leave));
+                // Spec MUST: "If the history_visibility was set to world_readable, allow."
+                REQUIRE(results_contain_event(*results, after_leave));
+            }
+        }
+    }
+}
+
 // Spec: "The search will not include rooms that are end to end encrypted."
 SCENARIO("search excludes events from end-to-end encrypted rooms", "[search][conformance][security]")
 {
