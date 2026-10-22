@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/event_table.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
@@ -312,24 +313,6 @@ struct MembershipProjection final
     std::string membership{};
     std::uint64_t stream_ordering{0U};
     std::optional<PersistentInvite> invite{};
-};
-
-struct PersistentEvent final
-{
-    std::string event_id{};
-    std::string room_id{};
-    std::string sender_user_id{};
-    std::string json{};
-    std::uint64_t depth{0U};
-    std::uint64_t stream_ordering{0U};
-    std::vector<std::string> prev_event_ids{};
-    std::vector<std::string> auth_event_ids{};
-    std::vector<events::EventSignature> signatures{};
-    // ADR-0064 receipt-order status: "accepted" | "soft_failed" | "rejected" |
-    // "outlier". Appended as the last member (default "accepted") so every
-    // pre-existing brace-init call site that does not mention it keeps
-    // compiling. See database::set_event_status/find_event_status.
-    std::string status{"accepted"};
 };
 
 struct PersistentStateEvent final
@@ -1096,7 +1079,8 @@ struct PersistentStore final
     std::vector<PersistentRoom> rooms{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentInvite> invites{};
-    std::vector<PersistentEvent> events{};
+    // The `events` table, indexed by event ID and by stream order (ADR-0215).
+    EventTable events{};
     RedactionState redactions{};
     RedactionObserver redaction_observer{};
     std::vector<PersistentStateEvent> state{};

@@ -405,9 +405,7 @@ auto forward_extremities_for_new_event(database::PersistentStore const& store, s
     with_depth.reserve(extremities.size());
     for (auto& id : extremities)
     {
-        auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
-            return event.event_id == id;
-        });
+        auto const it = store.events.find(id);
         auto const depth = it != store.events.end() ? it->depth : 0U;
         with_depth.emplace_back(depth, std::move(id));
     }

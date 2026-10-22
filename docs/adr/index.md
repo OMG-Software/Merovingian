@@ -181,6 +181,7 @@
 * [0179 - A room's stored version is resolved through one accessor, and a join must match the create event](0179-a-rooms-stored-version-is-resolved-through-one-accessor.md)
 * [0180 - The outbound client refuses header fields that are not valid HTTP](0180-the-outbound-client-refuses-invalid-header-fields.md)
 * [0181 - Third-party lookups take a client outbound proxy slot and keep per-appservice timeouts](0181-third-party-lookups-take-a-client-outbound-proxy-slot.md)
+* [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 
 ## Proposed Records
 

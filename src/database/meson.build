@@ -1,5 +1,6 @@
 database_sources = files(
   'connection.cpp',
+  'event_table.cpp',
   'migration_files.cpp',
   'migration.cpp',
   'persistent_store.cpp',

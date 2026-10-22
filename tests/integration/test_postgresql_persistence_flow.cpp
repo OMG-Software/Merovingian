@@ -1884,3 +1884,80 @@ SCENARIO("DB-6 PostgreSQL admission preserves Unicode state keys escaped NUL con
         }
     }
 }
+
+namespace
+{
+
+// The IDs in `wanted` in the order the store's stream-order index visits them. The shared database
+// holds other scenarios' events too.
+[[nodiscard]] auto stream_order_of(merovingian::database::EventTable const& events,
+                                   std::vector<std::string> const& wanted) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& event : events.in_stream_order())
+    {
+        if (std::ranges::find(wanted, event.event_id) != wanted.end())
+        {
+            ids.push_back(event.event_id);
+        }
+    }
+    return ids;
+}
+
+} // namespace
+
+SCENARIO("PostgreSQL hydration finds events by ID and walks them in stream order after their rows move",
+         "[database][postgresql][integration][event-table]")
+{
+    GIVEN("a PostgreSQL store whose events were committed out of stream order")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@pg-order-user-" + suffix + ":example.org";
+        auto const room_id = "!pg-order-room-" + suffix + ":example.org";
+        // Event IDs sort opposite to stream order, so PostgreSQL's ORDER BY event_id hydrates them
+        // backwards.
+        auto const early = "$pg-order-c-" + suffix + ":example.org";
+        auto const middle = "$pg-order-b-" + suffix + ":example.org";
+        auto const late = "$pg-order-a-" + suffix + ":example.org";
+        auto const ids = std::vector<std::string>{early, middle, late};
+        auto const message = std::string{R"({"type":"m.room.message","content":{"body":"hello"}})"};
+        REQUIRE(merovingian::database::store_room(opened.store, {room_id, user_id}));
+        REQUIRE(
+            merovingian::database::store_event(opened.store, {late, room_id, user_id, message, 3U, 3U, {}, {}, {}}));
+        REQUIRE(
+            merovingian::database::store_event(opened.store, {early, room_id, user_id, message, 1U, 1U, {}, {}, {}}));
+        REQUIRE(
+            merovingian::database::store_event(opened.store, {middle, room_id, user_id, message, 2U, 2U, {}, {}, {}}));
+
+        WHEN("one event's status is updated and another is redacted, which rewrites their rows, and the "
+             "store is reopened")
+        {
+            REQUIRE(merovingian::database::set_event_status(opened.store, early, "soft_failed"));
+            REQUIRE(merovingian::database::replace_event_json(opened.store, middle,
+                                                              R"({"type":"m.room.message","content":{}})"));
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(reopened.ok);
+            auto const& events = reopened.store.events;
+
+            THEN("each event is found by ID with its update, and the stream-order walk is ascending")
+            {
+                REQUIRE(events.find(early) != events.end());
+                REQUIRE(events.find(early)->status == "soft_failed");
+                REQUIRE(merovingian::database::find_event_status(reopened.store, early) == "soft_failed");
+                REQUIRE(events.find(middle)->json == R"({"type":"m.room.message","content":{}})");
+                REQUIRE(events.find_in_room(room_id, late) != events.end());
+                REQUIRE(stream_order_of(events, ids) == ids);
+            }
+        }
+    }
+}

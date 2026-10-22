@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.34
+Version:        0.12.41
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.41-1
+- Index the in-memory event store by event ID and by stream order.
+
 * Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.34-1
 - Fix the low-severity findings of security audit run-1 (federation fan-out, remote media owner, room versions, outbound headers, thirdparty lookups).
 

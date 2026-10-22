@@ -158,10 +158,7 @@ auto event_thread_id(database::PersistentStore const& store, canonicaljson::Obje
         {
             return std::string{main_thread_id};
         }
-        auto const stored =
-            std::ranges::find_if(store.events, [related_id](database::PersistentEvent const& candidate) {
-                return candidate.event_id == *related_id;
-            });
+        auto const stored = store.events.find(*related_id);
         if (stored == store.events.end())
         {
             return std::string{main_thread_id};

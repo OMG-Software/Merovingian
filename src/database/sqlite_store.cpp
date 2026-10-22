@@ -712,7 +712,11 @@ namespace
         return step == SQLITE_DONE;
     }
 
-    auto load_persistent_rows(sqlite3& connection, PersistentStore& store) -> bool
+    // Events go to `hydrated_events` rather than `store.events`, for the caller to index in one pass
+    // (ADR-0215): the SELECT has no ORDER BY, so adding them one at a time could shift the
+    // stream-order index for every row.
+    auto load_persistent_rows(sqlite3& connection, PersistentStore& store,
+                              std::vector<PersistentEvent>& hydrated_events) -> bool
     {
         return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
                          [&store](sqlite3_stmt& row) {
@@ -790,7 +794,7 @@ namespace
                          }) &&
                load_rows(connection,
                          "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status FROM events",
-                         [&store](sqlite3_stmt& row) {
+                         [&hydrated_events](sqlite3_stmt& row) {
                              auto event = PersistentEvent{column_text(row, 0),
                                                           column_text(row, 1),
                                                           column_text(row, 2),
@@ -798,7 +802,7 @@ namespace
                                                           parse_u64(column_text(row, 4)),
                                                           parse_u64(column_text(row, 5))};
                              event.status = column_text(row, 6);
-                             store.events.push_back(std::move(event));
+                             hydrated_events.push_back(std::move(event));
                          }) &&
                load_rows(connection, "SELECT event_id, prev_event_id FROM event_edges",
                          [&store](sqlite3_stmt& row) {
@@ -1260,7 +1264,7 @@ namespace
         // DB-2: scope the relation-table reads to this room using a JOIN on
         // events.room_id, not by binding one placeholder per loaded event.
         auto relations = PersistentStore{};
-        relations.events = snapshot.events;
+        std::ignore = relations.events.insert_all(std::move(snapshot.events));
         ok = ok &&
              load_rows_bound(connection,
                              "SELECT e.event_id, e.prev_event_id FROM event_edges e "
@@ -1294,7 +1298,7 @@ namespace
             return std::nullopt;
         }
         reconstruct_event_relations(relations);
-        snapshot.events = std::move(relations.events);
+        snapshot.events = relations.events.extract();
         return snapshot;
     }
 
@@ -1467,7 +1471,8 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
                            {"version", std::to_string(store.schema.version), false}
         });
     }
-    if (!load_persistent_rows(sqlite, store))
+    auto hydrated_events = std::vector<PersistentEvent>{};
+    if (!load_persistent_rows(sqlite, store, hydrated_events))
     {
         log_diagnostic("store.rejected",
                        {
@@ -1476,6 +1481,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
         });
         return {false, "unable to hydrate SQLite rows", {}};
     }
+    std::ignore = store.events.insert_all(std::move(hydrated_events));
     sort_appservice_outbox(store);
     reconstruct_event_relations(store);
     rebuild_state_transition_index(store);

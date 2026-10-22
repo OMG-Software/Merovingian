@@ -254,9 +254,7 @@ namespace
         entries.reserve(auth_event_ids.size());
         for (auto const& id : auth_event_ids)
         {
-            auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& evt) {
-                return evt.event_id == id;
-            });
+            auto const it = store.events.find(id);
             if (it == store.events.end())
             {
                 continue;
@@ -423,9 +421,7 @@ namespace
         seen.reserve(auth_event_ids.size());
         for (auto const& id : auth_event_ids)
         {
-            auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& evt) {
-                return evt.event_id == id;
-            });
+            auto const it = store.events.find(id);
             if (it == store.events.end())
             {
                 return AuthEventsSelectionCheck::unresolvable;
@@ -2515,27 +2511,18 @@ namespace
                         queue.push_back(eid);
                     }
                 }
-                // Build a lookup from event_id to PersistentEvent for this room
-                auto event_by_id = std::unordered_map<std::string, std::size_t>{};
-                for (std::size_t i = 0U; i < store.events.size(); ++i)
-                {
-                    if (store.events[i].room_id == room_id && !store.events[i].event_id.empty())
-                    {
-                        event_by_id[store.events[i].event_id] = i;
-                    }
-                }
-                // BFS: follow auth_event_ids from each discovered event
+                // BFS: follow auth_event_ids from each discovered event in this room
                 auto cursor = std::size_t{0U};
                 while (cursor < queue.size())
                 {
                     auto const& eid = queue[cursor];
                     ++cursor;
-                    auto const it = event_by_id.find(eid);
-                    if (it == event_by_id.end())
+                    auto const it = store.events.find_in_room(room_id, eid);
+                    if (it == store.events.end())
                     {
                         continue;
                     }
-                    for (auto const& auth_id : store.events[it->second].auth_event_ids)
+                    for (auto const& auth_id : it->auth_event_ids)
                     {
                         if (!auth_id.empty() && visited.insert(auth_id).second)
                         {
@@ -2546,20 +2533,19 @@ namespace
                 // Collect JSON for every event in the auth chain
                 for (auto const& eid : queue)
                 {
-                    auto const it = event_by_id.find(eid);
-                    if (it != event_by_id.end() && !store.events[it->second].json.empty())
+                    auto const it = store.events.find_in_room(room_id, eid);
+                    if (it != store.events.end() && !it->json.empty())
                     {
-                        auth_chain.push_back(store.events[it->second].json);
+                        auth_chain.push_back(it->json);
                     }
                 }
-                // State events: pre-join snapshot, resolved via the same
-                // event_by_id map built above.
+                // State events: pre-join snapshot, resolved the same way.
                 for (auto const& eid : pre_join_state_ids)
                 {
-                    auto const it = event_by_id.find(eid);
-                    if (it != event_by_id.end() && !store.events[it->second].json.empty())
+                    auto const it = store.events.find_in_room(room_id, eid);
+                    if (it != store.events.end() && !it->json.empty())
                     {
-                        state_events.push_back(store.events[it->second].json);
+                        state_events.push_back(it->json);
                     }
                 }
             }
@@ -3061,9 +3047,7 @@ namespace
         auto missing_auth = std::vector<std::string>{};
         for (auto const& id : envelope.auth_event_ids)
         {
-            auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& evt) {
-                return evt.event_id == id;
-            });
+            auto const it = store.events.find(id);
             if (it == store.events.end())
             {
                 missing_auth.push_back(id);
@@ -3073,9 +3057,7 @@ namespace
         auto missing_prev = std::vector<std::string>{};
         for (auto const& id : envelope.prev_event_ids)
         {
-            auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& evt) {
-                return evt.event_id == id;
-            });
+            auto const it = store.events.find(id);
             if (it == store.events.end() || !event_has_state_group(store, id))
             {
                 missing_prev.push_back(id);
@@ -3791,10 +3773,7 @@ namespace
             }
         };
 
-        auto const existing =
-            std::ranges::find_if(runtime.database.persistent_store.events, [&](database::PersistentEvent const& evt) {
-                return evt.event_id == envelope.event_id;
-            });
+        auto const existing = runtime.database.persistent_store.events.find(envelope.event_id);
         if (existing != runtime.database.persistent_store.events.end())
         {
             // Room versions 1 and 2 do not derive event IDs from content, so a
@@ -3964,10 +3943,7 @@ namespace
                 // later snapshot that names it. The snapshot is built below
                 // from the stored copies, which are checked for room, rejected
                 // status and state-event shape there.
-                if (std::ranges::any_of(runtime.database.persistent_store.events,
-                                        [&](database::PersistentEvent const& evt) {
-                                            return evt.event_id == id;
-                                        }))
+                if (runtime.database.persistent_store.events.contains(id))
                 {
                     continue;
                 }
@@ -4067,10 +4043,7 @@ namespace
                 {
                     continue;
                 }
-                auto const it = std::ranges::find_if(runtime.database.persistent_store.events,
-                                                     [&](database::PersistentEvent const& e) {
-                                                         return e.event_id == id;
-                                                     });
+                auto const it = runtime.database.persistent_store.events.find(id);
                 if (it == runtime.database.persistent_store.events.end())
                 {
                     return false;

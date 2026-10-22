@@ -107,15 +107,11 @@ namespace
         return out;
     }
 
-    // Newest rows are the likeliest, so look from the back.
     [[nodiscard]] auto find_event_by_id(database::PersistentStore const& store, std::string_view event_id)
         -> database::PersistentEvent const*
     {
-        auto const newest_first = store.events | std::views::reverse;
-        auto const found = std::ranges::find_if(newest_first, [event_id](database::PersistentEvent const& event) {
-            return event.event_id == event_id;
-        });
-        return found == newest_first.end() ? nullptr : &*found;
+        auto const found = store.events.find(event_id);
+        return found == store.events.end() ? nullptr : &*found;
     }
 
     [[nodiscard]] auto find_event_by_stream_ordering(database::PersistentStore const& store,

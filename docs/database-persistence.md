@@ -1276,3 +1276,30 @@ come from one committed state: `BEGIN DEFERRED` on SQLite, whose first read take
 end (main's commits wait for it), and `REPEATABLE READ READ ONLY` on PostgreSQL. The worker's
 whole-store startup load stays one statement per table, so it never holds SQLite's SHARED lock for
 the whole load (ADR-0161).
+
+### Event table indexes (0.12.41)
+
+`PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/event_table.hpp`),
+not a `std::vector`. It owns the in-memory rows of the `events` table and keeps two indexes over them,
+both holding positions in its row vector so they survive reallocation (ADR-0215):
+
+- **by event ID.** `events.find(id)` and `events.contains(id)` are hash lookups, and
+  `events.find_in_room(room_id, id)` adds the room check. Use them, never a `find_if` over the rows.
+- **by stream order.** `events.in_stream_order()` visits every row by ascending `stream_ordering`. Rows
+  with equal stream orderings come in the order they were added. Reverse it for newest first. Iterating
+  the table itself visits arrival order, which is not stream order: SQLite hydration has no `ORDER BY`,
+  PostgreSQL hydrates in event-ID order and moves a row whose status is updated, and stream orderings
+  commit out of order across rooms.
+
+Rows are read-only through the table. The only ways to change it are:
+
+| Change | Method | Callers |
+|---|---|---|
+| Add one event (refused if its ID is already held) | `insert()` / `push_back()` | `store_event`, `apply_store_event_with_state` |
+| Add many, sorting their stream order in one pass | `insert_all()` | SQLite and PostgreSQL hydration, `reload_room`, room snapshots |
+| Change a row's fields other than `event_id` and `stream_ordering` | `modify()` | `set_event_status`, `replace_event_json` (redaction), `reconstruct_event_relations` |
+| Remove rows, renumbering both indexes in one pass | `erase_if()` | `reload_room` |
+| Move every row out | `extract()` | room snapshot loaders |
+
+`modify()` puts `event_id` and `stream_ordering` back if a mutation changes them. The table has no lock
+of its own: like every other `PersistentStore` member, it is guarded by `runtime.mutex` in the homeserver.

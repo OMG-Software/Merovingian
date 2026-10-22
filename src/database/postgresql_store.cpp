@@ -757,15 +757,20 @@ namespace
             {
                 return false;
             }
+            // Indexed in one pass once loaded (ADR-0215): rows come back in event-ID order, not
+            // stream order, so adding them one at a time could shift the stream-order index per row.
+            auto hydrated_events = std::vector<PersistentEvent>{};
+            hydrated_events.reserve(events.rows.size());
             for (auto const& row : events.rows)
             {
                 if (row.size() >= 7U)
                 {
                     auto event = PersistentEvent{row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])};
                     event.status = row[6];
-                    store.events.push_back(std::move(event));
+                    hydrated_events.push_back(std::move(event));
                 }
             }
+            std::ignore = store.events.insert_all(std::move(hydrated_events));
         }
 
         if (table_load_profile_includes("state_groups", profile))
@@ -2353,7 +2358,7 @@ namespace
         // exceed PreparedStatement's parameter cap. Joins keep each relation
         // query scoped to this room without reading unrelated event graphs.
         auto relations = PersistentStore{};
-        relations.events = snapshot.events;
+        std::ignore = relations.events.insert_all(std::move(snapshot.events));
 
         auto edges = connection.execute({"postgresql_reload_event_edges",
                                          "SELECT r.event_id, r.prev_event_id FROM event_edges r "
@@ -2408,7 +2413,7 @@ namespace
         }
 
         reconstruct_event_relations(relations);
-        snapshot.events = std::move(relations.events);
+        snapshot.events = relations.events.extract();
         return snapshot;
     }
 
