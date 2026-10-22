@@ -6854,8 +6854,7 @@ namespace
     // True when the join `content` already carries `profile`'s display name and avatar URL (an
     // unset field matching an absent one).
     [[nodiscard]] auto member_content_carries_profile(canonicaljson::Object const& content,
-                                                      std::optional<database::PersistentProfile> const& profile)
-        -> bool
+                                                      std::optional<database::PersistentProfile> const& profile) -> bool
     {
         auto const wanted_displayname = profile.has_value() ? profile->displayname : std::string{};
         auto const wanted_avatar_url = profile.has_value() ? profile->avatar_url : std::string{};
@@ -6891,9 +6890,10 @@ namespace
         auto const content = current_member_content(store, room.room_id, *user_id);
         if (!content.has_value() || content_string(*content, "membership") != "join")
         {
-            log_diagnostic("profile.propagation.not_member", {
-                                                                 {"actor",   *user_id,     false},
-                                                                 {"room_id", room.room_id, false}
+            log_diagnostic("profile.propagation.not_member",
+                           {
+                               {"actor",   *user_id,     false},
+                               {"room_id", room.room_id, false}
             });
             continue;
         }
@@ -6906,8 +6906,9 @@ namespace
     auto failed = std::size_t{0U};
     for (auto const& room_id : pending_rooms)
     {
-        auto const result = event_json.has_value() ? send_event(runtime, access_token, room_id, *event_json)
-                                                   : make_operation_result(false, {}, "membership serialization failed");
+        auto const result = event_json.has_value()
+                                ? send_event(runtime, access_token, room_id, *event_json)
+                                : make_operation_result(false, {}, "membership serialization failed");
         if (result.ok)
         {
             ++sent;

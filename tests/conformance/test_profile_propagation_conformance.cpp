@@ -561,8 +561,8 @@ SCENARIO("changing the display name leaves rooms the user has left untouched",
         WHEN("Bob sets his display name")
         {
             auto const put = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"PUT", "/_matrix/client/v3/profile/@bob:example.org/displayname", bob,
-                                  R"({"displayname":"Robert"})"});
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/profile/@bob:example.org/displayname", bob, R"({"displayname":"Robert"})"});
 
             THEN("the field is set and his membership of that room is still leave")
             {
