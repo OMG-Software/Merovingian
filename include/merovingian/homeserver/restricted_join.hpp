@@ -63,7 +63,11 @@ inline constexpr std::size_t max_restricted_join_conditions{32U};
 // send_join path): only that user is considered, and it must be a user of
 // this server. When empty (make_join, or a local join) the authorising user is
 // chosen: the lowest user ID among this server's joined users with the invite
-// power level. Reads only; the caller holds runtime.mutex.
+// power level. A condition's room can be validated only while this server is
+// resident in it (its m.room.create is stored and a user of this server is
+// joined): state kept after leaving is not current. No condition met and one
+// that cannot be validated is unable_to_authorise; all validated and none met
+// is forbidden. Reads only; the caller holds runtime.mutex.
 [[nodiscard]] auto decide_restricted_join(database::PersistentStore const& store, std::string_view room_id,
                                           std::string_view user_id, std::string_view our_server,
                                           std::string_view named_authoriser = {}) -> RestrictedJoinDecision;

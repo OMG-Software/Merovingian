@@ -696,16 +696,21 @@ SCENARIO("send_join co-signs a restricted join this server authorises, and refus
         {
             namespace cj = merovingian::canonicaljson;
             auto envelope = join_by(bob, "$bobplanted:remote.example.org");
-            auto parsed = cj::parse_lossless(envelope.json);
+            auto const parsed = cj::parse_lossless(envelope.json);
             REQUIRE(parsed.error == cj::ParseError::none);
-            auto* object = std::get_if<cj::Object>(&parsed.value.storage());
+            auto const* object = std::get_if<cj::Object>(&parsed.value.storage());
             REQUIRE(object != nullptr);
+            auto with_planted = cj::Object{};
+            for (auto const& member : *object)
+            {
+                with_planted.push_back(cj::make_member(member.key, *member.value));
+            }
             auto planted = cj::Object{};
             planted.push_back(cj::make_member("ed25519:planted", cj::Value{std::string(86U, 'A')}));
             auto signatures = cj::Object{};
             signatures.push_back(cj::make_member(std::string{our_server}, cj::Value{std::move(planted)}));
-            object->push_back(cj::make_member("signatures", cj::Value{std::move(signatures)}));
-            auto const serialized = cj::serialize_canonical(parsed.value);
+            with_planted.push_back(cj::make_member("signatures", cj::Value{std::move(signatures)}));
+            auto const serialized = cj::serialize_canonical(cj::Value{std::move(with_planted)});
             REQUIRE(serialized.error == cj::CanonicalJsonError::none);
             envelope.json = serialized.output;
             auto const result =
