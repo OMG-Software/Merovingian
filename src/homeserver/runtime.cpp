@@ -36,8 +36,10 @@
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -571,6 +573,24 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     return it == rt.room_typing_stream_id.end() ? std::uint64_t{0U} : it->second;
 }
 
+namespace
+{
+
+    // Gives the room a new typing stream position and tells appservices its typing list
+    // `current` (sorted). Every typing change (local, federated, cleared by a message send, or
+    // expired) passes through here, so this is the one place appservices that receive ephemeral
+    // data are told (R08, ADR-0190).
+    auto advance_room_typing_stream_id(HomeserverRuntime& rt, std::string_view room_id,
+                                       std::vector<std::string> const& current) -> std::uint64_t
+    {
+        auto const new_id = database::allocate_sync_stream_id(rt.database.persistent_store);
+        rt.room_typing_stream_id[std::string{room_id}] = new_id;
+        queue_appservice_typing(rt, room_id, current);
+        return new_id;
+    }
+
+} // namespace
+
 [[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
                                                            std::vector<std::string> const& previous) -> std::uint64_t
 {
@@ -579,50 +599,61 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     {
         return room_typing_stream_id_for(rt, room_id);
     }
-    auto const new_id = database::allocate_sync_stream_id(rt.database.persistent_store);
-    rt.room_typing_stream_id[std::string{room_id}] = new_id;
-    // Every typing change (local, federated, or cleared by a message send) passes through here, so
-    // this is the one place appservices that receive ephemeral data are told (R08, ADR-0190).
-    queue_appservice_typing(rt, room_id);
-    return new_id;
+    return advance_room_typing_stream_id(rt, room_id, current);
 }
 
 [[nodiscard]] auto expire_typing(HomeserverRuntime& rt, std::chrono::steady_clock::time_point now) -> TypingExpiry
 {
+    // Runs under runtime.mutex, so the work is a fixed number of passes over the typing table,
+    // never one pass per expired room (PR #522 review). Each (room, user) pair has at most one
+    // entry, so a room that loses an expired typist always changes its typing list and gets one
+    // new stream position, as update_room_typing_stream_id_if_changed would give it.
     auto expiry = TypingExpiry{};
-    auto rooms = std::vector<std::string>{};
+    auto const is_expired = [now](InboundTypingUser const& entry) {
+        return entry.typing && entry.expires_at <= now;
+    };
+    auto const local_suffix = ":" + rt.config.server().server_name;
+    // Pass 1: the rooms that lose a typist, and the local typists that expired.
+    auto remaining_by_room = std::map<std::string, std::vector<std::string>, std::less<>>{};
     for (auto const& entry : rt.typing_users)
     {
-        if (entry.typing && entry.expires_at <= now && std::ranges::find(rooms, entry.room_id) == rooms.end())
+        if (!is_expired(entry))
         {
-            rooms.push_back(entry.room_id);
+            continue;
+        }
+        remaining_by_room.try_emplace(entry.room_id);
+        if (entry.user_id.ends_with(local_suffix))
+        {
+            expiry.expired_local.push_back(entry);
         }
     }
-    auto const local_suffix = ":" + rt.config.server().server_name;
-    for (auto const& room_id : rooms)
+    if (!remaining_by_room.empty())
     {
-        auto const previous = current_typing_users_in_room(rt, room_id);
-        for (auto const& entry : rt.typing_users)
-        {
-            if (entry.room_id == room_id && entry.typing && entry.expires_at <= now &&
-                entry.user_id.ends_with(local_suffix))
-            {
-                expiry.expired_local.push_back(entry);
-            }
-        }
-        std::erase_if(rt.typing_users, [&room_id, now](InboundTypingUser const& entry) {
-            return entry.room_id == room_id && entry.typing && entry.expires_at <= now;
-        });
-        std::ignore = update_room_typing_stream_id_if_changed(rt, room_id, previous);
+        // Pass 2: drop the expired entries.
+        std::erase_if(rt.typing_users, is_expired);
         expiry.changed = true;
     }
+    // Pass 3: the typists left in each affected room, and the next pending deadline.
     for (auto const& entry : rt.typing_users)
     {
-        if (entry.typing && entry.expires_at != std::chrono::steady_clock::time_point::max() &&
+        if (!entry.typing)
+        {
+            continue;
+        }
+        if (auto const room = remaining_by_room.find(entry.room_id); room != remaining_by_room.end())
+        {
+            room->second.push_back(entry.user_id);
+        }
+        if (entry.expires_at != std::chrono::steady_clock::time_point::max() &&
             (!expiry.next_expiry.has_value() || entry.expires_at < *expiry.next_expiry))
         {
             expiry.next_expiry = entry.expires_at;
         }
+    }
+    for (auto& [room_id, remaining] : remaining_by_room)
+    {
+        std::ranges::sort(remaining);
+        std::ignore = advance_room_typing_stream_id(rt, room_id, remaining);
     }
     return expiry;
 }

@@ -73,6 +73,10 @@ auto push_appservice_ephemeral(AppserviceEphemeralQueue& queue, AppserviceEpheme
 // stop-typing a message send implies. Takes runtime.mutex itself (recursive) and wakes the
 // drainer when anything was queued. Makes no network call.
 auto queue_appservice_typing(HomeserverRuntime& runtime, std::string_view room_id) -> void;
+// As above, with the room's typing list (sorted user IDs) already in hand, so a caller that has
+// grouped the typing table by room (expire_typing) does not rescan it per room.
+auto queue_appservice_typing(HomeserverRuntime& runtime, std::string_view room_id,
+                             std::vector<std::string> const& typing_user_ids) -> void;
 
 // Queues one stored read receipt (local or federated) for every interested appservice with
 // `receive_ephemeral`; private read receipts only for appservices whose namespaces cover the

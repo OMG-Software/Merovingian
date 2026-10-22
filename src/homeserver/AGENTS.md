@@ -228,6 +228,8 @@ client, sender or remote server controls, and per-user rows that requests scan m
   `m.fully_read`) go through `set_account_data` and are never refused.
 - `/search` judges a room the user has left with `room_read_access_for` only when one of its
   events would be returned, so those scans stay bounded by the page (R16).
+- `expire_typing` groups the typing table by room in a fixed number of passes and hands each
+  affected room its new typing list; it never rescans the table per expired room (R13).
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
   (ADR-0174).
 

@@ -167,12 +167,23 @@ auto queue_appservice_typing(HomeserverRuntime& runtime, std::string_view room_i
         return;
     }
     auto const lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
+    queue_appservice_typing(runtime, room_id, current_typing_users_in_room(runtime, room_id));
+}
+
+auto queue_appservice_typing(HomeserverRuntime& runtime, std::string_view room_id,
+                             std::vector<std::string> const& typing_user_ids) -> void
+{
+    if (!any_receives_ephemeral(runtime))
+    {
+        return;
+    }
+    auto const lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
     auto const* const room = find_local_room(runtime, room_id);
     if (room == nullptr)
     {
         return;
     }
-    auto const serialized = make_typing_ephemeral_event(room_id, current_typing_users_in_room(runtime, room_id));
+    auto const serialized = make_typing_ephemeral_event(room_id, typing_user_ids);
     if (serialized.empty())
     {
         return;

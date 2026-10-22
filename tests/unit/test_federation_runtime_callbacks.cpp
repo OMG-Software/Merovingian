@@ -1687,6 +1687,62 @@ SCENARIO("A typing EDU that sets a user typing wakes the typing-expiry job", "[h
     }
 }
 
+// R13 (ADR-0199; PR #522 review). The expiry pass runs under runtime.mutex, so it groups the
+// typing table by room in a fixed number of passes rather than rescanning it per expired room.
+// Its result must be the same as handling each room on its own: every room that lost a typing
+// user advances its typing position once, a room that lost nobody keeps its position, and users
+// whose deadline has not passed stay typing.
+SCENARIO("Typing expiry handles many rooms in one grouped pass", "[homeserver][federation][typing][r13]")
+{
+    GIVEN("three rooms: one whose two typists both expired, one with one expired and one live typist, one live")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-group-seed",
+                                   {"!a:matrix.example.org", "!b:matrix.example.org", "!c:matrix.example.org"});
+        auto const now = std::chrono::steady_clock::now();
+        auto const past = now - std::chrono::seconds{1};
+        auto const future = now + std::chrono::minutes{1};
+        runtime->typing_users = {
+            {"!a:matrix.example.org", "@a1:matrix.example.org", true, 0U, past  },
+            {"!b:matrix.example.org", "@b1:matrix.example.org", true, 0U, past  },
+            {"!a:matrix.example.org", "@a2:matrix.example.org", true, 0U, past  },
+            {"!b:matrix.example.org", "@b2:matrix.example.org", true, 0U, future},
+            {"!c:matrix.example.org", "@c1:matrix.example.org", true, 0U, future},
+        };
+        auto const c_before = merovingian::homeserver::room_typing_stream_id_for(*runtime, "!c:matrix.example.org");
+        auto const stream_before = runtime->database.persistent_store.next_sync_stream_id;
+
+        WHEN("the expiry pass runs")
+        {
+            auto const expiry = merovingian::homeserver::expire_typing(*runtime, now);
+
+            THEN("each room that lost a typist advances once, the others keep their state, and live typists stay")
+            {
+                REQUIRE(expiry.changed);
+                REQUIRE(expiry.expired_local.empty());
+                REQUIRE(
+                    merovingian::homeserver::current_typing_users_in_room(*runtime, "!a:matrix.example.org").empty());
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!b:matrix.example.org") ==
+                        std::vector<std::string>{"@b2:matrix.example.org"});
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!c:matrix.example.org") ==
+                        std::vector<std::string>{"@c1:matrix.example.org"});
+                auto const a_after =
+                    merovingian::homeserver::room_typing_stream_id_for(*runtime, "!a:matrix.example.org");
+                auto const b_after =
+                    merovingian::homeserver::room_typing_stream_id_for(*runtime, "!b:matrix.example.org");
+                REQUIRE(a_after > stream_before);
+                REQUIRE(b_after > stream_before);
+                REQUIRE(a_after != b_after);
+                REQUIRE(runtime->database.persistent_store.next_sync_stream_id == stream_before + 2U);
+                REQUIRE(merovingian::homeserver::room_typing_stream_id_for(*runtime, "!c:matrix.example.org") ==
+                        c_before);
+                REQUIRE(expiry.next_expiry == std::optional<std::chrono::steady_clock::time_point>{future});
+            }
+        }
+    }
+}
+
 // Conformance audit R13 (ADR-0199). A typing EDU carries no timeout, so a remote user's typing
 // would stay forever if their server never sent typing:false. It expires after
 // federation_typing_timeout instead, and each later EDU refreshes it.
