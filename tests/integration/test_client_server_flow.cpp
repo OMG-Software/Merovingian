@@ -6,6 +6,7 @@
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -1488,6 +1489,42 @@ SCENARIO("GET /messages returns the chunk sender's membership when lazy loading"
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body.find("\"state\":[]") == std::string::npos);
                 REQUIRE(response.response.body.find("@alice:example.org") != std::string::npos);
+            }
+        }
+    }
+}
+
+// ADR-0182: a profile change is answered once the field is stored; propagation is best effort. A
+// stored profile field this server cannot serialise (here an avatar URL that is not UTF-8, which no
+// client request can write) leaves no membership event to build, so nothing is sent to the user's
+// rooms and the request still succeeds. The spec's 200 and the stored field are covered by the
+// profile-propagation conformance scenario.
+SCENARIO("A profile change whose membership event cannot be serialised sends nothing",
+         "[integration][client-server][profile-propagation]")
+{
+    GIVEN("a user in a room whose stored avatar URL cannot be serialised")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_and_login(runtime, "alice", "CorrectHorse7!", "DEVICE1");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"})
+                    .response.status == 200U);
+        auto& store = runtime.homeserver.database.persistent_store;
+        REQUIRE(merovingian::database::store_profile(store, {"@alice:example.org", {}, "mxc://example.org/\xff"}));
+        auto const events_before = store.events.size();
+
+        WHEN("the user sets a display name")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/profile/@alice:example.org/displayname", token,
+                          R"({"displayname":"Alice Liddell"})"});
+
+            THEN("the request succeeds and no membership event is stored")
+            {
+                REQUIRE(put.response.status == 200U);
+                REQUIRE(store.events.size() == events_before);
             }
         }
     }
