@@ -44,6 +44,14 @@ attachments are uploaded as opaque ciphertext and must not be quarantined. Opera
 can override the list with `security.media.allowed_mime_types` if they need a stricter
 policy.
 
+## Remote media cache records
+
+Cached remote media is kept out of local quotas (ADR-0120) by `LocalMediaRecord::from_remote_fetch`,
+set from the upload request (only the remote fetch sets it) and rebuilt on hydration by
+`is_remote_cache_owner(owner, local server name)`. Never classify a record by its owner string
+alone: a local account could imitate `@remote-media:` (ADR-0178), and the localpart `remote-media`
+is reserved (`auth::localpart_is_reserved`).
+
 ## Thumbnail worker
 
 The thumbnail worker runs as a separate sandboxed process (`thumbnail_worker_main.cpp`).

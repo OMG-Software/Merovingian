@@ -1228,3 +1228,47 @@ SCENARIO("Media resolved for download is refused if moderation lands before it i
         }
     }
 }
+
+// Security audit run-1 (med01.remote-media-owner-sentinel-localpart-collision): remote media is
+// kept out of local quotas (ADR-0120), and that used to be decided by the owner string starting
+// with "@remote-media:". A local account named "remote-media" produced exactly that prefix, so its
+// uploads escaped max_total_size and max_records. Whether a record came from a remote fetch is now
+// part of the record, set where it is created and never read back from the owner string.
+SCENARIO("A local account whose owner string looks like the remote-media owner is still charged to local quotas",
+         "[media][repository][remote][security][med01]")
+{
+    GIVEN("a repository that holds at most one local record")
+    {
+        auto repository = test_repository();
+        repository.config.max_records = 1U;
+
+        WHEN("the local user @remote-media:example.org uploads two files")
+        {
+            auto const first = merovingian::media::upload_local_media(
+                repository, "example.org", {"@remote-media:example.org", "text/plain", "text/plain", "one", true});
+            auto const second = merovingian::media::upload_local_media(
+                repository, "example.org", {"@remote-media:example.org", "text/plain", "text/plain", "two", true});
+
+            THEN("the first is a local record and the second is refused at the local record cap")
+            {
+                REQUIRE(first.ok);
+                REQUIRE_FALSE(repository.records.front().from_remote_fetch);
+                REQUIRE_FALSE(second.ok);
+            }
+        }
+    }
+
+    GIVEN("persisted owner strings, as hydration reads them back")
+    {
+        WHEN("they are classified for a server named example.org")
+        {
+            THEN("only the remote-media owner of another server is the remote cache")
+            {
+                REQUIRE(merovingian::media::is_remote_cache_owner("@remote-media:peer.example.org", "example.org"));
+                REQUIRE_FALSE(merovingian::media::is_remote_cache_owner("@remote-media:example.org", "example.org"));
+                REQUIRE_FALSE(merovingian::media::is_remote_cache_owner("@alice:example.org", "example.org"));
+                REQUIRE_FALSE(merovingian::media::is_remote_cache_owner("@remote-media:", "example.org"));
+            }
+        }
+    }
+}

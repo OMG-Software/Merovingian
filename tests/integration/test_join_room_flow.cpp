@@ -1796,3 +1796,141 @@ SCENARIO("leave_room signs remote membership templates with and without existing
         }
     }
 }
+
+// Security audit run-1 (rooms.room-version-resolution-divergent-fallbacks-create-without-room_version):
+// a room's version is the one its m.room.create declares, and a create event with no room_version
+// is room version 1 (client-server-api.md, m.room.create), which this server does not support (ADR-0076). The federated
+// join took the version from the make_join response alone, so a resident server could seat a local
+// user in a room whose create event says something else, which every component then resolved
+// with a different default. The join is now refused, before anything is stored, unless the create
+// event in the send_join state declares the make_join version.
+SCENARIO("A federated join is refused when the room's create event does not declare the make_join version",
+         "[security][homeserver][federation][join][integration][room-version]")
+{
+    GIVEN("a resident server whose make_join says room version 10")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const bob_reg = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                          merovingian::tests::registration_token);
+        REQUIRE(bob_reg.ok);
+        auto const bob_login =
+            merovingian::homeserver::login_local_user(runtime, bob_reg.value, "CorrectHorse7!", "DEVICE2");
+        REQUIRE(bob_login.ok);
+        auto const bob = bob_reg.value;
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != resident_server || key_id != resident_key_id)
+            {
+                return std::nullopt;
+            }
+            return resident_remote_runtime();
+        };
+
+        auto const joined_room = std::string{"!versions:"} + resident_server;
+        auto const creator = std::string{"@creator:"} + resident_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + bob +
+                                     R"(","room_id":")" + joined_room + R"(","sender":")" + bob +
+                                     R"(","depth":3,"origin_server_ts":1000,)"
+                                     R"("prev_events":[],"auth_events":[],)"
+                                     R"("content":{"membership":"join"}})";
+        // The resident server answers make_join with version 10. Only the create event inside its send_join
+        // answer changes between the two WHEN blocks.
+        auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
+        auto const power_levels_event = std::string{R"({"type":"m.room.power_levels","state_key":"","sender":")"} +
+                                        creator + R"(","room_id":")" + joined_room +
+                                        R"(","depth":2,"origin_server_ts":901,"prev_events":[],"auth_events":[],)"
+                                        R"("content":{"users":{")" +
+                                        creator + R"(":100}}})";
+
+        // Builds a send_join answer whose state and auth chain hold a create event with the given content,
+        // signed by the resident server, plus its power levels.
+        auto const send_join_with_create_content = [&](std::string const& create_content) {
+            auto const create_event = std::string{R"({"type":"m.room.create","state_key":"","sender":")"} + creator +
+                                      R"(","room_id":")" + joined_room +
+                                      R"(","depth":1,"origin_server_ts":900,"prev_events":[],"auth_events":[],)"
+                                      R"("content":)" +
+                                      create_content + "}";
+            auto state_array = merovingian::canonicaljson::Array{};
+            state_array.push_back(
+                sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+            state_array.push_back(
+                sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+            auto auth_chain_array = merovingian::canonicaljson::Array{};
+            auth_chain_array.push_back(
+                sign_test_event(create_event, policy, resident_server, resident_key_id, resident_key_seed));
+            auth_chain_array.push_back(
+                sign_test_event(power_levels_event, policy, resident_server, resident_key_id, resident_key_seed));
+            return std::string{R"({"state":)"} + canonicaljson_array_to_string(state_array) + R"(,"auth_chain":)" +
+                   canonicaljson_array_to_string(auth_chain_array) + "}";
+        };
+        // Serves make_join then send_join from the mock resident server and joins bob through it.
+        auto const join_through_resident = [&](std::string const& send_join_body) {
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, json_http_response("200 OK", make_join_body),
+                                    json_http_response("200 OK", send_join_body), captured_requests);
+            }};
+            auto result = merovingian::homeserver::join_room(runtime, bob_login.value, joined_room,
+                                                             {std::string{resident_server}});
+            server_thread.join();
+            wait_for_join_background_tasks(runtime);
+            return result;
+        };
+        // Nothing of a refused room may be stored: no current state and no event.
+        auto const room_is_stored = [&] {
+            auto const lock = std::lock_guard{runtime.mutex};
+            return std::ranges::any_of(runtime.database.persistent_store.state,
+                                       [&](auto const& row) {
+                                           return row.room_id == joined_room;
+                                       }) ||
+                   std::ranges::any_of(runtime.database.persistent_store.events, [&](auto const& row) {
+                       return row.room_id == joined_room;
+                   });
+        };
+
+        // No room_version means room version 1 (client-server-api.md, m.room.create), not 10.
+        WHEN("the create event in its send_join state has no room_version (room version 1)")
+        {
+            auto const result =
+                join_through_resident(send_join_with_create_content(R"({"creator":")" + creator + R"("})"));
+
+            THEN("the join is refused and nothing of the room is stored")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(room_is_stored());
+            }
+        }
+
+        // A resident server must not choose the rule set by naming one version in make_join and another
+        // in the create event.
+        WHEN("the create event declares room version 11 while make_join said 10")
+        {
+            auto const result = join_through_resident(
+                send_join_with_create_content(R"({"room_version":"11","creator":")" + creator + R"("})"));
+
+            THEN("the join is refused and nothing of the room is stored")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(room_is_stored());
+            }
+        }
+    }
+}

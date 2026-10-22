@@ -599,6 +599,8 @@ auto outbound_error_name(OutboundError error) noexcept -> std::string_view
         return "timeout"sv;
     case OutboundError::network_error:
         return "network_error"sv;
+    case OutboundError::invalid_header:
+        return "invalid_header"sv;
     }
     return "unknown"sv;
 }
@@ -652,6 +654,10 @@ auto outbound_error_from_name(std::string_view name) noexcept -> OutboundError
     {
         return OutboundError::network_error;
     }
+    if (name == "invalid_header"sv)
+    {
+        return OutboundError::invalid_header;
+    }
     return OutboundError::network_error;
 }
 
@@ -698,11 +704,50 @@ auto detect_system_ca_trust() -> SystemCaTrust
     return trust;
 }
 
+namespace
+{
+
+    // RFC 9110 section 5.6.2: tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+    // "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA.
+    [[nodiscard]] auto is_token_character(char character) noexcept -> bool
+    {
+        if ((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+            (character >= '0' && character <= '9'))
+        {
+            return true;
+        }
+        return std::string_view{"!#$%&'*+-.^_`|~"}.find(character) != std::string_view::npos;
+    }
+
+    // RFC 9110 section 5.5: a field value holds no control character other than HTAB. CR and LF
+    // in particular would end the header line and start another, and libcurl writes header lines
+    // verbatim.
+    [[nodiscard]] auto is_field_value_character(char character) noexcept -> bool
+    {
+        auto const byte = static_cast<unsigned char>(character);
+        return byte == 0x09U || (byte >= 0x20U && byte != 0x7FU);
+    }
+
+    [[nodiscard]] auto header_is_valid(OutboundHeader const& header) noexcept -> bool
+    {
+        return !header.name.empty() && std::ranges::all_of(header.name, is_token_character) &&
+               std::ranges::all_of(header.value, is_field_value_character);
+    }
+
+} // namespace
+
 auto validate_outbound_request(OutboundRequest const& request) noexcept -> OutboundError
 {
     if (!is_known_method(request.method))
     {
         return OutboundError::invalid_method;
+    }
+    // Header values can carry client-supplied data (an identity server access token, for one), so
+    // every header is checked here, at the boundary every outbound request crosses, before any
+    // DNS, connection or header serialisation (security audit run-1, sp02).
+    if (!std::ranges::all_of(request.headers, header_is_valid))
+    {
+        return OutboundError::invalid_header;
     }
     if (request.url.empty())
     {
@@ -747,6 +792,10 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     if (!is_known_method(request.method))
     {
         return fail(OutboundError::invalid_method, "invalid_method");
+    }
+    if (!std::ranges::all_of(request.headers, header_is_valid))
+    {
+        return fail(OutboundError::invalid_header, "invalid_header");
     }
     if (request.url.empty())
     {

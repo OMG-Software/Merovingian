@@ -68,7 +68,20 @@ struct LocalMediaRecord final
     // /thumbnail fail closed to 404 while /_matrix/client/v1/media/... remains
     // available (Matrix v1.19 authenticated media, security audit M05).
     bool legacy_endpoint_visible{false};
+    // True for a copy of remote media held in the remote media cache (ADR-0120), which is charged
+    // to the cache's budget and never to local quotas. Set when the record is created, from the
+    // upload request, and on hydration by is_remote_cache_owner; never inferred from the owner
+    // string alone, which a local account could imitate (security audit run-1).
+    bool from_remote_fetch{false};
 };
+
+// Whether a persisted owner string names the remote media cache (ADR-0120): the
+// "@remote-media:<origin>" owner of a server other than `local_server_name`. A local account's
+// user ID always carries the local server name, and this server never caches media it fetched
+// from itself, so a local account named "remote-media" never matches. Used to rebuild
+// LocalMediaRecord::from_remote_fetch when records are hydrated.
+[[nodiscard]] auto is_remote_cache_owner(std::string_view owner_user_id, std::string_view local_server_name) noexcept
+    -> bool;
 
 struct MediaRepositoryMetrics final
 {

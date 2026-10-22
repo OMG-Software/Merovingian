@@ -11210,3 +11210,60 @@ SCENARIO("Key backup deletion endpoints remove sessions, rooms, and all keys for
         }
     }
 }
+
+// Security audit run-1 (med01.remote-media-owner-sentinel-localpart-collision): cached remote media
+// is owned by "@remote-media:<origin>" (ADR-0120). That localpart belongs to the server, so no
+// account may be created with it: registration answers as for a name already taken.
+SCENARIO("The remote-media localpart cannot be registered", "[homeserver][client-server][register][security][med01]")
+{
+    GIVEN("a server with open registration")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the name is checked for availability")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/register/available?username=remote-media", {}, {}});
+
+            THEN("it is reported as taken")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(string_field(response.response.body, "errcode") == "M_USER_IN_USE");
+            }
+        }
+
+        WHEN("an account is registered with it")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("remote-media", "CorrectHorse7!")});
+
+            THEN("registration is refused as taken, and no account exists")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(string_field(response.response.body, "errcode") == "M_USER_IN_USE");
+                REQUIRE(std::ranges::none_of(runtime.homeserver.database.users, [](auto const& user) {
+                    return user.user_id == "@remote-media:example.org";
+                }));
+            }
+        }
+
+        WHEN("a similar but different name is registered")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("remote-media2", "CorrectHorse7!")});
+
+            THEN("it is accepted")
+            {
+                REQUIRE(response.response.status == 200U);
+            }
+        }
+    }
+}

@@ -331,6 +331,7 @@ auto gateway_circuit_outcome(PushGatewayResult const& result) noexcept -> Gatewa
     case http::OutboundError::https_required:
     case http::OutboundError::redirect_rejected:
     case http::OutboundError::response_too_large:
+    case http::OutboundError::invalid_header:
         return GatewayCircuitOutcome::not_attempted;
     }
     return GatewayCircuitOutcome::not_attempted;

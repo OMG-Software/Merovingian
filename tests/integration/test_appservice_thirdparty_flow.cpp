@@ -28,6 +28,7 @@
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/homeserver/client_outbound_proxy.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 
@@ -42,6 +43,7 @@
 #include <variant>
 #include <vector>
 
+#include <poll.h>
 #include <unistd.h>
 
 namespace
@@ -469,5 +471,84 @@ SCENARIO("one appservice being unreachable does not suppress another appservice'
 
         std::filesystem::remove(unreachable_path);
         std::filesystem::remove(reachable_path);
+    }
+}
+
+// Security audit run-1 (sp02.thirdparty-no-proxy-slot): every client request that makes this server
+// call another one takes a slot of the client outbound proxy budget first (ADR-0079), so lookups
+// that wait on a slow peer cannot hold every request thread. The /thirdparty/* routes call the
+// registered appservices and took no slot. A route that would call an appservice is now refused with
+// 429 M_LIMIT_EXCEEDED, before any outbound call, when no slot is free.
+SCENARIO("Third-party lookups that call an appservice take a client outbound proxy slot",
+         "[appservice][integration][thirdparty][security][sp02]")
+{
+    GIVEN("a registered appservice and a client outbound budget whose only slot another client holds")
+    {
+        auto const path = std::filesystem::temp_directory_path() / "merovingian-thirdparty-budget.json";
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto const config = config_with_appservice(path, "irc-bridge", "irc-as-token", "irc-hs-token", port, {"irc"});
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_and_login(runtime, "erin");
+        runtime.homeserver.client_outbound_proxy_policy.global_cap = 1U;
+        auto const held = merovingian::homeserver::admit_client_outbound_proxy(runtime.homeserver, "another-client");
+        REQUIRE(held.has_value());
+
+        WHEN("each third-party route that would call the appservice is requested")
+        {
+            auto const targets = std::vector<std::string>{
+                "/_matrix/client/v3/thirdparty/protocols",
+                "/_matrix/client/v3/thirdparty/protocol/irc",
+                "/_matrix/client/v3/thirdparty/location/irc",
+                "/_matrix/client/v3/thirdparty/user/irc",
+                "/_matrix/client/v3/thirdparty/location?alias=%23chan%3Aexample.org",
+                "/_matrix/client/v3/thirdparty/user?userid=%40someone%3Aexample.org",
+            };
+
+            THEN("every one is refused with 429 M_LIMIT_EXCEEDED and nothing is sent to the appservice")
+            {
+                for (auto const& target : targets)
+                {
+                    CAPTURE(target);
+                    auto const response =
+                        merovingian::homeserver::handle_client_server_request(runtime, {"GET", target, token, {}});
+                    REQUIRE(response.response.status == 429U);
+                    REQUIRE(response.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                }
+                REQUIRE(runtime.homeserver.client_outbound_budget->active() == 1U);
+                // No connection reached the appservice's listening socket.
+                auto pending = pollfd{acceptor.fd(), POLLIN, 0};
+                REQUIRE(::poll(&pending, 1, 0) == 0);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+
+    GIVEN("no registered appservice and an exhausted client outbound budget")
+    {
+        auto started = merovingian::homeserver::start_client_server(thirdparty_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = register_and_login(runtime, "frank");
+        runtime.homeserver.client_outbound_proxy_policy.global_cap = 1U;
+        auto const held = merovingian::homeserver::admit_client_outbound_proxy(runtime.homeserver, "another-client");
+        REQUIRE(held.has_value());
+
+        WHEN("the protocols list is requested")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/thirdparty/protocols", token, {}});
+
+            THEN("it answers without needing a slot, since no appservice is called")
+            {
+                REQUIRE(response.response.status == 200U);
+            }
+        }
     }
 }

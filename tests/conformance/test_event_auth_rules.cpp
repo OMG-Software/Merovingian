@@ -4107,3 +4107,47 @@ SCENARIO("Auth rules reject float power levels from room version 6",
         }
     }
 }
+
+// Spec: Room versions v3-v11 authorization rules, rule 1.3 (rooms/v10.md): "If content.room_version
+// is present and is not a recognised version, reject." A room_version that is not a string is
+// present and is not a recognised version (client-server-api.md, m.room.create: room_version is a
+// string), so it is rejected too. Accepting it let a room's version be derived differently by
+// different components (security audit run-1).
+//
+// Spec: Room Versions v10, Authorisation rules (rule 1.3)
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md#authorisation-rules
+SCENARIO("Auth rules reject a create event whose room_version is not a string",
+         "[events][auth][create][rule1][conformance][room-version]")
+{
+    GIVEN("create events declaring room_version as a number, an object and null")
+    {
+        auto const policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = merovingian::events::AuthEventMap{};
+        auto const create_with = [](std::string const& room_version) {
+            return std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
+                               "\"room_id\":\"!room:example.org\",\"content\":{\"creator\":\"@alice:example.org\","
+                               "\"room_version\":"} +
+                   room_version +
+                   "},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_events\":[],"
+                   "\"hashes\":{\"sha256\":\"hash\"}}";
+        };
+
+        WHEN("each is authorized")
+        {
+            THEN("each is rejected")
+            {
+                for (auto const* room_version : {"10", "{}", "null"})
+                {
+                    CAPTURE(room_version);
+                    auto const parsed = merovingian::canonicaljson::parse_lossless(create_with(room_version));
+                    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                    // Spec MUST: a present room_version that is not a recognised version is rejected.
+                    REQUIRE_FALSE(
+                        merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events)
+                            .allowed);
+                }
+            }
+        }
+    }
+}

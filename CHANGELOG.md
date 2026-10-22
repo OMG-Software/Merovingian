@@ -1,3 +1,54 @@
+## 0.12.34
+
+Fixes the six LOW findings from security audit run-1 (2026-10-20), and two defects found while
+fixing them.
+
+- **SECURITY (`sp02.is-token-crlf-header-injection`):** a client's `id_access_token` reached the
+  outbound `Authorization` header unfiltered, and the pinned libcurl writes header lines verbatim, so
+  CR/LF in it added header lines. The outbound client now refuses, before any network I/O, a header
+  name that is not an RFC 9110 token or a value with a control character other than HTAB
+  (`OutboundError::invalid_header`, ADR-0180).
+- **FIXED (`fed.outbound-fanout-rfind-colon-port-server-name`):** a member's server name was taken
+  after the last `:` of their user ID, so a member on `host:8448` was addressed as `8448` and never
+  received the room's events. Every user ID, room ID and alias split in `src/homeserver/` now uses
+  the first `:` (`auth::identifier_server_name`, `auth::user_id_server_name`): room-event and EDU
+  fan-out, device-list destinations, key query/claim routing, invite targets and alias lookups.
+- **SECURITY (`fed.outbound-fanout-unbounded-destinations-queue-poison`):** a destination whose
+  circuit stayed open kept its transactions queued without counting retries, so one dead or hostile
+  peer could fill the shared outbound queue and every other peer's transactions were refused. Each
+  destination now holds at most its share of the queue (`max(16, depth / 16)`, 256 by default),
+  counting its queued and in-flight transactions, and replay after a restart parks rows past the
+  share instead of promoting them.
+  Refusals are counted (`merovingian_federation_outbound_rejected_total`) and the room-event fan-out
+  logs them at warning level (`room.event.dispatch_refused`) instead of discarding them (ADR-0177).
+- **FIXED (durable outbound queue):** both fan-outs gave every destination one transaction ID, which
+  is the durable `federation_transactions` key. A fan-out kept one durable row, and the first
+  delivery deleted it, so a restart could not replay the other destinations. Each destination now
+  gets its own transaction ID.
+- **SECURITY (`med01.remote-media-owner-sentinel-localpart-collision`):** remote media was told apart
+  from local media by its owner starting with `@remote-media:`, which a local account named
+  `remote-media` imitated to escape `max_total_size` and `max_records`. Each media record now
+  carries `from_remote_fetch`, rebuilt on startup from the owner and the local server name, and the
+  localpart `remote-media` cannot be registered (`400 M_USER_IN_USE`, ADR-0178).
+- **SECURITY (`rooms.room-version-resolution-divergent-fallbacks-create-without-room_version`):**
+  components derived a room's stored version with different defaults (`"1"`, `"10"`, `"12"`), and a
+  federated join never checked the create event against the make_join version. There is now one
+  accessor (`homeserver::stored_room_version`): a create event without `room_version`, or with an
+  unusable one, is version 1 and has no policy; the accessor never returns an empty version, which
+  several parsers would replace with `"12"`. A join is refused (502) unless the create event declares the make_join version.
+  Auth rule 1.3 also rejects a `room_version` that is not a string (ADR-0179).
+- **SECURITY (`sp02.thirdparty-no-proxy-slot`):** the `/thirdparty/*` routes called appservices
+  without a client outbound proxy slot. Each now takes one before calling, and answers
+  `429 M_LIMIT_EXCEEDED` when none is free (ADR-0181).
+- **OBSERVABILITY:** new metrics `merovingian_federation_outbound_rejected_total` and
+  `merovingian_federation_outbound_pending`, and log event `room.event.dispatch_refused`.
+- **TESTS:** new scenarios for each finding, a conformance scenario for first-colon splitting of
+  every sigilled identifier and for rule 1.3 with a non-string `room_version`, and
+  `tests/unit/test_stored_room_version.cpp`.
+- **DOCS:** ADR-0177 to ADR-0181; `docs/threat-model.md`, `docs/security-coding-rules.md`,
+  `docs/observability-audit.md`, `docs/http-transport.md`, `docs/media-repository.md` and the
+  `src/http`, `src/federation`, `src/homeserver`, `src/media` and `src/auth` `AGENTS.md` files.
+
 ## 0.12.33
 
 Fixes the five MEDIUM findings from security audit run-1 (2026-10-20) where a request could

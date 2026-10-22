@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
@@ -41,36 +42,12 @@ namespace
         return parsed.error == canonicaljson::ParseError::none ? std::move(parsed.value) : canonicaljson::Value{};
     }
 
+    // The create event's declared version, through the shared rule (declared_room_version): a
+    // create without room_version is room version 1, which has no policy here.
     [[nodiscard]] auto room_version_of(canonicaljson::Value const& create_event) -> std::string
     {
         auto const* root = std::get_if<canonicaljson::Object>(&create_event.storage());
-        if (root == nullptr)
-        {
-            return {};
-        }
-        for (auto const& member : *root)
-        {
-            if (member.key != "content")
-            {
-                continue;
-            }
-            auto const* content = std::get_if<canonicaljson::Object>(&member.value->storage());
-            if (content == nullptr)
-            {
-                return {};
-            }
-            for (auto const& field : *content)
-            {
-                if (auto const* version = std::get_if<std::string>(&field.value->storage());
-                    field.key == "room_version" && version != nullptr)
-                {
-                    return *version;
-                }
-            }
-            // Spec: a create event with no room_version is room version 1.
-            return "1";
-        }
-        return {};
+        return root == nullptr ? std::string{} : declared_room_version(*root);
     }
 
 } // namespace

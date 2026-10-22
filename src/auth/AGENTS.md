@@ -32,6 +32,13 @@ UIAA and `/whoami` are implemented in `src/homeserver/client_server.cpp`, not in
 6. **Revocation is one-way.** Never restore a revoked token; revoke more narrowly instead
    (e.g. `revoke_tokens_for_user_except_device`). See ADR-0052.
 
+7. **Split identifiers on the FIRST `:`.** A user ID's, room ID's or alias's server name is
+   everything after the first `:` (`user_id_server_name`, `identifier_server_name`): no localpart
+   contains `:`, while a server name may (`host:port`). Never `rfind(':')` (security audit run-1).
+8. **The server's own localparts are reserved.** `localpart_is_reserved` (today `remote-media`,
+   the remote media cache owner, ADR-0178) is refused at every account-creation path as a name
+   already taken. Add a localpart there before the server starts using it as an owner or sender.
+
 ## Argon2id admission and the runtime lock
 
 Every Argon2id call a client request can reach is bounded by the one `HomeserverRuntime::argon2id_admission`

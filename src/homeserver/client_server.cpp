@@ -47,6 +47,7 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -311,12 +312,11 @@ namespace
         auto servers = std::vector<std::string>{};
         for (auto const& member : room.members)
         {
-            auto const colon = member.rfind(':');
-            if (colon == std::string::npos)
+            auto const member_server = auth::user_id_server_name(member);
+            if (member_server.empty())
             {
                 continue;
             }
-            auto const member_server = member.substr(colon + 1);
             if (member_server != server_name && std::ranges::find(servers, member_server) == servers.end())
             {
                 servers.emplace_back(member_server);
@@ -350,10 +350,11 @@ namespace
             return 0U;
         }
         auto const& tx_body = *tx_body_opt;
-        auto const tx_id = federation::make_federation_transaction_id();
         auto enqueued = std::size_t{0U};
         for (auto const& destination : destinations)
         {
+            // One transaction ID per destination: it keys the durable queue row.
+            auto const tx_id = federation::make_federation_transaction_id();
             auto target = "/_matrix/federation/v1/send/" + tx_id;
             auto transaction = federation::make_outbound_transaction(destination, "PUT", target, server_name, tx_body);
             transaction.transaction_id = tx_id;
@@ -408,12 +409,11 @@ namespace
             }
             for (auto const& member : room.members)
             {
-                auto const colon = member.rfind(':');
-                if (colon == std::string::npos)
+                auto const server = auth::user_id_server_name(member);
+                if (server.empty())
                 {
                     continue;
                 }
-                auto const server = member.substr(colon + 1U);
                 if (server != server_name && std::ranges::find(servers, server) == servers.end())
                 {
                     servers.emplace_back(server);
@@ -1035,8 +1035,7 @@ namespace
 
     [[nodiscard]] auto server_name_from_user_id(std::string_view user_id) -> std::string_view
     {
-        auto const colon = user_id.rfind(':');
-        return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
+        return auth::user_id_server_name(user_id);
     }
 
     [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
@@ -1252,43 +1251,13 @@ namespace
         return std::get_if<canonicaljson::Object>(&value->storage());
     }
 
-    // Returns the room_version string from the room's m.room.create state event.
-    // Falls back to "10" for rooms created before version tracking was added.
+    // The room's version, from its m.room.create through the one accessor
+    // (stored_room_version). A room with no stored create (unknown here) falls
+    // back to "10"; a create without room_version is room version 1.
     [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store, std::string_view room_id)
         -> std::string
     {
-        for (auto const& state : store.state)
-        {
-            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
-            {
-                continue;
-            }
-            for (auto const& evt : store.events)
-            {
-                if (evt.event_id != state.event_id)
-                {
-                    continue;
-                }
-                auto const parsed = canonicaljson::parse_lossless(evt.json);
-                auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                if (obj == nullptr)
-                {
-                    break;
-                }
-                auto const* content = object_member_as_object(*obj, "content");
-                if (content == nullptr)
-                {
-                    break;
-                }
-                auto const* version = string_member(*content, "room_version");
-                if (version != nullptr && !version->empty())
-                {
-                    return *version;
-                }
-                break;
-            }
-        }
-        return "10";
+        return stored_room_version(store, room_id).value_or("10");
     }
 
     [[nodiscard]] auto parsed_json_object(std::string_view body) -> std::optional<canonicaljson::Object>
@@ -1684,12 +1653,7 @@ namespace
         {
             return {};
         }
-        auto const colon = room_alias.rfind(':');
-        if (colon == std::string_view::npos || colon + 1U >= room_alias.size())
-        {
-            return {};
-        }
-        return room_alias.substr(colon + 1U);
+        return auth::identifier_server_name(room_alias);
     }
 
     [[nodiscard]] auto parse_join_servers_query(std::string_view query) -> std::optional<std::vector<std::string>>
@@ -6601,8 +6565,7 @@ namespace
             }
 
             // Remote users are proxied via federation key query.
-            auto const colon = user_request.key.rfind(':');
-            auto const user_server = colon != std::string::npos ? user_request.key.substr(colon + 1U) : std::string{};
+            auto const user_server = std::string{auth::user_id_server_name(user_request.key)};
             if (!user_server.empty() && user_server != local_server)
             {
                 remote_by_server[user_server].push_back(user_request.key);
@@ -6810,8 +6773,7 @@ namespace
             }
 
             // Route remote users to their home server.
-            auto const colon = user_request.key.rfind(':');
-            auto const user_server = colon != std::string::npos ? user_request.key.substr(colon + 1U) : std::string{};
+            auto const user_server = std::string{auth::user_id_server_name(user_request.key)};
             if (!user_server.empty() && user_server != local_server)
             {
                 // Copy the device→algorithm map for the remote request.
@@ -6995,8 +6957,7 @@ namespace
             {
                 continue;
             }
-            auto const colon = user_entry.key.rfind(':');
-            auto const user_server = colon != std::string::npos ? user_entry.key.substr(colon + 1U) : std::string{};
+            auto const user_server = std::string{auth::user_id_server_name(user_entry.key)};
             auto const is_local = user_server.empty() || user_server == local_server;
 
             for (auto const& device_entry : *device_map)
@@ -10516,6 +10477,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
         }
+        // The server's own localparts (the remote media cache owner) are never given to an
+        // account; answer as for a name already in use (security audit run-1).
+        if (auth::localpart_is_reserved(*username))
+        {
+            return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
+        }
         auto const user_id = matrix_user_id(rt.homeserver.config.server().server_name, *username);
         if (user_exists(rt, user_id) ||
             rt.homeserver.appservices.is_sender_user_id(user_id, rt.homeserver.config.server().server_name))
@@ -10793,6 +10760,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
             }
+            if (auth::localpart_is_reserved(*username))
+            {
+                return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
+            }
             auto const& server_name = rt.homeserver.config.server().server_name;
             auto const desired_user_id = "@" + *username + ":" + server_name;
             if (!appservice::appservice_owns_user(*registration, server_name, desired_user_id))
@@ -10895,6 +10866,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (!auth::localpart_is_valid_new(body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+        }
+        // The server's own localparts (the remote media cache owner) are never given to an
+        // account; answer as for a name already in use (security audit run-1).
+        if (auth::localpart_is_reserved(body->localpart))
+        {
+            return dispatch_err(req, rt, 400U, "M_USER_IN_USE", "desired username is already taken");
         }
         // Spec: "normal users who attempt to create users ... inside an
         // application service-defined namespace will receive ... M_EXCLUSIVE
@@ -12651,8 +12628,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (request_path == "/_matrix/client/v3/thirdparty/protocols")
         {
             auto protocols_obj = canonicaljson::Object{};
-            if (can_call_appservices)
+            auto const any_protocols = std::ranges::any_of(registrations, [](auto const& registration) {
+                return !registration.protocols.empty();
+            });
+            if (can_call_appservices && any_protocols)
             {
+                // ADR-0079: every client request that calls another server holds a client outbound
+                // proxy slot for the whole call, taken before runtime.mutex is released; none free
+                // means 429 at once, with nothing sent (security audit run-1, sp02).
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
                                                            rt.homeserver.config.appservice()};
                 {
@@ -12703,6 +12691,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
             }
+            // ADR-0079: every client request that calls another server holds a client outbound
+            // proxy slot for the whole call, taken before runtime.mutex is released; none free
+            // means 429 at once, with nothing sent (security audit run-1, sp02).
+            auto const proxy_slot = admit_client_proxy(rt, req);
+            if (!proxy_slot.has_value())
+            {
+                return client_proxy_refused(req, rt);
+            }
             auto client =
                 appservice::AppserviceClient{*outbound_client, *cached_discovery, rt.homeserver.config.appservice()};
             auto const* owner_ptr = owner;
@@ -12739,6 +12735,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto locations = canonicaljson::Array{};
             if (can_call_appservices)
             {
+                // ADR-0079: every client request that calls another server holds a client outbound
+                // proxy slot for the whole call, taken before runtime.mutex is released; none free
+                // means 429 at once, with nothing sent (security audit run-1, sp02).
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 auto const fields = thirdparty_query_fields(req.target);
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
                                                            rt.homeserver.config.appservice()};
@@ -12775,8 +12779,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "alias is required");
             }
             auto locations = canonicaljson::Array{};
-            if (can_call_appservices)
+            if (can_call_appservices && !registrations.empty())
             {
+                // ADR-0079: every client request that calls another server holds a client outbound
+                // proxy slot for the whole call, taken before runtime.mutex is released; none free
+                // means 429 at once, with nothing sent (security audit run-1, sp02).
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
                                                            rt.homeserver.config.appservice()};
                 {
@@ -12825,6 +12837,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto users = canonicaljson::Array{};
             if (can_call_appservices)
             {
+                // ADR-0079: every client request that calls another server holds a client outbound
+                // proxy slot for the whole call, taken before runtime.mutex is released; none free
+                // means 429 at once, with nothing sent (security audit run-1, sp02).
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 auto const fields = thirdparty_query_fields(req.target);
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
                                                            rt.homeserver.config.appservice()};
@@ -12861,8 +12881,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "userid is required");
             }
             auto users = canonicaljson::Array{};
-            if (can_call_appservices)
+            if (can_call_appservices && !registrations.empty())
             {
+                // ADR-0079: every client request that calls another server holds a client outbound
+                // proxy slot for the whole call, taken before runtime.mutex is released; none free
+                // means 429 at once, with nothing sent (security audit run-1, sp02).
+                auto const proxy_slot = admit_client_proxy(rt, req);
+                if (!proxy_slot.has_value())
+                {
+                    return client_proxy_refused(req, rt);
+                }
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery,
                                                            rt.homeserver.config.appservice()};
                 {

@@ -67,7 +67,9 @@ current in-process runtime path.
   flag was consulted only in `media::fetch_remote_media`, after the bytes had been downloaded
   (audit OUT-7). The refusal is counted (`remote_fetch_rejections`) and audited
   (`media.remote_fetch_rejected`). Accepted remote media is stored in the database under a system
-  owner (`@remote-media:<origin>`), and the cache entry mapping `(origin_server, media_id)` to it is
+  owner (`@remote-media:<origin>`; the record's `from_remote_fetch` flag, not the owner string, is
+  what keeps it out of local quotas, and the localpart `remote-media` cannot be registered,
+  ADR-0178), and the cache entry mapping `(origin_server, media_id)` to it is
   stored in `remote_media`, so both survive a restart (ADR-0119). Requests within
   `security.media.remote_media_cache_ttl_seconds` are answered from the stored record without
   contacting the origin: its bytes when available, `451` when quarantined, `404` when removed. A

@@ -1399,3 +1399,163 @@ SCENARIO("local join to a room with remote members broadcasts m.device_list_upda
         homeserver.dispatch_worker->join();
     }
 }
+
+// Security audit run-1 (fed.outbound-fanout-rfind-colon-port-server-name): a member's server name
+// is everything after the FIRST ':' of their user ID (server_name = hostname [ ":" port ]). The
+// fan-out split on the last ':', so a member on "remote.example.org:8448" was addressed as "8448"
+// and never received the room's events.
+SCENARIO("send_event addresses members on a port-suffixed server name by the full server name",
+         "[homeserver][outbound-dispatch][send-event][security]")
+{
+    GIVEN("a room with members on a port-suffixed server and on a bare server, and a recording worker")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto queue_store = merovingian::database::PersistentStore{};
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &queue_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org:8448");
+        local_room->members.push_back("@carol:other.example.org");
+        queue_store.federation_transactions.clear();
+
+        WHEN("a local user sends a message event to the room")
+        {
+            auto const message = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                          R"({"type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}})"});
+
+            THEN("one transaction is queued per server, addressed to the full server names")
+            {
+                REQUIRE(message.response.status == 200U);
+                auto destinations = std::vector<std::string>{};
+                for (auto const& transaction : queue_store.federation_transactions)
+                {
+                    destinations.push_back(transaction.server_name);
+                }
+                std::ranges::sort(destinations);
+                REQUIRE(destinations == std::vector<std::string>{"other.example.org", "remote.example.org:8448"});
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+// Security audit run-1 (fed.outbound-fanout-unbounded-destinations-queue-poison): when the dispatch
+// worker refuses a destination's transaction (its share of the queue is full), the local send still
+// succeeds, the refusal is counted rather than discarded, and operators see it in the admin metrics.
+SCENARIO("send_event still succeeds when the dispatch worker refuses a destination, and the refusal is counted",
+         "[homeserver][outbound-dispatch][send-event][security][metrics]")
+{
+    GIVEN("a room with a remote member and a worker whose share for that destination is sixteen")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+        auto share_config = merovingian::federation::DispatchWorkerConfig{};
+        share_config.max_queue_depth = 64U; // make_dispatch_worker's depth
+        REQUIRE(merovingian::federation::effective_max_pending_per_destination(share_config) == 16U);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org");
+        auto const before = homeserver.dispatch_worker->summary();
+
+        WHEN("seventeen messages are sent while the worker is not draining")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            for (auto i = 0; i < 17; ++i)
+            {
+                statuses.push_back(
+                    merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                                  R"({"type":"m.room.message","content":{"body":"hi","msgtype":"m.text"}})"})
+                        .response.status);
+            }
+
+            THEN("every send succeeds, and the one transaction past the share is refused and counted")
+            {
+                REQUIRE(std::ranges::all_of(statuses, [](auto const status) {
+                    return status == 200U;
+                }));
+                auto const after = homeserver.dispatch_worker->summary();
+                REQUIRE(after.rejected == before.rejected + 1U);
+                REQUIRE(after.pending == 16U);
+            }
+
+            AND_THEN("the admin metrics report the refusal")
+            {
+                auto const admin =
+                    merovingian::homeserver::bootstrap_admin_user(homeserver, "operator", "AdminPass99!");
+                REQUIRE(admin.ok);
+                auto const admin_login = merovingian::homeserver::handle_local_http_request(
+                    homeserver, {"POST", "/_matrix/client/v3/login", {}, admin.value + "|AdminPass99!|ADMINDEV"});
+                REQUIRE(admin_login.status == 200U);
+                auto const metrics = merovingian::homeserver::handle_local_http_request(
+                    homeserver, {"GET", "/_merovingian/admin/metrics", admin_login.body, {}});
+                REQUIRE(metrics.status == 200U);
+                REQUIRE(metrics.body.find("merovingian_federation_outbound_rejected_total") != std::string::npos);
+                REQUIRE(metrics.body.find("merovingian_federation_outbound_pending") != std::string::npos);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}

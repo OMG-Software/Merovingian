@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 SCENARIO("System CA trust detection locates the host trust store", "[http][outbound][tls]")
@@ -360,6 +361,130 @@ SCENARIO("Outbound error names are stable, lowercase identifiers for audit logs"
                 REQUIRE(merovingian::http::outbound_error_name(merovingian::http::OutboundError::timeout) == "timeout");
                 REQUIRE(merovingian::http::outbound_error_name(merovingian::http::OutboundError::network_error) ==
                         "network_error");
+            }
+        }
+    }
+}
+
+// Security audit run-1 (sp02.is-token-crlf-header-injection): a client-supplied value (the
+// identity server id_access_token) reached an outbound Authorization header unfiltered, and the
+// pinned libcurl writes header lines verbatim, so CR/LF in it added header lines to the request.
+// RFC 9110 section 5: a field name is a token, and a field value holds no control characters other
+// than HTAB. The outbound client is the one boundary every outbound request crosses, so it refuses
+// any other header before any network I/O.
+SCENARIO("Outbound requests refuse header names and values that are not valid HTTP fields",
+         "[http][outbound][validation][security][sp02]")
+{
+    // A request that passes every other check (method, https URL, pinned public address), so the
+    // only thing a scenario below varies is the one header it adds.
+    auto const request_with_header = [](std::string name, std::string value) {
+        auto request = merovingian::http::OutboundRequest{};
+        request.method = "POST";
+        request.url = "https://identity.example.org/_matrix/identity/v2/3pid/bind";
+        request.pinned_addresses = {"203.0.113.10"};
+        request.headers.push_back({std::move(name), std::move(value)});
+        return request;
+    };
+
+    // CR and LF end a header line and start another; NUL truncates it in C APIs; any other control
+    // character (0x01-0x1F except HTAB, and DEL) is outside RFC 9110 field-value.
+    GIVEN("headers carrying CR, LF, NUL or another control character in the value")
+    {
+        auto const values = std::vector<std::string>{
+            "Bearer abc\r\nX-Injected: 1",
+            "Bearer abc\nX-Injected: 1",
+            "Bearer abc\rX",
+            std::string{"Bearer a\0b", 10U},
+            "Bearer \x01",
+            "Bearer \x7f"
+        };
+
+        WHEN("each request is validated")
+        {
+            THEN("every one is refused as an invalid header")
+            {
+                for (auto const& value : values)
+                {
+                    CAPTURE(value);
+                    REQUIRE(merovingian::http::validate_outbound_request(request_with_header("Authorization", value)) ==
+                            merovingian::http::OutboundError::invalid_header);
+                }
+            }
+        }
+    }
+
+    // A field name is a token: no space, no separators such as ":" "(" ")" "\"", no control
+    // characters, and not empty.
+    GIVEN("header names that are not HTTP tokens")
+    {
+        auto const names =
+            std::vector<std::string>{"", "Bad Name", "Bad:Name", "Bad\r\nName", "X-\x01", "Bad(Name)", "Bad\"Name"};
+
+        WHEN("each request is validated")
+        {
+            THEN("every one is refused as an invalid header")
+            {
+                for (auto const& name : names)
+                {
+                    CAPTURE(name);
+                    REQUIRE(merovingian::http::validate_outbound_request(request_with_header(name, "value")) ==
+                            merovingian::http::OutboundError::invalid_header);
+                }
+            }
+        }
+    }
+
+    // The real headers outbound callers send must keep passing: HTAB is allowed inside a value, and
+    // an empty value is a valid field value.
+    GIVEN("ordinary headers, including a value with a horizontal tab and visible punctuation")
+    {
+        auto request = request_with_header("Authorization", "Bearer abc.DEF-123_~+/=");
+        request.headers.push_back({"Content-Type", "application/json; charset=utf-8"});
+        request.headers.push_back({"X-Tabbed", "a\tb"});
+        request.headers.push_back({"X-Empty", ""});
+
+        WHEN("the request is validated")
+        {
+            THEN("it passes")
+            {
+                REQUIRE(merovingian::http::validate_outbound_request(request) ==
+                        merovingian::http::OutboundError::none);
+            }
+        }
+    }
+
+    // perform() repeats the check itself, so a caller that skips validate_outbound_request still
+    // cannot put an invalid header on the wire.
+    GIVEN("an OutboundClient and a request whose header value carries CR/LF")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto const request = request_with_header("Authorization", "Bearer abc\r\nX-Injected: 1");
+
+        WHEN("perform is invoked")
+        {
+            auto const result = client.perform(request);
+
+            THEN("it fails closed with invalid_header before any network I/O")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.error == merovingian::http::OutboundError::invalid_header);
+                REQUIRE(result.response.status == 0U);
+            }
+        }
+    }
+
+    // The error name is serialised across the worker IPC boundary, so it must round-trip.
+    GIVEN("the invalid_header error")
+    {
+        WHEN("it is named and the name parsed back")
+        {
+            auto const name = merovingian::http::outbound_error_name(merovingian::http::OutboundError::invalid_header);
+
+            THEN("the name is stable and round-trips")
+            {
+                REQUIRE(name == "invalid_header");
+                REQUIRE(merovingian::http::outbound_error_from_name(name) ==
+                        merovingian::http::OutboundError::invalid_header);
             }
         }
     }

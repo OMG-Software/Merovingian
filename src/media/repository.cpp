@@ -370,12 +370,13 @@ namespace
     // deduplicate onto one blob occupy one blob's worth of memory, so charging
     // both would refuse uploads long before the repository was actually full.
 
-    // ADR-0120: remote media is stored under one system owner per origin and
-    // is accounted against the remote media cache's own budget, never against
-    // local quotas, so cached remote files cannot make a local upload fail.
-    [[nodiscard]] auto is_remote_media_owner(std::string_view owner_user_id) noexcept -> bool
+    // ADR-0120: remote media is accounted against the remote media cache's own
+    // budget, never against local quotas, so cached remote files cannot make a
+    // local upload fail. The record says where it came from; the owner string
+    // is not trusted for this (security audit run-1).
+    [[nodiscard]] auto is_remote_cache_record(LocalMediaRecord const& record) noexcept -> bool
     {
-        return owner_user_id.starts_with("@remote-media:");
+        return record.from_remote_fetch;
     }
 
     // Bytes of local media, counting each stored file once however many local
@@ -386,7 +387,7 @@ namespace
         auto total = std::uint64_t{0U};
         for (auto const& record : repository.records)
         {
-            if (record.state != LocalMediaState::removed && !is_remote_media_owner(record.owner_user_id) &&
+            if (record.state != LocalMediaState::removed && !is_remote_cache_record(record) &&
                 counted.insert(record.storage_id).second)
             {
                 total += record.size_bytes;
@@ -400,14 +401,14 @@ namespace
     {
         return std::ranges::any_of(repository.records, [storage_id](LocalMediaRecord const& record) {
             return record.storage_id == storage_id && record.state != LocalMediaState::removed &&
-                   !is_remote_media_owner(record.owner_user_id);
+                   !is_remote_cache_record(record);
         });
     }
 
     [[nodiscard]] auto local_record_count(LocalMediaRepository const& repository) noexcept -> std::uint64_t
     {
         return static_cast<std::uint64_t>(std::ranges::count_if(repository.records, [](LocalMediaRecord const& record) {
-            return !is_remote_media_owner(record.owner_user_id);
+            return !is_remote_cache_record(record);
         }));
     }
 
@@ -483,6 +484,18 @@ auto local_media_state_name(LocalMediaState state) noexcept -> char const*
     }
 
     return "unknown";
+}
+
+auto is_remote_cache_owner(std::string_view owner_user_id, std::string_view local_server_name) noexcept -> bool
+{
+    constexpr auto prefix = std::string_view{"@remote-media:"};
+    if (!owner_user_id.starts_with(prefix))
+    {
+        return false;
+    }
+    // The prefix ends at the first ':', so the rest is the owner's server name.
+    auto const origin = owner_user_id.substr(prefix.size());
+    return !origin.empty() && origin != local_server_name;
 }
 
 auto make_local_media_repository(RuntimeMediaConfig config) -> LocalMediaRepository
@@ -764,6 +777,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 "media id generation failed"};
     }
     record.owner_user_id = request.owner_user_id;
+    record.from_remote_fetch = request.from_remote_fetch;
     record.content_type = content_type;
     record.size_bytes = size_bytes;
     record.hash_algorithm = "blake2b";

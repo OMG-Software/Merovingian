@@ -2352,3 +2352,24 @@ run, so each was a way for one party to slow the whole server (CWE-407).
 - **Federation media multipart.** The delimiter search was O(body × boundary) on a body and
   boundary a remote server chooses. **Mitigation:** boundaries over 70 characters are refused
   (RFC 2046) and the search is linear (ADR-0176).
+
+### Run-1 low findings (0.12.34)
+
+Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
+
+- **Header injection toward identity servers.** A client's `id_access_token` became an outbound
+  header unfiltered. **Mitigation:** the outbound client refuses invalid header names and values
+  before any I/O (ADR-0180).
+- **Ported server names.** Splitting user IDs on the last `:` addressed members on `host:port` to
+  the port, so they silently missed every event. **Mitigation:** first-`:` splitting everywhere.
+- **Outbound queue starvation.** One dead or hostile peer could fill the shared outbound queue.
+  **Mitigation:** each destination holds a bounded share; refusals are counted and logged
+  (ADR-0177). Residual risk: sixteen or more dead destinations can still fill it together.
+- **Remote media owner forgery.** A local account named `remote-media` escaped local media quotas.
+  **Mitigation:** cache membership is recorded per record and the name is reserved (ADR-0178).
+- **Room version divergence.** A resident server could seat a local user in a room whose create
+  event omits `room_version`, which components then judged under different rule sets.
+  **Mitigation:** one accessor, and the join must match the create event (ADR-0179).
+- **Unadmitted third-party lookups.** `/thirdparty/*` held request threads with no proxy slot.
+  **Mitigation:** each takes an ADR-0079 slot (ADR-0181). Residual risk: a request can still take up
+  to the sum of the appservices' timeouts.

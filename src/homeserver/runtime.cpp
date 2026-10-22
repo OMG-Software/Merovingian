@@ -95,6 +95,21 @@ namespace
                         "Total number of durable admin actions appended since the current store was created."),
         };
 
+        if (runtime.dispatch_worker != nullptr)
+        {
+            // Security audit run-1: outbound transactions the worker refused because its queue, or a
+            // destination's share of it, was full. The peers recover those events themselves.
+            auto const dispatch = runtime.dispatch_worker->summary();
+            metrics.push_back(make_metric("merovingian_federation_outbound_rejected_total",
+                                          static_cast<std::int64_t>(dispatch.rejected),
+                                          observability::MetricType::counter,
+                                          "Outbound federation transactions refused because the dispatch queue, or "
+                                          "the destination's share of it, was full."));
+            metrics.push_back(make_metric("merovingian_federation_outbound_pending",
+                                          static_cast<std::int64_t>(dispatch.pending), observability::MetricType::gauge,
+                                          "Outbound federation transactions waiting in the dispatch queue."));
+        }
+
         auto const health = admin_health(runtime);
         for (auto const& component : health.components)
         {
@@ -127,7 +142,8 @@ namespace
     }
 
     auto hydrate_media_repository(media::LocalMediaRepository& repository,
-                                  database::PersistentStore const& persistent_store) -> void
+                                  database::PersistentStore const& persistent_store, std::string_view server_name)
+        -> void
     {
         auto records = std::vector<media::LocalMediaRecord>{};
         records.reserve(persistent_store.local_media.size());
@@ -146,6 +162,7 @@ namespace
                                                                       : media::LocalMediaState::available);
             record.quarantine_reason = media_row.quarantined ? "persisted quarantine" : std::string{};
             record.legacy_endpoint_visible = media_row.legacy_endpoint_visible;
+            record.from_remote_fetch = media::is_remote_cache_owner(media_row.owner_user_id, server_name);
             records.push_back(std::move(record));
         }
 
@@ -898,7 +915,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
             });
     }
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
-    hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
+    hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store,
+                             runtime.config.server().server_name);
 
     // Application Service API (Matrix v1.19): parse every configured
     // registration file once, up front. A per-file problem (bad JSON, a

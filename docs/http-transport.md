@@ -982,6 +982,13 @@ Rules for anything added to these paths:
   guard it was handed, and restores exactly that many on exit. See "One release
   primitive" below for why that matters.
 
+## Outbound header validation (ADR-0180)
+
+The outbound client refuses a request before any DNS, connection or serialisation when a header
+name is not an RFC 9110 token or a header value holds a control character other than HTAB
+(`OutboundError::invalid_header`). Header values can carry client input, such as an identity
+server access token, and libcurl writes header lines verbatim.
+
 ## Client-triggered outbound proxying (ADR-0079)
 
 Releasing the runtime mutex during a network call frees the mutex, not the
@@ -999,6 +1006,7 @@ The paths under the budget:
 | `GET /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET /publicRooms` |
 | `POST /_matrix/client/v3/publicRooms?server=<remote>` | federation `GET` or `POST /publicRooms` |
 | `GET /_matrix/client/v3/directory/room/{alias}` for a remote alias | federation `GET /query/directory` |
+| `GET /_matrix/client/v3/thirdparty/*`, when an appservice will be called | appservice `GET /_matrix/app/v1/thirdparty/*` (ADR-0181) |
 | `GET /_matrix/media/v3/download` and `/thumbnail` for remote media, without a media fetch pool | discovery, federation media, legacy fallback, redirect follow |
 | `GET /_matrix/client/v1/media/download` and `/thumbnail` for remote media, without a media fetch pool | as above |
 

@@ -30,6 +30,9 @@ enum class OutboundError : std::uint8_t
     response_too_large,
     timeout,
     network_error,
+    // A header name that is not an RFC 9110 token, or a value with a control character other
+    // than HTAB (CR/LF would add header lines: security audit run-1). Refused before any I/O.
+    invalid_header,
 };
 
 struct OutboundHeader final

@@ -464,6 +464,9 @@ metadata ahead of each metric family. Core families currently exported are:
 - `audit_events_appended_total`
 - `admin_actions_total`
 - `merovingian_health_status{component="...",status="ok|degraded|failed"}`
+- `merovingian_federation_outbound_rejected_total`: outbound federation transactions refused
+  because the dispatch queue, or the destination's share of it, was full (ADR-0177)
+- `merovingian_federation_outbound_pending`: outbound federation transactions waiting to be sent
 - all `media_*` repository counters and gauges already tracked by the runtime
 
 Metric names and label keys are ASCII-safe, payload-free operator fields. New
