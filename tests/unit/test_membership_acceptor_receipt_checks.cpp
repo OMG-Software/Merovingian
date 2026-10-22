@@ -18,9 +18,12 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -33,6 +36,8 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
 namespace
@@ -173,8 +178,8 @@ auto seed_accepted_event(HomeserverRuntime& runtime, std::string const& room_id,
             auto const membership = events::extract_content_membership(parsed.value);
             if (!membership.empty())
             {
-                auto const existing = std::ranges::find_if(store.memberships,
-                    [&](database::PersistentMembership const& m) {
+                auto const existing =
+                    std::ranges::find_if(store.memberships, [&](database::PersistentMembership const& m) {
                         return m.room_id == room_id && m.user_id == *state_key;
                     });
                 if (existing != store.memberships.end())
@@ -486,6 +491,239 @@ SCENARIO("A membership event passing its auth_events and state-before but failin
                     });
                 REQUIRE(bob_membership != memberships.end());
                 REQUIRE(bob_membership->membership == "ban");
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto object_member_value(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Value const*
+{
+    for (auto const& member : object)
+    {
+        if (member.key == key)
+        {
+            return member.value.get();
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// Spec: docs/matrix-v1.19-spec/server-server-api.md — "Checks performed on
+// receipt of a PDU", step 3: "Passes hash checks, otherwise it is redacted
+// before being processed further", and "Validating hashes and signatures on
+// received events": "the receiving server should use the redacted copy it
+// calculated rather than the full copy it received". PUT /invite lists only a
+// signature failure as a reason to refuse. Audit R06.
+SCENARIO("invite: an invite with a mismatched content hash is redacted before it is signed and stored",
+         "[pdu_ingestion][invite][r06]")
+{
+    GIVEN("a local user invited to a room this server does not hold, by an event whose hash does not match")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        REQUIRE(started.runtime.federation.invite_handler != nullptr);
+        started.runtime.database.users.push_back({"@bob:local.example.org", {}, false, false, false, false});
+
+        auto const room_id = std::string{"!elsewhere:remote.example.org"};
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "displayname", merovingian::canonicaljson::Value{std::string{"Mallory"}}));
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"invite"}}));
+        auto const invite_json =
+            build_event_json(room_id, "m.room.member", std::string{"@bob:local.example.org"},
+                             "@alice:remote.example.org", std::move(content), {"$prev:remote.example.org"},
+                             {"$create:remote.example.org"}, 4, 5, std::string{"this-does-not-match"});
+        auto request = merovingian::federation::InviteRequest{};
+        request.room_id = room_id;
+        request.event_id = "$invitebadhash:remote.example.org";
+        request.room_version = "10";
+        request.invite_event_json = invite_json;
+        request.origin = "remote.example.org";
+
+        WHEN("the invite is handled")
+        {
+            auto const result = started.runtime.federation.invite_handler(request);
+
+            THEN("it is accepted, not refused for its hash")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(result.status == 200U);
+            }
+
+            THEN("the event this server signs and keeps is the redacted copy")
+            {
+                REQUIRE(result.accepted);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(result.signed_event_json);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* content_value = object_member_value(*root, "content");
+                REQUIRE(content_value != nullptr);
+                auto const* content_object = std::get_if<merovingian::canonicaljson::Object>(&content_value->storage());
+                REQUIRE(content_object != nullptr);
+                REQUIRE(object_member_value(*content_object, "displayname") == nullptr);
+                REQUIRE(object_member_value(*content_object, "membership") != nullptr);
+                auto const* signatures = object_member_value(*root, "signatures");
+                REQUIRE(signatures != nullptr);
+                auto const* signatures_object = std::get_if<merovingian::canonicaljson::Object>(&signatures->storage());
+                REQUIRE(signatures_object != nullptr);
+                REQUIRE(object_member_value(*signatures_object, "local.example.org") != nullptr);
+
+                auto const& events = started.runtime.database.persistent_store.events;
+                auto const stored = std::ranges::find_if(events, [&](merovingian::database::PersistentEvent const& e) {
+                    return e.event_id == request.event_id;
+                });
+                REQUIRE(stored != events.end());
+                REQUIRE(stored->json.find("Mallory") == std::string::npos);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: docs/matrix-v1.19-spec/server-server-api.md — PUT /v2/invite: the
+// request's `room_version` is "The version of the room where the user is being
+// invited to". A room this server does not hold has no create event to read a
+// version from, so the invite is redacted and signed under the version the
+// request names. Redaction differs by version: from rooms/v11.md, the top-level
+// `origin` key is no longer kept, while v10 keeps it. Audit R06 (review of PR
+// #520).
+SCENARIO(
+    "invite: an invite for a room this server does not hold is redacted and signed under the request's room version",
+    "[pdu_ingestion][invite][r06]")
+{
+    GIVEN("a local user invited to an unheld room version 12 room, by an event with a top-level origin and a bad hash")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        REQUIRE(started.runtime.federation.invite_handler != nullptr);
+        REQUIRE(started.runtime.crypto_provider != nullptr);
+        started.runtime.database.users.push_back({"@bob:local.example.org", {}, false, false, false, false});
+
+        auto const room_id = std::string{"!v12room:remote.example.org"};
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"invite"}}));
+        auto const built =
+            build_event_json(room_id, "m.room.member", std::string{"@bob:local.example.org"},
+                             "@alice:remote.example.org", std::move(content), {"$prev:remote.example.org"},
+                             {"$create:remote.example.org"}, 4, 5, std::string{"this-does-not-match"});
+        auto const parsed_built = merovingian::canonicaljson::parse_lossless(built);
+        REQUIRE(parsed_built.error == merovingian::canonicaljson::ParseError::none);
+        auto const* built_object = std::get_if<merovingian::canonicaljson::Object>(&parsed_built.value.storage());
+        REQUIRE(built_object != nullptr);
+        auto with_origin = merovingian::canonicaljson::Object{};
+        for (auto const& member : *built_object)
+        {
+            with_origin.push_back(merovingian::canonicaljson::make_member(member.key, *member.value));
+        }
+        with_origin.push_back(merovingian::canonicaljson::make_member(
+            "origin", merovingian::canonicaljson::Value{std::string{"remote.example.org"}}));
+        auto const invite_json =
+            merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{std::move(with_origin)});
+        REQUIRE(invite_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto request = merovingian::federation::InviteRequest{};
+        request.room_id = room_id;
+        request.event_id = "$invitev12:remote.example.org";
+        request.room_version = "12";
+        request.invite_event_json = invite_json.output;
+        request.origin = "remote.example.org";
+
+        WHEN("the invite is handled")
+        {
+            auto const result = started.runtime.federation.invite_handler(request);
+
+            THEN("the copy it keeps is redacted under version 12 and carries a signature valid under version 12")
+            {
+                REQUIRE(result.accepted);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(result.signed_event_json);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                // rooms/v11.md redaction: top-level `origin` is no longer preserved.
+                REQUIRE(object_member_value(*root, "origin") == nullptr);
+                auto const* policy = merovingian::rooms::find_room_version_policy("12");
+                REQUIRE(policy != nullptr);
+                auto const envelope = merovingian::events::parse_event_envelope(parsed.value);
+                REQUIRE(envelope.error.empty());
+                auto& store = started.runtime.database.persistent_store;
+                auto const verified = merovingian::federation::verify_server_signatures_on_event(
+                    parsed.value, *policy, "local.example.org", envelope.event.signatures,
+                    [&store](std::string_view server_name, std::string_view key_id) {
+                        return merovingian::federation::VerificationKeyResolution{
+                            merovingian::federation::find_own_server_signing_key(store, server_name, key_id)};
+                    },
+                    *started.runtime.crypto_provider);
+                REQUIRE(verified.accepted);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: docs/matrix-v1.19-spec/server-server-api.md — PUT /v2/send_join, 200
+// response `event`: "The membership event sent to other servers by the resident
+// server". After a hash mismatch that is the redacted copy the resident kept,
+// never the full copy it received. Audit R06.
+SCENARIO("send_join: the event returned for a hash-mismatched join is the redacted copy this server stored",
+         "[pdu_ingestion][auth][r06]")
+{
+    GIVEN("a seeded public room and a send_join whose content carries an extra key the hash does not cover")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+
+        auto const room_id = std::string{"!sjhashreturn:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org");
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "displayname", merovingian::canonicaljson::Value{std::string{"Mallory"}}));
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const bad_json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
+                                               "@bob:remote.example.org", std::move(content), {genesis.join_rules_id},
+                                               {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5,
+                                               std::string{"this-does-not-match"});
+        auto const envelope =
+            make_envelope(room_id, "$sjhashreturn:remote.example.org", "m.room.member",
+                          std::string{"@bob:remote.example.org"}, "@bob:remote.example.org", {genesis.join_rules_id},
+                          {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, bad_json);
+
+        WHEN("the send_join is accepted")
+        {
+            auto const result = started.runtime.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
+
+            THEN("the event handed back is the redacted copy, identical to the stored one")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(result.signed_event_json.find("Mallory") == std::string::npos);
+                auto const& events = started.runtime.database.persistent_store.events;
+                auto const stored = std::ranges::find_if(events, [&](merovingian::database::PersistentEvent const& e) {
+                    return e.event_id == envelope.event_id;
+                });
+                REQUIRE(stored != events.end());
+                REQUIRE(stored->json == result.signed_event_json);
             }
         }
 

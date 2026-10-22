@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace merovingian::ipc
 {
@@ -62,5 +65,26 @@ namespace merovingian::ipc
 // room_sync notification so main can correlate the asynchronous result.
 [[nodiscard]] auto serialize_room_sync_result(std::string_view room_id, std::string_view state,
                                               std::uint64_t generation) -> std::string;
+
+// A make_join a federation worker hands to main (audit R04, ADR-0185): the
+// template names an authorising user only after the allow conditions of a
+// restricted room are checked, and those rooms' state may live in another
+// shard, so main, which holds every room, builds it. Worker to main.
+struct MembershipTemplateIngest final
+{
+    std::string room_id{};
+    std::string user_id{};
+    std::vector<std::string> supported_versions{};
+};
+[[nodiscard]] auto serialize_membership_template_ingest(MembershipTemplateIngest const& request) -> std::string;
+// std::nullopt for a frame that does not parse or lacks room_id / user_id.
+[[nodiscard]] auto deserialize_membership_template_ingest(std::string_view json)
+    -> std::optional<MembershipTemplateIngest>;
+
+// Main's answer: the template, or none (404 to the requesting server).
+[[nodiscard]] auto serialize_membership_template_ingest_result(
+    std::optional<federation::MembershipEventTemplate> const& result) -> std::string;
+[[nodiscard]] auto deserialize_membership_template_ingest_result(std::string_view json)
+    -> std::optional<federation::MembershipEventTemplate>;
 
 } // namespace merovingian::ipc

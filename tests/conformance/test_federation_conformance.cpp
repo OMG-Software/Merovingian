@@ -63,8 +63,8 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
-                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
+    -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -97,8 +97,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
-                                      std::string const& target,
-                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                      std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -116,8 +116,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_post_request(std::string const& origin, std::string const& key_id,
-                                       std::string const& key_seed, std::string const& target,
-                                       std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                       std::string const& key_seed, std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "POST";
@@ -255,8 +255,8 @@ struct SignedMemberPdu final
 // verify_pdu_content_hash passes. The membership parameter selects
 // "join", "leave", or "knock".
 [[nodiscard]] auto make_signed_member_pdu(std::string const& room_id_arg, std::string const& sender,
-                                          std::string const& membership,
-                                          std::string_view room_ver = "12") -> SignedMemberPdu
+                                          std::string const& membership, std::string_view room_ver = "12")
+    -> SignedMemberPdu
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
@@ -275,8 +275,8 @@ struct SignedMemberPdu final
 // Build a properly signed v2 invite body wrapping a signed m.room.member
 // invite event from the remote server.
 [[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id_arg, std::string const& sender,
-                                              std::string const& state_key,
-                                              std::string_view room_ver = "12") -> std::string
+                                              std::string const& state_key, std::string_view room_ver = "12")
+    -> std::string
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
@@ -310,8 +310,8 @@ struct SignedMemberPdu final
 }
 
 // Navigate a JSON object and return a pointer to the Value for `key`.
-[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj,
-                            std::string const& key) -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
+    -> merovingian::canonicaljson::Value const*
 {
     for (auto const& m : obj)
         if (m.key == key)
@@ -1555,10 +1555,11 @@ SCENARIO("Room-scoped federation reads pass the authenticated origin to the prov
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1queryprofile
 //
 // The resident server MUST return 200 with displayname and avatar_url for a
-// known local user. Unknown users MUST return 404 M_NOT_FOUND. An invalid
-// 'field' query parameter MUST return 400. Missing provider → 501.
+// known local user. Unknown users MUST return 404 M_NOT_FOUND. `field` accepts
+// displayname, avatar_url, m.tz and additional keys; a field the user does not
+// have is 404 M_NOT_FOUND. Missing provider → 501.
 SCENARIO("GET /query/profile returns user profile fields when the profile_query_provider is wired",
-         "[federation][conformance][query_profile]")
+         "[federation][conformance][query_profile][r18]")
 {
     GIVEN("a runtime with profile_query_provider installed")
     {
@@ -1631,18 +1632,96 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
             }
         }
 
-        WHEN("a profile request supplies an invalid field parameter")
+        // Spec v1.19 (query/profile, `field`): "Defined values are `displayname`,
+        // `avatar_url` and `m.tz`. In addition to these servers MAY allow users to
+        // set additional key/value pairs." A field the user does not have is a 404:
+        // "The user does not exist, does not have a profile or the queried field
+        // does not exist." It is never a 400; this replaces a scenario that asserted
+        // 400 for any field other than displayname and avatar_url (audit R18).
+        WHEN("a profile request asks for the m.tz field the user has not set")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=m.tz"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the field is accepted and reported as not existing")
+            {
+                // Spec MUST: m.tz is a defined value of `field`, so it is not a bad request.
+                REQUIRE(response.status != 400U);
+                // Spec MUST: 404 when "the queried field does not exist".
+                REQUIRE(response.status == 404U);
+                // Spec MUST: the 404 is a Matrix error; M_NOT_FOUND names a missing resource.
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("a profile request asks for an additional field this server does not hold")
         {
             auto const target =
                 std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=badfield"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
-            THEN("the response is 400 because the field value is not recognised")
+            THEN("the response is 404 because the queried field does not exist")
             {
-                // Spec: field MUST be one of 'displayname' or 'avatar_url'.
-                // Any other value is a client error.
-                REQUIRE(response.status == 400U);
+                // Spec MUST: servers MAY allow additional key/value pairs, so an unknown
+                // key is a field that does not exist (404), not a malformed request.
+                REQUIRE(response.status == 404U);
+                // Spec MUST: the 404 is a Matrix error; M_NOT_FOUND names a missing resource.
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime whose profile provider knows a user with no display name or avatar set")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        runtime.profile_query_provider = [](std::string_view user_id) -> merovingian::federation::FederationProfile {
+            if (user_id == "@bare:local.example.org")
+                return {true, {}, {}};
+            return {false, {}, {}};
+        };
+
+        WHEN("the whole profile is requested")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id=@bare:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the unset fields are left out rather than sent as empty strings")
+            {
+                // Spec MUST: 200 with the user's public profile for a known user.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                // Spec MUST: the 200 body is a JSON object.
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                // Spec MUST: the 200 body is a JSON object.
+                REQUIRE(root != nullptr);
+                // Spec MUST: "If the user does not have a particular field set on their
+                // profile, the server MUST either exclude it from the response body or
+                // give it the value null."
+                REQUIRE(json_get(*root, std::string{"displayname"}) == nullptr);
+                // Spec MUST: an unset avatar_url is excluded or null, never "".
+                REQUIRE(json_get(*root, std::string{"avatar_url"}) == nullptr);
+            }
+        }
+
+        WHEN("only the unset displayname field is requested")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@bare:local.example.org&field=displayname"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 404 because the queried field does not exist")
+            {
+                // Spec MUST: 404 when "the queried field does not exist".
+                REQUIRE(response.status == 404U);
+                // Spec MUST: the 404 is a Matrix error; M_NOT_FOUND names a missing resource.
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }

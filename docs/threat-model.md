@@ -1949,11 +1949,12 @@ until the refresh).
   state), and is exactly what state-res v2's power/mainline ordering exists
   to make deterministic and unexploitable; see "PDU ingestion resolved
   state diverging by delivery order" above.
-- **Not covered by this phase:** the membership-acceptor path
-  (`send_join`/`send_leave`/`send_knock` acceptance,
-  `src/federation/inbound_request.cpp`) does not run this three-way check
-  and still hard-rejects a content-hash mismatch instead of redacting — see
-  `src/federation/AGENTS.md`.
+- **Membership-acceptor path:** `send_join`/`send_leave`/`send_knock`
+  acceptance runs the same three-way check in the membership acceptor
+  (`src/homeserver/local_http_router.cpp`). Since 0.12.36 (R06) a content-hash
+  mismatch there, and on `/invite`, is redacted and processed further rather
+  than refused; see "What a remote server can get accepted or signed:
+  conformance audit wave 2 (0.12.36)" below and `src/federation/AGENTS.md`.
 
 ### Gaps in room history leaving inbound PDUs unapplied (v0.12.13, ADR-0064 phase C)
 
@@ -2326,6 +2327,40 @@ Security audit run-1 (2026-10-20) found two HIGH issues, both fixed in 0.12.31.
   a list's cost still grows with the user's joined-room count; the 32-list cap bounds how often
   a request repeats it. The audit's other runtime-lock findings (extension rooms arrays, push
   glob matching, account-data scans) are not addressed by this change.
+
+### What a remote server can get accepted or signed: conformance audit wave 2 (0.12.36)
+
+The 2026-10-17 conformance audit's federation findings changed what this server accepts from
+other servers. Each change, and its bound:
+
+- **Sender signatures under every listed key ID (R05, ADR-0183).** A PDU's sender signature
+  is checked against every `ed25519:` key ID listed for the sender's server, not only the
+  first: unknown and expired keys are skipped, every other signature must verify, and one
+  must. A relay can list extra key IDs (the `signatures` object is unsigned), so an event
+  listing more than four for its sender's server is refused before any lookup, and each
+  candidate goes through the admitted, rate-limited, failure-cached lookup. Residual risk: an
+  event can cost up to four lookups for its sender's server where it cost one. A relay that
+  adds an invalid signature under a published key gets the event dropped, which it could do
+  anyway by not forwarding it; a dropped event is not recorded, so a genuine copy arriving
+  another way is still accepted.
+- **Hash mismatches are redacted, not refused (R06).** `send_join`, `send_leave`, `send_knock`
+  and `/invite` (v1 and v2) now accept a validly signed event whose content hash does not
+  match, and keep, authorise, sign and return only its redacted copy. A sender can therefore
+  get a stripped copy of its own event stored, which it could always do by sending the
+  redacted form; nothing it adds outside the signed, redacted form survives.
+- **This server co-signs restricted joins (R04, ADR-0184, ADR-0185).** A `send_join` naming
+  one of our users as `join_authorised_via_users_server` is no longer refused for lacking our
+  signature; the acceptor adds it, but only when `decide_restricted_join` finds, in our own
+  current state, that the joining user meets an allow condition and the named user is joined
+  with invite power. Otherwise it refuses without storing or signing. The decision reads at
+  most 32 conditions and validates one only while this server is joined to the room it
+  names, so state kept after leaving cannot authorise anyone. Before signing, the acceptor
+  drops every signature the joining server filed under our name. A local client cannot name an
+  authoriser itself: every locally composed join naming a local authoriser passes the same
+  decision. Residual risk: the decision is only
+  as current as our view of the allowed rooms; a user who left an allowed room in a fork we
+  have not seen can still be authorised, which the spec accepts ("the conditions are only
+  checked/evaluated during the join process").
 
 ### Request-sized work under the runtime lock (0.12.33)
 

@@ -21,6 +21,7 @@ This is the largest and most complex module — read this file carefully before 
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
 | `redaction_service.cpp` | Applies redactions (judge, overwrite the target's stored JSON, withhold unapplied redactions from clients) and checks a local client's redaction |
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
+| `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
 | `default_push_ruleset.cpp` | The server-default push ruleset returned by `/pushrules/` |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
@@ -137,6 +138,26 @@ request to `media_fetch_budget` and hands it to the pool, which runs it again in
 network before the deferral, so a refusal or cache hit never costs a pool slot. Fetches of one remote
 file are coalesced (`RemoteMediaFetchCoalescer`): never wait on the coalescer with `runtime.mutex`
 held, and never take `runtime.mutex` while holding its mutex.
+
+## Restricted joins as the resident (R04, ADR-0184, ADR-0185)
+
+`decide_restricted_join` (`restricted_join.cpp`) is the only place that decides whether a
+non-member may join a restricted room through an allow condition, and which local user
+authorises it. Three callers use it and must stay in step: the `make_join` template provider
+(names `join_authorised_via_users_server` and adds that user's member event to `auth_events`,
+or refuses with 400 `M_UNABLE_TO_AUTHORISE_JOIN` / `M_UNABLE_TO_GRANT_JOIN` or 403
+`M_FORBIDDEN` via `MembershipEventTemplate::error_status`), the `send_join` acceptor (co-signs
+with `sign_invite_event` only when the decision authorises the named user, before the auth
+checks and before storing, after `without_signatures_of` drops whatever the joining server filed
+under our name; refuses unsigned otherwise), and `compose_signed_event` (refuses any local join
+naming a local authoriser the decision does not accept, so `PUT /state` cannot skip the check;
+a join by a user already joined has the field dropped instead, ADR-0185).
+An allow condition counts as verifiable only while this server is joined to the room it names:
+state kept after leaving is not current. Federation workers relay `make_join` to main
+(`membership_template_ingest`), since allowed rooms may live in another shard; main refuses a
+frame whose user ID is malformed or local. The decision reads state under `runtime.mutex`, takes
+the room version through `declared_room_version`, and is bounded by
+`max_restricted_join_conditions` (32).
 
 ## Federation worker relays are untrusted input
 

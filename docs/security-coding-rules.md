@@ -479,6 +479,41 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (CWE-347 Improper Verification of Cryptographic Signature; security audit run-1, ADR-0171).
   Source: `src/federation/AGENTS.md`.
 
+- **Check a sender's signature against every key ID it lists, never only the first, and
+  bound the candidates.** Use `federation::authorize_federation_pdu_sender` or
+  `verify_server_signatures_on_event`; candidates come from `signature_key_ids_for_server`:
+  `ed25519:` IDs only, no repeats, each through the caller's admitted lookup, and an event
+  listing more than `max_signature_keys_per_server` (4) is refused before any lookup. Unknown
+  keys and keys expired before `origin_server_ts` are skipped; any other signature that does
+  not verify refuses the event, and at least one must verify.
+  Why: a first-match loop refused genuine events signed with a rotated key and let a relay
+  make any event fail by listing a junk ID first; "any one verifies" accepts an event carrying
+  an invalid signature by a published key, which the spec drops; an unbounded list lets one
+  event force unbounded key fetches (CWE-347 Improper Verification of Cryptographic Signature;
+  CWE-400 Uncontrolled Resource Consumption for the bound; conformance audit R05, ADR-0183).
+  Source: `src/federation/AGENTS.md`.
+
+- **This server co-signs a restricted join only after `homeserver::decide_restricted_join`
+  authorises it, and every locally composed join naming a local authoriser passes the same
+  decision.** The only exemption from the authorising-signature check is a `send_join` naming
+  this server's user (`PduSignatureChecks::authorised_here`), because the acceptor signs it,
+  after dropping every signature the joining server filed under this server's name. An allow
+  condition is verifiable only while this server is joined to the room it names.
+  Why: the auth rules check only that the named user is joined with invite power and that its
+  server signed; whether the joining user met an allow condition is checked by nobody else, so
+  signing without the decision lets anyone into a restricted room (CWE-863 Incorrect
+  Authorization; conformance audit R04, ADR-0185).
+  Source: `src/federation/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **Never refuse a received event for a content-hash mismatch; redact it and continue.**
+  Only a signature failure refuses (spec "Checks performed on receipt of a PDU", steps 2 and
+  3). Everything after the check (authorisation, our signature, what is stored and returned)
+  uses the redacted copy.
+  Why: the direct membership endpoints refused a mismatch before the acceptor could redact it.
+  Content the hash does not cover is unauthenticated, so only the redacted copy may be used
+  (CWE-345 Insufficient Verification of Data Authenticity; conformance audit R06).
+  Source: `src/federation/AGENTS.md`.
+
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
   server supplies inline. The cache fetches from `/_matrix/key/v2/server` and trusts a key for
   at most 7 days after the fetch. From room v5 an event's signing key must be valid at the

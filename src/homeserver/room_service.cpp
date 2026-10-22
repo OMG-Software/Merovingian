@@ -36,6 +36,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -521,10 +522,18 @@ namespace
     }
 
     // The m.room.member join this server sends for its own user `user_id`, carrying their profile.
-    [[nodiscard]] auto serialize_own_join_event_json(database::PersistentStore const& store, std::string_view user_id)
+    // `authorising_user`, when not empty, is the join_authorised_via_users_server of a join into
+    // a restricted room through one of its allow conditions (R04).
+    [[nodiscard]] auto serialize_own_join_event_json(database::PersistentStore const& store, std::string_view user_id,
+                                                     std::string_view authorising_user = {})
         -> std::optional<std::string>
     {
         auto content = canonicaljson::Object{};
+        if (!authorising_user.empty())
+        {
+            content.push_back(canonicaljson::make_member("join_authorised_via_users_server",
+                                                         canonicaljson::Value{std::string{authorising_user}}));
+        }
         content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
         add_member_profile(content, database::find_profile(store, user_id));
 
@@ -1321,6 +1330,36 @@ namespace
         return token == nullptr ? std::string{} : *token;
     }
 
+    // A join's content.join_authorised_via_users_server, or empty. server-server-api.md
+    // "Auth events selection": "If type is m.room.member and membership is join, and
+    // content.join_authorised_via_users_server is present ... the current m.room.member
+    // event with state_key matching content.join_authorised_via_users_server".
+    [[nodiscard]] auto join_authorising_user_of(canonicaljson::Value const& event) -> std::string
+    {
+        auto const* obj = std::get_if<canonicaljson::Object>(&event.storage());
+        auto const* type = obj == nullptr ? nullptr : string_member(*obj, "type");
+        if (type == nullptr || *type != "m.room.member" || events::extract_content_membership(event) != "join")
+        {
+            return {};
+        }
+        auto const* content = obj == nullptr ? nullptr : object_member_as_object(*obj, "content");
+        auto const* authorising =
+            content == nullptr ? nullptr : string_member(*content, "join_authorised_via_users_server");
+        return authorising == nullptr ? std::string{} : *authorising;
+    }
+
+    // `user_id`'s membership in the room's current state, or empty.
+    [[nodiscard]] auto current_membership_of(database::PersistentStore const& store, std::string_view room_id,
+                                             std::string_view user_id) -> std::string
+    {
+        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
+        });
+        return state_it == store.state.end()
+                   ? std::string{}
+                   : std::string{events::extract_content_membership(find_event_json(store, state_it->event_id))};
+    }
+
     [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
                                             std::string_view sender, std::string_view target_state_key,
                                             std::string_view event_type, canonicaljson::Value const& event)
@@ -1328,11 +1367,19 @@ namespace
     {
         auto result = events::AuthEventMap{};
         auto const invite_token = third_party_invite_token(event);
+        auto const authorising_user = join_authorising_user_of(event);
         for (auto const& state : store.state)
         {
             if (state.room_id != room_id)
             {
                 continue;
+            }
+            // Auth events selection: a join carrying
+            // join_authorised_via_users_server also names that user's current
+            // m.room.member event (R04).
+            if (state.event_type == "m.room.member" && !authorising_user.empty() && state.state_key == authorising_user)
+            {
+                result.authorising_user_member = find_event_json(store, state.event_id);
             }
             if (state.event_type == "m.room.create" && state.state_key.empty())
             {
@@ -1454,8 +1501,58 @@ namespace
         // 3PID invite member events must list the matching m.room.third_party_invite
         // event in auth_events. auth_events_for_room does not inspect content, so
         // add it here when the client event carries a third_party_invite token.
+        // client-server-api.md, m.room.member `join_authorised_via_users_server`: "When copying
+        // the membership event's content (for profile updates and similar) it is therefore
+        // encouraged to exclude this field in the copy, as otherwise the event might fail event
+        // authorisation." A join by a user who is already joined needs no authorisation (rooms/v10.md
+        // 4.3.5.1), so a copied field is dropped rather than honoured or refused.
+        auto const drop_join_authoriser =
+            event_type == "m.room.member" && membership == "join" && event_state_key == sender &&
+            current_membership_of(runtime.database.persistent_store, room_id, sender) == "join";
         if (event_type == "m.room.member")
         {
+            // A restricted join names its authorising user's m.room.member
+            // event too (auth events selection, R04). This server signs every
+            // event it composes, so a join naming one of its own users would
+            // carry that user's server's signature whoever asked for it: the
+            // field is honoured only when the allow conditions hold now, for
+            // this joining user and that authorising user (client-server-api.md
+            // "Restricted rooms": "the server MUST verify that the requesting
+            // user meets at least one of the conditions"). A client cannot
+            // name an authoriser through PUT /state to skip the check.
+            if (auto const authorising_user =
+                    drop_join_authoriser ? std::string{} : join_authorising_user_of(canonicaljson::Value{*input});
+                !authorising_user.empty())
+            {
+                auto const& our_server = runtime.config.server().server_name;
+                if (sender_domain_from_user_id(authorising_user) == our_server)
+                {
+                    auto const decision =
+                        decide_restricted_join(runtime.database.persistent_store, room_id,
+                                               event_state_key.value_or(std::string{}), our_server, authorising_user);
+                    if (decision.verdict != RestrictedJoinVerdict::authorised)
+                    {
+                        log_diagnostic("event.compose.rejected", {
+                                                                     {"room_id", std::string{room_id}, false},
+                                                                     {"sender",  std::string{sender},  false},
+                                                                     {"reason",  decision.reason,      false}
+                        });
+                        return ComposeResult{std::nullopt, ComposeFailure::rejected};
+                    }
+                }
+                for (auto const& state : runtime.database.persistent_store.state)
+                {
+                    if (state.room_id == room_id && state.event_type == "m.room.member" &&
+                        state.state_key == authorising_user)
+                    {
+                        if (std::ranges::find(auth_events, state.event_id) == auth_events.end())
+                        {
+                            auth_events.push_back(state.event_id);
+                        }
+                        break;
+                    }
+                }
+            }
             auto const invite_token = third_party_invite_token(canonicaljson::Value{*input});
             if (!invite_token.empty())
             {
@@ -1487,6 +1584,19 @@ namespace
         event.push_back(canonicaljson::make_member("prev_events", string_array(prev_events)));
         event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
         auto event_content = copy_member_or_empty_object(*input, "content");
+        if (auto const* content_object = std::get_if<canonicaljson::Object>(&event_content.storage());
+            drop_join_authoriser && content_object != nullptr)
+        {
+            auto kept = canonicaljson::Object{};
+            for (auto const& member : *content_object)
+            {
+                if (member.key != "join_authorised_via_users_server")
+                {
+                    kept.push_back(member);
+                }
+            }
+            event_content = canonicaljson::Value{std::move(kept)};
+        }
         // Spec (Client-Server API, PUT /send): "In rooms with a version older than 11 they MUST move
         // the `redacts` property inside the `content` to the top level of the event." From room
         // version 11 it stays in `content` (rooms/v11.md).
@@ -3644,23 +3754,15 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             {
                 continue;
             }
-            auto key_id = std::string{};
-            for (auto const& sig : parsed.event.signatures)
+            // R05 (ADR-0183): every key the sender check may try, at most
+            // max_signature_keys_per_server per event, in the same pass.
+            for (auto& key_id : federation::signature_key_ids_for_server(parsed.event.signatures, dom))
             {
-                if (sig.server_name == dom)
+                auto key = std::make_pair(std::string{dom}, std::move(key_id));
+                if (seen.insert(key).second)
                 {
-                    key_id = sig.key_id;
-                    break;
+                    distinct_pairs.push_back(std::move(key));
                 }
-            }
-            if (key_id.empty())
-            {
-                continue;
-            }
-            auto const key = std::make_pair(std::string{dom}, std::move(key_id));
-            if (seen.insert(key).second)
-            {
-                distinct_pairs.push_back(key);
             }
         }
         if (!distinct_pairs.empty())
@@ -3738,16 +3840,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         {
             continue;
         }
-        auto key_id = std::string{};
-        for (auto const& sig : parsed.event.signatures)
-        {
-            if (sig.server_name == dom)
-            {
-                key_id = sig.key_id;
-                break;
-            }
-        }
-        if (key_id.empty())
+        if (federation::signature_key_ids_for_server(parsed.event.signatures, dom).empty())
         {
             log_diagnostic("room.join.state_event_rejected",
                            {
@@ -3757,53 +3850,34 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
                            observability::LogEventSeverity::warning);
             continue;
         }
-        auto const resolved_key = [&]() -> std::optional<federation::FederationKeyRecord> {
-            if (dom == our_server)
-            {
-                return own_signing_key(key_id);
-            }
-            auto const map_it = sender_key_map.find(std::pair<std::string, std::string>{std::string{dom}, key_id});
-            return map_it != sender_key_map.end() ? map_it->second : std::nullopt;
-        }();
-        if (!resolved_key.has_value())
-        {
-            log_diagnostic("room.join.state_event_rejected",
-                           {
-                               {"sender_domain", std::string{dom},                           false},
-                               {"reason",
-                                dom == our_server ? "signing key is not one this server holds"
-                                                  : "sender domain signing key unavailable",
-                                false                                                             }
-            },
-                           observability::LogEventSeverity::warning);
-            continue;
-        }
         if (runtime.crypto_provider == nullptr)
         {
             continue;
         }
-        // ADR-0075: from room v5 the key must still be valid at the event's
-        // origin_server_ts, the same rule every received event is held to.
-        auto const validity = federation::check_signing_key_valid_for_event(*resolved_key, entry, policy);
-        if (!validity.accepted)
-        {
-            log_diagnostic("room.join.state_event_rejected",
-                           {
-                               {"sender_domain", std::string{dom}, false},
-                               {"reason",        validity.reason,  false}
+        // R05 (ADR-0183): every listed key that is known and unexpired must
+        // verify, and at least one must. Each is one of ours (never fetched) or
+        // was resolved in the pass above. ADR-0075: from room v5 a key counts
+        // only if it was still valid at the event's origin_server_ts, the same
+        // rule every received event is held to.
+        auto const verification = federation::verify_server_signatures_on_event(
+            entry, policy, dom, parsed.event.signatures,
+            [&](std::string_view server_name, std::string_view key_id) {
+                if (server_name == our_server)
+                {
+                    return federation::VerificationKeyResolution{own_signing_key(key_id)};
+                }
+                auto const map_it = sender_key_map.find(
+                    std::pair<std::string, std::string>{std::string{server_name}, std::string{key_id}});
+                return federation::VerificationKeyResolution{map_it != sender_key_map.end() ? map_it->second
+                                                                                            : std::nullopt};
             },
-                           observability::LogEventSeverity::warning);
-            continue;
-        }
-        auto const verification = events::verify_event_signature(
-            entry, policy, events::SigningKeyId{resolved_key->server_name, resolved_key->key_id},
-            crypto::Ed25519PublicKey{resolved_key->public_key_bytes}, *runtime.crypto_provider);
-        if (!verification.valid)
+            *runtime.crypto_provider);
+        if (!verification.accepted)
         {
             log_diagnostic("room.join.state_event_rejected",
                            {
-                               {"sender_domain", std::string{dom},   false},
-                               {"reason",        verification.error, false}
+                               {"sender_domain", std::string{dom},    false},
+                               {"reason",        verification.reason, false}
             },
                            observability::LogEventSeverity::warning);
             continue;
@@ -5001,7 +5075,37 @@ namespace
             room->events.push_back(composed_invite->json);
         }
 
-        auto const join_event_json = serialize_own_join_event_json(runtime.database.persistent_store, *user_id);
+        // Audit R04 (ADR-0185): a join into a restricted room this server is
+        // resident in. client-server-api.md "Restricted rooms": "When joining
+        // without an invite, the server MUST verify that the requesting user
+        // meets at least one of the conditions. If no conditions can be
+        // verified or no conditions are satisfied, the user will not be able
+        // to join." When one holds, the join names a user of this server who
+        // can invite (join_authorised_via_users_server); this server signs the
+        // join, which is that user's server's signature (rule 4.2.1).
+        auto authorising_user = std::string{};
+        if (third_party_signed == nullptr)
+        {
+            auto const decision = decide_restricted_join(runtime.database.persistent_store, room_id, *user_id,
+                                                         runtime.config.server().server_name);
+            if (decision.verdict == RestrictedJoinVerdict::authorised)
+            {
+                authorising_user = decision.authorising_user;
+            }
+            else if (decision.verdict != RestrictedJoinVerdict::not_restricted &&
+                     decision.verdict != RestrictedJoinVerdict::already_permitted)
+            {
+                log_diagnostic("room.join.rejected", {
+                                                         {"actor",   *user_id,             false},
+                                                         {"room_id", std::string{room_id}, false},
+                                                         {"status",  "403",                false},
+                                                         {"reason",  decision.reason,      false}
+                });
+                return make_operation_result(false, {}, decision.reason, 403U);
+            }
+        }
+        auto const join_event_json =
+            serialize_own_join_event_json(runtime.database.persistent_store, *user_id, authorising_user);
         if (!join_event_json.has_value())
         {
             log_diagnostic("room.join.rejected", {

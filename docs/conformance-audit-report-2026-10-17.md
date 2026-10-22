@@ -20,9 +20,9 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R01 | P1 | Application-service outages permanently skip newer events | Fixed 0.12.28 (ADR-0163) |
 | R02 | P1 | Local to-device enqueue failure is acknowledged, then deduplicated | Fixed 0.12.28 (ADR-0164) |
 | R03 | P1 | A federation PDU with unresolved history is lost after a 200 | Fixed 0.12.28 (ADR-0165) |
-| R04 | P2 | Resident restricted-room joins fail at template creation and resident signing | Open — wave 2 |
-| R05 | P2 | Relayed PDU signature checks use only the first key ID listed | Open — wave 2 |
-| R06 | P2 | Direct membership endpoints reject a hash mismatch instead of redacting | Open — wave 2 |
+| R04 | P2 | Resident restricted-room joins fail at template creation and resident signing | Fixed 0.12.36 (ADR-0184, ADR-0185) |
+| R05 | P2 | Relayed PDU signature checks use only the first key ID listed | Fixed 0.12.36 (ADR-0183) |
+| R06 | P2 | Direct membership endpoints reject a hash mismatch instead of redacting | Fixed 0.12.36 |
 | R07 | P2 | Appservices miss invites to their own virtual users | Open — wave 3 |
 | R08 | P2 | `receive_ephemeral` is parsed but no ephemeral data is sent | Open — wave 3 |
 | R09 | P2 | Identity-server `requestToken` calls drop `send_attempt` | Open — wave 3 |
@@ -35,7 +35,7 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R19 | P2 | Push-rule mutation APIs are absent; delivery uses read-only defaults | Open — wave 5 |
 | R14 | P3 | Failed push notifications are never retried (spec SHOULD) | Open — wave 5 |
 | R16 | P3 | `/search` omits visible history from rooms the user has left | Open — wave 4 |
-| R18 | P3 | Federation profile queries reject `field=m.tz` | Open — wave 2 |
+| R18 | P3 | Federation profile queries reject `field=m.tz` | Fixed 0.12.36 |
 
 ### Triage notes
 
@@ -58,6 +58,13 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 - Inbound `m.direct_to_device` recorded the `message_id` before storing the messages, one
   commit per device, so a failed store left the EDU half stored and its resend was dropped as a
   replay.
+
+### Found while fixing wave 2 (fixed in 0.12.36)
+
+- R05 is fixed to the spec's rule, not "any one key verifies": unknown keys and keys expired
+  before `origin_server_ts` are skipped, every other listed signature must verify, and one must
+  ("If all signatures from known unexpired keys ... are found to be valid"; ADR-0183).
+- The `make_join` template provider read room state without the runtime lock.
 
 ### Found while fixing R01 (open)
 
@@ -103,7 +110,7 @@ branch CI run 39053180514 shows OpenBSD at 58 Ok, 0 Fail.
 | Wave | Version | Findings |
 |------|---------|----------|
 | 1 | 0.12.28 | R01, R02, R03, to-device message IDs |
-| 2 | — | R04, R05, R06, R18 (federation) |
+| 2 | 0.12.36 | R04, R05, R06, R18 (federation) |
 | 3 | — | R07, R08, R09, appservice ping and network directory, `create_room` appservice delivery |
 | 4 | — | R10, R11, R12, R13, R16, R17 (client API) |
 | 5 | — | R19, then R15 and R14 (push rules, counts, retry) |
