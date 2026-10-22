@@ -12245,8 +12245,8 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions changes a server-defaul
         WHEN("the actions of .m.rule.message are set to none, and of an unknown rule")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/underride/.m.rule.message/actions",
-                                  token, R"({"actions":[]})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/underride/.m.rule.message/actions", token,
+                                  R"({"actions":[]})"});
             auto const fetched = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"GET", "/_matrix/client/v3/pushrules/global/underride/.m.rule.message/actions", token, {}});
@@ -12316,8 +12316,8 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled enables a server-defaul
         WHEN(".m.rule.master is enabled")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled",
-                                  token, R"({"enabled":true})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled", token,
+                                  R"({"enabled":true})"});
             auto const fetched = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled", token, {}});
@@ -12740,6 +12740,10 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId} conformance")
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesglobalkindruleid
+// ruleId: "If the string starts with a dot ("."), the request MUST be rejected as this is reserved
+// for server-default rules." (R19, 0.12.39: this scenario asserted 404 M_UNRECOGNIZED while the
+// endpoint was absent.)
 SCENARIO("PUT /pushrules/global/{kind}/{ruleId} conformance")
 {
     GIVEN("a started homeserver with an authenticated user")
@@ -12754,18 +12758,24 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId} conformance")
                 started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name",
                                   token, R"({"pattern":"alice","actions":["notify"]})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server rejects the reserved rule ID with 400")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: a rule ID starting with "." is rejected.
+                REQUIRE(response.response.status == 400);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_INVALID_PARAM");
             }
         }
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3pushrulesglobalkindruleid
+// 404: "The push rule does not exist." .m.rule.contains_user_name is not a server-default rule
+// since v1.17 ("the legacy default push rules that looked for mentions in the body of the event
+// were removed"). (R19, 0.12.39: this scenario asserted 404 M_UNRECOGNIZED while the endpoint was
+// absent.)
 SCENARIO("DELETE /pushrules/global/{kind}/{ruleId} conformance")
 {
     GIVEN("a started homeserver with an authenticated user")
@@ -12780,13 +12790,14 @@ SCENARIO("DELETE /pushrules/global/{kind}/{ruleId} conformance")
                 started.runtime,
                 {"DELETE", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
+                // Spec: 404 "The push rule does not exist."
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
@@ -12818,6 +12829,10 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId}/actions conformance")
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesglobalkindruleidactions
+// Request body: an object whose `actions` is required; 404: "The push rule does not exist." (R19,
+// 0.12.39: this scenario asserted 404 M_UNRECOGNIZED while the endpoint was absent, and sent a
+// bare array, which is not the request body the spec defines.)
 SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/actions conformance")
 {
     GIVEN("a started homeserver with an authenticated user")
@@ -12831,15 +12846,16 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/actions conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions", token,
-                 R"(["notify"])"});
+                 R"({"actions":["notify"]})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
+                // Spec: 404 "The push rule does not exist."
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
@@ -12871,6 +12887,9 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId}/enabled conformance")
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesglobalkindruleidenabled
+// 404: "The push rule does not exist." (R19, 0.12.39: this scenario asserted 404 M_UNRECOGNIZED
+// while the endpoint was absent.)
 SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/enabled conformance")
 {
     GIVEN("a started homeserver with an authenticated user")
@@ -12886,13 +12905,14 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/enabled conformance")
                 {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled", token,
                  R"({"enabled":true})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
+                // Spec: 404 "The push rule does not exist."
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }

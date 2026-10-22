@@ -14,7 +14,8 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   defaults (ADR-0204), so a change reaches the user's clients in the `account_data` section of
   `/sync`, and push delivery now evaluates the user's own rules instead of the read-only defaults.
   `PUT /user/{userId}/account_data/m.push_rules` and `.../m.fully_read` are refused with 405, as the
-  spec requires for server-managed types.
+  spec requires for server-managed types. The conformance scenarios that asserted `404 M_UNRECOGNIZED`
+  for these endpoints now assert the spec's answers.
 - **SECURITY (bounded work under the runtime lock):** rules are evaluated under `runtime.mutex` for
   every recipient of every event, so a user holds at most
   `server.client_api.max_push_rules_per_user` user-defined rules (new, default 200, at most 10000;
