@@ -188,9 +188,9 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
 
             THEN("each cap is a restart-required change")
             {
-                REQUIRE(plan.changes().size() == 5U);
+                REQUIRE(plan.changes().size() == 6U);
                 REQUIRE(plan.reloadable_change_count() == 0U);
-                REQUIRE(plan.restart_required_change_count() == 5U);
+                REQUIRE(plan.restart_required_change_count() == 6U);
             }
         }
     }
