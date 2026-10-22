@@ -13,8 +13,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -460,6 +462,19 @@ auto ThreadNotificationCounts::total() const noexcept -> NotificationCounts
 auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
                             ReadMarkers const& markers, UnreadEventClassifier const& unread) -> ThreadNotificationCounts
 {
+    auto unlimited =
+        UnreadScanBudget{std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
+    return count_unread_by_thread_within(store, room_id, user, markers, unread, unlimited);
+}
+
+// The one walk. Only accepted events count: a rejected or soft-failed event is never served to
+// clients, so it is never unread. `budget` bounds the work (ADR-0207): the walk stops before
+// parsing another event once it is exhausted.
+auto count_unread_by_thread_within(database::PersistentStore const& store, std::string_view room_id,
+                                   std::string_view user, ReadMarkers const& markers,
+                                   UnreadEventClassifier const& unread, UnreadScanBudget& budget)
+    -> ThreadNotificationCounts
+{
     auto counts = ThreadNotificationCounts{};
     auto const counted_after = unread.counted_after(room_id);
     if (!counted_after.has_value())
@@ -468,11 +483,16 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
     }
     for (auto const& ev : store.events)
     {
-        if (ev.room_id != room_id || ev.stream_ordering <= markers.unthreaded || ev.stream_ordering <= *counted_after ||
-            ev.sender_user_id == user)
+        if (budget.exhausted())
+        {
+            break;
+        }
+        if (ev.room_id != room_id || ev.status != "accepted" || ev.stream_ordering <= markers.unthreaded ||
+            ev.stream_ordering <= *counted_after || ev.sender_user_id == user)
         {
             continue;
         }
+        --budget.examinations_left;
         auto const parsed = canonicaljson::parse_lossless(ev.json);
         if (parsed.error != canonicaljson::ParseError::none)
         {
@@ -495,6 +515,7 @@ auto count_unread_by_thread(database::PersistentStore const& store, std::string_
         }
         auto& thread = counts.threads[std::move(thread_id)];
         ++thread.notification_count;
+        --budget.notifications_left;
         thread.highlight_count += outcome.highlight ? 1U : 0U;
     }
     return counts;
@@ -504,6 +525,13 @@ auto count_notifications(database::PersistentStore const& store, std::string_vie
                          ReadMarkers const& markers, UnreadEventClassifier const& unread) -> std::uint64_t
 {
     return count_unread_by_thread(store, room_id, user, markers, unread).total().notification_count;
+}
+
+auto count_notifications_within(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
+                                ReadMarkers const& markers, UnreadEventClassifier const& unread,
+                                UnreadScanBudget& budget) -> std::uint64_t
+{
+    return count_unread_by_thread_within(store, room_id, user, markers, unread, budget).total().notification_count;
 }
 
 auto count_highlights(database::PersistentStore const& store, std::string_view room_id, std::string_view user,

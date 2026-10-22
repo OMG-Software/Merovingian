@@ -48,6 +48,12 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   `M_UNKNOWN_POS` and long-poll returns; a push retry that fails late in a long batch is scheduled
   from when it failed, not from when the batch began; and the log-field and capability-gap docs
   match the code.
+- **SECURITY (PR #523 review, bounded work under the runtime lock):** the push badge
+  (`counts.unread`) recounted the recipient's whole unread backlog, applying their push rules to
+  each event, under `runtime.mutex` for every recipient of every event. It now saturates at 1000 and
+  examines at most 4000 unread events (ADR-0207). `/sync` unread counts stay exact. Rejected and
+  soft-failed events no longer count as unread, and a rejected leave no longer ends a user's join
+  for counting.
 
 ## 0.12.39
 

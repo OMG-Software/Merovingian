@@ -119,6 +119,34 @@ struct ThreadNotificationCounts final
 
 // count_unread_by_thread()'s highlights, summed over threads. Used for both sliding sync and
 // the legacy /sync `unread_notifications.highlight_count`.
+// How much work a bounded unread count may still do (ADR-0207): how many more notifications it
+// may count, and how many more unread events it may parse and classify. Shared across the rooms
+// one count walks. The push badge uses it; `/sync` counts exactly.
+struct UnreadScanBudget final
+{
+    std::uint64_t notifications_left{0U};
+    std::uint64_t examinations_left{0U};
+
+    [[nodiscard]] auto exhausted() const noexcept -> bool
+    {
+        return notifications_left == 0U || examinations_left == 0U;
+    }
+};
+
+// count_unread_by_thread(), stopping as soon as `budget` is exhausted. count_unread_by_thread() is
+// this with an unlimited budget.
+[[nodiscard]] auto count_unread_by_thread_within(database::PersistentStore const& store, std::string_view room_id,
+                                                 std::string_view user, ReadMarkers const& markers,
+                                                 UnreadEventClassifier const& unread, UnreadScanBudget& budget)
+    -> ThreadNotificationCounts;
+
+// count_notifications(), stopping as soon as `budget` is exhausted. Each unread event parsed and
+// classified spends one examination and each notification counted spends one notification.
+[[nodiscard]] auto count_notifications_within(database::PersistentStore const& store, std::string_view room_id,
+                                              std::string_view user, ReadMarkers const& markers,
+                                              UnreadEventClassifier const& unread, UnreadScanBudget& budget)
+    -> std::uint64_t;
+
 [[nodiscard]] auto count_highlights(database::PersistentStore const& store, std::string_view room_id,
                                     std::string_view user, ReadMarkers const& markers,
                                     UnreadEventClassifier const& unread) -> std::uint64_t;

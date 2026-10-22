@@ -4,6 +4,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 #include "merovingian/sync/unread_event_classifier.hpp"
@@ -56,6 +57,7 @@ public:
     [[nodiscard]] auto classify(std::string_view /*room_id*/, merovingian::canonicaljson::Value const& event) const
         -> merovingian::sync::UnreadEventOutcome override
     {
+        ++calls_;
         auto const& object = std::get<merovingian::canonicaljson::Object>(event.storage());
         auto is_message = false;
         auto is_loud = false;
@@ -77,9 +79,36 @@ public:
         return {is_message, is_message && is_loud};
     }
 
+    // How many events the walk asked about.
+    [[nodiscard]] auto calls() const noexcept -> std::size_t
+    {
+        return calls_;
+    }
+
 private:
     std::optional<std::uint64_t> after_;
+    mutable std::size_t calls_{0U};
 };
+
+// `count` messages from bob in !room:example.org at stream positions from `first`.
+auto append_bob_messages(merovingian::database::PersistentStore& store, std::size_t count, std::uint64_t first,
+                         std::string_view body = "hi") -> void
+{
+    for (auto i = std::size_t{0U}; i < count; ++i)
+    {
+        store.events.push_back({"$m" + std::to_string(first + i),
+                                "!room:example.org",
+                                "@bob:example.org",
+                                std::string{R"({"type":"m.room.message","sender":"@bob:example.org",)"} +
+                                    R"("room_id":"!room:example.org","content":{"body":")" + std::string{body} +
+                                    R"("}})",
+                                1U,
+                                first + i,
+                                {},
+                                {},
+                                {}});
+    }
+}
 
 auto append_event(merovingian::database::PersistentStore& store, std::string_view event_id, std::string_view room_id,
                   std::string_view json, std::uint64_t stream_ordering) -> void
@@ -1092,6 +1121,148 @@ SCENARIO("MSC4186 multi-list fold is associative across three list windows",
                     });
                 };
                 REQUIRE(same_set(left_folded.required_state, reordered.required_state));
+            }
+        }
+    }
+}
+
+SCENARIO("A bounded unread walk stops at its notification budget", "[sync][receipts][r15][push-badge]")
+{
+    GIVEN("fifty unread messages")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        append_bob_messages(store, 50U, 10U);
+        auto const classifier = StubClassifier{0U};
+
+        WHEN("they are counted with room for ten notifications")
+        {
+            auto budget = merovingian::sync::UnreadScanBudget{10U, 1000U};
+            auto const count = merovingian::sync::count_notifications_within(
+                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier,
+                budget);
+
+            THEN("the count saturates at ten and no later event is examined")
+            {
+                REQUIRE(count == 10U);
+                REQUIRE(classifier.calls() == 10U);
+                REQUIRE(budget.exhausted());
+            }
+        }
+    }
+}
+
+SCENARIO("A bounded unread walk stops at its examination budget", "[sync][receipts][r15][push-badge]")
+{
+    GIVEN("thirty unread name changes followed by thirty unread messages")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        for (auto i = std::uint64_t{0U}; i < 30U; ++i)
+        {
+            store.events.push_back({"$n" + std::to_string(i),
+                                    "!room:example.org",
+                                    "@bob:example.org",
+                                    R"({"type":"m.room.name","sender":"@bob:example.org","content":{"name":"x"}})",
+                                    1U,
+                                    10U + i,
+                                    {},
+                                    {},
+                                    {}});
+        }
+        append_bob_messages(store, 30U, 100U);
+        auto const classifier = StubClassifier{0U};
+
+        WHEN("they are counted with room for twenty examinations")
+        {
+            auto budget = merovingian::sync::UnreadScanBudget{1000U, 20U};
+            auto const count = merovingian::sync::count_notifications_within(
+                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier,
+                budget);
+
+            THEN("the walk stops after twenty events, none of them notifications")
+            {
+                REQUIRE(count == 0U);
+                REQUIRE(classifier.calls() == 20U);
+                REQUIRE(budget.exhausted());
+            }
+        }
+    }
+}
+
+SCENARIO("Rejected and soft-failed events never count as unread", "[sync][receipts][r15]")
+{
+    GIVEN("one accepted, one rejected and one soft-failed message")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        append_bob_messages(store, 3U, 10U);
+        store.events.at(1U).status = "rejected";
+        store.events.at(2U).status = "soft_failed";
+        auto const classifier = StubClassifier{0U};
+
+        WHEN("alice's unread count is computed")
+        {
+            auto const counts = merovingian::sync::count_unread_by_thread(
+                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier);
+
+            THEN("only the accepted message counts, and the others are not even classified")
+            {
+                REQUIRE(counts.total().notification_count == 1U);
+                REQUIRE(classifier.calls() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("A rejected leave does not end the user's join for unread counting", "[sync][receipts][r15]")
+{
+    GIVEN("alice joined at 5 and a rejected leave of hers at 8")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        append_alice_join(store, 5U);
+        store.events.push_back({"$alice_leave",
+                                "!room:example.org",
+                                "@alice:example.org",
+                                R"({"type":"m.room.member","sender":"@alice:example.org",)"
+                                R"("state_key":"@alice:example.org","content":{"membership":"leave"}})",
+                                1U,
+                                8U,
+                                {},
+                                {},
+                                {}});
+        store.events.back().status = "rejected";
+
+        WHEN("the start of her current join is found")
+        {
+            auto const start =
+                merovingian::homeserver::current_join_start(store, "!room:example.org", "@alice:example.org");
+
+            THEN("it is still her join")
+            {
+                REQUIRE(start.has_value());
+                REQUIRE(*start == 5U);
+            }
+        }
+    }
+}
+
+SCENARIO("The push badge's unread count saturates at its cap", "[push][receipts][r15][push-badge]")
+{
+    GIVEN("alice joined, with more unread messages than the badge cap")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        store.memberships.push_back({"!room:example.org", "@alice:example.org", "join", 5U});
+        append_alice_join(store, 5U);
+        append_bob_messages(store, merovingian::homeserver::push_badge_unread_cap + 200U, 10U);
+        auto const ruleset = merovingian::homeserver::load_push_ruleset(store, "@alice:example.org", 200U);
+
+        WHEN("the badge count for a push is computed")
+        {
+            auto const badge = merovingian::homeserver::push_badge_unread_count(runtime, "@alice:example.org", ruleset);
+
+            THEN("it reports the cap, not the full backlog")
+            {
+                // Project policy: counts.unread is a badge; it saturates (ADR-0207).
+                REQUIRE(badge == merovingian::homeserver::push_badge_unread_cap);
             }
         }
     }

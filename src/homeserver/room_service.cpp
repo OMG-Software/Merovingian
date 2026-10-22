@@ -6062,31 +6062,6 @@ namespace
     // task (and repeatedly occupy a background-delivery slot) for minutes to
     // hours. The configured cap bounds sequential gateway calls per event.
 
-    // Sum of sync::count_notifications() across every room `user_id` is
-    // currently joined to — the Push Gateway API's counts.unread definition:
-    // "the number of unread messages a user has across all of the rooms they
-    // are a member of." Reuses the same per-room read-receipt baseline and
-    // push-rule classifier /sync's unread_notifications block uses (R15); no
-    // second unread implementation. `ruleset` is the one the caller already
-    // loaded for `user_id`, so it is not read again under runtime.mutex.
-    [[nodiscard]] auto total_unread_count(HomeserverRuntime const& runtime, std::string_view user_id,
-                                          push::PushRuleset const& ruleset) -> std::uint32_t
-    {
-        auto const& store = runtime.database.persistent_store;
-        auto const unread = PushRuleUnreadClassifier{store, user_id, ruleset};
-        auto total = std::uint64_t{0U};
-        for (auto const& membership : store.memberships)
-        {
-            if (membership.user_id != user_id || membership.membership != "join")
-            {
-                continue;
-            }
-            auto const read_markers = sync::read_receipt_markers(runtime, store, membership.room_id, user_id);
-            total += sync::count_notifications(store, membership.room_id, user_id, read_markers, unread);
-        }
-        return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
-    }
-
     // Reconstructs a spec-shaped `actions` array (Matrix v1.19 CS API
     // §push-rules-api, referenced by GET /notifications' Notification.actions)
     // from a PushEvaluationResult. push_rules.hpp deliberately does not keep
@@ -6328,7 +6303,7 @@ namespace
                 pushers.resize(max_pushers_per_delivery);
             }
 
-            auto const unread = total_unread_count(runtime, member, ruleset);
+            auto const unread = push_badge_unread_count(runtime, member, ruleset);
             for (auto const& pusher : pushers)
             {
                 if (pusher.kind != "http" || pusher.data_url.empty())

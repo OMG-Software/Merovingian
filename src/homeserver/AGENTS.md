@@ -239,6 +239,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
 - A user's push rules are evaluated for every event they receive. `PUT /pushrules/...` refuses a new
   rule past `max_push_rules_per_user` with `400 M_TOO_LARGE` and bounds each rule (ADR-0204);
   `m.push_rules` cannot be set through the account-data API (405).
+- Push delivery's badge count (`counts.unread`) runs per recipient per event. It saturates at
+  `push_badge_unread_cap` (1000) and examines at most `push_badge_unread_examined_cap` (4000)
+  unread events (ADR-0207); do not replace it with an unbounded count.
 
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 
