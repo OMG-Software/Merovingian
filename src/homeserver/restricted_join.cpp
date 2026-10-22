@@ -5,6 +5,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -217,10 +218,20 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
     }
 
     // The allow conditions, judged by this server's view of each named room.
+    // This runs under runtime.mutex and the list is room state another server
+    // can write, so the cost per state row must not grow with it: one pass
+    // over store.state with one hash lookup per row, then one pass over
+    // store.events for every member event needed below (src/homeserver/
+    // AGENTS.md, "Work under the runtime lock is bounded by the request").
     auto conditions = parse_conditions(join_rules);
     if (conditions.empty())
     {
         return refuse(RestrictedJoinVerdict::forbidden, "the room's join rules name no usable condition");
+    }
+    auto conditions_by_room = std::unordered_map<std::string_view, std::vector<std::size_t>>{};
+    for (auto index = std::size_t{0U}; index < conditions.size(); ++index)
+    {
+        conditions_by_room[conditions[index].room_id].push_back(index);
     }
     for (auto const& state : store.state)
     {
@@ -228,30 +239,38 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
         {
             continue;
         }
-        for (auto& condition : conditions)
+        auto const found = conditions_by_room.find(state.room_id);
+        if (found == conditions_by_room.end())
         {
-            if (state.room_id != condition.room_id)
-            {
-                continue;
-            }
-            if (state.event_type == "m.room.create" && state.state_key.empty())
+            continue;
+        }
+        auto const is_create = state.event_type == "m.room.create" && state.state_key.empty();
+        auto const is_member = state.event_type == "m.room.member";
+        if (!is_create && !is_member)
+        {
+            continue;
+        }
+        for (auto const index : found->second)
+        {
+            auto& condition = conditions[index];
+            if (is_create)
             {
                 condition.known = true;
+                continue;
             }
-            else if (state.event_type == "m.room.member")
+            if (state.state_key == user_id)
             {
-                if (state.state_key == user_id)
-                {
-                    condition.member_event_id = state.event_id;
-                }
-                if (server_of(state.state_key) == our_server)
-                {
-                    condition.local_member_event_ids.push_back(state.event_id);
-                }
+                condition.member_event_id = state.event_id;
+            }
+            if (server_of(state.state_key) == our_server)
+            {
+                condition.local_member_event_ids.push_back(state.event_id);
             }
         }
     }
-    auto condition_member_ids = std::unordered_set<std::string>{};
+    // Every member event read below, the authorising candidates' included, in
+    // one pass over store.events.
+    auto member_ids = std::unordered_set<std::string>{};
     for (auto const& condition : conditions)
     {
         if (!condition.known)
@@ -260,14 +279,18 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
         }
         if (!condition.member_event_id.empty())
         {
-            condition_member_ids.insert(condition.member_event_id);
+            member_ids.insert(condition.member_event_id);
         }
-        condition_member_ids.insert(condition.local_member_event_ids.begin(), condition.local_member_event_ids.end());
+        member_ids.insert(condition.local_member_event_ids.begin(), condition.local_member_event_ids.end());
     }
-    auto const condition_members = load_events(store, condition_member_ids);
-    auto const is_join = [&condition_members](std::string const& event_id) {
-        auto const member = condition_members.find(event_id);
-        return member != condition_members.end() && content_string(member->second, "membership") == "join";
+    for (auto const& [member_user, member_event_id] : local_members)
+    {
+        member_ids.insert(member_event_id);
+    }
+    auto const member_events = load_events(store, member_ids);
+    auto const is_join = [&member_events](std::string const& event_id) {
+        auto const member = member_events.find(event_id);
+        return member != member_events.end() && content_string(member->second, "membership") == "join";
     };
     auto satisfied = false;
     auto any_unknown = false;
@@ -298,12 +321,6 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
 
     // rooms/v10.md 4.3.5.2 (v12.md 5.3.5.2): the authorising user must be a
     // joined member "with sufficient permission to invite other users".
-    auto local_member_ids = std::unordered_set<std::string>{};
-    for (auto const& [member_user, member_event_id] : local_members)
-    {
-        local_member_ids.insert(member_event_id);
-    }
-    auto const local_member_events = load_events(store, local_member_ids);
     auto const power_levels = event_or_null(power_levels_id);
     auto const encoding = events::power_level_encoding(*policy);
     auto const invite_level = std::holds_alternative<std::nullptr_t>(power_levels.storage())
@@ -312,8 +329,7 @@ auto decide_restricted_join(database::PersistentStore const& store, std::string_
     std::ranges::sort(local_members);
     for (auto const& [member_user, member_event_id] : local_members)
     {
-        auto const member = local_member_events.find(member_event_id);
-        if (member == local_member_events.end() || content_string(member->second, "membership") != "join")
+        if (!is_join(member_event_id))
         {
             continue;
         }

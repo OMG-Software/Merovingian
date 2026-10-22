@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/database/persistent_store.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+
+namespace merovingian::database
+{
+struct PersistentStore;
+} // namespace merovingian::database
 
 namespace merovingian::homeserver
 {
