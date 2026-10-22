@@ -43,6 +43,11 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   dropped. A notification skipped because its gateway's circuit is open is now retried instead of
   dropped. New log events: `push.delivery.retry_scheduled`, `push.delivery.retry_abandoned` (debug),
   `push.delivery.retry_dropped` and `push.delivery.gave_up` (warning).
+- **FIXED (PR #523 review):** delivery loads each recipient's push rules once (the badge count reused
+  a second load under `runtime.mutex`); sliding sync builds its unread classifier only after the
+  `M_UNKNOWN_POS` and long-poll returns; a push retry that fails late in a long batch is scheduled
+  from when it failed, not from when the batch began; and the log-field and capability-gap docs
+  match the code.
 
 ## 0.12.39
 
