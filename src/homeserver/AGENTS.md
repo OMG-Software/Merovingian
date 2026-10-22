@@ -309,7 +309,9 @@ Every path that sets a typing entry to `typing: true` sets its `expires_at`: the
 `federation_typing_timeout` from an inbound EDU. `expire_typing_notifications` removes expired
 entries, advances the room's typing stream position and sends `typing: false` for local users; it
 runs on the "typing-expiry" `PeriodicJob` in `main.cpp`. A new path that adds a typing entry must
-set `expires_at`, or it never expires.
+set `expires_at`, or it never expires, and call `wake_typing_expiry` so an earlier deadline than the
+job's current sleep is not missed. Every read and write of `typing_users` holds `runtime.mutex`:
+the federation EDU sink runs without it and takes it itself in the typing case.
 
 ## Appservice delivery (R01, ADR-0163)
 

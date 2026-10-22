@@ -389,6 +389,13 @@ struct HomeserverRuntime final
     // runtime.mutex on another thread (PeriodicJob::wake does neither). Cleared under
     // runtime.mutex at shutdown before the thread is stopped.
     std::function<void()> appservice_delivery_wake{};
+    // Wakes the "typing-expiry" job (R13, ADR-0199) so a typing deadline earlier than the job's
+    // current sleep is not missed. Set by the process entry point once that thread exists; null
+    // in tests, which call expire_typing_notifications directly. Called through
+    // wake_typing_expiry with runtime.mutex held, so it must not block or wait for runtime.mutex
+    // on another thread (PeriodicJob::wake does neither). Cleared under runtime.mutex at shutdown
+    // before the thread is stopped.
+    std::function<void()> typing_expiry_wake{};
     // The drainer's retry state per appservice, keyed by registration id. In memory only: after
     // a restart the first attempt is immediate. Guarded by `mutex`.
     std::map<std::string, AppserviceDeliveryBackoff, std::less<>> appservice_delivery_backoff{};
@@ -595,6 +602,9 @@ auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void;
 // new (possibly empty) m.typing list (R13, ADR-0199). The caller holds runtime.mutex, wakes
 // sync waiters when `changed`, and tells remote servers about `expired_local`.
 [[nodiscard]] auto expire_typing(HomeserverRuntime& rt, std::chrono::steady_clock::time_point now) -> TypingExpiry;
+// Wakes the typing-expiry job, if one runs. Every path that sets a user typing calls it, with
+// runtime.mutex held, after setting `expires_at` (R13, ADR-0199).
+auto wake_typing_expiry(HomeserverRuntime& rt) -> void;
 
 struct RuntimeStartOptions final
 {

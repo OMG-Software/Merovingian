@@ -1611,6 +1611,82 @@ SCENARIO("Typing state stays bounded when a peer floods a room it is legitimatel
     }
 }
 
+// The EDU sink runs without runtime.mutex (the dispatcher releases it, see "a federation
+// transaction is blocked inside the sink" above), while the typing-expiry job and the client
+// typing route scan and erase typing_users under it. The typing case must therefore take the lock
+// itself for every read and write of typing state (R13, ADR-0199; PR #522 review).
+SCENARIO("A typing EDU waits for runtime.mutex before touching typing state",
+         "[homeserver][federation][typing][r13][concurrency]")
+{
+    GIVEN("a runtime whose federation callbacks are wired, and another thread holding runtime.mutex")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-lock-seed", {"!room:matrix.example.org"});
+        // A first transaction wires the federation callbacks, edu_sink among them.
+        REQUIRE(merovingian::homeserver::handle_federation_http_request(
+                    *runtime, edu_request(origin, key_id, "txn-typing-lock-wire", "m.typing",
+                                          typing_content("!room:matrix.example.org", "@first:matrix.example.org")))
+                    .status == 200U);                             // Fixture: wires the callbacks.
+        REQUIRE(static_cast<bool>(runtime->federation.edu_sink)); // Fixture: the sink is installed.
+        auto const envelope = merovingian::federation::InboundEduEnvelope{
+            merovingian::federation::EduType::typing, "m.typing",
+            typing_content("!room:matrix.example.org", "@second:matrix.example.org"), origin};
+
+        WHEN("a typing EDU is delivered to the sink while the lock is held, then the lock is released")
+        {
+            auto held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+            auto delivered = std::async(std::launch::async, [&runtime, &envelope] {
+                return runtime->federation.edu_sink(envelope).status;
+            });
+            auto const finished_while_locked =
+                delivered.wait_for(std::chrono::milliseconds{300}) == std::future_status::ready;
+            held.unlock();
+            auto const status = delivered.get();
+
+            THEN("the EDU completes only after the lock is released, and its typing is recorded")
+            {
+                REQUIRE_FALSE(
+                    finished_while_locked); // Project policy: typing state is read and written under runtime.mutex.
+                REQUIRE(status == merovingian::federation::EduDispositionStatus::accepted); // Fixture: a valid EDU.
+                auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
+                REQUIRE(merovingian::homeserver::current_typing_users_in_room(*runtime, "!room:matrix.example.org") ==
+                        std::vector<std::string>{"@first:matrix.example.org",
+                                                 "@second:matrix.example.org"}); // Fixture: both EDUs applied.
+            }
+        }
+    }
+}
+
+// R13 (ADR-0199): a typing EDU sets a deadline, so it wakes the typing-expiry job, which may be
+// sleeping for longer than federation_typing_timeout would allow after an earlier pass.
+SCENARIO("A typing EDU that sets a user typing wakes the typing-expiry job", "[homeserver][federation][typing][r13]")
+{
+    GIVEN("a runtime in a room, with a typing-expiry wake hook that counts its calls")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-wake-seed", {"!room:matrix.example.org"});
+        auto wakes = 0;
+        runtime->typing_expiry_wake = [&wakes]() {
+            ++wakes;
+        };
+
+        WHEN("a remote user starts typing")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-typing-wake", "m.typing",
+                                      typing_content("!room:matrix.example.org", "@remote:matrix.example.org")));
+
+            THEN("the job is woken once")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(wakes == 1);
+            }
+        }
+    }
+}
+
 // Conformance audit R13 (ADR-0199). A typing EDU carries no timeout, so a remote user's typing
 // would stay forever if their server never sent typing:false. It expires after
 // federation_typing_timeout instead, and each later EDU refreshes it.

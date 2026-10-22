@@ -824,6 +824,12 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    {
+        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        runtime.homeserver.typing_expiry_wake = [&typing_expiry_job]() {
+            typing_expiry_job.wake();
+        };
+    }
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 
@@ -885,6 +891,11 @@ struct ListenerBinding final
         runtime.homeserver.appservice_delivery_wake = nullptr;
     }
     appservice_delivery_job.stop();
+    {
+        auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
+        runtime.homeserver.typing_expiry_wake = nullptr;
+    }
+    typing_expiry_job.stop();
     // Clears its wake hook under the runtime lock, then stops; a retry in
     // progress ends within its own outbound deadlines and the PDU stays
     // retained in the database for the next start.

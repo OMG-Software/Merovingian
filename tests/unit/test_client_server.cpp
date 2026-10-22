@@ -9513,6 +9513,59 @@ SCENARIO("Key backup session writes are rejected for non-current versions and re
 // Bug 8: PUT /typing must validate room existence and membership
 // ---------------------------------------------------------------------------
 
+// R13 (ADR-0199): the typing-expiry job sleeps until the earliest pending deadline, at most 5 s.
+// Setting a user typing must wake it, or a shorter new deadline would be missed by up to 5 s.
+SCENARIO("PUT /rooms/{roomId}/typing wakes the typing-expiry job when a user starts typing",
+         "[homeserver][client-server][typing][r13]")
+{
+    GIVEN("alice in her own room, and a typing-expiry wake hook that counts its calls")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVALI"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+        auto wakes = 0;
+        runtime.homeserver.typing_expiry_wake = [&wakes]() {
+            ++wakes;
+        };
+        auto const typing_target = "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org";
+
+        WHEN("alice starts typing, then stops")
+        {
+            auto const started_typing = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", typing_target, alice_token, R"({"typing":true,"timeout":1000})"});
+            auto const wakes_after_start = wakes;
+            auto const stopped_typing = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", typing_target, alice_token, R"({"typing":false})"});
+
+            THEN("starting wakes the job once, and stopping, which sets no deadline, does not")
+            {
+                REQUIRE(started_typing.response.status == 200U);
+                REQUIRE(stopped_typing.response.status == 200U);
+                REQUIRE(wakes_after_start == 1);
+                REQUIRE(wakes == 1);
+            }
+        }
+    }
+}
+
 SCENARIO("PUT /rooms/{roomId}/typing enforces room existence and membership before updating state",
          "[homeserver][client-server][typing]")
 {

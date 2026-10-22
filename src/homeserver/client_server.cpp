@@ -15024,6 +15024,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         rt.homeserver.typing_users.push_back(
                             {typing->room_id, std::string{*user}, true, std::uint64_t{0U}, expires_at});
                     }
+                    if (is_typing)
+                    {
+                        wake_typing_expiry(rt.homeserver);
+                    }
                     auto const room_stream_id =
                         update_room_typing_stream_id_if_changed(rt.homeserver, typing->room_id, previous_users);
                     if (room_stream_id != std::uint64_t{0U})

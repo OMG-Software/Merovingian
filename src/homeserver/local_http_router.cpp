@@ -1679,6 +1679,11 @@ namespace
                     return {federation::EduDispositionStatus::rejected_invalid,
                             "user_id domain does not match envelope origin"};
                 }
+                // The dispatcher calls this sink without runtime.mutex, while the
+                // typing-expiry job and the client typing route scan and erase
+                // typing_users under it (R13, ADR-0199). Every read and write of
+                // runtime state below happens under the lock; none of it blocks.
+                auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
                 // 0.12.5 audit, finding 12: bound what a peer can put here. The
                 // primary bound is membership — this server has no use for
                 // typing state in a room it is not in, and without the check a
@@ -1713,6 +1718,7 @@ namespace
                         }
                         rt->typing_users.push_back({room_id, user_id, true, std::uint64_t{0U}, expires_at});
                     }
+                    wake_typing_expiry(*rt);
                 }
                 else
                 {

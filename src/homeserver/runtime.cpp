@@ -468,6 +468,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , test_frozen_event_clock_ms(other.test_frozen_event_clock_ms)
     , appservices(std::move(other.appservices))
     , appservice_delivery_wake(std::move(other.appservice_delivery_wake))
+    , typing_expiry_wake(std::move(other.typing_expiry_wake))
     , appservice_delivery_backoff(std::move(other.appservice_delivery_backoff))
     , appservice_ephemeral(std::move(other.appservice_ephemeral))
     , appservice_pending_ephemeral(std::move(other.appservice_pending_ephemeral))
@@ -522,6 +523,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     test_frozen_event_clock_ms = other.test_frozen_event_clock_ms;
     appservices = std::move(other.appservices);
     appservice_delivery_wake = std::move(other.appservice_delivery_wake);
+    typing_expiry_wake = std::move(other.typing_expiry_wake);
     appservice_delivery_backoff = std::move(other.appservice_delivery_backoff);
     appservice_ephemeral = std::move(other.appservice_ephemeral);
     appservice_pending_ephemeral = std::move(other.appservice_pending_ephemeral);
@@ -623,6 +625,14 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
         }
     }
     return expiry;
+}
+
+auto wake_typing_expiry(HomeserverRuntime& rt) -> void
+{
+    if (rt.typing_expiry_wake)
+    {
+        rt.typing_expiry_wake();
+    }
 }
 
 auto bootstrap_local_database(config::Config const& config) -> LocalDatabase

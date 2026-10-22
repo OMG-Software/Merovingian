@@ -43,7 +43,11 @@ stream position of each room that changed. `expire_typing_notifications` takes `
 calls it, publishes the new position to the sync notifier, and sends `typing: false` to the remote
 servers in the room for each local user whose typing expired, as a `typing: false` request would.
 It returns the time to the earliest pending expiry, kept between 250 ms and 5 s, and the job
-sleeps that long. Tests call it with a chosen clock.
+sleeps that long. Setting a user typing calls `HomeserverRuntime::typing_expiry_wake` (under
+`runtime.mutex`; it only wakes the job), so a deadline earlier than the job's current sleep is
+picked up at once rather than after up to 5 s. Every read and write of typing state, including
+the federated `m.typing` EDU sink, which the dispatcher runs without the lock, happens under
+`runtime.mutex`. Tests call it with a chosen clock.
 
 The request must carry `typing` as a JSON boolean (`400 M_MISSING_PARAM` when absent,
 `400 M_BAD_JSON` otherwise), and `timeout`, when present, a non-negative integer
