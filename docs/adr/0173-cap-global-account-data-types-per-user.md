@@ -1,6 +1,6 @@
 # Cap a user's global account-data types; room account data stays bounded by membership
 
-* Status: accepted
+* Status: accepted; refined by [ADR-0197](0197-room-account-data-needs-a-membership-and-is-capped-per-room.md) (2026-10-22)
 * Date: 2026-10-21
 
 Technical Story: security audit run-1, `sp02.account-data-unbounded-linear-scan`

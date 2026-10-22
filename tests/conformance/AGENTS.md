@@ -19,6 +19,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | File | Spec section(s) covered |
 |------|------------------------|
 | `test_3pid_invite_conformance.cpp` | [CS API § Third-party invites](../../docs/matrix-v1.19-spec/client-server-api.md#third-party-invites) |
+| `test_account_data_conformance.cpp` | [CS API § Client Config](../../docs/matrix-v1.19-spec/client-server-api.md#client-config) (global and room account data: JSON-object bodies, 405 for `m.fully_read`/`m.push_rules`, room ID validation, no fallback between room and global, delivery in `/sync`) |
 | `test_admin_safety_policy_rules_conformance.cpp` | Project-specific: Merovingian admin API (trust-and-safety extension, not in the Matrix v1.19 spec) — `GET`/`PUT`/`DELETE /_matrix/client/v3/admin/safety/policy_rules` |
 | `test_admin_safety_review_conformance.cpp` | Project-specific: Merovingian admin API (trust-and-safety extension, not in the Matrix v1.19 spec) — `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}` |
 | `test_appservice_conformance.cpp` | [Application Service API](../../docs/matrix-v1.19-spec/application-service-api.md) (as_token auth, `?user_id=` masquerade, `m.login.application_service`, namespace exclusivity) |
@@ -68,6 +69,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_state_resolution_conformance.cpp` | [SS API § State Resolution](../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution) |
 | `test_sync_filter_conformance.cpp` | [CS API § Filtering](../../docs/matrix-v1.19-spec/client-server-api.md#filtering) |
 | `test_sync_summary_conformance.cpp` | [CS API § Syncing](../../docs/matrix-v1.19-spec/client-server-api.md#syncing) |
+| `test_typing_conformance.cpp` | [CS API § Typing Notifications](../../docs/matrix-v1.19-spec/client-server-api.md#typing-notifications) (`typing` must be a boolean; typing expires after its `timeout`, never later than the server's ceiling) |
 | `test_x_matrix_auth_parsing.cpp` | [SS API § X-Matrix Auth](../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication) |
 
 ## How to Write Conformance Tests

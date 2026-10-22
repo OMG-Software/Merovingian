@@ -222,7 +222,12 @@ client, sender or remote server controls, and per-user rows that requests scan m
   (ADR-0176).
 - `PUT /user/{userId}/account_data/{type}` refuses a new global type past
   `max_global_account_data_per_user` with `400 M_TOO_LARGE`, and always allows an update to a
-  type the user already holds (ADR-0173). Room account data is bounded by membership.
+  type the user already holds (ADR-0173). `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`
+  is written only for a room the user holds a membership row in, and refuses a new type past
+  `max_room_account_data_per_room` per room the same way (ADR-0197). Server-written rows (`m.tag`,
+  `m.fully_read`) go through `set_account_data` and are never refused.
+- `/search` judges a room the user has left with `room_read_access_for` only when one of its
+  events would be returned, so those scans stay bounded by the page (R16).
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
   (ADR-0174).
 
@@ -296,6 +301,15 @@ When a client endpoint's action is, or advertises, a state event (`/upgrade` sen
 visibility and aliases stand for `m.room.canonical_alias`), refuse it up front with `may_send_state_event()` for that
 event type, before anything is created. Membership alone is not enough. Alias `PUT` validates with
 `auth::room_alias_is_valid` and requires this server's domain; `DELETE` allows the alias's recorded creator.
+
+## Typing expiry (R13, ADR-0199)
+
+Every path that sets a typing entry to `typing: true` sets its `expires_at`: the client's
+`timeout` (default `default_typing_timeout`, at most `max_typing_timeout`), or
+`federation_typing_timeout` from an inbound EDU. `expire_typing_notifications` removes expired
+entries, advances the room's typing stream position and sends `typing: false` for local users; it
+runs on the "typing-expiry" `PeriodicJob` in `main.cpp`. A new path that adds a typing entry must
+set `expires_at`, or it never expires.
 
 ## Appservice delivery (R01, ADR-0163)
 
