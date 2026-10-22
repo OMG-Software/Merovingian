@@ -126,7 +126,8 @@ R18). No migration.
   `username`, `/search` of a left and a forgotten room, the room account-data caps, the room
   capped store, remote typing expiry and the new configuration key. The four conformance
   scenarios that asserted `404 M_UNRECOGNIZED` for room account data are replaced by normative
-  ones.
+  ones. The ignoring-users scenario for a malformed `m.ignored_user_list` now writes the bad row
+  straight to the store, since the PUT API refuses it.
 
 ## 0.12.34
 
