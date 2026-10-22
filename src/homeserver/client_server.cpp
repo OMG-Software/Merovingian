@@ -10135,6 +10135,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;
     rt.limits.max_room_account_data_per_room = client_api.max_room_account_data_per_room;
+    rt.limits.max_push_rules_per_user = client_api.max_push_rules_per_user;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};

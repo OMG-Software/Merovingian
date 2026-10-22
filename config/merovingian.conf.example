@@ -658,6 +658,10 @@ server.client_api.max_key_signatures_per_user=10000
 server.client_api.max_filters_per_user=1000
 server.client_api.max_global_account_data_per_user=1000
 server.client_api.max_room_account_data_per_room=100
+# Most user-defined push rules one user may hold (all five kinds together; server-default rules are not
+# counted). A PUT that would create one more is refused with M_TOO_LARGE; updating an existing rule always
+# succeeds. Range 1..10000.
+server.client_api.max_push_rules_per_user=200
 server.client_api.max_body_size=1MiB
 
 # server.http

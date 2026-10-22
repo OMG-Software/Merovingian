@@ -150,18 +150,20 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
             REQUIRE(parsed.config.server().client_api.max_filters_per_user == 1000U);
             REQUIRE(parsed.config.server().client_api.max_global_account_data_per_user == 1000U);
             REQUIRE(parsed.config.server().client_api.max_room_account_data_per_room == 100U);
+            REQUIRE(parsed.config.server().client_api.max_push_rules_per_user == 200U);
             REQUIRE(merovingian::config::validate(parsed.config).empty());
         }
     }
 
-    GIVEN("a configuration that overrides all five caps")
+    GIVEN("a configuration that overrides all six caps")
     {
         auto const parsed =
             merovingian::config::parse_key_value_config("server.client_api.max_one_time_keys_per_device=250\n"
                                                         "server.client_api.max_key_signatures_per_user=500\n"
                                                         "server.client_api.max_filters_per_user=40\n"
                                                         "server.client_api.max_global_account_data_per_user=60\n"
-                                                        "server.client_api.max_room_account_data_per_room=30\n");
+                                                        "server.client_api.max_room_account_data_per_room=30\n"
+                                                        "server.client_api.max_push_rules_per_user=75\n");
 
         WHEN("it is parsed and validated")
         {
@@ -176,6 +178,7 @@ SCENARIO("E2EE key and filter caps default to bounded values and can be tuned", 
                 REQUIRE(parsed.config.server().client_api.max_filters_per_user == 40U);
                 REQUIRE(parsed.config.server().client_api.max_global_account_data_per_user == 60U);
                 REQUIRE(parsed.config.server().client_api.max_room_account_data_per_room == 30U);
+                REQUIRE(parsed.config.server().client_api.max_push_rules_per_user == 75U);
             }
         }
 
@@ -285,7 +288,8 @@ SCENARIO("E2EE key and filter caps reject zero, malformed and excessive values",
             "server.client_api.max_filters_per_user=100001\n", "server.client_api.max_global_account_data_per_user=0\n",
             "server.client_api.max_global_account_data_per_user=100001\n",
             "server.client_api.max_room_account_data_per_room=0\n",
-            "server.client_api.max_room_account_data_per_room=100001\n");
+            "server.client_api.max_room_account_data_per_room=100001\n",
+            "server.client_api.max_push_rules_per_user=0\n", "server.client_api.max_push_rules_per_user=10001\n");
 
         WHEN("the configuration is parsed and validated")
         {

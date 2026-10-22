@@ -107,6 +107,8 @@ struct ClientApiLimits final
     std::uint32_t max_global_account_data_per_user{1000U};
     // Conformance audit R10 (ADR-0197): client-set account-data types per user per room.
     std::uint32_t max_room_account_data_per_room{100U};
+    // User-defined push rules per user across all five kinds; over -> M_TOO_LARGE.
+    std::uint32_t max_push_rules_per_user{200U};
     sync::SlidingSyncLimits sliding_sync{500U, 1024U, 1024U};
     std::uint32_t sliding_sync_connections_per_device{16U};
 };
