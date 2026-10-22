@@ -1222,8 +1222,8 @@ directory of one of the protocols it declares with `PUT
 /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}`, and
 `POST /publicRooms` lists those rooms for `third_party_instance_id` (the
 `instance_id` from `GET /thirdparty/protocol/{protocol}`) or together with the
-ordinary directory for `include_all_networks`. The outbound query hooks (`GET /_matrix/app/v1/users/
-{userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) are called on a local miss
+ordinary directory for `include_all_networks`. The outbound query hooks
+(`GET /_matrix/app/v1/users/{userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) are called on a local miss
 inside the owning appservice's namespace. Every client request that makes the server
 call an appservice (the ping, and the `GET /thirdparty/*` lookups) first takes a slot in the
 client-outbound budget (ADR-0079) and is answered `429 M_LIMIT_EXCEEDED` when none is free. `/_matrix/client/v3/thirdparty/*`
