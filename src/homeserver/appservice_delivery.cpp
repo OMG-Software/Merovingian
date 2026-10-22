@@ -402,11 +402,11 @@ namespace
 
             if (result.ok || result.disabled)
             {
-                runtime.appservice_pending_ephemeral.erase(appservice_id);
                 if (!database::complete_appservice_delivery(store, appservice_id, cursor.pending_stream_ordering))
                 {
                     // The appservice has it but the acknowledgement did not reach the database, so
-                    // the next attempt re-sends the same transaction ID (idempotent per the spec).
+                    // the next attempt re-sends the same transaction ID (idempotent per the spec). The
+                    // parked ephemeral items stay, so that resend carries exactly what this one did.
                     log_diagnostic("appservice.delivery.cursor_write_failed",
                                    {
                                        {"appservice_id", appservice_id, false}
@@ -415,6 +415,7 @@ namespace
                     record_failure(runtime, appservice_id, clock_now);
                     return {};
                 }
+                runtime.appservice_pending_ephemeral.erase(appservice_id);
                 runtime.appservice_delivery_backoff.erase(appservice_id);
                 continue;
             }

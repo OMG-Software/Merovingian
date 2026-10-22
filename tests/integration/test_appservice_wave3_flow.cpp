@@ -760,6 +760,70 @@ SCENARIO("a failed ephemeral transaction is retried under the same id with the s
     }
 }
 
+// Spec: "Homeservers MUST NOT alter (e.g. add more) events they were going to send within that
+// transaction ID on retries." When the appservice acknowledged a transaction but the acknowledgement
+// did not reach the database, the cursor still names that transaction and the next pass resends it.
+// It must carry the ephemeral items it carried the first time, not whatever is queued by then.
+SCENARIO("an acknowledged event transaction whose acknowledgement failed to commit is resent unchanged",
+         "[appservice][integration][delivery][r08]")
+{
+    GIVEN("an appservice that wants ephemeral data, an event and a typing item queued for it")
+    {
+        auto bridge = TestAppservice{.id = "bridge", .users_regex = "@_bridge_.*", .receive_ephemeral = true};
+        auto mock = MockAppservice{};
+        bridge.url = mock.url();
+        auto started =
+            merovingian::homeserver::start_client_server(merovingian::tests::appservice_test_config({bridge}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto clock = SteppedClock{};
+        auto const alice = register_human(runtime, "alice");
+        register_virtual_user(runtime, bridge, "_bridge_dave");
+        auto const room_id = create_room(runtime, alice, R"({"preset":"public_chat"})");
+        REQUIRE(call(runtime, "POST", "/_matrix/client/v3/join/" + room_id + "?user_id=@_bridge_dave:example.org",
+                     bridge.as_token(), "{}")
+                    .response.status == 200U);
+        clock.drain(runtime);
+        auto const baseline = mock.requests_to("/_matrix/app/v1/transactions/").size();
+        REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/rooms/" + room_id + "/typing/@alice:example.org", alice,
+                     R"({"typing":true,"timeout":30000})")
+                    .response.status == 200U);
+        std::ignore = send_message(runtime, alice, room_id, "hello");
+
+        WHEN("the appservice answers 200 but recording the delivery fails, and presence is queued before the "
+             "retry")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.homeserver.database.persistent_store,
+                                                                       "complete_appservice_outbox_entry");
+            clock.drain(runtime);
+            REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/presence/@alice:example.org/status", alice,
+                         R"({"presence":"online"})")
+                        .response.status == 200U);
+            clock.drain(runtime);
+            clock.drain(runtime);
+            auto const all = mock.requests_to("/_matrix/app/v1/transactions/");
+
+            THEN("the resend has the first attempt's id and body, and the presence goes in a later transaction")
+            {
+                REQUIRE(all.size() >= baseline + 2U);
+                auto const& acknowledged = all[baseline];
+                auto const& resent = all[baseline + 1U];
+                CHECK(acknowledged.answered_status == 200U);
+                CHECK(acknowledged.target == resent.target);
+                CHECK(acknowledged.body == resent.body);
+                CHECK(acknowledged.body.find("m.typing") != std::string::npos);
+                CHECK(resent.body.find("m.presence") == std::string::npos);
+                REQUIRE(all.size() >= baseline + 3U);
+                auto const presence_later = std::ranges::any_of(
+                    all.begin() + static_cast<std::ptrdiff_t>(baseline) + 2, all.end(), [](auto const& request) {
+                        return request.body.find("m.presence") != std::string::npos;
+                    });
+                CHECK(presence_later);
+            }
+        }
+    }
+}
+
 // ===========================================================================
 // ADR-0191: the outbox of an appservice that never returns is capped
 // ===========================================================================
