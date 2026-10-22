@@ -2140,7 +2140,7 @@ namespace
             }
             tmpl.depth = max_depth + 1;
             auto content_obj = canonicaljson::Object{};
-            // Audit R04 (ADR-0181). server-server-api.md "Restricted rooms": "A
+            // Audit R04 (ADR-0185). server-server-api.md "Restricted rooms": "A
             // resident server processing a request to join a restricted room
             // must ensure that the joining server satisfies at least one of the
             // conditions specified by m.room.join_rules", refusing with 400
@@ -2325,7 +2325,7 @@ namespace
                     stored_json = serialized.output;
                 }
 
-                // Audit R04 (ADR-0181): a join naming one of this server's users
+                // Audit R04 (ADR-0185): a join naming one of this server's users
                 // as join_authorised_via_users_server is one this server is asked
                 // to authorise. PUT /send_join: "The resident server which owns
                 // the provided user ID must have a valid signature on the event.
@@ -3725,7 +3725,7 @@ namespace
         }
         // No main-validated client address accompanies recovery frames. Share
         // unknown-source admission; never let peer/worker origin choose a bucket.
-        // R05 (ADR-0179): every key ID the event lists for its sender's server
+        // R05 (ADR-0183): every key ID the event lists for its sender's server
         // is a candidate (at most max_signature_keys_per_server), each an
         // admitted lookup, none started after the backfill deadline. The
         // overload flag follows the decision (503: a candidate was locally

@@ -2327,6 +2327,34 @@ Security audit run-1 (2026-10-20) found two HIGH issues, both fixed in 0.12.31.
   a request repeats it. The audit's other runtime-lock findings (extension rooms arrays, push
   glob matching, account-data scans) are not addressed by this change.
 
+### What a remote server can get accepted or signed: conformance audit wave 2 (0.12.34)
+
+The 2026-10-17 conformance audit's federation findings changed what this server accepts from
+other servers. Each change, and its bound:
+
+- **Signatures under any listed key ID (R05, ADR-0183).** A PDU's sender signature, and a
+  restricted join's authorising-server signature, are now accepted when any key ID listed for
+  that server verifies, not only the first. A relay can list extra key IDs (the `signatures`
+  object is unsigned), so the candidates are capped at four `ed25519:` IDs per server, each
+  through the admitted, rate-limited, failure-cached lookup. Residual risk: an event can cost
+  up to four lookups for its sender's server and four for its authorising server, where it
+  cost one and four; a list of junk IDs costs at most that and then fails closed.
+- **Hash mismatches are redacted, not refused (R06).** `send_join`, `send_leave`, `send_knock`
+  and `/invite` (v1 and v2) now accept a validly signed event whose content hash does not
+  match, and keep, authorise, sign and return only its redacted copy. A sender can therefore
+  get a stripped copy of its own event stored, which it could always do by sending the
+  redacted form; nothing it adds outside the signed, redacted form survives.
+- **This server co-signs restricted joins (R04, ADR-0184, ADR-0185).** A `send_join` naming
+  one of our users as `join_authorised_via_users_server` is no longer refused for lacking our
+  signature; the acceptor adds it, but only when `decide_restricted_join` finds, in our own
+  current state, that the joining user meets an allow condition and the named user is joined
+  with invite power. Otherwise it refuses without storing or signing. The decision reads at
+  most 32 conditions. A local client cannot name an authoriser itself: every locally composed
+  join naming a local authoriser passes the same decision. Residual risk: the decision is only
+  as current as our view of the allowed rooms; a user who left an allowed room in a fork we
+  have not seen can still be authorised, which the spec accepts ("the conditions are only
+  checked/evaluated during the join process").
+
 ### Request-sized work under the runtime lock (0.12.33)
 
 Security audit run-1 (2026-10-20) found five MEDIUM issues of one kind: work done while

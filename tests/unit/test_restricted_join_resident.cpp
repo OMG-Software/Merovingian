@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Audit R04 (conformance audit 2026-10-17, wave 2; ADR-0181): this server as the
+// Audit R04 (conformance audit 2026-10-17, wave 2; ADR-0185): this server as the
 // resident of a restricted room. It decides whether a joining user meets an allow
 // condition, names one of its own users in the make_join template, and co-signs the
 // join it receives through send_join.

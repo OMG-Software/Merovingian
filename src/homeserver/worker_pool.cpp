@@ -649,7 +649,7 @@ namespace
 
     // `authorised_here` is this server's name when the relay is a send_join
     // the membership acceptor may co-sign as a restricted join's authorising
-    // server (R04, ADR-0181): such an event cannot carry our signature yet, and
+    // server (R04, ADR-0185): such an event cannot carry our signature yet, and
     // the acceptor checks the allow conditions before it adds one. Empty for
     // every other relay, which must already carry every signature it needs.
     [[nodiscard]] auto verify_relayed_event_signature(HomeserverRuntime& runtime, std::string_view event_json,
@@ -825,7 +825,7 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
     // TRUST BOUNDARY (ADR-0071): verified before the runtime lock is taken,
     // because resolving the sender's key may go to the network. A send_join
     // naming one of our users as its authorising user is co-signed by the
-    // acceptor after it checks the allow conditions (R04, ADR-0181), so only
+    // acceptor after it checks the allow conditions (R04, ADR-0185), so only
     // that one signature is left to it.
     auto const our_server = endpoint == federation::FederationEndpoint::send_join
                                 ? std::string{runtime.config.server().server_name}

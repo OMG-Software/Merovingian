@@ -182,6 +182,9 @@
 * [0180 - The outbound client refuses header fields that are not valid HTTP](0180-the-outbound-client-refuses-invalid-header-fields.md)
 * [0181 - Third-party lookups take a client outbound proxy slot and keep per-appservice timeouts](0181-third-party-lookups-take-a-client-outbound-proxy-slot.md)
 * [0182 - A profile change succeeds once stored, and reaches only rooms whose state holds the user joined](0182-a-profile-change-succeeds-once-stored-and-reaches-only-rooms-whose-state-holds-the-user-joined.md)
+* [0183 - Every known, unexpired key's signature of the sender's server must verify](0183-every-known-key-signature-of-the-sender-must-verify.md)
+* [0184 - Federation workers relay make_join to main](0184-federation-workers-relay-make-join-to-main.md)
+* [0185 - A resident authorises restricted joins only after checking the allow conditions](0185-a-resident-authorises-restricted-joins-only-after-checking-the-allow-conditions.md)
 
 ## Proposed Records
 

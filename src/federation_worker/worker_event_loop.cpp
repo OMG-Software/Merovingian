@@ -719,7 +719,7 @@ auto WorkerEventLoop::run() -> void
     };
 
     // Override membership_template_provider for make_join only (audit R04,
-    // ADR-0181). In a restricted room the template names an authorising user
+    // ADR-0185). In a restricted room the template names an authorising user
     // only after the allow conditions are checked, and those conditions name
     // OTHER rooms, whose state this shard's snapshot may not hold or may hold
     // stale (room_sync refreshes only the shard that owns a room). Main holds

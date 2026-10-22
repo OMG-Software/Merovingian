@@ -477,7 +477,7 @@ struct VerificationKeyResolution final
 // authorising server alike. Any one valid signature satisfies the check, but
 // the signatures object is not itself signed, so a relaying server can add key
 // IDs, and each candidate may cost a key fetch. A rotating server signs with
-// one or two keys. ADR-0179.
+// one or two keys. ADR-0183.
 inline constexpr std::size_t max_signature_keys_per_server{4U};
 inline constexpr std::size_t max_authorising_signature_keys{max_signature_keys_per_server};
 
@@ -522,7 +522,7 @@ using SignatureKeyResolver = AuthorisingKeyResolver;
 // received events": "If a signature is from an unknown or expired key, it is
 // skipped." No key IDs, or none that verifies, is a 403. A local admission
 // denial on any candidate makes the outcome a retryable 503 when nothing
-// verified, never a verdict; running out of `deadline` is a 504. ADR-0179.
+// verified, never a verdict; running out of `deadline` is a 504. ADR-0183.
 [[nodiscard]] auto verify_server_signature_with_any_listed_key(
     canonicaljson::Value const& event, rooms::RoomVersionPolicy const& room_version, std::string_view server_name,
     std::vector<std::string> const& key_ids, SignatureKeyResolver const& resolve_key,

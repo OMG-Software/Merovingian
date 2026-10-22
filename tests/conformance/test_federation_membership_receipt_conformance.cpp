@@ -312,7 +312,7 @@ SCENARIO("The invite endpoints pass a hash-mismatched invite on for redaction an
 // doesn't understand." The signatures object is not covered by any signature,
 // so whoever relays an event can list extra key IDs: the check uses every key
 // ID listed for the sender's server, not only the first, and an attacker-made
-// list costs at most max_signature_keys_per_server lookups (audit R05, ADR-0179).
+// list costs at most max_signature_keys_per_server lookups (audit R05, ADR-0183).
 SCENARIO("The sender's signature is checked against every key ID listed for its server, within a bound",
          "[federation][conformance][signatures][r05]")
 {
@@ -546,7 +546,7 @@ SCENARIO("Inbound federation finds a sender's signature under any listed key ID"
 // must be added before sending or persisting the event to other servers." So a join
 // naming one of THIS server's users cannot already carry this server's signature: the
 // request layer leaves that one check to the acceptor, which checks the allow conditions
-// and adds the signature (audit R04, ADR-0181). Every other authorising server's
+// and adds the signature (audit R04, ADR-0185). Every other authorising server's
 // signature is still required up front, and on every other endpoint.
 SCENARIO("A restricted join naming this server's user is handed to the acceptor to co-sign",
          "[federation][conformance][membership][restricted_join][r04]")

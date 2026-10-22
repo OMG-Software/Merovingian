@@ -13,7 +13,7 @@ namespace merovingian::homeserver
 {
 
 // How this server, resident in a room, answers a join by a user who is not yet
-// a member (audit R04, ADR-0181).
+// a member (audit R04, ADR-0185).
 //
 // client-server-api.md "Restricted rooms": "When joining without an invite,
 // the server MUST verify that the requesting user meets at least one of the
@@ -54,7 +54,7 @@ struct RestrictedJoinDecision final
 // The list is room state another server's administrator can write, and each
 // condition costs a lookup in this server's state under runtime.mutex, so it
 // is bounded; a condition past the bound is treated as absent (fail closed).
-// ADR-0181.
+// ADR-0185.
 inline constexpr std::size_t max_restricted_join_conditions{32U};
 
 // Decides a join of `user_id` into `room_id` from this server's current state

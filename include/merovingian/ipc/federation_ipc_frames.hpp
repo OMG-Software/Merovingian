@@ -66,7 +66,7 @@ namespace merovingian::ipc
 [[nodiscard]] auto serialize_room_sync_result(std::string_view room_id, std::string_view state,
                                               std::uint64_t generation) -> std::string;
 
-// A make_join a federation worker hands to main (audit R04, ADR-0181): the
+// A make_join a federation worker hands to main (audit R04, ADR-0185): the
 // template names an authorising user only after the allow conditions of a
 // restricted room are checked, and those rooms' state may live in another
 // shard, so main, which holds every room, builds it. Worker to main.

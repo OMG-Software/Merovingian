@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/in_memory_database_config.hpp"
 
-// Conformance audit 2026-10-17, R04 (ADR-0181): a local user joins a local restricted
+// Conformance audit 2026-10-17, R04 (ADR-0185): a local user joins a local restricted
 // room through one of its allow conditions. Every scenario drives the real
 // client-server dispatcher.
 

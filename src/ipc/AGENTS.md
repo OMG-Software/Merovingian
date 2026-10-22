@@ -9,7 +9,7 @@ and `merovingian-fed-worker`. There is no filesystem socket path: the fd is inhe
 | File | Responsibility |
 |---|---|
 | `channel.cpp` | `IpcChannel`: handshake, AEAD framing, reader and dispatch threads, `send_request` / `send_response` / `send_notification` |
-| `federation_ipc_frames.cpp` | JSON (de)serialisation of `fed_request` / `fed_response`, `outbound_http_request` / `outbound_http_response`, `room_sync` frame bodies |
+| `federation_ipc_frames.cpp` | JSON (de)serialisation of `fed_request` / `fed_response`, `outbound_http_request` / `outbound_http_response`, `room_sync`, and `membership_template_ingest` (a worker's `make_join`, ADR-0184) frame bodies |
 
 ## Security model — non-negotiable
 

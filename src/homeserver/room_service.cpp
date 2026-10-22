@@ -3721,7 +3721,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             {
                 continue;
             }
-            // R05 (ADR-0179): every key the sender check may try, at most
+            // R05 (ADR-0183): every key the sender check may try, at most
             // max_signature_keys_per_server per event, in the same pass.
             for (auto& key_id : federation::signature_key_ids_for_server(parsed.event.signatures, dom))
             {
@@ -3822,7 +3822,7 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         {
             continue;
         }
-        // R05 (ADR-0179): any one listed key that verifies will do. Each is one
+        // R05 (ADR-0183): any one listed key that verifies will do. Each is one
         // of ours (never fetched) or was resolved in the pass above. ADR-0075:
         // from room v5 the key must still be valid at the event's
         // origin_server_ts, the same rule every received event is held to.
@@ -5042,7 +5042,7 @@ namespace
             room->events.push_back(composed_invite->json);
         }
 
-        // Audit R04 (ADR-0181): a join into a restricted room this server is
+        // Audit R04 (ADR-0185): a join into a restricted room this server is
         // resident in. client-server-api.md "Restricted rooms": "When joining
         // without an invite, the server MUST verify that the requesting user
         // meets at least one of the conditions. If no conditions can be

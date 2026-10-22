@@ -119,7 +119,7 @@ auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexce
     {
     case FederationEndpoint::transaction:
     // make_join relays its template to main: a restricted room's allow
-    // conditions name rooms another shard owns (R04, ADR-0181).
+    // conditions name rooms another shard owns (R04, ADR-0185).
     case FederationEndpoint::make_join:
     case FederationEndpoint::send_join:
     case FederationEndpoint::send_leave:

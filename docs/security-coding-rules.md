@@ -479,6 +479,34 @@ quickly finding everything a given `AGENTS.md` file contributed.
   (CWE-347 Improper Verification of Cryptographic Signature; security audit run-1, ADR-0171).
   Source: `src/federation/AGENTS.md`.
 
+- **Check a server's signature against every key ID it lists, never only the first, and
+  bound the candidates.** Use `federation::authorize_federation_pdu_sender` (sender) or
+  `verify_server_signature_with_any_listed_key`; candidates come from
+  `signature_key_ids_for_server`: `ed25519:` IDs only, no repeats, at most
+  `max_signature_keys_per_server` (4), each through the caller's admitted lookup.
+  Why: a first-match loop refused genuine events signed with a rotated key and let a relay
+  make any event fail by listing a junk ID first; an unbounded list lets one event force
+  unbounded key fetches (conformance audit R05, ADR-0183).
+  Source: `src/federation/AGENTS.md`.
+
+- **This server co-signs a restricted join only after `homeserver::decide_restricted_join`
+  authorises it, and every locally composed join naming a local authoriser passes the same
+  decision.** The only exemption from the authorising-signature check is a `send_join` naming
+  this server's user (`PduSignatureChecks::authorised_here`), because the acceptor signs it.
+  Why: the auth rules check only that the named user is joined with invite power and that its
+  server signed; whether the joining user met an allow condition is checked by nobody else, so
+  signing without the decision lets anyone into a restricted room (conformance audit R04,
+  ADR-0185).
+  Source: `src/federation/AGENTS.md`, `src/homeserver/AGENTS.md`.
+
+- **Never refuse a received event for a content-hash mismatch; redact it and continue.**
+  Only a signature failure refuses (spec "Checks performed on receipt of a PDU", steps 2 and
+  3). Everything after the check (authorisation, our signature, what is stored and returned)
+  uses the redacted copy.
+  Why: the direct membership endpoints refused a mismatch before the acceptor could redact it
+  (conformance audit R06).
+  Source: `src/federation/AGENTS.md`.
+
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
   server supplies inline. The cache fetches from `/_matrix/key/v2/server` and trusts a key for
   at most 7 days after the fetch. From room v5 an event's signing key must be valid at the

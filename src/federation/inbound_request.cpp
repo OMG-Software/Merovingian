@@ -532,7 +532,7 @@ namespace
         PrefetchedSenderKeys const& prefetched;
         // A restricted join naming a user of this server is signed here, by
         // the send_join acceptor, after it has checked the allow conditions
-        // (R04, ADR-0181), so it cannot already carry a signature from us.
+        // (R04, ADR-0185), so it cannot already carry a signature from us.
         // Set to this server's name to leave that one check to the acceptor.
         std::string_view authorised_here{};
     };
@@ -540,7 +540,7 @@ namespace
     // The sender server's signature, then a restricted join's authorising
     // server's (EVT-1). Every candidate key goes through one admitted lookup
     // (FED-10); each check tries every listed key ID up to
-    // max_signature_keys_per_server (R05, ADR-0179). `known_key` is the
+    // max_signature_keys_per_server (R05, ADR-0183). `known_key` is the
     // X-Matrix key of the request, used without a lookup when it is the
     // sender's.
     [[nodiscard]] auto authorize_admitted_federation_pdu(FederationRuntimeState& runtime,
@@ -1241,7 +1241,7 @@ namespace
             // restricted joins the authorising user's homeserver signature is
             // also verified (EVT-1), except on send_join when that server is
             // this one: the acceptor checks the allow conditions and then adds
-            // the signature itself (R04, ADR-0181).
+            // the signature itself (R04, ADR-0185).
             // Spec v1.19 send_join / send_leave / send_knock: "servers SHOULD
             // return `M_INVALID_PARAM` if: The ... event fails a signature check".
             // A local key-resolution overload is not a verdict: 503, retryable.
@@ -2341,7 +2341,7 @@ namespace
     }
 
     // The one loop every "is this event validly signed by that server" check
-    // runs (audit R05, ADR-0179): resolve each candidate key in turn, verify
+    // runs (audit R05, ADR-0183): resolve each candidate key in turn, verify
     // with it, stop at the first that verifies. A local admission denial and
     // the deadline are reported as such only when nothing verified, so they
     // never override an accept and are never mistaken for a bad signature.
@@ -3460,7 +3460,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
 
         // Signature verification (Ed25519 + key validity) against every key ID
         // the PDU lists for its sender's server, up to
-        // max_signature_keys_per_server (R05, ADR-0179): the request's X-Matrix
+        // max_signature_keys_per_server (R05, ADR-0183): the request's X-Matrix
         // key first when the sender is the origin, then the pre-resolved key
         // from the fan-out above, then an admitted lookup. Fail-closed: no key
         // that verifies → the PDU is rejected, not persisted; a local
