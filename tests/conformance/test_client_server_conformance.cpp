@@ -11721,73 +11721,7 @@ SCENARIO("PUT and GET /user/{userId}/account_data/m.image_pack.rooms round-trips
     }
 }
 
-// --- PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type} --
-// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridrooms roomidaccount_datatype
-// IMPLEMENTATION GAP: per-room account data not yet implemented.
-SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account-data]")
-{
-    GIVEN("a running client-server and a logged-in user with a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("PUT /user/@alice:example.org/rooms/{roomId}/account_data/m.test is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/m.test",
-                 token, R"({"key":"value"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: per-room account data not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-// --- GET /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type} --
-// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3useruseridrooms roomidaccount_datatype
-// IMPLEMENTATION GAP: per-room account data retrieval not yet implemented.
-SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account-data]")
-{
-    GIVEN("a running client-server and a logged-in user with a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("GET /user/@alice:example.org/rooms/{roomId}/account_data/m.test is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/m.test",
-                 token,
-                 {}});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: per-room account data retrieval not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
+// Room-scoped account data (R10) is covered in test_account_data_conformance.cpp.
 
 // =============================================================================
 // USER DATA — ROOM TAGS
@@ -13058,67 +12992,8 @@ SCENARIO("GET /user/{userId}/filter/{filterId} conformance")
 // ============================================================================
 // 14     User data — Account data
 // ============================================================================
-// Spec: Matrix v1.19 §14 PUT/GET per-room account data and tags
-//       IMPLEMENTATION GAP: room-level account data and tags not implemented.
-
-SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("PUT /user/@alice:example.org/rooms/{roomId}/account_data/{type} is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom",
-                 token, R"({"data":42})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("GET /user/@alice:example.org/rooms/{roomId}/account_data/{type} is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom",
-                 token,
-                 {}});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
+// Spec: Matrix v1.19 §14 room tags. Room-scoped account data (R10) is covered in
+//       test_account_data_conformance.cpp.
 
 SCENARIO("GET /user/{userId}/rooms/{roomId}/tags conformance")
 {

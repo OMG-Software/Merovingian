@@ -657,6 +657,7 @@ server.client_api.max_one_time_keys_per_device=1000
 server.client_api.max_key_signatures_per_user=10000
 server.client_api.max_filters_per_user=1000
 server.client_api.max_global_account_data_per_user=1000
+server.client_api.max_room_account_data_per_room=100
 server.client_api.max_body_size=1MiB
 
 # server.http

@@ -3683,6 +3683,32 @@ namespace
         });
     }
 
+    // Appendices, "Room IDs": `!opaque_id` or `!opaque_id:domain`, at most 255 bytes, with no
+    // NUL. Room IDs are opaque, so this checks only the sigil, the bounds and the NUL rule; it is
+    // the 400 M_INVALID_PARAM gate of the room account-data endpoints (R10).
+    [[nodiscard]] auto room_id_is_well_formed(std::string_view room_id) noexcept -> bool
+    {
+        return room_id.size() >= 2U && room_id.size() <= 255U && room_id.front() == '!' &&
+               room_id.find('\0') == std::string_view::npos;
+    }
+
+    // Client Config, Server Behaviour: "Currently, this only includes m.fully_read and
+    // m.push_rules." A client PUT of either is refused with 405 M_BAD_JSON.
+    [[nodiscard]] auto account_data_type_is_server_managed(std::string_view type) noexcept -> bool
+    {
+        return type == "m.fully_read" || type == "m.push_rules";
+    }
+
+    // True when the store holds a membership row of any kind (join, invite, knock, leave, ban)
+    // for the user in the room. Room account data is written only for such a room (ADR-0197).
+    [[nodiscard]] auto user_has_room_membership(database::PersistentStore const& store, std::string_view user_id,
+                                                std::string_view room_id) -> bool
+    {
+        return std::ranges::any_of(store.memberships, [user_id, room_id](database::PersistentMembership const& row) {
+            return row.user_id == user_id && row.room_id == room_id;
+        });
+    }
+
     // True when the persistent store records a "join" membership for the user in
     // the given room.  Used by handlers that only have a room_id, not a LocalRoom.
     [[nodiscard]] auto user_is_joined(database::PersistentStore const& store, std::string_view room_id,
@@ -10022,6 +10048,7 @@ auto start_client_server(config::Config const& config, ClientServerStartOptions 
     rt.limits.max_key_signatures_per_user = client_api.max_key_signatures_per_user;
     rt.limits.max_filters_per_user = client_api.max_filters_per_user;
     rt.limits.max_global_account_data_per_user = client_api.max_global_account_data_per_user;
+    rt.limits.max_room_account_data_per_room = client_api.max_room_account_data_per_room;
     rt.limits.sliding_sync = {client_api.sliding_sync_max_timeline_limit,
                               client_api.sliding_sync_max_room_subscriptions,
                               client_api.sliding_sync_max_required_state_entries};
@@ -15962,48 +15989,91 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_resp(req, rt, 200U, stored->json);
         }
 
-        // Global (non-room) account data. The userId path segment is
-        // percent-encoded and contains no '/', so a pre-marker segment that
-        // contains '/' is room-scoped and falls through to the 404 below
-        // until room-scoped account data is implemented.
+        // Account data (Client Config): global `{userId}/account_data/{type}` and
+        // room-scoped `{userId}/rooms/{roomId}/account_data/{type}`. The userId and
+        // roomId path segments are percent-encoded and contain no '/'.
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#client-config
         auto constexpr account_data_m = std::string_view{"/account_data/"};
-        if (auto const ad_pos = suffix.find(account_data_m); ad_pos != std::string_view::npos)
+        if (auto const ad_pos = suffix.find(account_data_m);
+            ad_pos != std::string_view::npos && (req.method == "PUT" || req.method == "GET"))
         {
-            auto const encoded_user = suffix.substr(0U, ad_pos);
+            auto const scope = suffix.substr(0U, ad_pos);
             auto const type = core::percent_decode_path_component(suffix.substr(ad_pos + account_data_m.size()));
-            if (encoded_user.find('/') == std::string_view::npos && !type.empty())
+            auto constexpr rooms_m = std::string_view{"/rooms/"};
+            auto const rooms_pos = scope.find(rooms_m);
+            auto const encoded_user = rooms_pos == std::string_view::npos ? scope : scope.substr(0U, rooms_pos);
+            auto const encoded_room =
+                rooms_pos == std::string_view::npos ? std::string_view{} : scope.substr(rooms_pos + rooms_m.size());
+            if (encoded_user.find('/') == std::string_view::npos && encoded_room.find('/') == std::string_view::npos &&
+                !type.empty())
             {
+                auto const room_scoped = rooms_pos != std::string_view::npos;
                 auto const path_user = core::percent_decode_path_component(encoded_user);
+                auto const path_room = core::percent_decode_path_component(encoded_room);
                 if (path_user != *user)
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot access account data for another user");
                 }
+                if (room_scoped && !room_id_is_well_formed(path_room))
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room id is not a valid room ID");
+                }
                 if (req.method == "PUT")
                 {
-                    if (req.body.empty())
+                    // Spec (Client Config, Server Behaviour): "Servers MUST reject setting
+                    // account data for event types that the server manages by using a 405
+                    // error response", for global and room account data alike (R11).
+                    if (account_data_type_is_server_managed(type))
                     {
-                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "account data body must not be empty");
+                        return dispatch_err(req, rt, 405U, "M_BAD_JSON",
+                                            "cannot set " + type + " through the account data API");
                     }
-                    // Security audit run-1 (ADR-0173): each new global type is a row
-                    // that push fan-out and every /sync scan under runtime.mutex, so
-                    // new types stop at the per-user cap (M_TOO_LARGE, nothing stored
-                    // or evicted, as for the ADR-0118 caps). A type the user already
-                    // holds can always be updated. The cap check and the store share
-                    // one pass over the rows.
-                    auto const outcome = set_global_account_data_within_cap(
-                        rt, {path_user, std::string{}, type, req.body, 0U}, rt.limits.max_global_account_data_per_user);
+                    // Spec: 400 "The request body is not a JSON object", M_NOT_JSON when it
+                    // is not JSON at all, M_BAD_JSON when it is JSON of another kind (R11).
+                    auto const parsed_body = canonicaljson::parse_lossless(req.body);
+                    if (parsed_body.error != canonicaljson::ParseError::none)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_NOT_JSON", "account data body must be valid JSON");
+                    }
+                    if (std::get_if<canonicaljson::Object>(&parsed_body.value.storage()) == nullptr)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "account data body must be a JSON object");
+                    }
+                    // Conformance audit R10 (ADR-0197): room account data is written only for
+                    // a room the user holds a membership in, so the rooms a user can create
+                    // rows for are bounded by the rooms they have been part of.
+                    if (room_scoped && !user_has_room_membership(rt.homeserver.database.persistent_store, path_user,
+                                                                 path_room))
+                    {
+                        log_diagnostic("account_data.rejected", {
+                                                                    {"actor",   *user,         false},
+                                                                    {"room_id", path_room,     false},
+                                                                    {"type",    type,          false},
+                                                                    {"reason",  "no membership", false}
+                        });
+                        return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+                    }
+                    // Security audit run-1 (ADR-0173) and R10 (ADR-0197): each new type is a
+                    // row that push fan-out and every /sync scan under runtime.mutex, so new
+                    // types stop at the per-user cap (global) or per-room cap (room), with
+                    // M_TOO_LARGE, nothing stored or evicted, as for the ADR-0118 caps. A type
+                    // the user already holds can always be updated. The cap check and the
+                    // store share one pass over the rows.
+                    auto const cap = room_scoped ? rt.limits.max_room_account_data_per_room
+                                                 : rt.limits.max_global_account_data_per_user;
+                    auto row = database::PersistentAccountData{path_user, path_room, type, req.body, 0U};
+                    auto const outcome = room_scoped ? set_room_account_data_within_cap(rt, std::move(row), cap)
+                                                     : set_global_account_data_within_cap(rt, std::move(row), cap);
                     if (outcome == database::CappedAccountDataStore::over_cap)
                     {
                         log_diagnostic("account_data.rejected",
                                        {
-                                           {"actor",  *user,                                 false},
-                                           {"type",   type,                                  false},
-                                           {"reason", "per-user account data limit reached", false}
+                                           {"actor",  *user,                            false},
+                                           {"type",   type,                             false},
+                                           {"reason", "account data type limit reached", false}
                         });
                         return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
-                                            "account data limit of " +
-                                                std::to_string(rt.limits.max_global_account_data_per_user) +
-                                                " types reached");
+                                            "account data limit of " + std::to_string(cap) + " types reached");
                     }
                     if (outcome != database::CappedAccountDataStore::stored)
                     {
@@ -16023,10 +16093,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
                 if (req.method == "GET")
                 {
+                    // Spec (Client Config): "There is no inheritance mechanism here": a room
+                    // read never falls back to the global row of the same type, nor the reverse.
                     auto const& store = rt.homeserver.database.persistent_store;
                     auto const found = std::ranges::find_if(
-                        store.account_data, [&path_user, &type](database::PersistentAccountData const& d) {
-                            return d.user_id == path_user && d.room_id.empty() && d.event_type == type;
+                        store.account_data, [&path_user, &path_room, &type](database::PersistentAccountData const& d) {
+                            return d.user_id == path_user && d.room_id == path_room && d.event_type == type;
                         });
                     if (found == store.account_data.end())
                     {
@@ -16432,6 +16504,19 @@ auto set_global_account_data_within_cap(ClientServerRuntime& runtime, database::
     auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
     auto const outcome = database::store_global_account_data_within_cap(runtime.homeserver.database.persistent_store,
                                                                         std::move(data), max_global_types);
+    if (outcome == database::CappedAccountDataStore::stored)
+    {
+        std::ignore = ensure_sync_notifier(runtime);
+    }
+    return outcome;
+}
+
+auto set_room_account_data_within_cap(ClientServerRuntime& runtime, database::PersistentAccountData data,
+                                      std::size_t max_room_types) -> database::CappedAccountDataStore
+{
+    auto guard = std::unique_lock<RuntimeMutex>{runtime.homeserver.mutex};
+    auto const outcome = database::store_room_account_data_within_cap(runtime.homeserver.database.persistent_store,
+                                                                      std::move(data), max_room_types);
     if (outcome == database::CappedAccountDataStore::stored)
     {
         std::ignore = ensure_sync_notifier(runtime);

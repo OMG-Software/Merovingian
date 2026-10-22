@@ -342,6 +342,7 @@ shell = find_program('sh')
     'merovingian-conformance-tests',
     sources: files(
       'conformance/test_main.cpp',
+      'conformance/test_account_data_conformance.cpp',
       'conformance/test_appservice_conformance.cpp',
       'conformance/test_appservice_assertion_conformance.cpp',
       'conformance/test_appservice_directory_conformance.cpp',

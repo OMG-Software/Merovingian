@@ -1657,13 +1657,15 @@ inline constexpr auto max_audit_query_rows = std::size_t{10000U};
 [[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool;
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 
-// Outcome of store_global_account_data_within_cap.
+// Outcome of store_global_account_data_within_cap and store_room_account_data_within_cap.
 enum class CappedAccountDataStore
 {
     stored,
-    // The user already holds `max_global_types` other global types; nothing was written.
+    // The user already holds the cap's number of other types in the row's scope; nothing was
+    // written.
     over_cap,
-    // Not a global row (room_id set), a missing user or type, or the write failed.
+    // A row of the wrong scope (room_id set for a global store, empty for a room store), a
+    // missing user or type, or the write failed.
     failed,
 };
 
@@ -1674,6 +1676,13 @@ enum class CappedAccountDataStore
 // no sync stream position.
 [[nodiscard]] auto store_global_account_data_within_cap(PersistentStore& store, PersistentAccountData data,
                                                         std::size_t max_global_types) -> CappedAccountDataStore;
+// Stores a room account-data row (room_id set) unless it would give the user more than
+// `max_room_types` distinct types in that room (ADR-0197). Same contract as the global form: a
+// type the user already holds in the room is always updated, one pass under runtime.mutex, and a
+// refusal writes nothing. Rows the server writes through store_account_data (m.tag,
+// m.fully_read) are counted but never refused.
+[[nodiscard]] auto store_room_account_data_within_cap(PersistentStore& store, PersistentAccountData data,
+                                                      std::size_t max_room_types) -> CappedAccountDataStore;
 // Sets the receipt `receipt` names by (room_id, receipt_type, user_id,
 // thread_id) to its event_id and ts, at a newly allocated sync stream
 // position written back into the stored row. The row is committed before the

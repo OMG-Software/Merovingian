@@ -3827,6 +3827,52 @@ namespace
     return true;
 }
 
+namespace
+{
+
+    // Stores `data` unless the user already holds `max_types` other types in the row's scope
+    // (global when room_id is empty, otherwise that one room). One pass over the in-memory rows
+    // both counts the types and finds the row to update, because the PUT paths run under
+    // runtime.mutex. A refusal writes nothing and allocates no sync stream position.
+    [[nodiscard]] auto store_account_data_within_scope_cap(PersistentStore& store, PersistentAccountData data,
+                                                           std::size_t max_types) -> CappedAccountDataStore
+    {
+        auto held_types = std::size_t{0U};
+        auto existing = std::optional<std::size_t>{};
+        for (auto index = std::size_t{0U}; index < store.account_data.size(); ++index)
+        {
+            auto const& row = store.account_data[index];
+            if (row.user_id != data.user_id || row.room_id != data.room_id)
+            {
+                continue;
+            }
+            ++held_types;
+            if (row.event_type == data.event_type)
+            {
+                existing = index;
+            }
+        }
+        if (!existing.has_value() && held_types >= max_types)
+        {
+            return CappedAccountDataStore::over_cap;
+        }
+        if (!persist_account_data_row(store, data))
+        {
+            return CappedAccountDataStore::failed;
+        }
+        if (existing.has_value())
+        {
+            store.account_data[*existing] = std::move(data);
+        }
+        else
+        {
+            store.account_data.push_back(std::move(data));
+        }
+        return CappedAccountDataStore::stored;
+    }
+
+} // namespace
+
 [[nodiscard]] auto store_global_account_data_within_cap(PersistentStore& store, PersistentAccountData data,
                                                         std::size_t max_global_types) -> CappedAccountDataStore
 {
@@ -3834,38 +3880,17 @@ namespace
     {
         return CappedAccountDataStore::failed;
     }
-    auto held_types = std::size_t{0U};
-    auto existing = std::optional<std::size_t>{};
-    for (auto index = std::size_t{0U}; index < store.account_data.size(); ++index)
-    {
-        auto const& row = store.account_data[index];
-        if (row.user_id != data.user_id || !row.room_id.empty())
-        {
-            continue;
-        }
-        ++held_types;
-        if (row.event_type == data.event_type)
-        {
-            existing = index;
-        }
-    }
-    if (!existing.has_value() && held_types >= max_global_types)
-    {
-        return CappedAccountDataStore::over_cap;
-    }
-    if (!persist_account_data_row(store, data))
+    return store_account_data_within_scope_cap(store, std::move(data), max_global_types);
+}
+
+[[nodiscard]] auto store_room_account_data_within_cap(PersistentStore& store, PersistentAccountData data,
+                                                      std::size_t max_room_types) -> CappedAccountDataStore
+{
+    if (data.user_id.empty() || data.event_type.empty() || data.room_id.empty())
     {
         return CappedAccountDataStore::failed;
     }
-    if (existing.has_value())
-    {
-        store.account_data[*existing] = std::move(data);
-    }
-    else
-    {
-        store.account_data.push_back(std::move(data));
-    }
-    return CappedAccountDataStore::stored;
+    return store_account_data_within_scope_cap(store, std::move(data), max_room_types);
 }
 
 namespace
