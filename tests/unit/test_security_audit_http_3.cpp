@@ -545,7 +545,7 @@ SCENARIO("HTTP-3 rate-limits only the push-rule route the spec marks rate-limite
             }
         }
 
-        WHEN("rules are put under three different IDs, one of them named \"enabled\"")
+        WHEN("rules are put under four IDs, one named \"enabled\" and one holding an encoded slash")
         {
             auto const first =
                 send("PUT", "/_matrix/client/v3/pushrules/global/content/one", R"({"pattern":"a","actions":[]})");
@@ -555,6 +555,9 @@ SCENARIO("HTTP-3 rate-limits only the push-rule route the spec marks rate-limite
             // A rule named like an attribute is still a rule PUT, not an exempt attribute PUT.
             auto const named_enabled =
                 send("PUT", "/_matrix/client/v3/pushrules/global/content/enabled", R"({"pattern":"b","actions":[]})");
+            // An encoded slash is part of the rule ID, as the router reads it, not an attribute.
+            auto const encoded_slash = send("PUT", "/_matrix/client/v3/pushrules/global/content/a%2Fenabled",
+                                            R"({"pattern":"c","actions":[]})");
 
             THEN("the later two share the first's exhausted bucket")
             {
@@ -562,6 +565,7 @@ SCENARIO("HTTP-3 rate-limits only the push-rule route the spec marks rate-limite
                 CHECK(first == 200U);
                 CHECK(second == 429U);
                 CHECK(named_enabled == 429U);
+                CHECK(encoded_slash == 429U);
             }
         }
     }

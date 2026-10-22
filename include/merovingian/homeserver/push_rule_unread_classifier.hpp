@@ -59,6 +59,14 @@ public:
     PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user, std::size_t max_user_rules,
                              sync::HistoryVisibility& visibility);
 
+    // `visibility_` may refer to this object's own `owned_visibility_`, so a copy or move would
+    // leave it referring to the source. Build one in place, where it is used.
+    PushRuleUnreadClassifier(PushRuleUnreadClassifier const&) = delete;
+    PushRuleUnreadClassifier(PushRuleUnreadClassifier&&) = delete;
+    auto operator=(PushRuleUnreadClassifier const&) -> PushRuleUnreadClassifier& = delete;
+    auto operator=(PushRuleUnreadClassifier&&) -> PushRuleUnreadClassifier& = delete;
+    ~PushRuleUnreadClassifier() override = default;
+
     [[nodiscard]] auto visible(database::PersistentEvent const& event) const -> bool override;
 
     [[nodiscard]] auto counted_after(std::string_view room_id) const -> std::optional<std::uint64_t> override;
