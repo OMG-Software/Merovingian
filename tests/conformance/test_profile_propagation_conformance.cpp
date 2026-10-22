@@ -577,6 +577,71 @@ SCENARIO("changing the display name leaves rooms the user has left untouched",
             }
         }
     }
+
+    // The member list can also name a user whose current membership cannot be read from the room's
+    // state: one who never joined, or whose member event row is missing or unreadable. None of these
+    // shows the user to be a member, so nothing is sent there.
+    GIVEN("the server's member list names Bob in a room whose state does not show him joined")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before room membership is exercised.
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const bob = logged_in_token(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        auto const shape = std::string{GENERATE("never joined", "member event missing", "member event unreadable")};
+        auto& store = started.runtime.homeserver.database.persistent_store;
+        if (shape != "never joined")
+        {
+            join(started.runtime, bob, room_id);
+            auto const state = std::ranges::find_if(store.state, [&](auto const& row) {
+                return row.room_id == room_id && row.event_type == "m.room.member" &&
+                       row.state_key == "@bob:example.org";
+            });
+            // Fixture: Bob's join must be in the room's current state before it is made unreadable.
+            REQUIRE(state != store.state.end());
+            auto const event = std::ranges::find_if(store.events, [&](auto const& row) {
+                return row.event_id == state->event_id;
+            });
+            // Fixture: the state row must name a stored event.
+            REQUIRE(event != store.events.end());
+            if (shape == "member event missing")
+            {
+                store.events.erase(event);
+            }
+            else
+            {
+                event->json = "{";
+            }
+        }
+        else
+        {
+            auto& rooms = started.runtime.homeserver.database.rooms;
+            auto const room = std::ranges::find_if(rooms, [&](auto const& candidate) {
+                return candidate.room_id == room_id;
+            });
+            // Fixture: the room Alice created must be held in the runtime.
+            REQUIRE(room != rooms.end());
+            room->members.emplace_back("@bob:example.org");
+        }
+        auto const events_before = store.events.size();
+
+        WHEN("Bob sets his display name")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/profile/@bob:example.org/displayname", bob, R"({"displayname":"Robert"})"});
+
+            THEN("the field is set and no membership event is sent to that room")
+            {
+                // Spec MUST: 200 "The profile field was set."
+                REQUIRE(put.response.status == 200U);
+                // Spec SHOULD: the update goes to rooms the user is a member of; state that does not
+                // show Bob joined is not such a room.
+                REQUIRE(store.events.size() == events_before);
+            }
+        }
+    }
 }
 
 // Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
