@@ -54,15 +54,16 @@ constexpr auto alice_path = std::string_view{"%40alice%3Aexample.org"};
 [[nodiscard]] auto call(ClientServerRuntime& rt, std::string method, std::string target, std::string const& token,
                         std::string body = {}) -> LocalHttpResponse
 {
-    return merovingian::homeserver::handle_client_server_request(rt, {std::move(method), std::move(target), token,
-                                                                      std::move(body)})
+    return merovingian::homeserver::handle_client_server_request(
+               rt, {std::move(method), std::move(target), token, std::move(body)})
         .response;
 }
 
 [[nodiscard]] auto register_and_login(ClientServerRuntime& rt, std::string const& localpart) -> std::string
 {
-    REQUIRE(call(rt, "POST", "/_matrix/client/v3/register", {}, registration_json(localpart, "CorrectHorse7!"))
-                .status == 200U);
+    REQUIRE(
+        call(rt, "POST", "/_matrix/client/v3/register", {}, registration_json(localpart, "CorrectHorse7!")).status ==
+        200U);
     auto const login =
         call(rt, "POST", "/_matrix/client/v3/login", {},
              std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +
@@ -89,11 +90,10 @@ constexpr auto alice_path = std::string_view{"%40alice%3Aexample.org"};
     return "/_matrix/client/v3/user/" + std::string{user_path} + "/account_data/" + std::string{type};
 }
 
-[[nodiscard]] auto room_url(std::string_view user_path, std::string_view room_id, std::string_view type)
-    -> std::string
+[[nodiscard]] auto room_url(std::string_view user_path, std::string_view room_id, std::string_view type) -> std::string
 {
-    return "/_matrix/client/v3/user/" + std::string{user_path} + "/rooms/" + std::string{room_id} +
-           "/account_data/" + std::string{type};
+    return "/_matrix/client/v3/user/" + std::string{user_path} + "/rooms/" + std::string{room_id} + "/account_data/" +
+           std::string{type};
 }
 
 [[nodiscard]] auto errcode_of(LocalHttpResponse const& response) -> std::string
@@ -193,7 +193,8 @@ SCENARIO("global account data that is not a JSON object is refused and not store
 
         WHEN("the body is a JSON object")
         {
-            auto const stored = call(rt, "PUT", global_url(alice_path, "org.example.good"), token, R"({"key":"value"})");
+            auto const stored =
+                call(rt, "PUT", global_url(alice_path, "org.example.good"), token, R"({"key":"value"})");
 
             THEN("it is stored and read back")
             {
@@ -229,7 +230,8 @@ SCENARIO("server-managed account data types are refused with 405 M_BAD_JSON glob
 
         WHEN("the client sets m.fully_read or m.push_rules through either account-data API")
         {
-            auto const global_read = call(rt, "PUT", global_url(alice_path, "m.fully_read"), token, R"({"event_id":"$x"})");
+            auto const global_read =
+                call(rt, "PUT", global_url(alice_path, "m.fully_read"), token, R"({"event_id":"$x"})");
             auto const global_push = call(rt, "PUT", global_url(alice_path, "m.push_rules"), token, R"({"global":{}})");
             auto const room_read =
                 call(rt, "PUT", room_url(alice_path, room_id, "m.fully_read"), token, R"({"event_id":"$x"})");
@@ -426,7 +428,8 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
         {
             auto const put = call(rt, "PUT", room_url(alice_path, "%40notaroomid%3Aexample.org", "org.example.c"),
                                   alice, R"({"c":1})");
-            auto const get = call(rt, "GET", room_url(alice_path, "%40notaroomid%3Aexample.org", "org.example.c"), alice);
+            auto const get =
+                call(rt, "GET", room_url(alice_path, "%40notaroomid%3Aexample.org", "org.example.c"), alice);
 
             THEN("both are refused with 400 M_INVALID_PARAM")
             {
@@ -439,7 +442,8 @@ SCENARIO("room account data refuses bad bodies, invalid room IDs and other users
 
         WHEN("bob reads or writes alice's room account data")
         {
-            REQUIRE(call(rt, "PUT", room_url(alice_path, room_id, "org.example.d"), alice, R"({"d":1})").status == 200U);
+            REQUIRE(call(rt, "PUT", room_url(alice_path, room_id, "org.example.d"), alice, R"({"d":1})").status ==
+                    200U);
             auto const get = call(rt, "GET", room_url(alice_path, room_id, "org.example.d"), bob);
             auto const put = call(rt, "PUT", room_url(alice_path, room_id, "org.example.d"), bob, R"({"d":2})");
 

@@ -130,8 +130,8 @@ namespace
                                          std::string const& token, std::string_view room_id, std::string_view type)
     -> merovingian::homeserver::LocalHttpResponse
 {
-    return merovingian::homeserver::handle_client_server_request(runtime,
-                                                                 {"GET", room_account_data_url(room_id, type), token, {}})
+    return merovingian::homeserver::handle_client_server_request(
+               runtime, {"GET", room_account_data_url(room_id, type), token, {}})
         .response;
 }
 
@@ -146,10 +146,11 @@ namespace
 
 [[nodiscard]] auto register_and_login_bob(merovingian::homeserver::ClientServerRuntime& runtime) -> std::string
 {
-    REQUIRE(merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("bob", "CorrectHorse7!")})
-                .response.status == 200U);
+    REQUIRE(
+        merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+            .response.status == 200U);
     auto const login = merovingian::homeserver::handle_client_server_request(
         runtime,
         {"POST",

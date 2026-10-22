@@ -756,7 +756,8 @@ SCENARIO("POST /register without a username generates a Matrix ID local part",
                     // whose localpart is drawn from a-z, 0-9, ".", "_", "=", "-", "/" and "+".
                     REQUIRE(user_id->starts_with("@"));
                     REQUIRE(user_id->ends_with(":example.org"));
-                    auto const localpart = user_id->substr(1U, user_id->size() - 1U - std::string_view{":example.org"}.size());
+                    auto const localpart =
+                        user_id->substr(1U, user_id->size() - 1U - std::string_view{":example.org"}.size());
                     REQUIRE(!localpart.empty());
                     REQUIRE(std::ranges::all_of(localpart, [](char c) {
                         return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '=' ||
@@ -779,7 +780,9 @@ SCENARIO("POST /register without a username generates a Matrix ID local part",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/register", {},
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
                  R"({"username":"","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
 
             THEN("it is refused as an invalid user name, not treated as omitted")

@@ -16160,13 +16160,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     // Conformance audit R10 (ADR-0197): room account data is written only for
                     // a room the user holds a membership in, so the rooms a user can create
                     // rows for are bounded by the rooms they have been part of.
-                    if (room_scoped && !user_has_room_membership(rt.homeserver.database.persistent_store, path_user,
-                                                                 path_room))
+                    if (room_scoped &&
+                        !user_has_room_membership(rt.homeserver.database.persistent_store, path_user, path_room))
                     {
                         log_diagnostic("account_data.rejected", {
-                                                                    {"actor",   *user,         false},
-                                                                    {"room_id", path_room,     false},
-                                                                    {"type",    type,          false},
+                                                                    {"actor",   *user,           false},
+                                                                    {"room_id", path_room,       false},
+                                                                    {"type",    type,            false},
                                                                     {"reason",  "no membership", false}
                         });
                         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
@@ -16186,8 +16186,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         log_diagnostic("account_data.rejected",
                                        {
-                                           {"actor",  *user,                            false},
-                                           {"type",   type,                             false},
+                                           {"actor",  *user,                             false},
+                                           {"type",   type,                              false},
                                            {"reason", "account data type limit reached", false}
                         });
                         return dispatch_err(req, rt, 400U, "M_TOO_LARGE",

@@ -4267,10 +4267,13 @@ SCENARIO("Room account data is stored within a per-room cap of distinct types",
     {
         auto store = merovingian::database::PersistentStore{};
         merovingian::database::enable_statement_capture(store, 256U);
-        REQUIRE(merovingian::database::store_account_data(store, {"@alice:example.org", "!a:example.org", "m.a", R"({})", 0U}));
-        REQUIRE(merovingian::database::store_account_data(store, {"@alice:example.org", "!a:example.org", "m.b", R"({})", 0U}));
+        REQUIRE(merovingian::database::store_account_data(
+            store, {"@alice:example.org", "!a:example.org", "m.a", R"({})", 0U}));
+        REQUIRE(merovingian::database::store_account_data(
+            store, {"@alice:example.org", "!a:example.org", "m.b", R"({})", 0U}));
         REQUIRE(merovingian::database::store_account_data(store, {"@alice:example.org", "", "m.c", R"({})", 0U}));
-        REQUIRE(merovingian::database::store_account_data(store, {"@alice:example.org", "!b:example.org", "m.a", R"({})", 0U}));
+        REQUIRE(merovingian::database::store_account_data(
+            store, {"@alice:example.org", "!b:example.org", "m.a", R"({})", 0U}));
         auto const rows_before = store.account_data.size();
         auto const stream_before = store.next_sync_stream_id;
 

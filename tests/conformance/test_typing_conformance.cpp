@@ -56,15 +56,16 @@ using merovingian::homeserver::LocalHttpResponse;
 [[nodiscard]] auto call(ClientServerRuntime& rt, std::string method, std::string target, std::string const& token,
                         std::string body = {}) -> LocalHttpResponse
 {
-    return merovingian::homeserver::handle_client_server_request(rt, {std::move(method), std::move(target), token,
-                                                                      std::move(body)})
+    return merovingian::homeserver::handle_client_server_request(
+               rt, {std::move(method), std::move(target), token, std::move(body)})
         .response;
 }
 
 [[nodiscard]] auto register_and_login(ClientServerRuntime& rt, std::string const& localpart) -> std::string
 {
-    REQUIRE(call(rt, "POST", "/_matrix/client/v3/register", {}, registration_json(localpart, "CorrectHorse7!"))
-                .status == 200U);
+    REQUIRE(
+        call(rt, "POST", "/_matrix/client/v3/register", {}, registration_json(localpart, "CorrectHorse7!")).status ==
+        200U);
     auto const login =
         call(rt, "POST", "/_matrix/client/v3/login", {},
              std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +

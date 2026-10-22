@@ -7,9 +7,9 @@
 
 #include "in_memory_database_config.hpp"
 #include "master_key.hpp"
-#include "registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "registration_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -21,8 +21,8 @@ namespace merovingian::tests
 {
 
 [[nodiscard]] inline auto caps_config(std::uint32_t one_time_keys, std::uint32_t key_signatures, std::uint32_t filters,
-                                      std::uint32_t global_account_data = 1000U,
-                                      std::uint32_t room_account_data = 100U) -> merovingian::config::Config
+                                      std::uint32_t global_account_data = 1000U, std::uint32_t room_account_data = 100U)
+    -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
     security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
