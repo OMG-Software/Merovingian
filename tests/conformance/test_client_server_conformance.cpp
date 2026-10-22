@@ -12742,7 +12742,7 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId} conformance")
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesglobalkindruleid
 // ruleId: "If the string starts with a dot ("."), the request MUST be rejected as this is reserved
-// for server-default rules." (R19, 0.12.39: this scenario asserted 404 M_UNRECOGNIZED while the
+// for server-default rules." (R19, 0.12.40: this scenario asserted 404 M_UNRECOGNIZED while the
 // endpoint was absent.)
 SCENARIO("PUT /pushrules/global/{kind}/{ruleId} conformance")
 {
@@ -12774,7 +12774,7 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId} conformance")
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3pushrulesglobalkindruleid
 // 404: "The push rule does not exist." .m.rule.contains_user_name is not a server-default rule
 // since v1.17 ("the legacy default push rules that looked for mentions in the body of the event
-// were removed"). (R19, 0.12.39: this scenario asserted 404 M_UNRECOGNIZED while the endpoint was
+// were removed"). (R19, 0.12.40: this scenario asserted 404 M_UNRECOGNIZED while the endpoint was
 // absent.)
 SCENARIO("DELETE /pushrules/global/{kind}/{ruleId} conformance")
 {
@@ -12831,7 +12831,7 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId}/actions conformance")
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesglobalkindruleidactions
 // Request body: an object whose `actions` is required; 404: "The push rule does not exist." (R19,
-// 0.12.39: this scenario asserted 404 M_UNRECOGNIZED while the endpoint was absent, and sent a
+// 0.12.40: this scenario asserted 404 M_UNRECOGNIZED while the endpoint was absent, and sent a
 // bare array, which is not the request body the spec defines.)
 SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/actions conformance")
 {
@@ -12888,7 +12888,7 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId}/enabled conformance")
 }
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesglobalkindruleidenabled
-// 404: "The push rule does not exist." (R19, 0.12.39: this scenario asserted 404 M_UNRECOGNIZED
+// 404: "The push rule does not exist." (R19, 0.12.40: this scenario asserted 404 M_UNRECOGNIZED
 // while the endpoint was absent.)
 SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/enabled conformance")
 {

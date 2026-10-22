@@ -8,7 +8,7 @@ used read-only defaults)
 
 ## Context and Problem Statement
 
-Until 0.12.39 every user had the server-default push ruleset and nothing else. The Push Rules API
+Until 0.12.40 every user had the server-default push ruleset and nothing else. The Push Rules API
 (`PUT`/`DELETE /pushrules/global/{kind}/{ruleId}`, `PUT .../enabled`, `PUT .../actions`) lets a
 user create, order, delete, enable and re-action rules, and push delivery and unread counts must
 follow the result. The rules need durable storage, a way to reach the user's clients, and bounds,

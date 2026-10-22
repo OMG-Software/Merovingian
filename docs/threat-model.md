@@ -2168,7 +2168,7 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   `shared` or `world_readable` history from that period is not shown to later joiners or
   peekers until state is recorded for it. The unread counts
   (`notification_count`, `highlight_count`, and the `by_notification_count` room ordering) do not
-  go through the filter, but since 0.12.39 they count only events after the start of the user's
+  go through the filter, but since 0.12.40 they count only events after the start of the user's
   current join (ADR-0205), so they no longer reveal how many messages preceded it. What remains is
   that a user who left and rejoined is not counted the events they could see before leaving. `/notifications` rows are
   returned as recorded: they were created for a user who was joined at delivery, and are not
@@ -2389,7 +2389,7 @@ run, so each was a way for one party to slow the whole server (CWE-407).
 - **Push glob matching.** `event_match` allocated per character, and `content.body` matching
   was quadratic in the body, for every local recipient of every event. **Mitigation:** linear
   matchers with no per-character allocation, checked against the old implementation
-  (ADR-0175). Residual risk: user push rules are evaluated server-side since 0.12.39; see
+  (ADR-0175). Residual risk: user push rules are evaluated server-side since 0.12.40; see
   "Conformance audit wave 5" below.
 - **Global account data.** One user could add types without bound, growing the rows every
   account-data read scans. **Mitigation:** a configurable per-user cap on global types,
@@ -2423,7 +2423,7 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   **Mitigation:** each takes an ADR-0079 slot (ADR-0181). Residual risk: a request can still take up
   to the sum of the appservices' timeouts.
 
-### Conformance audit wave 5 (0.12.39)
+### Conformance audit wave 5 (0.12.40)
 
 - **Client-chosen push rules evaluated under the runtime lock.** The Push Rules API (R19) lets a
   client store rules the server evaluates for every event the user receives. **Mitigation:** a
