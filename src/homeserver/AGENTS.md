@@ -23,7 +23,8 @@ This is the largest and most complex module — read this file carefully before 
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
-| `default_push_ruleset.cpp` | The server-default push ruleset returned by `/pushrules/` |
+| `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
+| `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `federation_request_routing.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
@@ -232,6 +233,9 @@ client, sender or remote server controls, and per-user rows that requests scan m
   affected room its new typing list; it never rescans the table per expired room (R13).
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
   (ADR-0174).
+- A user's push rules are evaluated for every event they receive. `PUT /pushrules/...` refuses a new
+  rule past `max_push_rules_per_user` with `400 M_TOO_LARGE` and bounds each rule (ADR-0204);
+  `m.push_rules` cannot be set through the account-data API (405).
 
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 

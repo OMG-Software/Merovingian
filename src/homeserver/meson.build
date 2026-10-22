@@ -27,6 +27,7 @@ homeserver_sources = files(
   'runtime_signing_key_store.cpp',
   'space_hierarchy.cpp',
   'state_bookkeeping.cpp',
+  'stored_push_rules.cpp',
   'tls.cpp',
   'worker_env.cpp',
   'worker_pool.cpp',

@@ -2388,7 +2388,8 @@ run, so each was a way for one party to slow the whole server (CWE-407).
 - **Push glob matching.** `event_match` allocated per character, and `content.body` matching
   was quadratic in the body, for every local recipient of every event. **Mitigation:** linear
   matchers with no per-character allocation, checked against the old implementation
-  (ADR-0175). Residual risk: none known; user push rules are not yet evaluated server-side.
+  (ADR-0175). Residual risk: user push rules are evaluated server-side since 0.12.39; see
+  "Conformance audit wave 5" below.
 - **Global account data.** One user could add types without bound, growing the rows every
   account-data read scans. **Mitigation:** a configurable per-user cap on global types,
   `400 M_TOO_LARGE` beyond it (ADR-0173). Residual risk: the scans are still linear in the
@@ -2420,3 +2421,12 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
 - **Unadmitted third-party lookups.** `/thirdparty/*` held request threads with no proxy slot.
   **Mitigation:** each takes an ADR-0079 slot (ADR-0181). Residual risk: a request can still take up
   to the sum of the appservices' timeouts.
+
+### Conformance audit wave 5 (0.12.39)
+
+- **Client-chosen push rules evaluated under the runtime lock.** The Push Rules API (R19) lets a
+  client store rules the server evaluates for every event the user receives. **Mitigation:** a
+  per-user rule cap (`server.client_api.max_push_rules_per_user`, default 200), per-rule bounds,
+  re-validation of the stored rules on read, and 405 on setting `m.push_rules` as account data
+  (ADR-0204). Residual risk: evaluation is linear in rules times event size, with a factor the
+  operator sets.

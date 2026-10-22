@@ -2,6 +2,26 @@
 
 Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-report-2026-10-17.md`.
 
+- **FIXED (R19, push-rule mutation APIs absent):** `PUT` and `DELETE /pushrules/global/{kind}/{ruleId}`,
+  `PUT .../enabled` and `PUT .../actions` are implemented. A new rule is enabled and becomes the most
+  important user-defined rule of its kind unless `before`/`after` place it (`before` wins when both
+  are given). Rule IDs starting with `.` (reserved for server defaults), containing `/` or `\`, or
+  (room and sender rules) not a room or user ID are refused with `400 M_INVALID_PARAM`; a placement
+  that names no rule answers `400 M_UNKNOWN`, and one relative to a server-default rule
+  `400 M_INVALID_PARAM`. Server-default rules can be enabled, disabled and given new actions but not
+  created or deleted. Historical `dont_notify` and `coalesce` actions are stripped.
+  A user's rules are kept as their `m.push_rules` account data and applied over the current server
+  defaults (ADR-0204), so a change reaches the user's clients in the `account_data` section of
+  `/sync`, and push delivery now evaluates the user's own rules instead of the read-only defaults.
+  `PUT /user/{userId}/account_data/m.push_rules` and `.../m.fully_read` are refused with 405, as the
+  spec requires for server-managed types.
+- **SECURITY (bounded work under the runtime lock):** rules are evaluated under `runtime.mutex` for
+  every recipient of every event, so a user holds at most
+  `server.client_api.max_push_rules_per_user` user-defined rules (new, default 200, at most 10000;
+  `400 M_TOO_LARGE` past it, updates always allowed), and each rule is bounded: an ID of 255 bytes,
+  patterns and condition strings of 512 bytes, 16 conditions, 16 actions, 4096 bytes of canonical
+  JSON. Stored rules are re-validated when read.
+
 ## 0.12.39
 
 Indexes the in-memory event store by event ID and by stream order (ADR-0215). Deferred from the

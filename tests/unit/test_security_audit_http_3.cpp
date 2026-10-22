@@ -391,6 +391,13 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
          "/_matrix/client/v1/appservice/two/ping"                                                                                                                                                                                              },
         {"/_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}",
          "/_matrix/client/v3/directory/list/appservice/irc/%21a%3Aexample.org",                                                              "/_matrix/client/v3/directory/list/appservice/gitter/%21b%3Aexample.org"                          },
+        // R19 (ADR-0204): the push rule mutation routes share the read routes' templates.
+        {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}",                     "/_matrix/client/v3/pushrules/global/content/one",
+         "/_matrix/client/v3/pushrules/global/room/%21two%3Aexample.org"                                                                                                                                                                       },
+        {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}/actions",
+         "/_matrix/client/v3/pushrules/global/override/.m.rule.master/actions",                                                              "/_matrix/client/v3/pushrules/global/content/two/actions"                                         },
+        {"/_matrix/client/v3/pushrules/global/{kind}/{ruleId}/enabled",
+         "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled",                                                              "/_matrix/client/v3/pushrules/global/sender/%40two%3Aexample.org/enabled"                         },
     };
 
     GIVEN("a one-request operator cap keyed on each route template")

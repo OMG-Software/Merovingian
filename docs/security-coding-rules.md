@@ -1148,6 +1148,14 @@ media-fetch-pool task.
   several stars (CWE-1333). A randomised test pins the answers to the old implementation
   (ADR-0175).
   Source: `src/push/AGENTS.md`.
+- **A user's push rules are bounded on write and re-validated on read.** At most
+  `server.client_api.max_push_rules_per_user` user-defined rules, each with bounded ID, pattern and
+  string lengths, condition and action counts and canonical size; the stored `m.push_rules` content
+  is read through the same validator, and clients cannot set it through the account-data API (405).
+  Why: a client's rules are evaluated under the runtime lock for every event it receives and every
+  unread event a `/sync` counts, so their size is work the client would otherwise choose (CWE-400,
+  ADR-0204).
+  Source: `src/push/AGENTS.md`.
 
 ## Trust and safety
 

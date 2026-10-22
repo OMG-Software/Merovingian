@@ -32,7 +32,7 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R13 | P2 | Local typing never expires; non-boolean `typing` is treated as true | Fixed 0.12.38 (ADR-0199) |
 | R15 | P2 | Unread counts ignore push-rule notify/highlight actions | Open — wave 5 |
 | R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Open — media wave (0.12.40) |
-| R19 | P2 | Push-rule mutation APIs are absent; delivery uses read-only defaults | Open — wave 5 |
+| R19 | P2 | Push-rule mutation APIs are absent; delivery uses read-only defaults | Fixed 0.12.39 (ADR-0204) |
 | R20 | P2 | `POST /register` runs User-Interactive Authentication before the username checks | Open — unscheduled |
 | R14 | P3 | Failed push notifications are never retried (spec SHOULD) | Open — wave 5 |
 | R16 | P3 | `/search` omits visible history from rooms the user has left | Fixed 0.12.38 |

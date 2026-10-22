@@ -997,8 +997,9 @@ The boundary provides these guarantees:
 
 ## Deliberately not included
 
-The `push_rules` schema table remains unused: clients can fetch the server's
-default push ruleset, but cannot mutate or persist user rules. Federation queue
+The v1 `push_rules` schema table remains unused: a user's push rules are kept as
+their `m.push_rules` global account data, applied over the current server defaults
+(ADR-0204), because that table's primary key cannot express a rule's kind. Federation queue
 tables (`federation_destinations`, `federation_transactions`) are hydrated and
 used by the runtime on both backends; media metadata and policy rows are also
 persisted and hydrated.

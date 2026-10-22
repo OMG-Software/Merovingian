@@ -12112,9 +12112,13 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId} returns a server-default push r
 
 // --- PUT /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId} ----------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleid
-// IMPLEMENTATION GAP: push rule creation not yet implemented.
-SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][push]")
+// Endpoint / Section: PUT /_matrix/client/v3/pushrules/global/{kind}/{ruleId}
+//
+// "This endpoint allows the creation and modification of user defined push rules." "When creating
+// push rules, they MUST be enabled by default." (R19, ADR-0204. Ordering, refusals, delivery and
+// /sync are covered in test_push_rules_api_conformance.cpp.)
+SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId} creates an enabled user-defined rule",
+         "[conformance][client-server][push][r19]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -12127,15 +12131,25 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (imp
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/content/myrule", token,
                                   R"({"pattern":"conformance","actions":["notify"]})"});
+            auto const fetched = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/pushrules/global/content/myrule", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the rule is created, enabled, and not a server-default rule")
             {
-                // IMPLEMENTATION GAP: push rule creation not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                // Spec: 200 "The push rule was created/updated."
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(fetched.response.status == 200U);
+                auto const body = parse_object(fetched.response.body);
+                auto const* enabled = bool_member(body, "enabled");
+                auto const* is_default = bool_member(body, "default");
+                auto const* pattern = string_member(body, "pattern");
+                REQUIRE(enabled != nullptr);
+                // Spec MUST: "When creating push rules, they MUST be enabled by default."
+                REQUIRE(*enabled);
+                REQUIRE(is_default != nullptr);
+                REQUIRE_FALSE(*is_default);
+                REQUIRE(pattern != nullptr);
+                REQUIRE(*pattern == "conformance");
             }
         }
     }
@@ -12143,29 +12157,42 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (imp
 
 // --- DELETE /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId} -------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3pushrulesscopekindruleid
-// IMPLEMENTATION GAP: push rule deletion not yet implemented.
-SCENARIO("DELETE /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][push]")
+// Endpoint / Section: DELETE /_matrix/client/v3/pushrules/global/{kind}/{ruleId}
+//
+// "This endpoint removes the push rule defined in the path." 404: "The push rule does not exist."
+SCENARIO("DELETE /pushrules/{scope}/{kind}/{ruleId} removes a user-defined rule",
+         "[conformance][client-server][push][r19]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a logged-in user with a content rule")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/content/myrule", token,
+                                      R"({"pattern":"conformance","actions":["notify"]})"})
+                    .response.status == 200U);
 
-        WHEN("DELETE /pushrules/global/content/myrule is called")
+        WHEN("DELETE /pushrules/global/content/myrule is called twice")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"DELETE", "/_matrix/client/v3/pushrules/global/content/myrule", token, {}});
+            auto const fetched = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/pushrules/global/content/myrule", token, {}});
+            auto const second = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"DELETE", "/_matrix/client/v3/pushrules/global/content/myrule", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the first deletes it and the second finds nothing")
             {
-                // IMPLEMENTATION GAP: push rule deletion not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
+                // Spec: 200 "The push rule was deleted."
+                REQUIRE(first.response.status == 200U);
+                REQUIRE(fetched.response.status == 404U);
+                // Spec: 404 "The push rule does not exist."
+                REQUIRE(second.response.status == 404U);
+                auto const body = parse_object(second.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -12202,9 +12229,12 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/actions returns the rule action
 
 // --- PUT /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/actions ---------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleidactions
-// IMPLEMENTATION GAP: push rule actions update not yet implemented.
-SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][push]")
+// Endpoint / Section: PUT /_matrix/client/v3/pushrules/global/{kind}/{ruleId}/actions
+//
+// "This endpoint allows clients to change the actions of a push rule. This can be used to change
+// the actions of builtin rules."
+SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions changes a server-default rule's actions",
+         "[conformance][client-server][push][r19]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -12212,21 +12242,29 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNI
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("PUT /pushrules/global/content/.m.rule.contains_user_name/actions is called")
+        WHEN("the actions of .m.rule.message are set to none, and of an unknown rule")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/underride/.m.rule.message/actions",
+                                  token, R"({"actions":[]})"});
+            auto const fetched = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions", token,
-                 R"({"actions":["notify"]})"});
+                {"GET", "/_matrix/client/v3/pushrules/global/underride/.m.rule.message/actions", token, {}});
+            auto const unknown = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/pushrules/global/content/nope/actions", token, R"({"actions":[]})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the builtin rule's actions change and the unknown rule is not found")
             {
-                // IMPLEMENTATION GAP: push rule actions PUT not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                // Spec: 200 "The actions for the push rule were set."
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(fetched.response.status == 200U);
+                auto const body = parse_object(fetched.response.body);
+                auto const* actions = object_member_as_array(body, "actions");
+                REQUIRE(actions != nullptr);
+                REQUIRE(actions->empty());
+                // Spec: 404 "The push rule does not exist."
+                REQUIRE(unknown.response.status == 404U);
             }
         }
     }
@@ -12263,9 +12301,11 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/enabled returns the rule enable
 
 // --- PUT /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/enabled ---------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleidenabled
-// IMPLEMENTATION GAP: push rule enable/disable not yet implemented.
-SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][push]")
+// Endpoint / Section: PUT /_matrix/client/v3/pushrules/global/{kind}/{ruleId}/enabled
+//
+// "This endpoint allows clients to enable or disable the specified push rule."
+SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled enables a server-default rule",
+         "[conformance][client-server][push][r19]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -12273,21 +12313,24 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("PUT /pushrules/global/content/.m.rule.contains_user_name/enabled is called")
+        WHEN(".m.rule.master is enabled")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled",
+                                  token, R"({"enabled":true})"});
+            auto const fetched = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled", token,
-                 R"({"enabled":true})"});
+                {"GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("GET reports it enabled")
             {
-                // IMPLEMENTATION GAP: push rule enabled PUT not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                // Spec: 200 "The push rule was enabled or disabled."
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(fetched.response.status == 200U);
+                auto const body = parse_object(fetched.response.body);
+                auto const* enabled = bool_member(body, "enabled");
+                REQUIRE(enabled != nullptr);
+                REQUIRE(*enabled);
             }
         }
     }

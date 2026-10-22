@@ -31,7 +31,6 @@
 #include "merovingian/homeserver/appservice_delivery.hpp"
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -41,6 +40,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -6369,7 +6369,10 @@ namespace
             // whether they have a pusher or push delivery is enabled — GET
             // /notifications history recording just below depends on this
             // either way (see this function's doc comment).
-            auto const ruleset = push::parse_push_ruleset(default_push_ruleset(member));
+            // The recipient's own rules (R19, ADR-0204): the server defaults with their stored
+            // m.push_rules applied.
+            auto const ruleset = load_push_ruleset(
+                store, member, static_cast<std::size_t>(runtime.config.server().client_api.max_push_rules_per_user));
             auto context = push::PushEvaluationContext{};
             context.receiving_user_id = member;
             // contains_display_name matches against the recipient's display

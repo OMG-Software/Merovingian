@@ -39,7 +39,6 @@
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
-#include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -49,6 +48,7 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
+#include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
@@ -57,6 +57,7 @@
 #include "merovingian/observability/bounded_text.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/push/user_push_rules.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/sync/history_visibility.hpp"
@@ -615,55 +616,6 @@ namespace
             return canonicaljson::Value{};
         }
         return std::move(result.value);
-    }
-
-    // default_push_ruleset() and its helper condition/action/rule builders
-    // moved to homeserver/default_push_ruleset.{hpp,cpp} so room_service.cpp's
-    // push-delivery pipeline can build the exact same ruleset this endpoint
-    // serves (see that header's doc comment).
-
-    [[nodiscard]] auto push_rule_array(canonicaljson::Object const& ruleset, std::string_view kind)
-        -> canonicaljson::Array const*
-    {
-        auto const value = std::ranges::find_if(ruleset, [kind](canonicaljson::ObjectMember const& member) {
-            return member.key == kind;
-        });
-        if (value == ruleset.end())
-        {
-            return nullptr;
-        }
-        return std::get_if<canonicaljson::Array>(&value->value->storage());
-    }
-
-    [[nodiscard]] auto push_rule_object(canonicaljson::Object const& ruleset, std::string_view kind,
-                                        std::string_view rule_id) -> canonicaljson::Object const*
-    {
-        auto const* rules = push_rule_array(ruleset, kind);
-        if (rules == nullptr)
-        {
-            return nullptr;
-        }
-        for (auto const& rule : *rules)
-        {
-            auto const* rule_object = std::get_if<canonicaljson::Object>(&rule.storage());
-            if (rule_object == nullptr)
-            {
-                continue;
-            }
-            auto const member = std::ranges::find_if(*rule_object, [](canonicaljson::ObjectMember const& current) {
-                return current.key == "rule_id";
-            });
-            if (member == rule_object->end())
-            {
-                continue;
-            }
-            auto const* current_rule_id = std::get_if<std::string>(&member->value->storage());
-            if (current_rule_id != nullptr && *current_rule_id == rule_id)
-            {
-                return rule_object;
-            }
-        }
-        return nullptr;
     }
 
     [[nodiscard]] auto resp(std::uint16_t status, std::string body) -> LocalHttpResponse
@@ -13405,28 +13357,34 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
         return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
-    // Clients fetch /pushrules immediately after login to load the
-    // server-default rules defined by Matrix v1.19.
+    // Push Rules API (R19, ADR-0204). Spec: client-server-api.md, "Push Rules: API". A user's
+    // rules are the server defaults with their own `m.push_rules` account data applied
+    // (stored_push_rules.hpp); every edit rewrites that account data, so the change reaches the
+    // user's clients in the account_data section of their next /sync ("Push Rules: Events").
+    auto const max_push_rules = static_cast<std::size_t>(rt.limits.max_push_rules_per_user);
     if (req.method == "GET" && request_path == "/_matrix/client/v3/pushrules/")
     {
-        auto const ruleset = default_push_ruleset(*user);
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("global", json_obj(ruleset))})));
+        auto const rules = load_user_push_rules(rt.homeserver.database.persistent_store, *user, max_push_rules);
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("global", json_obj(rules.ruleset()))})));
     }
     auto constexpr pushrules_global_prefix = std::string_view{"/_matrix/client/v3/pushrules/global/"};
     if (req.method == "GET" && request_path == pushrules_global_prefix)
     {
-        auto const ruleset = default_push_ruleset(*user);
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(ruleset)));
+        auto const rules = load_user_push_rules(rt.homeserver.database.persistent_store, *user, max_push_rules);
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(rules.ruleset())));
     }
-    if (req.method == "GET" && starts_with(request_path, pushrules_global_prefix))
+    if ((req.method == "GET" || req.method == "PUT" || req.method == "DELETE") &&
+        starts_with(request_path, pushrules_global_prefix))
     {
+        auto const is_get = req.method == "GET";
         auto const suffix = request_path.substr(pushrules_global_prefix.size());
         auto const first_separator = suffix.find('/');
         if (first_separator == std::string_view::npos)
         {
-            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "push rule not found");
+            return is_get ? dispatch_err(req, rt, 404U, "M_NOT_FOUND", "push rule not found")
+                          : dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "a push rule kind and ID are required");
         }
-        auto const kind = suffix.substr(0U, first_separator);
         auto const remainder = suffix.substr(first_separator + 1U);
         auto const action_suffix = std::string_view{"/actions"};
         auto const enabled_suffix = std::string_view{"/enabled"};
@@ -13437,44 +13395,129 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             is_actions ? remainder.substr(0U, remainder.size() - action_suffix.size())
                        : (is_enabled ? remainder.substr(0U, remainder.size() - enabled_suffix.size()) : remainder);
         auto const rule_id = core::percent_decode_path_component(rule_segment);
-        auto const ruleset = default_push_ruleset(*user);
-        auto const* rule = push_rule_object(ruleset, kind, rule_id);
-        if (rule == nullptr)
+        auto const kind = push::parse_push_rule_kind(suffix.substr(0U, first_separator));
+        if (!kind.has_value())
         {
-            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "push rule not found");
+            // The spec's {kind} is one of five values; a GET for another names no rule.
+            return is_get ? dispatch_err(req, rt, 404U, "M_NOT_FOUND", "push rule not found")
+                          : dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                         "kind must be one of override, underride, sender, room, content");
         }
-        if (is_actions)
+        if (req.method == "DELETE" && (is_actions || is_enabled))
         {
-            auto const action_member = std::ranges::find_if(*rule, [](canonicaljson::ObjectMember const& member) {
-                return member.key == "actions";
-            });
-            if (action_member == rule->end())
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+
+        auto rules = load_user_push_rules(rt.homeserver.database.persistent_store, *user, max_push_rules);
+        if (is_get)
+        {
+            auto const rule = rules.rule(*kind, rule_id);
+            if (!rule.has_value())
             {
-                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "push rule actions missing");
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "push rule not found");
             }
-            auto const* actions = std::get_if<canonicaljson::Array>(&action_member->value->storage());
-            return actions == nullptr
-                       ? dispatch_err(req, rt, 500U, "M_UNKNOWN", "push rule actions missing")
-                       : dispatch_resp(
-                             req, rt, 200U,
-                             json_serialize(json_obj({json_member("actions", canonicaljson::Value{*actions})})));
-        }
-        if (is_enabled)
-        {
-            auto const enabled_member = std::ranges::find_if(*rule, [](canonicaljson::ObjectMember const& member) {
-                return member.key == "enabled";
-            });
-            if (enabled_member == rule->end())
+            auto const member_of = [&rule](std::string_view key) -> canonicaljson::Value const& {
+                return *std::ranges::find_if(*rule, [key](canonicaljson::ObjectMember const& member) {
+                            return member.key == key;
+                        })->value;
+            };
+            if (is_actions)
             {
-                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "push rule enabled flag missing");
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("actions", member_of("actions"))})));
             }
-            auto const* enabled = std::get_if<bool>(&enabled_member->value->storage());
-            return enabled == nullptr
-                       ? dispatch_err(req, rt, 500U, "M_UNKNOWN", "push rule enabled flag missing")
-                       : dispatch_resp(req, rt, 200U,
-                                       json_serialize(json_obj({json_member("enabled", json_bool(*enabled))})));
+            if (is_enabled)
+            {
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("enabled", member_of("enabled"))})));
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(*rule)));
         }
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(*rule)));
+
+        auto edited = push::PushRuleEditOutcome::applied;
+        if (req.method == "DELETE")
+        {
+            edited = rules.delete_rule(*kind, rule_id);
+        }
+        else
+        {
+            auto const parsed = canonicaljson::parse_lossless(req.body);
+            auto const* body = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (parsed.error != canonicaljson::ParseError::none || body == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_NOT_JSON", "the request body must be a JSON object");
+            }
+            auto const field = [body](std::string_view key) -> canonicaljson::Value const* {
+                auto const found = std::ranges::find_if(*body, [key](canonicaljson::ObjectMember const& member) {
+                    return member.key == key;
+                });
+                return found == body->end() ? nullptr : found->value.get();
+            };
+            if (is_enabled)
+            {
+                auto const* enabled_value = field("enabled");
+                auto const* enabled = enabled_value == nullptr ? nullptr : std::get_if<bool>(&enabled_value->storage());
+                if (enabled == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "enabled must be a boolean");
+                }
+                edited = rules.set_enabled(*kind, rule_id, *enabled);
+            }
+            else if (is_actions)
+            {
+                auto const* actions = field("actions");
+                if (actions == nullptr)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "actions is required");
+                }
+                edited = rules.set_actions(*kind, rule_id, *actions);
+            }
+            else
+            {
+                auto placement = push::PushRulePlacement{query_param_value(req.target, "before"),
+                                                         query_param_value(req.target, "after")};
+                edited = rules.put_rule(*kind, rule_id, parsed.value, placement);
+            }
+        }
+
+        if (edited != push::PushRuleEditOutcome::applied)
+        {
+            switch (edited)
+            {
+            case push::PushRuleEditOutcome::applied:
+                break;
+            case push::PushRuleEditOutcome::not_found:
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "The push rule was not found.");
+            case push::PushRuleEditOutcome::invalid_rule_id:
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "invalid push rule ID for this kind");
+            case push::PushRuleEditOutcome::invalid_rule:
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invalid push rule");
+            case push::PushRuleEditOutcome::server_default_rule:
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "server-default push rules cannot be created or deleted");
+            case push::PushRuleEditOutcome::unknown_relative_rule:
+                return dispatch_err(req, rt, 400U, "M_UNKNOWN", "before/after rule not found");
+            case push::PushRuleEditOutcome::relative_to_server_default:
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "a rule cannot be placed relative to a server-default rule");
+            case push::PushRuleEditOutcome::too_many_rules:
+                return dispatch_err(req, rt, 400U, "M_TOO_LARGE",
+                                    "push rule limit of " + std::to_string(max_push_rules) + " per user reached");
+            }
+        }
+        auto content = push_rules_account_data_content(rules);
+        if (!content.has_value() ||
+            !set_account_data(
+                rt, {*user, std::string{}, std::string{push_rules_account_data_type}, std::move(*content), 0U}))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store push rules");
+        }
+        log_diagnostic("push_rules.updated", {
+                                                 {"actor",  *user,                                         false},
+                                                 {"method", req.method,                                    false},
+                                                 {"kind",   std::string{push::push_rule_kind_name(*kind)}, false}
+        });
+        return dispatch_resp(req, rt, 200U, "{}");
     }
     // PUT /_matrix/client/v3/profile/{userId}/displayname
     // PUT /_matrix/client/v3/profile/{userId}/avatar_url
@@ -16134,6 +16177,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     // Spec (Client Config, Server Behaviour): "Servers MUST reject setting
                     // account data for event types that the server manages by using a 405
                     // error response", for global and room account data alike (R11).
+                    // m.push_rules is the user's push rules (R19, ADR-0204); they change only
+                    // through the Push Rules API.
                     if (account_data_type_is_server_managed(type))
                     {
                         return dispatch_err(req, rt, 405U, "M_BAD_JSON",

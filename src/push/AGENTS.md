@@ -11,6 +11,7 @@ Spec authority:
 | File | Responsibility |
 |---|---|
 | `push_rules.cpp` | `parse_push_ruleset` / `evaluate_push_rules`: pure, in-memory rule evaluation against an event |
+| `user_push_rules.cpp` | `UserPushRules`: one user's rules over the server defaults; the Push Rules API's create, order, delete, enable and re-action edits, and their validation and bounds (R19, ADR-0204) |
 | `push_gateway_client.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
 | `gateway_circuit_breaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
 
@@ -56,10 +57,19 @@ concurrency caps are in `homeserver/room_service.cpp`.
     allocate per character or try every substring pair. The `[push][security][sp01]` scenario
     in `tests/unit/test_push_rules.cpp` checks the matchers against the old implementation on
     seeded random cases; a change to the matchers must keep it passing.
+12. **A user's rules are bounded before they are stored, and again when they are read**
+    (ADR-0204). `UserPushRules` refuses a rule past `server.client_api.max_push_rules_per_user`
+    and any rule over the per-rule bounds in `user_push_rules.hpp` (ID, pattern and string
+    lengths, condition and action counts, canonical size). The stored `m.push_rules` content is
+    read through the same validator, so a rule that would be refused now is skipped. Do not add a
+    path that evaluates stored rules without going through `UserPushRules`
+    (`homeserver::load_user_push_rules` / `load_push_ruleset`).
 
 ## Testing
 
 - `tests/unit/test_push_rules.cpp`, `tests/unit/test_default_push_ruleset.cpp` — evaluation and default ruleset
+- `tests/unit/test_user_push_rules.cpp` — user rules over the defaults: ordering, refusals, bounds, round trip
+- `tests/conformance/test_push_rules_api_conformance.cpp` — Push Rules API and `m.push_rules`
 - `tests/unit/test_push_gateway_client.cpp` — request building, response parsing, SSRF gate
 - `tests/unit/test_push_pusher_store.cpp` — pusher persistence
 - `tests/conformance/test_push_notifications_conformance.cpp` — spec conformance
