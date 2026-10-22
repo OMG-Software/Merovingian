@@ -29,7 +29,8 @@ inline constexpr auto push_retry_idle_delay = std::chrono::minutes{5};
 // One attempt to deliver `delivery` to its pusher: skipped when the gateway's circuit is open
 // (ADR-0151), otherwise sent with `client`. A pushkey the gateway rejects loses its pusher and its
 // queued retries. A failure push::push_delivery_should_retry accepts, an open circuit included,
-// is counted and scheduled at `now` plus its backoff, or given up and logged. Takes
+// is counted and scheduled at `now` plus the time the attempt took plus its backoff, or given up
+// and logged. Takes
 // HomeserverRuntime::mutex only to delete a rejected pusher, never across the network call; call
 // it without that mutex held.
 auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& client, push::PushRetry delivery,

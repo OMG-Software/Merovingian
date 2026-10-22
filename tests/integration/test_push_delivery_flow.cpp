@@ -2191,3 +2191,78 @@ SCENARIO("a retry stops when its pushkey is rejected or its pusher removed", "[i
         }
     }
 }
+
+// Spec: Matrix Push Gateway API v1.19, POST /_matrix/push/v1/notify
+// URL: ../../docs/matrix-v1.19-spec/push-gateway-api.md#post_matrixpushv1notify
+//
+// "If the endpoint returns an HTTP error code, the homeserver SHOULD retry for a reasonable amount
+// of time using exponential backoff." The backoff runs from when the attempt failed: a gateway
+// that answers slowly must not use up the wait before the retry is queued (R14, ADR-0206; PR #523
+// review). The gateway stalls for two seconds before answering 503.
+SCENARIO("a slow gateway's error is retried one full backoff after it answers", "[integration][push][r14]")
+{
+    GIVEN("bob's pusher on a gateway that answers 503 after a two-second stall")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const gateway_host = std::string{"push-retry-stall.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-stall-pushkey", gateway_url);
+
+        auto& homeserver = started.runtime.homeserver;
+        REQUIRE(homeserver.outbound_client != nullptr);
+        REQUIRE(homeserver.cached_discovery != nullptr);
+        auto delivery = merovingian::push::PushRetry{};
+        delivery.user_id = "@bob:example.org";
+        delivery.app_id = "org.matrix.integration";
+        delivery.pushkey = "bob-stall-pushkey";
+        delivery.gateway_url = gateway_url;
+        delivery.notification.event_id = "$stalled";
+        delivery.notification.room_id = "!room:example.org";
+
+        WHEN("one attempt is made")
+        {
+            auto const stall = std::chrono::seconds{2};
+            auto state = merovingian::tests::tls_mock::StallingTlsServerState{};
+            auto const failure =
+                merovingian::tests::tls_mock::json_http_response("503 Service Unavailable", R"({"error":"busy"})");
+            auto const attempt_started = std::chrono::steady_clock::now();
+            {
+                auto server_thread = std::thread{[&] {
+                    merovingian::tests::tls_mock::run_stalling_tls_server(acceptor, *tls_ctx.context, state, failure,
+                                                                          stall);
+                }};
+                auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+                auto client = merovingian::push::PushGatewayClient{
+                    *homeserver.outbound_client, *homeserver.cached_discovery, homeserver.config.server().push,
+                    &homeserver.test_forced_push_gateway_resolution};
+                merovingian::homeserver::attempt_push_delivery(homeserver, client, std::move(delivery),
+                                                               attempt_started);
+            }
+            auto const attempt_ended = std::chrono::steady_clock::now();
+            auto const due = homeserver.push_retry_queue_->next_due();
+
+            THEN("the retry is due one full backoff after the gateway answered, not after the attempt began")
+            {
+                // Fixture: the gateway took the whole stall to answer.
+                REQUIRE(attempt_ended - attempt_started >= stall);
+                REQUIRE(due.has_value());
+                // Spec SHOULD: retry "using exponential backoff"; the first backoff is 5 s.
+                REQUIRE(*due >= attempt_started + merovingian::push::push_retry_backoff(1U) + stall);
+                REQUIRE(*due <= attempt_ended + merovingian::push::push_retry_backoff(1U));
+            }
+        }
+    }
+}

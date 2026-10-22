@@ -80,6 +80,13 @@ namespace
 auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& client, push::PushRetry delivery,
                            std::chrono::steady_clock::time_point now) -> void
 {
+    // A failure is scheduled from when it happened: `now` plus the time this attempt has taken. A
+    // gateway can take its whole timeout to answer with an error, which would otherwise use up the
+    // backoff before the retry is queued.
+    auto const attempt_started = std::chrono::steady_clock::now();
+    auto const failed_at = [&now, attempt_started]() {
+        return now + (std::chrono::steady_clock::now() - attempt_started);
+    };
     auto const& push_config = runtime.config.server().push;
     auto const breaker_policy = push::GatewayCircuitBreakerPolicy{
         push_config.gateway_failure_threshold, std::chrono::seconds{push_config.gateway_cooldown_seconds}};
@@ -95,7 +102,7 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
                      {"recipient",    delivery.user_id, false}
         },
                  observability::LogEventSeverity::warning);
-        schedule_retry(runtime, std::move(delivery), now);
+        schedule_retry(runtime, std::move(delivery), failed_at());
         return;
     }
     auto const result = client.notify(delivery.gateway_url, delivery.notification);
@@ -125,7 +132,7 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
     }
     if (push::push_delivery_should_retry(result))
     {
-        schedule_retry(runtime, std::move(delivery), now);
+        schedule_retry(runtime, std::move(delivery), failed_at());
     }
 }
 
