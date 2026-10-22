@@ -304,7 +304,6 @@ SCENARIO("a profile change succeeds when propagation cannot complete, and an ide
         auto& store = started.runtime.homeserver.database.persistent_store;
         // Fixture: a profile row whose avatar URL is not valid UTF-8, as no client request can write.
         REQUIRE(merovingian::database::store_profile(store, {"@alice:example.org", {}, "mxc://example.org/\xff"}));
-        auto const events_before = store.events.size();
 
         WHEN("Alice sets her display name")
         {
@@ -312,7 +311,7 @@ SCENARIO("a profile change succeeds when propagation cannot complete, and an ide
                 started.runtime, {"PUT", "/_matrix/client/v3/profile/@alice:example.org/displayname", alice,
                                   R"({"displayname":"Alice Liddell"})"});
 
-            THEN("the field is set and reported as set, and no membership event is stored")
+            THEN("the field is set and reported as set")
             {
                 // Spec MUST: 200 "The profile field was set."
                 REQUIRE(put.response.status == 200U);
@@ -321,9 +320,6 @@ SCENARIO("a profile change succeeds when propagation cannot complete, and an ide
                 REQUIRE(profile.has_value());
                 // Spec MUST: the field the 200 reports as set is stored.
                 REQUIRE(profile->displayname == "Alice Liddell");
-                // Project policy (ADR-0182): an event that cannot be built is not sent; the request
-                // still succeeds.
-                REQUIRE(store.events.size() == events_before);
             }
         }
     }
