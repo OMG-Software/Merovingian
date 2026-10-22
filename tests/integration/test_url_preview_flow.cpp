@@ -388,6 +388,37 @@ SCENARIO("URL previews refuse private, loopback, link-local and metadata destina
         }
     }
 
+    GIVEN("a public page whose og:image points into a private address")
+    {
+        auto fixture = PreviewFixture{};
+        auto const page = std::string{R"(<html><head>
+<meta property="og:title" content="Image elsewhere">
+<meta property="og:image" content="http://metadata.test/latest/meta-data/x.png">
+</head></html>)"};
+        auto server = MockIdentityServer{
+            {
+             {"GET /page", http_response("200 OK", "text/html", page)},
+             },
+            std::string{preview_host}
+        };
+        fixture.pin(server);
+
+        WHEN("it is previewed")
+        {
+            auto const response = fixture.preview(mock_url(server, "/page"));
+
+            THEN("the image hop is checked like the page and refused, and the preview leaves the image out")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(string_member(body, "og:title") != nullptr);
+                REQUIRE(string_member(body, "og:image") == nullptr);
+                REQUIRE(fixture.asked.size() == 1U);
+                REQUIRE(fixture.asked.front() == "metadata.test");
+            }
+        }
+    }
+
     GIVEN("a page that redirects more times than the cap allows")
     {
         auto fixture = PreviewFixture{};

@@ -1004,7 +1004,8 @@ SCENARIO("media_content_disposition names a file without letting the name break 
             {
                 REQUIRE(merovingian::media::media_content_disposition("image/png", "a\r\nSet-Cookie: x") == "inline");
                 REQUIRE(merovingian::media::media_content_disposition("image/png", "dir/a.png") == "inline");
-                REQUIRE(merovingian::media::media_content_disposition("image/png", "dir\a.png") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition("image/png", R"(dir\a.png)") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "bell\a.png") == "inline");
                 REQUIRE(merovingian::media::media_content_disposition("image/png", "bad\xC3.png") == "inline");
                 REQUIRE(merovingian::media::media_content_disposition(
                             "image/png", std::string(merovingian::media::max_media_filename_bytes + 1U, 'a')) ==
