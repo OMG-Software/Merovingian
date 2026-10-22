@@ -87,6 +87,7 @@ SCENARIO("a ping that the appservice answers is a 200 with duration_ms", "[appse
 
             THEN("the answer is 200 with an integer duration_ms")
             {
+                // Spec MUST: "200: The ping was successful."
                 REQUIRE(result.response.status == 200U);
                 auto const body = merovingian::tests::parse_object(result.response.body);
                 // Spec MUST: `duration_ms` is required and an integer.
@@ -98,6 +99,7 @@ SCENARIO("a ping that the appservice answers is a 200 with duration_ms", "[appse
             THEN("the appservice was called once at POST /_matrix/app/v1/ping with its hs_token and the transaction_id")
             {
                 auto const calls = mock.requests_to("/_matrix/app/v1/ping");
+                // Spec MUST: the homeserver calls POST /_matrix/app/v1/ping on the appservice.
                 REQUIRE(calls.size() == 1U);
                 CHECK(calls.front().method == "POST");
                 // Spec MUST: the homeserver authenticates to the appservice with its hs_token.
@@ -116,8 +118,10 @@ SCENARIO("a ping that the appservice answers is a 200 with duration_ms", "[appse
 
             THEN("transaction_id is optional, so this is a 200 and the appservice is sent an object without one")
             {
+                // Spec MUST: `transaction_id` is "An optional transaction ID".
                 REQUIRE(result.response.status == 200U);
                 auto const calls = mock.requests_to("/_matrix/app/v1/ping");
+                // Spec MUST: the homeserver calls POST /_matrix/app/v1/ping on the appservice.
                 REQUIRE(calls.size() == 1U);
                 auto const sent = merovingian::tests::parse_object(calls.front().body);
                 CHECK(merovingian::tests::string_member(sent, "transaction_id") == nullptr);
@@ -130,12 +134,14 @@ SCENARIO("a ping that the appservice answers is a 200 with duration_ms", "[appse
 
             THEN("the empty string is passed through as given, not dropped")
             {
+                // Spec MUST: "200: The ping was successful."
                 REQUIRE(result.response.status == 200U);
                 auto const calls = mock.requests_to("/_matrix/app/v1/ping");
+                // Spec MUST: the homeserver calls POST /_matrix/app/v1/ping on the appservice.
                 REQUIRE(calls.size() == 1U);
                 auto const sent = merovingian::tests::parse_object(calls.front().body);
                 auto const* transaction_id = merovingian::tests::string_member(sent, "transaction_id");
-                // Spec: `transaction_id` is "copied directly from the POST .../ping call".
+                // Spec MUST: `transaction_id` is "copied directly from the POST .../ping call".
                 REQUIRE(transaction_id != nullptr);
                 CHECK(transaction_id->empty());
             }
@@ -319,6 +325,7 @@ SCENARIO("a ping the appservice rejects is 502 M_BAD_STATUS with its status and 
 
             THEN("the body echoed to the caller is bounded")
             {
+                // Spec MUST: "502: The application service returned a bad status".
                 REQUIRE(result.response.status == 502U);
                 auto const body = merovingian::tests::parse_object(result.response.body);
                 auto const* text = merovingian::tests::string_member(body, "body");
@@ -329,7 +336,13 @@ SCENARIO("a ping the appservice rejects is 502 M_BAD_STATUS with its status and 
     }
 }
 
-// Spec: "Can't connect to appservice: AS <--- HS : 502 Bad Gateway {"errcode": "M_CONNECTION_FAILED"}".
+// Spec: Application Service API v1.19
+// Endpoint / Section: POST /_matrix/client/v1/appservice/{appserviceId}/ping — 502 (M_CONNECTION_FAILED)
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md#post_matrixclientv1appserviceappserviceidping
+//
+// "502: The application service returned a bad status, or the connection failed. The errcode is
+// M_BAD_STATUS or M_CONNECTION_FAILED." The "Pinging" section's "Can't connect to appservice" flow
+// answers 502 {"errcode": "M_CONNECTION_FAILED"}.
 SCENARIO("a ping the homeserver cannot deliver is 502 M_CONNECTION_FAILED", "[appservice][conformance][ping]")
 {
     GIVEN("an appservice whose url points at a closed port")
@@ -353,9 +366,13 @@ SCENARIO("a ping the homeserver cannot deliver is 502 M_CONNECTION_FAILED", "[ap
     }
 }
 
-// Spec: "504: The connection to the application service timed out. The errcode is M_CONNECTION_TIMEOUT."
-// The homeserver must not hold runtime.mutex across the call: the request pool shares one lock with every
-// other client and with inbound federation.
+// Spec: Application Service API v1.19
+// Endpoint / Section: POST /_matrix/client/v1/appservice/{appserviceId}/ping — 504
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md#post_matrixclientv1appserviceappserviceidping
+//
+// "504: The connection to the application service timed out. The errcode is M_CONNECTION_TIMEOUT."
+// Project policy, not the spec: the homeserver must not hold runtime.mutex across the call, because the
+// request pool shares one lock with every other client and with inbound federation.
 SCENARIO("a ping the appservice never answers is 504 M_CONNECTION_TIMEOUT and holds no runtime lock",
          "[appservice][conformance][ping][security]")
 {
@@ -404,7 +421,11 @@ SCENARIO("a ping the appservice never answers is 504 M_CONNECTION_TIMEOUT and ho
     }
 }
 
-// Spec: the ping endpoint is documented "Rate-limited: No".
+// Spec: Application Service API v1.19
+// Endpoint / Section: POST /_matrix/client/v1/appservice/{appserviceId}/ping — rate limiting
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md#post_matrixclientv1appserviceappserviceidping
+//
+// The endpoint is documented "Rate-limited: No".
 SCENARIO("repeated pings are not rate limited", "[appservice][conformance][ping]")
 {
     GIVEN("a working appservice and a burst of pings from one address")
