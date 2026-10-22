@@ -490,11 +490,14 @@ SCENARIO("Inbound federation query/profile answers existing local users even wit
                                                             "example.org", "GET", target, ""),
                                      {}});
 
-            THEN("the route returns an empty but spec-shaped profile object instead of failing upstream")
+            THEN("the route returns a spec-shaped profile object without the unset fields instead of failing upstream")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find(R"("displayname":"")") != std::string::npos);
-                REQUIRE(response.body.find(R"("avatar_url":"")") != std::string::npos);
+                // Spec v1.19 query/profile, 200: "If the user does not have a particular
+                // field set on their profile, the server MUST either exclude it from the
+                // response body or give it the value null." An empty string is neither.
+                REQUIRE(response.body.find("displayname") == std::string::npos);
+                REQUIRE(response.body.find("avatar_url") == std::string::npos);
             }
         }
     }

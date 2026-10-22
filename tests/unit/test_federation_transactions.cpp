@@ -96,9 +96,11 @@ SCENARIO("federation_endpoint_requires_main_relay classifies every registered en
     {
         // Endpoints whose handling can call pdu_sink, edu_sink,
         // membership_acceptor, invite_handler, or one of the query-provider
-        // relays — see worker_event_loop.cpp's overrides of each.
+        // relays — see worker_event_loop.cpp's overrides of each. make_join
+        // relays its template to main (R04, ADR-0181).
         auto const requires_relay = std::array{
             merovingian::federation::FederationEndpoint::transaction,
+            merovingian::federation::FederationEndpoint::make_join,
             merovingian::federation::FederationEndpoint::send_join,
             merovingian::federation::FederationEndpoint::send_leave,
             merovingian::federation::FederationEndpoint::send_knock,

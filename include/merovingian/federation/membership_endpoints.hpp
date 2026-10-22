@@ -46,7 +46,12 @@ struct MembershipEventTemplate final
     std::vector<std::string> auth_events{};
     std::int64_t depth{0};
     std::string content_json{}; // canonical JSON object for content
-    std::string reason{};       // human-readable when an error occurred
+    // When not empty, the request is refused: `reason` is the response body
+    // (a Matrix error object) and `error_status` its HTTP status, e.g. 400
+    // M_UNABLE_TO_AUTHORISE_JOIN or 403 M_FORBIDDEN for a restricted room the
+    // user may not join (server-server-api.md "Restricted rooms").
+    std::string reason{};
+    std::uint16_t error_status{400U};
 };
 
 // Hook signature for building a membership event template. Implementations

@@ -718,6 +718,34 @@ auto WorkerEventLoop::run() -> void
         return deserialize_membership_ingest_result(*reply);
     };
 
+    // Override membership_template_provider for make_join only (audit R04,
+    // ADR-0181). In a restricted room the template names an authorising user
+    // only after the allow conditions are checked, and those conditions name
+    // OTHER rooms, whose state this shard's snapshot may not hold or may hold
+    // stale (room_sync refreshes only the shard that owns a room). Main holds
+    // every room, so it builds the template. make_leave and make_knock need
+    // nothing outside the room being left or knocked on, so they stay local.
+    runtime.federation.membership_template_provider =
+        [channel_ptr, local_provider = runtime.federation.membership_template_provider](
+            federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view user_id,
+            std::vector<std::string> const& supported_versions) -> std::optional<federation::MembershipEventTemplate> {
+        if (endpoint != federation::FederationEndpoint::make_join)
+        {
+            return local_provider ? local_provider(endpoint, room_id, user_id, supported_versions) : std::nullopt;
+        }
+        auto const json_body = ipc::serialize_membership_template_ingest(
+            ipc::MembershipTemplateIngest{std::string{room_id}, std::string{user_id}, supported_versions});
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            auto unavailable = federation::MembershipEventTemplate{};
+            unavailable.error_status = 503U;
+            unavailable.reason = R"({"errcode":"M_UNKNOWN","error":"membership_template_ingest IPC timeout"})";
+            return unavailable;
+        }
+        return ipc::deserialize_membership_template_ingest_result(*reply);
+    };
+
     // Override invite_handler the same way as membership_acceptor above: the
     // default implementation (local_http_router.cpp) persists the invite's
     // membership row, invite metadata, and event straight into this

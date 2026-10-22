@@ -31,6 +31,7 @@
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
+#include "merovingian/homeserver/restricted_join.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
@@ -2030,6 +2031,10 @@ namespace
                                                                std::string_view room_id, std::string_view user_id,
                                                                std::vector<std::string> const& supported_versions)
             -> std::optional<federation::MembershipEventTemplate> {
+            // Reads room state and the event graph, which the membership
+            // acceptor and ingest paths write under rt->mutex (recursive, so
+            // safe from the worker-relay handler too). No network I/O here.
+            auto const guard = std::unique_lock<RuntimeMutex>{rt->mutex};
             auto const& store = rt->database.persistent_store;
             auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
                 return r.room_id == room_id;
@@ -2135,6 +2140,41 @@ namespace
             }
             tmpl.depth = max_depth + 1;
             auto content_obj = canonicaljson::Object{};
+            // Audit R04 (ADR-0181). server-server-api.md "Restricted rooms": "A
+            // resident server processing a request to join a restricted room
+            // must ensure that the joining server satisfies at least one of the
+            // conditions specified by m.room.join_rules", refusing with 400
+            // M_UNABLE_TO_AUTHORISE_JOIN / M_UNABLE_TO_GRANT_JOIN or 403
+            // M_FORBIDDEN. When a condition holds, the template names a user of
+            // this server who can invite (`join_authorised_via_users_server`,
+            // GET /make_join 200 response: "An arbitrary user ID belonging to
+            // the resident server in the room being joined that is able to
+            // issue invites to other users"), and auth events selection names
+            // that user's m.room.member event.
+            if (endpoint == federation::FederationEndpoint::make_join)
+            {
+                auto const decision =
+                    decide_restricted_join(store, room_id, user_id, rt->config.server().server_name);
+                if (decision.verdict == RestrictedJoinVerdict::authorised)
+                {
+                    content_obj.push_back(canonicaljson::make_member(
+                        "join_authorised_via_users_server", canonicaljson::Value{decision.authorising_user}));
+                    if (std::ranges::find(tmpl.auth_events, decision.authorising_member_event_id) ==
+                        tmpl.auth_events.end())
+                    {
+                        tmpl.auth_events.push_back(decision.authorising_member_event_id);
+                    }
+                }
+                else if (decision.verdict != RestrictedJoinVerdict::not_restricted &&
+                         decision.verdict != RestrictedJoinVerdict::already_permitted)
+                {
+                    auto refused = federation::MembershipEventTemplate{};
+                    refused.room_version = room_version;
+                    refused.error_status = restricted_join_refusal_status(decision.verdict);
+                    refused.reason = matrix_error(restricted_join_refusal_errcode(decision.verdict), decision.reason);
+                    return refused;
+                }
+            }
             content_obj.push_back(
                 canonicaljson::make_member("membership", canonicaljson::Value{std::string{tmpl.membership}}));
             auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content_obj)});
@@ -2283,6 +2323,58 @@ namespace
                         return {false, 400U, "failed to serialize redacted event", {}, {}};
                     }
                     stored_json = serialized.output;
+                }
+
+                // Audit R04 (ADR-0181): a join naming one of this server's users
+                // as join_authorised_via_users_server is one this server is asked
+                // to authorise. PUT /send_join: "The resident server which owns
+                // the provided user ID must have a valid signature on the event.
+                // If the resident server is receiving the /send_join request, the
+                // signature must be added before sending or persisting the event
+                // to other servers." It signs only after checking, against its
+                // own current state, that the user meets an allow condition and
+                // the named user is joined with invite power ("Restricted
+                // rooms"); otherwise it refuses without storing anything. Any
+                // other membership naming our user is left unsigned, so the
+                // auth rules reject it (rule 4.2.1).
+                if (endpoint == federation::FederationEndpoint::send_join)
+                {
+                    auto const our_server = std::string{rt->config.server().server_name};
+                    auto const authoriser = join_authorising_user(effective_pdu);
+                    if (!authoriser.empty() && server_name_from_user_id(authoriser) == our_server)
+                    {
+                        auto const decision =
+                            decide_restricted_join(store, room_id, envelope.sender, our_server, authoriser);
+                        if (decision.verdict != RestrictedJoinVerdict::authorised)
+                        {
+                            auto const refusing =
+                                decision.verdict == RestrictedJoinVerdict::not_restricted ||
+                                        decision.verdict == RestrictedJoinVerdict::already_permitted
+                                    ? RestrictedJoinVerdict::forbidden
+                                    : decision.verdict;
+                            auto const reason =
+                                refusing == decision.verdict
+                                    ? decision.reason
+                                    : std::string{"this join needs no authorisation from this server"};
+                            return {false,
+                                    restricted_join_refusal_status(refusing),
+                                    matrix_error(restricted_join_refusal_errcode(refusing), reason),
+                                    {},
+                                    {}};
+                        }
+                        auto signed_join = sign_invite_event(*rt, effective_pdu, room_policy->id);
+                        if (!signed_join.has_value())
+                        {
+                            return {false, 500U, "failed to add this server's signature to the join", {}, {}};
+                        }
+                        auto parsed_signed = canonicaljson::parse_lossless(*signed_join);
+                        if (parsed_signed.error != canonicaljson::ParseError::none)
+                        {
+                            return {false, 500U, "failed to read back the co-signed join", {}, {}};
+                        }
+                        effective_pdu = std::move(parsed_signed.value);
+                        stored_json = std::move(*signed_join);
+                    }
                 }
 
                 // Step 4: auth_events selection, then the auth rules against
@@ -2563,15 +2655,13 @@ namespace
                     }
                 }
             }
-            // Pass the raw PDU JSON so the federation layer can echo it back
-            // in the send_join v2 "event" field as required by the spec.
-            return {true,
-                    200U,
-                    {},
-                    std::move(auth_chain),
-                    std::move(state_events),
-                    room_version_from_store(store, room_id),
-                    std::string{envelope.json}};
+            // The send_join v2 "event" field is "the membership event sent to
+            // other servers by the resident server": the copy this server
+            // accepted and stored — redacted after a hash mismatch (R06) and
+            // carrying this server's signature when it authorised a
+            // restricted join (R04) — never the raw request body.
+            return {true,   200U, {}, std::move(auth_chain), std::move(state_events), room_version_from_store(store, room_id),
+                    stored_json};
         };
 
         runtime.federation.invite_handler =
@@ -2585,9 +2675,43 @@ namespace
             // stripe mutex, so the lock order can never invert against
             // ingest_pdu_event's documented stripe-then-global ordering.
             auto guard = std::unique_lock<RuntimeMutex>{rt->mutex};
-            auto const parsed = canonicaljson::parse_lossless(invite.invite_event_json);
+            auto parsed = canonicaljson::parse_lossless(invite.invite_event_json);
+            if (parsed.error != canonicaljson::ParseError::none ||
+                std::get_if<canonicaljson::Object>(&parsed.value.storage()) == nullptr)
+            {
+                return {false, 400U, "malformed invite event", {}};
+            }
+            // The rules the event is redacted and signed under: the room's own
+            // version where this server holds it, else the one the request
+            // carries (handle_invite fills it for v1 too).
+            auto const stored_room_version = room_version_from_store(rt->database.persistent_store, invite.room_id);
+            auto const signing_room_version = !stored_room_version.empty() ? stored_room_version
+                                              : !invite.room_version.empty() ? invite.room_version
+                                                                             : std::string{"12"};
+            // Audit R06. Spec "Checks performed on receipt of a PDU", step 3:
+            // "Passes hash checks, otherwise it is redacted before being
+            // processed further"; "Validating hashes and signatures on received
+            // events": "the receiving server should use the redacted copy it
+            // calculated rather than the full copy it received". Everything
+            // below (validation, authorisation, our signature, what is stored
+            // and returned) uses the redacted copy. The signature was verified
+            // by the caller over the redacted form, so it still holds.
+            if (!events::verify_pdu_content_hash(parsed.value))
+            {
+                auto const* redaction_policy = rooms::find_room_version_policy(signing_room_version);
+                if (redaction_policy == nullptr)
+                {
+                    return {false, 400U, "invite room version is not supported", {}};
+                }
+                auto redaction = events::redact_event(parsed.value, *redaction_policy);
+                if (!redaction.error.empty())
+                {
+                    return {false, 400U, "content hash mismatch and invite could not be redacted", {}};
+                }
+                parsed.value = std::move(redaction.event);
+            }
             auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (parsed.error != canonicaljson::ParseError::none || event == nullptr)
+            if (event == nullptr)
             {
                 return {false, 400U, "malformed invite event", {}};
             }
@@ -2642,7 +2766,7 @@ namespace
                     return {false, 403U, matrix_error("M_FORBIDDEN", "the invited user is banned from the room"), {}};
                 }
             }
-            auto signed_event = sign_invite_event(*rt, parsed.value, invite.room_version);
+            auto signed_event = sign_invite_event(*rt, parsed.value, signing_room_version);
             if (!signed_event.has_value())
             {
                 return {false, 500U, "invite signing failed", {}};
@@ -3599,32 +3723,22 @@ namespace
         {
             return false;
         }
-        auto const key_id = [&pdu, sender_domain]() -> std::optional<std::string> {
-            for (auto const& sig : pdu.signatures)
-            {
-                if (sig.server_name == sender_domain)
-                {
-                    return sig.key_id;
-                }
-            }
-            return std::nullopt;
-        }();
-        if (!key_id.has_value())
-        {
-            return false;
-        }
         // No main-validated client address accompanies recovery frames. Share
         // unknown-source admission; never let peer/worker origin choose a bucket.
-        auto const resolved = federation::resolve_verification_key(runtime.federation, {}, sender_domain, *key_id);
-        budget.key_resolution_locally_denied = resolved.locally_denied;
-        if (!resolved.key.has_value())
-        {
-            return false;
-        }
-        auto const signature_decision =
-            federation::authorize_federation_pdu(pdu, std::string{sender_domain}, *resolved.key);
+        // R05 (ADR-0179): every key ID the event lists for its sender's server
+        // is a candidate (at most max_signature_keys_per_server), each an
+        // admitted lookup, none started after the backfill deadline. The
+        // overload flag follows the decision (503: a candidate was locally
+        // denied and none verified), not whichever lookup ran last.
+        auto const signature_decision = federation::authorize_federation_pdu_sender(
+            pdu, std::nullopt,
+            [&runtime](std::string_view server_name, std::string_view key_id) {
+                return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
+            },
+            budget.deadline);
         if (!signature_decision.accepted)
         {
+            budget.key_resolution_locally_denied = signature_decision.status == 503U;
             return false;
         }
         // EVT-1: a fetched event reaches the structural auth rules below, which

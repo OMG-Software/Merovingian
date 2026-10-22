@@ -412,6 +412,10 @@ namespace
         {
             return R"({"type":"edu_ingest_result","status":"rejected_invalid","reason":"main at per-channel in-flight cap"})";
         }
+        if (type == "membership_template_ingest")
+        {
+            return R"({"type":"membership_template_ingest_result","found":true,"reason":"{\"errcode\":\"M_UNKNOWN\",\"error\":\"main at per-channel in-flight cap\"}","error_status":503})";
+        }
         return R"({"type":"error","status":503,"reason":"main at per-channel in-flight cap"})";
     }
 
@@ -643,8 +647,14 @@ namespace
         bool locally_denied{false};
     };
 
+    // `authorised_here` is this server's name when the relay is a send_join
+    // the membership acceptor may co-sign as a restricted join's authorising
+    // server (R04, ADR-0181): such an event cannot carry our signature yet, and
+    // the acceptor checks the allow conditions before it adds one. Empty for
+    // every other relay, which must already carry every signature it needs.
     [[nodiscard]] auto verify_relayed_event_signature(HomeserverRuntime& runtime, std::string_view event_json,
-                                                      std::string const& room_version) -> RelayedSignature
+                                                      std::string const& room_version,
+                                                      std::string_view authorised_here = {}) -> RelayedSignature
     {
         auto pdu = federation::parse_federation_pdu(event_json, [&room_version](std::string_view) {
             return room_version;
@@ -655,26 +665,25 @@ namespace
         }
         pdu.room_version = room_version;
         auto const sender_server = server_name_of(pdu.sender);
-        auto const signature = std::ranges::find_if(pdu.signatures, [sender_server](auto const& sig) {
-            return sig.server_name == sender_server;
-        });
-        if (sender_server.empty() || signature == pdu.signatures.end())
+        if (sender_server.empty() || federation::signature_key_ids_for_server(pdu.signatures, sender_server).empty())
         {
             return {{}, "relayed event has no signature from its sender's server"};
         }
-        auto const resolution = [&]() {
+        // No trustworthy client address travels in these relay frames. All
+        // main relay misses share the bounded unknown-source bucket; never let
+        // a worker choose a source to evade main's quota. Each lookup may go to
+        // the network, so runtime.mutex is released around it.
+        auto const resolve = [&runtime](std::string_view server_name, std::string_view key_id) {
             auto const unlocked = RuntimeLockRelease{};
             std::ignore = unlocked;
-            // No trustworthy client address travels in these relay frames.
-            // All main relay misses share the bounded unknown-source bucket;
-            // never let a worker choose a source to evade main's quota.
-            return federation::resolve_verification_key(runtime.federation, {}, sender_server, signature->key_id);
-        }();
-        if (resolution.locally_denied)
+            return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
+        };
+        // R05: every key ID listed for the sender's server, not only the first.
+        auto const decision = federation::authorize_federation_pdu_sender(pdu, std::nullopt, resolve);
+        if (decision.status == 503U)
         {
             return {{}, "main key-resolution admission overloaded", true};
         }
-        auto const decision = federation::authorize_federation_pdu(pdu, sender_server, resolution.key);
         if (!decision.accepted)
         {
             return {{}, "relayed event failed signature verification: " + decision.reason};
@@ -690,12 +699,15 @@ namespace
         {
             return {{}, "relayed event could not be checked for an authorising server"};
         }
-        auto const authorising = federation::verify_join_authorising_server_signature(
-            parsed.value, *policy, [&runtime](std::string_view server_name, std::string_view key_id) {
-                auto const unlocked = RuntimeLockRelease{};
-                std::ignore = unlocked;
-                return federation::resolve_verification_key(runtime.federation, {}, server_name, key_id);
-            });
+        if (!authorised_here.empty())
+        {
+            if (auto const authorising_key = federation::join_authorising_signature_key(parsed.value);
+                authorising_key.has_value() && authorising_key->server_name == authorised_here)
+            {
+                return {pdu.event_id, {}};
+            }
+        }
+        auto const authorising = federation::verify_join_authorising_server_signature(parsed.value, *policy, resolve);
         if (authorising.status == 503U)
         {
             return {{}, "main key-resolution admission overloaded", true};
@@ -721,10 +733,11 @@ namespace
     // choose where to backfill from; anything fetched there is verified
     // again) is taken from the frame.
     [[nodiscard]] auto reverify_relayed_envelope(HomeserverRuntime& runtime,
-                                                 federation::InboundPduEnvelope const& frame) -> RelayedEnvelope
+                                                 federation::InboundPduEnvelope const& frame,
+                                                 std::string_view authorised_here = {}) -> RelayedEnvelope
     {
         auto const room_version = relayed_room_version(runtime, frame.room_id, frame.room_version);
-        auto const signature = verify_relayed_event_signature(runtime, frame.json, room_version);
+        auto const signature = verify_relayed_event_signature(runtime, frame.json, room_version, authorised_here);
         if (!signature.refusal.empty())
         {
             return {std::nullopt, signature.refusal, signature.locally_denied};
@@ -810,8 +823,14 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
         return serialize_membership_ingest_result(result);
     }
     // TRUST BOUNDARY (ADR-0071): verified before the runtime lock is taken,
-    // because resolving the sender's key may go to the network.
-    auto const relayed = reverify_relayed_envelope(runtime, frame);
+    // because resolving the sender's key may go to the network. A send_join
+    // naming one of our users as its authorising user is co-signed by the
+    // acceptor after it checks the allow conditions (R04, ADR-0181), so only
+    // that one signature is left to it.
+    auto const our_server = endpoint == federation::FederationEndpoint::send_join
+                                ? std::string{runtime.config.server().server_name}
+                                : std::string{};
+    auto const relayed = reverify_relayed_envelope(runtime, frame, our_server);
     if (!relayed.envelope.has_value())
     {
         log_relay_refused("membership_ingest", frame.event_id, relayed.refusal);
@@ -997,6 +1016,23 @@ auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string
         }
     }
     return serialize_profile_query_ingest_result(profile);
+}
+
+auto handle_membership_template_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string
+{
+    // The frame comes from the worker (ADR-0071: untrusted input). A template
+    // carries nothing secret (room state the worker's own snapshot already
+    // holds), so main only checks the frame is well formed; the worker has
+    // already checked the user is on the X-Matrix origin. The provider takes
+    // runtime.mutex itself and makes no network call.
+    auto const request = ipc::deserialize_membership_template_ingest(request_json);
+    if (!request.has_value() || !runtime.federation.membership_template_provider)
+    {
+        return ipc::serialize_membership_template_ingest_result(std::nullopt);
+    }
+    return ipc::serialize_membership_template_ingest_result(runtime.federation.membership_template_provider(
+        federation::FederationEndpoint::make_join, request->room_id, request->user_id, request->supported_versions));
 }
 
 auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
@@ -1276,6 +1312,16 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
                         auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                    }))
+                {
+                    ch->send_response(id, overload_response_for(type));
+                }
+            }
+            else if (type == "membership_template_ingest")
+            {
+                if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
+                        auto const guard = InFlightGuard{*ch};
+                        ch->send_response(id, handle_membership_template_ingest_request(runtime_, json));
                     }))
                 {
                     ch->send_response(id, overload_response_for(type));

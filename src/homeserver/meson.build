@@ -19,6 +19,7 @@ homeserver_sources = files(
   'stored_room_version.cpp',
   'remote_media_fetch_scope.cpp',
   'request_lock.cpp',
+  'restricted_join.cpp',
   'room_service.cpp',
   'runtime.cpp',
   'runtime_mutex.cpp',
