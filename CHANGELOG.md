@@ -34,6 +34,7 @@ the appservice ping and network directories, and `createRoom` appservice deliver
 - **SECURITY:** every client-server route that forwards an `id_access_token` refuses one that is not
   printable ASCII without spaces of at most 4096 bytes (`400 M_INVALID_PARAM`), before the outbound
   client's own header check (ADR-0180).
+
 ## 0.12.36
 
 Fixes the federation findings of the 17 October 2026 conformance audit (wave 2: R04, R05, R06,
