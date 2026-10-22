@@ -7777,9 +7777,16 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} for remote media does n
 // =============================================================================
 
 // --- PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId} ---
-// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directorylistappservicenetworkidroomid
-// IMPLEMENTATION GAP: appservice directory visibility management not yet implemented.
-SCENARIO("PUT /directory/list/appservice/{networkId}/{roomId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: Matrix Application Service API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md#published-room-directories
+//
+// "This API requires the use of an application service access token (as_token) instead of a typical
+// client's access_token. This API cannot be invoked by users who are not identified as application
+// services." Implemented in 0.12.37 (conformance audit wave 3), which replaces the implementation-gap
+// placeholder that asserted 404 M_UNRECOGNIZED; the appservice's own success path is covered in
+// test_appservice_directory_conformance.cpp.
+SCENARIO("PUT /directory/list/appservice/{networkId}/{roomId} cannot be invoked with a user's access token",
          "[conformance][client-server][appservice]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -7788,20 +7795,20 @@ SCENARIO("PUT /directory/list/appservice/{networkId}/{roomId} returns 404 M_UNRE
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("PUT /directory/list/appservice/net1/!room:example.org is called")
+        WHEN("PUT /directory/list/appservice/net1/!room:example.org is called with the user's token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"PUT", "/_matrix/client/v3/directory/list/appservice/net1/%21room%3Aexample.org",
                                   token, R"({"visibility":"public"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the route exists and refuses the user with 403 M_FORBIDDEN")
             {
-                // IMPLEMENTATION GAP: appservice directory management not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: "cannot be invoked by users who are not identified as application services".
+                REQUIRE(response.response.status == 403U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_FORBIDDEN");
             }
         }
     }
