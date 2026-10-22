@@ -257,13 +257,18 @@ SCENARIO("an appservice publishes a room to its network's directory and publicRo
     }
 }
 
-// Spec: the same endpoint — "This API cannot be invoked by users who are not identified as application
-// services." The spec states no failure status for the other refusals, so these are the fail-closed
-// readings recorded in ADR-0192.
-SCENARIO("only an appservice may publish, and only a protocol it declares in a room it has an interest in",
+// Spec: Application Service API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}
+// URL: ../../docs/matrix-v1.19-spec/application-service-api.md#published-room-directories
+//
+// "This API cannot be invoked by users who are not identified as application services", it "Requires
+// authentication", and `visibility` is "Required ... One of: [public, private]". The refusals the spec gives
+// no status for (an undeclared protocol, a missing room, a room the appservice has no interest in) are
+// project policy (ADR-0192) and are covered in tests/integration/test_appservice_wave3_flow.cpp.
+SCENARIO("only an appservice may publish to a network directory, with a valid visibility",
          "[appservice][conformance][directory][security]")
 {
-    GIVEN("one appservice that is interested only in rooms containing its users, and an ordinary user")
+    GIVEN("two appservices and an ordinary user")
     {
         auto bridge = TestAppservice{.id = "bridge", .users_regex = "@_bridge_.*", .protocols = {"irc"}};
         auto other = TestAppservice{.id = "other", .rooms_regex = ".*", .protocols = {"slack"}};
@@ -298,45 +303,6 @@ SCENARIO("only an appservice may publish, and only a protocol it declares in a r
             {
                 CHECK(result.response.status == 401U);
                 CHECK(errcode_of(result) == "M_MISSING_TOKEN");
-            }
-        }
-
-        WHEN("the appservice names a protocol it does not declare")
-        {
-            auto const result =
-                call(runtime, "PUT", directory_target("slack", room), bridge.as_token(), R"({"visibility":"public"})");
-
-            THEN("404 M_NOT_FOUND: another appservice's protocol is not its to list under")
-            {
-                CHECK(result.response.status == 404U);
-                CHECK(errcode_of(result) == "M_NOT_FOUND");
-            }
-        }
-
-        WHEN("the appservice names a room that does not exist")
-        {
-            auto const result = call(runtime, "PUT", directory_target("irc", "!missing:example.org"), bridge.as_token(),
-                                     R"({"visibility":"public"})");
-
-            THEN("404 M_NOT_FOUND")
-            {
-                CHECK(result.response.status == 404U);
-                CHECK(errcode_of(result) == "M_NOT_FOUND");
-            }
-        }
-
-        WHEN("the appservice names a room it has no interest in")
-        {
-            auto const result =
-                call(runtime, "PUT", directory_target("irc", room), bridge.as_token(), R"({"visibility":"public"})");
-
-            THEN("403 M_FORBIDDEN: it may not put an arbitrary private room's metadata in a public directory")
-            {
-                CHECK(result.response.status == 403U);
-                CHECK(errcode_of(result) == "M_FORBIDDEN");
-                auto const protocol_listing =
-                    call(runtime, "POST", "/_matrix/client/v3/publicRooms", alice, R"({"include_all_networks":true})");
-                CHECK(listed_rooms(protocol_listing).empty());
             }
         }
 

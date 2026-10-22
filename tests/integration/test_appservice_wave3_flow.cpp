@@ -993,6 +993,77 @@ SCENARIO("a room an appservice published to its network directory is still liste
     }
 }
 
+// Project policy (ADR-0192), not the spec: PUT /directory/list/appservice/{networkId}/{roomId} documents no
+// failure status beyond refusing callers that are not appservices, so these fail-closed refusals live here
+// rather than in the conformance suite. An appservice lists only under a protocol it declares, only a room
+// that exists, and only a room it is interested in, so it cannot put an arbitrary private room's metadata
+// in a public directory.
+SCENARIO("an appservice may list only a room it is interested in, under a protocol it declares",
+         "[appservice][integration][directory][adr-0192][security]")
+{
+    GIVEN("one appservice interested only in rooms containing its users, another declaring slack, and a room")
+    {
+        auto bridge = TestAppservice{.id = "bridge", .users_regex = "@_bridge_.*", .protocols = {"irc"}};
+        auto other = TestAppservice{.id = "other", .rooms_regex = ".*", .protocols = {"slack"}};
+        auto mock = MockAppservice{};
+        auto other_mock = MockAppservice{};
+        bridge.url = mock.url();
+        other.url = other_mock.url();
+        auto started =
+            merovingian::homeserver::start_client_server(merovingian::tests::appservice_test_config({bridge, other}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_human(runtime, "alice");
+        auto const room_id = create_room(runtime, alice);
+        auto const errcode_of = [](merovingian::homeserver::DispatchResult const& result) {
+            return string_in(result.response.body, "errcode");
+        };
+
+        WHEN("the appservice names a protocol it does not declare")
+        {
+            auto const result = call(runtime, "PUT", "/_matrix/client/v3/directory/list/appservice/slack/" + room_id,
+                                     bridge.as_token(), R"({"visibility":"public"})");
+
+            THEN("404 M_NOT_FOUND: another appservice's protocol is not its to list under")
+            {
+                CHECK(result.response.status == 404U);
+                CHECK(errcode_of(result) == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("the appservice names a room that does not exist")
+        {
+            auto const result =
+                call(runtime, "PUT", "/_matrix/client/v3/directory/list/appservice/irc/%21missing%3Aexample.org",
+                     bridge.as_token(), R"({"visibility":"public"})");
+
+            THEN("404 M_NOT_FOUND")
+            {
+                CHECK(result.response.status == 404U);
+                CHECK(errcode_of(result) == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("the appservice names a room it has no interest in")
+        {
+            auto const result = call(runtime, "PUT", "/_matrix/client/v3/directory/list/appservice/irc/" + room_id,
+                                     bridge.as_token(), R"({"visibility":"public"})");
+
+            THEN("403 M_FORBIDDEN, and no network directory lists the room")
+            {
+                CHECK(result.response.status == 403U);
+                CHECK(errcode_of(result) == "M_FORBIDDEN");
+                CHECK_FALSE(merovingian::database::appservice_directory_contains(
+                    runtime.homeserver.database.persistent_store, "bridge", "irc", room_id));
+                auto const listing =
+                    call(runtime, "POST", "/_matrix/client/v3/publicRooms", alice, R"({"include_all_networks":true})");
+                REQUIRE(listing.response.status == 200U);
+                CHECK(listing.response.body.find(room_id) == std::string::npos);
+            }
+        }
+    }
+}
+
 // ===========================================================================
 // sp02.thirdparty-no-proxy-slot
 // ===========================================================================
