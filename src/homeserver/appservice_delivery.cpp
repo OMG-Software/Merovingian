@@ -294,7 +294,11 @@ namespace
 
             auto cursor = database::find_appservice_txn_cursor(store, appservice_id);
             auto event = std::optional<appservice::AppserviceTransactionEvent>{};
-            if (cursor.pending_txn_id != 0U)
+            // A transaction with a pending ID was sent before, so this attempt is a retry: it may carry
+            // only what the first attempt carried (ADR-0190). Only a transaction built on this pass
+            // takes queued ephemeral items.
+            auto const is_retry = cursor.pending_txn_id != 0U;
+            if (is_retry)
             {
                 // Sent but never acknowledged: rebuild it from the stored event and send it again
                 // under its own ID. This is also how a cursor left pending by the pre-outbox design
@@ -378,19 +382,27 @@ namespace
             auto transaction = appservice::AppserviceTransaction{};
             transaction.txn_id = std::to_string(cursor.pending_txn_id);
             transaction.events.push_back(std::move(*event));
-            // Ephemeral data (ADR-0190). A retry of this transaction ID carries the items the first
-            // attempt carried; a fresh one takes what is queued now. After a restart nothing is
-            // remembered, so the re-sent transaction carries its event alone.
-            if (auto const parked = runtime.appservice_pending_ephemeral.find(appservice_id);
-                parked != runtime.appservice_pending_ephemeral.end() && !parked->second.events_free &&
-                parked->second.txn_id == cursor.pending_txn_id)
+            // Ephemeral data (ADR-0190). A retry carries exactly the items parked for its transaction
+            // ID, or none when its first attempt carried none (or a restart forgot them); items queued
+            // since stay queued for the next transaction. A fresh transaction takes what is queued now.
+            if (is_retry)
             {
-                transaction.ephemeral_json = parked->second.items;
+                if (auto const parked = runtime.appservice_pending_ephemeral.find(appservice_id);
+                    parked != runtime.appservice_pending_ephemeral.end() && !parked->second.events_free &&
+                    parked->second.txn_id == cursor.pending_txn_id)
+                {
+                    transaction.ephemeral_json = parked->second.items;
+                }
             }
             else if (registration.receive_ephemeral)
             {
                 transaction.ephemeral_json = take_appservice_ephemeral(runtime, appservice_id);
-                if (!transaction.ephemeral_json.empty())
+                if (transaction.ephemeral_json.empty())
+                {
+                    // Nothing to park; drop a stale entry left by an earlier transaction ID.
+                    runtime.appservice_pending_ephemeral.erase(appservice_id);
+                }
+                else
                 {
                     runtime.appservice_pending_ephemeral.insert_or_assign(
                         appservice_id,

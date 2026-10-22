@@ -323,7 +323,8 @@ the job.
   `update_room_typing_stream_id_if_changed`), `queue_appservice_receipt` and `queue_appservice_presence` (called after
   the store write, local and federated) coalesce by key into `HomeserverRuntime::appservice_ephemeral`, bounded per
   appservice. The drainer attaches up to 100 items to the next transaction and keeps them in
-  `appservice_pending_ephemeral` so a retry under the same ID carries the same items; with no event queued it sends an
+  `appservice_pending_ephemeral` so a retry under the same ID carries the same items. Only a freshly built transaction
+  takes queued items: a retry whose first attempt carried none carries none. With no event queued it sends an
   events-free transaction whose ID comes from `next_txn_id`. Never persist it and never queue it for `url: null`.
 - **Ping and the network directory** (`client_server.cpp`) act on the appservice named by the masquerade token
   (`decode_masquerade_token`), never on a path parameter alone: `POST /_matrix/client/v1/appservice/{appserviceId}/ping`

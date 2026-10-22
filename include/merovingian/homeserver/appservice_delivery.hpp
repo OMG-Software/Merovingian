@@ -92,7 +92,8 @@ auto enqueue_appservice_delivery(HomeserverRuntime& runtime, std::string_view ro
 //
 // Ephemeral data (appservice_ephemeral.hpp, ADR-0190) rides the same transactions. An event
 // transaction carries up to max_appservice_ephemeral_per_transaction queued items in its
-// `ephemeral` array, the same items again on a retry under the same ID. When an appservice has
+// `ephemeral` array, the same items again on a retry under the same ID; only a transaction built
+// fresh takes queued items, so a retry whose first attempt carried none carries none. When an appservice has
 // ephemeral data and no queued event, an events-free transaction carries the data alone under a
 // fresh ID from the cursor's next_txn_id; it is not persisted, so a restart forgets it.
 //

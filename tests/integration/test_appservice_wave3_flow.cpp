@@ -824,6 +824,86 @@ SCENARIO("an acknowledged event transaction whose acknowledgement failed to comm
     }
 }
 
+// Spec: "Homeservers MUST NOT alter (e.g. add more) events they were going to send within that
+// transaction ID on retries." A transaction first sent with no ephemeral data is resent with none:
+// ephemeral data queued after the first send waits for the next transaction.
+SCENARIO("an event transaction first sent without ephemeral data is retried without it",
+         "[appservice][integration][delivery][r08]")
+{
+    GIVEN("an appservice that wants ephemeral data and an event queued for it with no ephemeral data")
+    {
+        auto bridge = TestAppservice{.id = "bridge", .users_regex = "@_bridge_.*", .receive_ephemeral = true};
+        auto mock = MockAppservice{};
+        bridge.url = mock.url();
+        auto started =
+            merovingian::homeserver::start_client_server(merovingian::tests::appservice_test_config({bridge}));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto clock = SteppedClock{};
+        auto const alice = register_human(runtime, "alice");
+        register_virtual_user(runtime, bridge, "_bridge_dave");
+        auto const room_id = create_room(runtime, alice, R"({"preset":"public_chat"})");
+        REQUIRE(call(runtime, "POST", "/_matrix/client/v3/join/" + room_id + "?user_id=@_bridge_dave:example.org",
+                     bridge.as_token(), "{}")
+                    .response.status == 200U);
+        clock.drain(runtime);
+        auto const baseline = mock.requests_to("/_matrix/app/v1/transactions/").size();
+        std::ignore = send_message(runtime, alice, room_id, "hello");
+
+        auto const retry_then_presence = [&]() {
+            REQUIRE(call(runtime, "PUT", "/_matrix/client/v3/presence/@alice:example.org/status", alice,
+                         R"({"presence":"online"})")
+                        .response.status == 200U);
+            mock.set_status(200);
+            clock.drain(runtime);
+            clock.drain(runtime);
+            return mock.requests_to("/_matrix/app/v1/transactions/");
+        };
+        auto const check = [&](auto const& all) {
+            REQUIRE(all.size() >= baseline + 2U);
+            auto const& first = all[baseline];
+            auto const& retried = all[baseline + 1U];
+            // The precondition: the first send carried no ephemeral data.
+            REQUIRE(first.body.find(R"("ephemeral")") == std::string::npos);
+            CHECK(first.target == retried.target);
+            CHECK(first.body == retried.body);
+            CHECK(retried.body.find("m.presence") == std::string::npos);
+            REQUIRE(all.size() >= baseline + 3U);
+            auto const presence_later = std::ranges::any_of(
+                all.begin() + static_cast<std::ptrdiff_t>(baseline) + 2, all.end(), [](auto const& request) {
+                    return request.body.find("m.presence") != std::string::npos;
+                });
+            CHECK(presence_later);
+        };
+
+        WHEN("the first send fails and presence is queued before the retry")
+        {
+            mock.set_status(503);
+            clock.drain(runtime);
+            auto const all = retry_then_presence();
+
+            THEN("the retry carries the first attempt's id and body, and the presence goes in a later transaction")
+            {
+                check(all);
+            }
+        }
+
+        WHEN("the appservice answers 200 but recording the delivery fails, and presence is queued before the "
+             "retry")
+        {
+            merovingian::database::force_persist_failure_for_statement(runtime.homeserver.database.persistent_store,
+                                                                       "complete_appservice_outbox_entry");
+            clock.drain(runtime);
+            auto const all = retry_then_presence();
+
+            THEN("the retry carries the first attempt's id and body, and the presence goes in a later transaction")
+            {
+                check(all);
+            }
+        }
+    }
+}
+
 // ===========================================================================
 // ADR-0191: the outbox of an appservice that never returns is capped
 // ===========================================================================

@@ -57,8 +57,9 @@ Chosen option: best-effort, in memory.
   transaction ID taken from the cursor's `next_txn_id` (persisted, so the ID is never reused) with no
   pending marker. The items of a transaction in flight are kept in memory (`AppservicePendingEphemeral`)
   so a retry under the same ID carries exactly the same items, honouring "MUST NOT alter ... events
-  they were going to send within that transaction ID on retries"; after a restart a re-sent event
-  transaction carries its event alone.
+  they were going to send within that transaction ID on retries". Only a transaction built fresh takes
+  queued items: a retry whose first attempt carried none carries none, and items queued meanwhile wait
+  for the next transaction. After a restart a re-sent event transaction carries its event alone.
 * **Hooks.** Typing is queued from `update_room_typing_stream_id_if_changed`, the one function every
   typing change passes through (local, federated, cleared by a message send). Receipts are queued
   after `store_receipt` succeeds, locally and from a federation EDU. Presence is queued after
