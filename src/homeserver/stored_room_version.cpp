@@ -63,12 +63,8 @@ auto stored_room_version(database::PersistentStore const& store, std::string_vie
         {
             continue;
         }
-        for (auto const& event : store.events)
+        for (auto const& event : store.events.with_id(state.event_id))
         {
-            if (event.event_id != state.event_id)
-            {
-                continue;
-            }
             auto const parsed = canonicaljson::parse_lossless(event.json);
             auto const* object = parsed.error == canonicaljson::ParseError::none
                                      ? std::get_if<canonicaljson::Object>(&parsed.value.storage())

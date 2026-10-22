@@ -161,16 +161,11 @@ auto room_read_access_for(database::PersistentStore const& store, std::string_vi
         {
             return {};
         }
-        for (auto const& event : store.events)
+        auto const event = store.events.find(*member_event_id);
+        if (event != store.events.end() && !event_is_withheld(*event) &&
+            membership_of_json(event->json) == std::optional<std::string>{"join"})
         {
-            if (event.event_id == *member_event_id)
-            {
-                if (!event_is_withheld(event) && membership_of_json(event.json) == std::optional<std::string>{"join"})
-                {
-                    return {RoomReadKind::current, {}, 0U};
-                }
-                return {};
-            }
+            return {RoomReadKind::current, {}, 0U};
         }
         return {};
     }

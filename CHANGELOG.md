@@ -9,12 +9,14 @@ early or look thread parents up cheaply.
   read-only through it. Every change goes through `insert`/`push_back`, `insert_all`, `erase_if`,
   `modify`, `extract` or `clear`, so a writer cannot leave an index stale. `modify` cannot change a
   row's `event_id` or `stream_ordering`. An event ID is held at most once.
-- **CHANGED (lookups):** about forty linear scans of every stored event by event ID, all under
-  `runtime.mutex`, are now hash lookups (`find`, `contains`, `find_in_room`). They include
-  `sync::event_thread_id`'s up to three parent hops, `/event`, `/context`, `/relations`,
-  `/redact`, `/report`, read markers, notifications, the send_join auth chain, appservice delivery,
-  space hierarchy, power levels, state bookkeeping, the federation event query, and the database's
-  own status, redaction, state-match and duplicate checks.
+- **CHANGED (lookups):** about fifty linear scans of every stored event by event ID, all under
+  `runtime.mutex`, are now hash lookups (`find`, `contains`, `find_in_room`, `with_id`). They include
+  `sync::event_thread_id`'s up to three parent hops, history visibility, room read access, sliding
+  sync's required state, heroes and room list, `/event`, `/context`, `/relations`, `/redact`,
+  `/report`, read markers, notifications, the send_join auth chain (which also built a per-request
+  map of every event in the room), auth-event maps, server ACLs, the stored room version,
+  appservice delivery, space hierarchy, power levels, state bookkeeping, the federation event
+  query, and the database's own status, redaction, state-match and duplicate checks.
 - **CHANGED (stream order):** `events.in_stream_order()` visits events by ascending
   `stream_ordering` whatever order they were hydrated (SQLite: no `ORDER BY`; PostgreSQL: event-ID
   order, and an updated row moves) or committed in (stream orderings commit out of order across

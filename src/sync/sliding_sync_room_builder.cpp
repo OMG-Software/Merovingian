@@ -273,12 +273,8 @@ namespace
             {
                 continue;
             }
-            for (auto const& ev : store.events)
+            for (auto const& ev : store.events.with_id(se.event_id))
             {
-                if (ev.event_id != se.event_id)
-                {
-                    continue;
-                }
                 auto const parsed = canonicaljson::parse_lossless(ev.json);
                 if (parsed.error != canonicaljson::ParseError::none)
                 {
@@ -359,12 +355,8 @@ namespace
                 {
                     continue;
                 }
-                for (auto const& ev : store.events)
+                for (auto const& ev : store.events.with_id(se.event_id))
                 {
-                    if (ev.event_id != se.event_id)
-                    {
-                        continue;
-                    }
                     auto const parsed = canonicaljson::parse_lossless(ev.json);
                     if (parsed.error != canonicaljson::ParseError::none)
                     {
@@ -788,12 +780,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
             // On incremental responses include only state that changed since
             // pos, unless this is a newly-relevant lazy-loaded member seeing
             // their first delivery on this connection (bypass_floor).
-            for (auto const& ev : store.events)
+            for (auto const& ev : store.events.with_id(se.event_id))
             {
-                if (ev.event_id != se.event_id)
-                {
-                    continue;
-                }
                 if (!bypass_floor && ev.stream_ordering <= room_since_event_ordering)
                 {
                     break; // unchanged since last pos — skip

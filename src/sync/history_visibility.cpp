@@ -94,13 +94,11 @@ auto current_history_visibility(database::PersistentStore const& store, std::str
         {
             continue;
         }
-        for (auto const& event : store.events)
+        auto const event = store.events.find(state.event_id);
+        if (event != store.events.end())
         {
-            if (event.event_id == state.event_id)
-            {
-                auto const value = content_string_of(event.json, "history_visibility");
-                return value.has_value() ? parse_history_visibility(*value) : HistoryVisibilityValue::shared;
-            }
+            auto const value = content_string_of(event->json, "history_visibility");
+            return value.has_value() ? parse_history_visibility(*value) : HistoryVisibilityValue::shared;
         }
         return HistoryVisibilityValue::shared;
     }

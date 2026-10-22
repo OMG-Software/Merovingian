@@ -78,6 +78,8 @@ public:
     // The row whose event ID is `event_id`, or end().
     [[nodiscard]] auto find(std::string_view event_id) const -> const_iterator;
     [[nodiscard]] auto contains(std::string_view event_id) const -> bool;
+    // The rows whose event ID is `event_id`: none or one. For a loop whose body runs for the match.
+    [[nodiscard]] auto with_id(std::string_view event_id) const -> std::ranges::subrange<const_iterator>;
     // The row whose event ID is `event_id` if it is in room `room_id`, otherwise end().
     [[nodiscard]] auto find_in_room(std::string_view room_id, std::string_view event_id) const -> const_iterator;
 

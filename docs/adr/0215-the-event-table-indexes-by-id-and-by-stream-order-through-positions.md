@@ -9,7 +9,7 @@ Technical Story: follow-up deferred from PR #523 (conformance audit wave 5, ADR-
 
 `PersistentStore::events`, the in-memory mirror of the `events` table, was a plain
 `std::vector<PersistentEvent>`. Every lookup by event ID was a linear `find_if` over every stored
-event (about forty call sites, including `sync::event_thread_id`, which makes up to three of them
+event (about fifty call sites, including `sync::event_thread_id`, which makes up to three of them
 per event it classifies), all under `runtime.mutex`. The vector was also not in stream order:
 hydration selects with no `ORDER BY` (SQLite) or in event-ID order (PostgreSQL), PostgreSQL moves a
 row whose status is updated, and stream orderings are allocated before commit, so events in
@@ -85,7 +85,8 @@ or quietly fall back to scans.
 
 ## Rules for future code
 
-* Look events up with `store.events.find()` / `contains()`, never `find_if` over `store.events`.
+* Look events up with `store.events.find()`, `contains()`, `find_in_room()` or `with_id()`, never
+  with `find_if` or a loop over `store.events`.
 * Walk events in stream order with `store.events.in_stream_order()`. Do not assume iteration order
   of the table means anything.
 * Add many events at once with `insert_all()`, not one `insert()` per row.

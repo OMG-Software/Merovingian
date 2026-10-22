@@ -1284,7 +1284,8 @@ not a `std::vector`. It owns the in-memory rows of the `events` table and keeps 
 both holding positions in its row vector so they survive reallocation (ADR-0215):
 
 - **by event ID.** `events.find(id)` and `events.contains(id)` are hash lookups, and
-  `events.find_in_room(room_id, id)` adds the room check. Use them, never a `find_if` over the rows.
+  `events.find_in_room(room_id, id)` adds the room check. `events.with_id(id)` is a range of zero or
+  one rows, for a loop whose body runs for the match. Use these, never a `find_if` over the rows.
 - **by stream order.** `events.in_stream_order()` visits every row by ascending `stream_ordering`. Rows
   with equal stream orderings come in the order they were added. Reverse it for newest first. Iterating
   the table itself visits arrival order, which is not stream order: SQLite hydration has no `ORDER BY`,

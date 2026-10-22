@@ -1290,18 +1290,13 @@ namespace
     [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
         -> canonicaljson::Value
     {
-        for (auto const& event : store.events)
+        auto const event = store.events.find(event_id);
+        if (event == store.events.end())
         {
-            if (event.event_id == event_id)
-            {
-                auto const parsed = canonicaljson::parse_lossless(event.json);
-                if (parsed.error == canonicaljson::ParseError::none)
-                {
-                    return parsed.value;
-                }
-            }
+            return {};
         }
-        return {};
+        auto const parsed = canonicaljson::parse_lossless(event->json);
+        return parsed.error == canonicaljson::ParseError::none ? parsed.value : canonicaljson::Value{};
     }
 
     // Extracts content.third_party_invite.signed.token from an in-progress
@@ -7009,16 +7004,9 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     auto state_array = canonicaljson::Array{};
     for (auto const& state_event_id : *state_ids)
     {
-        auto const* event = static_cast<database::PersistentEvent const*>(nullptr);
-        for (auto const& candidate : runtime.database.persistent_store.events)
-        {
-            if (candidate.event_id == state_event_id)
-            {
-                event = &candidate;
-                break;
-            }
-        }
-        if (event != nullptr)
+        auto const& events = runtime.database.persistent_store.events;
+        auto const event = events.find(state_event_id);
+        if (event != events.end())
         {
             state_array.push_back(client_event_with_id(runtime.database.persistent_store, *event));
         }

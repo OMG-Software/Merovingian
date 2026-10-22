@@ -125,6 +125,8 @@ SCENARIO("An event table finds rows by ID and walks them in stream order whateve
                 }
                 REQUIRE(table.find("$missing") == table.end());
                 REQUIRE_FALSE(table.contains("$missing"));
+                REQUIRE(ids_of(table.with_id("$ten")) == std::vector<std::string>{"$ten"});
+                REQUIRE(std::ranges::empty(table.with_id("$missing")));
             }
 
             THEN("the stream-order walk is ascending, ties in arrival order, and reverses to newest first")

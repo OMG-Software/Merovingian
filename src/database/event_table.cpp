@@ -31,6 +31,12 @@ auto EventTable::contains(std::string_view event_id) const -> bool
     return by_id_.contains(event_id);
 }
 
+auto EventTable::with_id(std::string_view event_id) const -> std::ranges::subrange<const_iterator>
+{
+    auto const first = find(event_id);
+    return {first, first == rows_.end() ? first : std::next(first)};
+}
+
 auto EventTable::find_in_room(std::string_view room_id, std::string_view event_id) const -> const_iterator
 {
     auto const event = find(event_id);

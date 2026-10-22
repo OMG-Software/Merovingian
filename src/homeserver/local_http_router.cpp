@@ -134,18 +134,13 @@ namespace
         std::string_view third_party_invite_token = {}, std::string_view authorising_user = {}) -> events::AuthEventMap
     {
         auto load = [&](std::string_view event_id) -> canonicaljson::Value {
-            for (auto const& evt : store.events)
+            auto const evt = store.events.find(event_id);
+            if (evt == store.events.end())
             {
-                if (evt.event_id == event_id)
-                {
-                    auto const parsed = canonicaljson::parse_lossless(evt.json);
-                    if (parsed.error == canonicaljson::ParseError::none)
-                    {
-                        return parsed.value;
-                    }
-                }
+                return {};
             }
-            return {};
+            auto const parsed = canonicaljson::parse_lossless(evt->json);
+            return parsed.error == canonicaljson::ParseError::none ? parsed.value : canonicaljson::Value{};
         };
 
         auto result = events::AuthEventMap{};
@@ -370,12 +365,8 @@ namespace
             {
                 continue;
             }
-            for (auto const& evt : store.events)
+            for (auto const& evt : store.events.with_id(state.event_id))
             {
-                if (evt.event_id != state.event_id)
-                {
-                    continue;
-                }
                 auto const parsed = canonicaljson::parse_lossless(evt.json);
                 return parsed.error == canonicaljson::ParseError::none ? parsed.value : canonicaljson::Value{};
             }
