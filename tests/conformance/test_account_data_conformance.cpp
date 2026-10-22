@@ -24,6 +24,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -278,6 +279,66 @@ SCENARIO("account data accepts a JSON object holding fractional and exponent num
                     // Spec MUST: the content is returned as it was set.
                     REQUIRE(*order == 0.5);
                 }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v3/rooms/{roomId}/initialSync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidinitialsync
+//
+// RoomInfo `account_data`: "The private data that this user has attached to this room." An m.tag
+// `order` is "A number in a range [0,1]", so the room's account data must reach the client with
+// its fractional numbers, not as an empty object (PR #522 review).
+SCENARIO("room initialSync returns room account data holding fractional numbers",
+         "[conformance][client-server][account-data][r10]")
+{
+    GIVEN("a user who tagged her room as a favourite with order 0.5")
+    {
+        auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        auto const room_id = create_public_room(rt, token);
+        // Fixture: the tag is set through the room tags API.
+        REQUIRE(call(rt, "PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/m.favourite",
+                     token, R"({"order":0.5})")
+                    .status == 200U);
+
+        WHEN("she calls initialSync for the room")
+        {
+            auto const response = call(rt, "GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", token);
+
+            THEN("account_data holds the m.tag event with its order")
+            {
+                // Spec MUST: a member gets the room's RoomInfo (200).
+                REQUIRE(response.status == 200U);
+                auto const body = parse_object_json(response.body);
+                auto const* account_data = object_member_as_array(body, "account_data");
+                // Spec MUST: RoomInfo carries account_data, the user's private data for the room.
+                REQUIRE(account_data != nullptr);
+                auto order = std::optional<double>{};
+                for (auto const& event : *account_data)
+                {
+                    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+                    auto const* type = object == nullptr ? nullptr : string_member(*object, "type");
+                    if (type == nullptr || *type != "m.tag")
+                    {
+                        continue;
+                    }
+                    auto const* content = object_member_as_object(*object, "content");
+                    auto const* tags = content == nullptr ? nullptr : object_member_as_object(*content, "tags");
+                    auto const* favourite = tags == nullptr ? nullptr : object_member_as_object(*tags, "m.favourite");
+                    auto const* value = favourite == nullptr ? nullptr : double_member(*favourite, "order");
+                    if (value != nullptr)
+                    {
+                        order = *value;
+                    }
+                }
+                // Spec MUST: the m.tag content is delivered as stored, its order "A number in a range [0,1]".
+                REQUIRE(order == std::optional<double>{0.5});
             }
         }
     }

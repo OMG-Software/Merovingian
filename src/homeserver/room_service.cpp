@@ -2049,7 +2049,10 @@ namespace
             });
         if (existing != account_data.end())
         {
-            auto const parsed = canonicaljson::parse_lossless(existing->content_json);
+            // Client-owned account data may hold fractional numbers. The canonical parser
+            // refused them, so the mapping started empty and the write below destroyed the
+            // user's existing direct rooms.
+            auto const parsed = canonicaljson::parse_json(existing->content_json);
             if (parsed.error == canonicaljson::ParseError::none)
             {
                 if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()); obj != nullptr)

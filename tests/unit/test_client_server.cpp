@@ -6909,6 +6909,58 @@ SCENARIO("public_chat preset does not auto-emit m.room.encryption",
     return state->event_id;
 }
 
+// createRoom with is_direct adds the room to the creator's m.direct (upsert_m_direct). That is a
+// read-modify-write of client-owned account data, which is never signed and may hold fractional
+// numbers. Reading it with the canonical parser failed on them, started from an empty mapping and
+// overwrote the user's existing direct rooms (PR #522 review).
+SCENARIO("createRoom with is_direct keeps the existing m.direct entries when they hold a fractional number",
+         "[homeserver][client-server][create-room][account-data][r10]")
+{
+    GIVEN("alice whose m.direct lists a DM with carol and holds a fractional number")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const m_direct_url = std::string{"/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct"};
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"PUT", m_direct_url, token,
+                              R"({"@carol:example.org":["!carol-dm:example.org"],"org.example.weight":0.5})"})
+                    .response.status == 200U);
+
+        WHEN("alice creates a direct room with bob")
+        {
+            auto const created = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token,
+                          R"({"preset":"private_chat","invite":["@bob:example.org"],"is_direct":true})"});
+            auto const fetched =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", m_direct_url, token, {}});
+
+            THEN("m.direct gains the new room under bob and still lists carol's room")
+            {
+                REQUIRE(created.response.status == 200U);
+                REQUIRE(fetched.response.status == 200U);
+                REQUIRE(fetched.response.body.find("@bob:example.org") != std::string::npos);
+                REQUIRE(fetched.response.body.find("!carol-dm:example.org") != std::string::npos);
+                REQUIRE(fetched.response.body.find("org.example.weight") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("non-member events exclude join_rules from auth_events per spec v1.19",
          "[homeserver][client-server][create-room][auth-events]")
 {

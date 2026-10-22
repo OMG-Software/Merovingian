@@ -41,7 +41,11 @@ Conformance audit (2026-10-17) wave 4: the Client-Server API findings R10, R11, 
   `400 M_NOT_JSON`. They now use the general parser (account data is never signed), and a
   fractional typing `timeout` is `400 M_BAD_JSON`. The sliding-sync `account_data` extension also
   read stored account data with the canonical parser and sent `{}` for an `m.tag` with an `order`;
-  it now delivers the content.
+  it now delivers the content. The same canonical re-read was fixed where stored account data
+  reaches a client or is rewritten: the sliding-sync response assembly, room `initialSync`,
+  sliding sync's `is_dm` (`m.direct`), and `createRoom`'s `is_direct` update of `m.direct`, which
+  started from an empty mapping and destroyed the user's existing direct rooms when their
+  `m.direct` held a fractional number.
 - **R13 follow-up:** the typing-expiry pass no longer rescans the typing table for every expired
   room while holding the runtime lock; it groups the table by room in a fixed number of passes.
 - **Tests:** new `tests/conformance/test_account_data_conformance.cpp` and

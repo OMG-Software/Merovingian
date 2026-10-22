@@ -5198,8 +5198,11 @@ namespace
 
     [[nodiscard]] auto sliding_sync_ext_to_value(sync::SlidingSyncExtensionResponses ext) -> canonicaljson::Object
     {
+        // The extensions carry account data and receipts, which are never signed and may hold
+        // fractional numbers (m.tag's `order` is "A number in a range [0,1]"), so the general
+        // parser reads them back; the canonical one would turn such an event into {}.
         auto parse_json = [](std::string const& json) -> canonicaljson::Value {
-            auto result = canonicaljson::parse_lossless(json);
+            auto result = canonicaljson::parse_json(json);
             return result.error == canonicaljson::ParseError::none ? std::move(result.value)
                                                                    : canonicaljson::Value{canonicaljson::Object{}};
         };
@@ -8899,7 +8902,9 @@ namespace
             {
                 continue;
             }
-            auto parsed = canonicaljson::parse_lossless(row.content_json);
+            // Account data is never signed: read it with the general parser, which keeps
+            // fractional numbers such as m.tag's `order`.
+            auto parsed = canonicaljson::parse_json(row.content_json);
             auto content = parsed.error == canonicaljson::ParseError::none
                                ? std::move(parsed.value)
                                : canonicaljson::Value{canonicaljson::Object{}};
