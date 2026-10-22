@@ -2447,7 +2447,7 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   thread that sends them one at a time, and no `runtime.mutex` across the network call
   (ADR-0206). Residual risk: a recipient's failing gateway can fill that recipient's share.
 
-### Media: header injection, asynchronous uploads and URL previews (0.12.40)
+### Media: header injection, asynchronous uploads and URL previews (0.12.41)
 
 - **Upload filename in `Content-Disposition` (R17).** A client-chosen `filename` is now served
   back in a response header. **Mitigation:** a filename with control characters, path separators,

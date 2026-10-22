@@ -342,7 +342,7 @@ Client-facing download and thumbnail responses previously carried only
   to anything served over federation (audit finding 8). Unknown and
   non-inline-safe types fail closed to `attachment` on both paths.
 
-### Named downloads (R17, 0.12.40)
+### Named downloads (R17, 0.12.41)
 
 `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}` and the deprecated
 `/_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}` serve the same media as the
@@ -356,10 +356,10 @@ one: media uploaded after the freeze is 404 there (ADR-0068).
 characters, no `/` or `\`) is written as `filename="..."` (with `"` and `\` escaped) when it is
 printable ASCII, and as RFC 5987 `filename*=utf-8''<percent-encoded>` otherwise. Any other
 name is left out, so no byte a client chose can end or extend the header line (ADR-0211).
-Until 0.12.40 the router refused the third segment, so the named routes answered 404 for media
+Until 0.12.41 the router refused the third segment, so the named routes answered 404 for media
 that existed.
 
-### Upload filenames (0.12.40)
+### Upload filenames (0.12.41)
 
 An upload's `filename` query parameter (`POST /upload`, `PUT /upload/{serverName}/{mediaId}`) is
 stored as `media.upload_name` and returned in `Content-Disposition` on download, as the spec

@@ -7587,7 +7587,7 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 for missing
 
 // --- PUT /_matrix/media/v3/upload/{serverName}/{mediaId} ---------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixmediav3uploadservernamemediaid
-// Implemented in 0.12.40 (ADR-0212); the full contract is in
+// Implemented in 0.12.41 (ADR-0212); the full contract is in
 // test_content_repository_conformance.cpp. Spec 404: "The MXC ID was not
 // created with POST /_matrix/media/v1/create", errcode M_NOT_FOUND.
 SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} refuses a media ID that was never created",
@@ -7619,7 +7619,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} refuses a media ID that wa
 
 // --- POST /_matrix/media/v1/create --------------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixmediav1create
-// Implemented in 0.12.40 (ADR-0212); the full contract is in
+// Implemented in 0.12.41 (ADR-0212); the full contract is in
 // test_content_repository_conformance.cpp. Spec 200: content_uri (Required)
 // and unused_expires_at (integer, optional).
 SCENARIO("POST /media/v1/create returns a content_uri on this server",
