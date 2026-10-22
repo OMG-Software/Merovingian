@@ -37,8 +37,9 @@ auto attempt_push_delivery(HomeserverRuntime& runtime, push::PushGatewayClient& 
 
 // The retry job's body: sends the retries due at `now` (at most push_retry_batch), checking `stop`
 // between them. A retry whose pusher has since been removed, or now names another gateway URL, is
-// dropped. Returns how long to wait before the next call: until the earliest queued retry, between
-// one second and push_retry_idle_delay.
+// dropped. A retry that fails again is scheduled from `now` plus the time the batch has taken so
+// far. Returns how long to wait before the next call: until the earliest queued retry, measured
+// the same way, between one second and push_retry_idle_delay.
 [[nodiscard]] auto retry_due_push_deliveries(HomeserverRuntime& runtime, StopFlag const& stop,
                                              std::chrono::steady_clock::time_point now) -> std::chrono::milliseconds;
 

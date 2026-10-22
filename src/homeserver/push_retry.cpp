@@ -138,6 +138,13 @@ auto retry_due_push_deliveries(HomeserverRuntime& runtime, StopFlag const& stop,
         return idle;
     }
     auto due = runtime.push_retry_queue_->take_due(now, push_retry_batch);
+    // A batch can take up to its size times the gateway timeout. Time spent in it is added to `now`,
+    // so a failure late in the batch is scheduled from when it failed and the next wait is not cut
+    // short by the time the batch took.
+    auto const batch_started = std::chrono::steady_clock::now();
+    auto const current = [&now, batch_started]() {
+        return now + (std::chrono::steady_clock::now() - batch_started);
+    };
     if (!due.empty() && runtime.outbound_client != nullptr && runtime.cached_discovery != nullptr)
     {
         auto client =
@@ -158,7 +165,7 @@ auto retry_due_push_deliveries(HomeserverRuntime& runtime, StopFlag const& stop,
                 });
                 continue;
             }
-            attempt_push_delivery(runtime, client, std::move(delivery), now);
+            attempt_push_delivery(runtime, client, std::move(delivery), current());
         }
     }
     auto const next = runtime.push_retry_queue_->next_due();
@@ -166,7 +173,7 @@ auto retry_due_push_deliveries(HomeserverRuntime& runtime, StopFlag const& stop,
     {
         return idle;
     }
-    auto const wait = std::chrono::duration_cast<std::chrono::milliseconds>(*next - now);
+    auto const wait = std::chrono::duration_cast<std::chrono::milliseconds>(*next - current());
     return std::clamp(wait, std::chrono::milliseconds{std::chrono::seconds{1}}, idle);
 }
 
