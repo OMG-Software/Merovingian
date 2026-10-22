@@ -3,6 +3,8 @@
 
 #include "merovingian/media/url_preview.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -180,62 +182,6 @@ namespace
         return end + 1U;
     }
 
-    [[nodiscard]] auto utf8_valid(std::string_view text) noexcept -> bool
-    {
-        auto index = std::size_t{0U};
-        while (index < text.size())
-        {
-            auto const lead = static_cast<unsigned char>(text[index]);
-            auto length = std::size_t{1U};
-            auto minimum = std::uint32_t{0U};
-            auto code_point = std::uint32_t{lead};
-            if (lead >= 0x80U)
-            {
-                if ((lead & 0xE0U) == 0xC0U)
-                {
-                    length = 2U;
-                    minimum = 0x80U;
-                    code_point = lead & 0x1FU;
-                }
-                else if ((lead & 0xF0U) == 0xE0U)
-                {
-                    length = 3U;
-                    minimum = 0x800U;
-                    code_point = lead & 0x0FU;
-                }
-                else if ((lead & 0xF8U) == 0xF0U)
-                {
-                    length = 4U;
-                    minimum = 0x10000U;
-                    code_point = lead & 0x07U;
-                }
-                else
-                {
-                    return false;
-                }
-                if (index + length > text.size())
-                {
-                    return false;
-                }
-                for (auto offset = std::size_t{1U}; offset < length; ++offset)
-                {
-                    auto const continuation = static_cast<unsigned char>(text[index + offset]);
-                    if ((continuation & 0xC0U) != 0x80U)
-                    {
-                        return false;
-                    }
-                    code_point = (code_point << 6U) | (continuation & 0x3FU);
-                }
-                if (code_point < minimum || code_point > 0x10FFFFU || (code_point >= 0xD800U && code_point <= 0xDFFFU))
-                {
-                    return false;
-                }
-            }
-            index += length;
-        }
-        return true;
-    }
-
     // Entity-decodes `raw`, turns control characters and runs of whitespace
     // into one space, trims, and cuts the result to `max_bytes` on a UTF-8
     // boundary. Returns empty when the text is not valid UTF-8. Only the
@@ -285,7 +231,7 @@ namespace
             }
             out.resize(cut);
         }
-        return utf8_valid(out) ? out : std::string{};
+        return canonicaljson::utf8_is_valid(out) ? out : std::string{};
     }
 
     // The position of the '>' that closes a tag whose attributes start at
