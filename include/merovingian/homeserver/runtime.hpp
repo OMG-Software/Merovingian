@@ -487,6 +487,12 @@ struct HomeserverRuntime final
     // mutex is a leaf: never waited on with `mutex` held. Held through a
     // unique_ptr so waiters keep a stable address across a runtime move.
     std::unique_ptr<MediaUploadNotifier> media_upload_notifier{std::make_unique<MediaUploadNotifier>()};
+    // ADR-0212: downloads currently waiting for a reserved media ID's content.
+    // A wait holds its worker, so at most media_fetch_threads - 1 run at once
+    // (half of those for one user): the media fetch pool always keeps a worker
+    // for remote fetches and previews. Its mutex is a leaf, like the budget
+    // above. Held through a unique_ptr so slots keep a stable address.
+    std::unique_ptr<http::InFlightBudget> pending_upload_waits{std::make_unique<http::InFlightBudget>()};
     // ADR-0213: URL preview responses by canonical URL, bounded by
     // security.media.url_preview_cache_max_entries. Guarded by `mutex`. Not
     // carried across a runtime move: it is only a cache.

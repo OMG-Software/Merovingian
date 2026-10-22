@@ -1150,14 +1150,26 @@ namespace
         deferred,
     };
 
+    // ADR-0212: concurrent pending-upload waits, at most media_fetch_threads - 1
+    // so the media fetch pool always keeps a worker for remote fetches and
+    // previews; one requester may hold half of them.
+    [[nodiscard]] auto pending_upload_wait_cap(HomeserverRuntime const& runtime) noexcept -> std::uint32_t
+    {
+        auto const threads = runtime.config.server().http.media_fetch_threads;
+        return threads > 1U ? threads - 1U : 1U;
+    }
+
     // ADR-0212: a download of a reserved but empty local media ID waits for
     // the upload, at most min(timeout_ms, pending_upload_max_wait_ms). It never
     // waits on a main-pool thread: there it defers to the media fetch pool like
-    // a remote fetch, whose admission bounds how many waits run at once. It
-    // never waits with runtime.mutex held either. Runs with runtime.mutex held
-    // and published (RequestLockScope).
+    // a remote fetch. A wait is admitted first: under pending_upload_wait_cap
+    // always, and on a request thread (no media fetch pool) with an ADR-0079
+    // client-outbound slot too. A wait that is not admitted answers 504 at once,
+    // which the spec allows ("The content repository MAY respond before the
+    // timeout"). It never waits with runtime.mutex held. Runs with
+    // runtime.mutex held and published (RequestLockScope).
     [[nodiscard]] auto await_pending_upload(HomeserverRuntime& runtime, std::string_view media_id,
-                                            std::uint32_t timeout_ms) -> PendingDownload
+                                            RemoteMediaRequestContext const& remote) -> PendingDownload
     {
         auto& repository = runtime.media_repository;
         if (media::find_local_media_record(repository, media_id) != nullptr ||
@@ -1165,18 +1177,49 @@ namespace
         {
             return PendingDownload::not_pending;
         }
-        auto const wait_ms = std::min(timeout_ms, repository.config.pending_upload_max_wait_ms);
+        auto const wait_ms = std::min(remote.timeout_ms, repository.config.pending_upload_max_wait_ms);
         if (wait_ms == 0U)
         {
             return PendingDownload::timed_out;
         }
-        if (RemoteMediaFetchScope::current_mode() == RemoteMediaFetchMode::defer &&
-            RemoteMediaFetchScope::record_deferral())
+        auto const wait_cap = pending_upload_wait_cap(runtime);
+        auto const refuse_wait = [&media_id](std::string_view reason) {
+            log_diagnostic("download.pending_wait_refused",
+                           {
+                               {"media_id", std::string{media_id}, false},
+                               {"reason",   std::string{reason},   false}
+            });
+            return PendingDownload::timed_out;
+        };
+        // Answer a full cap here rather than spend a media fetch pool handoff on
+        // a wait that will be refused; the slot below is the authoritative check.
+        if (runtime.pending_upload_waits->active() >= wait_cap)
+        {
+            return refuse_wait("wait cap reached");
+        }
+        auto const mode = RemoteMediaFetchScope::current_mode();
+        if (mode == RemoteMediaFetchMode::defer && RemoteMediaFetchScope::record_deferral())
         {
             log_diagnostic("download.pending_deferred", {
                                                             {"media_id", std::string{media_id}, false}
             });
             return PendingDownload::deferred;
+        }
+        // On a request thread the wait holds a main-pool worker: it takes an
+        // ADR-0079 slot, as an inline remote fetch does. On the media fetch pool
+        // the transport's admission already stands in for it.
+        auto const outbound_slot = mode == RemoteMediaFetchMode::inline_fetch
+                                       ? admit_client_outbound_proxy(runtime, remote.client_key)
+                                       : std::optional<http::InFlightBudget::Slot>{};
+        if (mode == RemoteMediaFetchMode::inline_fetch && !outbound_slot.has_value())
+        {
+            return refuse_wait("client outbound budget exhausted");
+        }
+        auto const wait_slot = runtime.pending_upload_waits->try_acquire(
+            remote.requester.empty() ? remote.client_key : remote.requester, wait_cap, std::max(1U, wait_cap / 2U));
+        if (!wait_slot.has_value())
+        {
+            return refuse_wait("wait cap reached");
         }
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{wait_ms};
         auto& notifier = *runtime.media_upload_notifier;
@@ -1207,9 +1250,10 @@ namespace
     // The answer for a download of a pending local media ID, or nullopt to go
     // on serving it normally.
     [[nodiscard]] auto pending_download_answer(HomeserverRuntime& runtime, std::string_view media_id,
-                                               std::uint32_t timeout_ms) -> std::optional<OperationResult>
+                                               RemoteMediaRequestContext const& remote)
+        -> std::optional<OperationResult>
     {
-        switch (await_pending_upload(runtime, media_id, timeout_ms))
+        switch (await_pending_upload(runtime, media_id, remote))
         {
         case PendingDownload::timed_out:
             return not_yet_uploaded_result();
@@ -1745,7 +1789,7 @@ namespace
     // they do not wait for it either.
     if (!legacy_endpoint)
     {
-        if (auto pending = pending_download_answer(runtime, media_id, remote.timeout_ms); pending.has_value())
+        if (auto pending = pending_download_answer(runtime, media_id, remote); pending.has_value())
         {
             return std::move(*pending);
         }
@@ -1879,7 +1923,7 @@ namespace
 
     if (!legacy_endpoint)
     {
-        if (auto pending = pending_download_answer(runtime, media_id, remote.timeout_ms); pending.has_value())
+        if (auto pending = pending_download_answer(runtime, media_id, remote); pending.has_value())
         {
             return std::move(*pending);
         }

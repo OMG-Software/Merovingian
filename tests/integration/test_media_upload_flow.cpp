@@ -11,6 +11,7 @@
 // ("The content repository MAY respond before the timeout").
 
 #include "../support/in_memory_database_config.hpp"
+#include "../support/joining_threads.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
@@ -26,6 +27,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace
 {
@@ -83,6 +85,30 @@ auto const png_bytes = std::string{"\x89PNG\r\n\x1a\npending-upload-image"};
     return *token;
 }
 
+[[nodiscard]] auto reserve(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
+{
+    auto const response =
+        merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/media/v1/create", token, {}});
+    REQUIRE(response.response.status == 200U);
+    auto const body = parse_object(response.response.body);
+    auto const* content_uri = string_member(body, "content_uri");
+    REQUIRE(content_uri != nullptr);
+    return content_uri->substr(std::string_view{"mxc://example.org/"}.size());
+}
+
+[[nodiscard]] auto download(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                            std::string const& media_id, std::uint32_t timeout_ms)
+    -> merovingian::homeserver::DispatchResult
+{
+    return merovingian::homeserver::handle_client_server_request(
+        runtime,
+        {"GET",
+         "/_matrix/client/v1/media/download/example.org/" + media_id + "?timeout_ms=" + std::to_string(timeout_ms),
+         token,
+         {}});
+}
+
 [[nodiscard]] auto errcode_of(merovingian::homeserver::DispatchResult const& result) -> std::string
 {
     auto const body = parse_object(result.response.body);
@@ -91,6 +117,86 @@ auto const png_bytes = std::string{"\x89PNG\r\n\x1a\npending-upload-image"};
 }
 
 } // namespace
+
+SCENARIO("A pending-upload wait on a request thread needs a client-outbound slot",
+         "[integration][media][async-upload][security]")
+{
+    GIVEN("a reserved, empty mxc:// URI and a client-outbound budget with no slots")
+    {
+        auto started = merovingian::homeserver::start_client_server(pending_config(16U));
+        REQUIRE(started.started);
+        auto const alice = login(started.runtime, "alice");
+        auto const media_id = reserve(started.runtime, alice);
+        started.runtime.homeserver.client_outbound_proxy_policy.global_cap = 0U;
+
+        WHEN("it is downloaded with a long timeout and no media fetch pool")
+        {
+            auto const started_at = std::chrono::steady_clock::now();
+            auto const response = download(started.runtime, alice, media_id, 5000U);
+            auto const waited = std::chrono::steady_clock::now() - started_at;
+
+            THEN("the request thread does not wait: the answer is 504 M_NOT_YET_UPLOADED at once")
+            {
+                REQUIRE(response.response.status == 504U);
+                REQUIRE(errcode_of(response) == "M_NOT_YET_UPLOADED");
+                REQUIRE(waited < std::chrono::seconds{2});
+                REQUIRE(started.runtime.homeserver.media_upload_notifier->waiting() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Concurrent pending-upload waits stay below the media fetch pool's size",
+         "[integration][media][async-upload][security]")
+{
+    GIVEN("a server with two media fetch workers, so at most one wait at a time, and a reserved URI")
+    {
+        auto started = merovingian::homeserver::start_client_server(pending_config(2U));
+        REQUIRE(started.started);
+        // Room in the client-outbound budget, so only the wait cap can refuse.
+        started.runtime.homeserver.client_outbound_proxy_policy.global_cap = 8U;
+        started.runtime.homeserver.client_outbound_proxy_policy.per_client_cap = 8U;
+        auto const alice = login(started.runtime, "alice");
+        auto const bob = login(started.runtime, "bob");
+        auto const media_id = reserve(started.runtime, alice);
+
+        WHEN("one download is waiting and a second asks to wait")
+        {
+            auto waiter_status = std::uint16_t{0U};
+            auto threads = merovingian::tests::JoiningThreads{};
+            threads.emplace_back([&started, &alice, &media_id, &waiter_status] {
+                waiter_status = download(started.runtime, alice, media_id, 10000U).response.status;
+            });
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (started.runtime.homeserver.media_upload_notifier->waiting() == 0U &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{2});
+            }
+            auto const first_was_waiting = started.runtime.homeserver.media_upload_notifier->waiting() == 1U;
+            auto const second_started_at = std::chrono::steady_clock::now();
+            auto const second = download(started.runtime, bob, media_id, 5000U);
+            auto const second_waited = std::chrono::steady_clock::now() - second_started_at;
+            auto const uploaded = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT",
+                                  "/_matrix/media/v3/upload/example.org/" + media_id,
+                                  alice,
+                                  png_bytes,
+                                  {merovingian::http::Header{"Content-Type", "image/png"}}});
+            threads.join();
+
+            THEN("the second is answered 504 at once and the first is still served when the content arrives")
+            {
+                REQUIRE(first_was_waiting);
+                REQUIRE(second.response.status == 504U);
+                REQUIRE(errcode_of(second) == "M_NOT_YET_UPLOADED");
+                REQUIRE(second_waited < std::chrono::seconds{2});
+                REQUIRE(uploaded.response.status == 200U);
+                REQUIRE(waiter_status == 200U);
+            }
+        }
+    }
+}
 
 SCENARIO("An upload the server fails to store is answered as a server error", "[integration][media][sqlite]")
 {

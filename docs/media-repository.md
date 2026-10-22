@@ -369,8 +369,8 @@ requires ("If the upload was made with a `filename`, this header MUST contain th
 the client sent. A remote server's `Content-Disposition` filename is read by
 `media::content_disposition_filename` (quoted, token or RFC 5987 form, at most 1 KiB scanned, an
 unsafe name dropped) and stored with the remote copy. Inside the process the stored name crosses
-from the local router to the client API percent-encoded, in an internal header that the client API
-never copies to the wire (ADR-0211).
+from the local router to the client API in `LocalHttpResponse::media_filename`, a field rather than
+a header, so nothing that writes a local-router response to the wire can leak it (ADR-0211).
 
 ## Asynchronous uploads
 
@@ -395,6 +395,10 @@ A download of a reserved ID whose content has not arrived waits for it, at most
 then answers `504 M_NOT_YET_UPLOADED`; `timeout_ms=0` answers at once. The wait never runs on a
 main-pool thread: it is handed to the media fetch pool like a remote fetch, and it releases the
 runtime mutex while it sleeps on `MediaUploadNotifier`, which the upload signals after its commit.
+A wait is admitted first: at most `server.http.media_fetch_threads - 1` waits run at once (half of
+them for one requester), so the pool always keeps a worker for remote fetches and previews; a
+server with no media fetch pool waits on the request thread and then also needs an ADR-0079
+client-outbound slot. A wait that is not admitted answers `504 M_NOT_YET_UPLOADED` at once.
 The thumbnail routes behave the same way. The federation route
 (`GET /_matrix/federation/v1/media/download/{mediaId}`) answers `504 M_NOT_YET_UPLOADED` at once,
 and the legacy v3 routes never serve such media (ADR-0068, ADR-0212).

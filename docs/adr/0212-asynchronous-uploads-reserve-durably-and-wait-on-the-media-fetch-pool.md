@@ -59,6 +59,16 @@ defer to and answers `504 M_NOT_YET_UPLOADED` immediately, which the spec allows
 respond before the timeout"). The legacy v3 download route never waits: media uploaded after
 the freeze is never served there (ADR-0068).
 
+A wait holds a worker for its whole length, so it is admitted before it starts
+(`await_pending_upload`). At most `media_fetch_threads - 1` waits run at once, and one requester
+may hold half of them (`HomeserverRuntime::pending_upload_waits`): the media fetch pool always
+keeps a worker for remote fetches and URL previews, and two client addresses can no longer fill
+it with waits. A request served without a media fetch pool waits on its own request thread, so
+it also takes an ADR-0079 client-outbound slot, as an inline remote fetch does. A wait that is
+not admitted answers `504 M_NOT_YET_UPLOADED` at once, which the spec allows ("The content
+repository MAY respond before the timeout"). A full cap is checked before the deferral too, so
+a wait that will be refused does not cost a media fetch pool handoff.
+
 ### Positive Consequences
 
 * Reservations and waits are bounded by configuration; neither can starve the main pool.
@@ -68,7 +78,9 @@ the freeze is never served there (ADR-0068).
 
 * An expired reservation's row stays until the next `create` sweeps it (bounded by the global
   cap).
-* A waiting download occupies a media fetch pool slot for up to the server cap.
+* A waiting download occupies a media fetch pool worker for up to the server cap; past
+  `media_fetch_threads - 1` concurrent waits, further downloads of reserved IDs get `504` at once
+  instead of waiting.
 
 ## Pros and Cons of the Options
 
