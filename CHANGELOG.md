@@ -1,4 +1,4 @@
-## 0.12.41
+## 0.12.39
 
 Indexes the in-memory event store by event ID and by stream order (ADR-0215). Deferred from the
 review of PR #523 (conformance audit wave 5), whose capped push-badge count (ADR-0207) could not stop

@@ -1291,7 +1291,7 @@ end (main's commits wait for it), and `REPEATABLE READ READ ONLY` on PostgreSQL.
 whole-store startup load stays one statement per table, so it never holds SQLite's SHARED lock for
 the whole load (ADR-0161).
 
-### Event table indexes (0.12.41)
+### Event table indexes (0.12.39)
 
 `PersistentStore::events` is a `database::EventTable` (`include/merovingian/database/event_table.hpp`),
 not a `std::vector`. It owns the in-memory rows of the `events` table and keeps two indexes over them,
