@@ -57,6 +57,7 @@ struct Reply final
 
 [[nodiscard]] auto register_and_login(ClientServerRuntime& rt, std::string const& localpart) -> std::string
 {
+    // Fixture: the user registers.
     REQUIRE(call(rt, "POST", "/_matrix/client/v3/register", {},
                  merovingian::tests::registration_json(localpart, "CorrectHorse7!"))
                 .status == 200U);
@@ -64,9 +65,11 @@ struct Reply final
         call(rt, "POST", "/_matrix/client/v3/login", {},
              std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +
                  R"(:example.org"},"password":"CorrectHorse7!","device_id":")" + localpart + R"(_DEV"})");
+    // Fixture: the user logs in.
     REQUIRE(login.status == 200U);
     auto const body = parse_object(login.body);
     auto const* token = string_member(body, "access_token");
+    // Fixture: the login returns an access token.
     REQUIRE(token != nullptr);
     return *token;
 }
@@ -75,9 +78,11 @@ struct Reply final
     -> std::string
 {
     auto const reply = call(rt, "POST", "/_matrix/client/v3/createRoom", token, body);
+    // Fixture: the room is created.
     REQUIRE(reply.status == 200U);
     auto const parsed = parse_object(reply.body);
     auto const* room_id = string_member(parsed, "room_id");
+    // Fixture: createRoom returns the room ID.
     REQUIRE(room_id != nullptr);
     return *room_id;
 }
@@ -105,12 +110,14 @@ SCENARIO("A local user joins a local restricted room through an allow condition"
     GIVEN("a room alice and bob are in, and a restricted room of alice's that allows its members")
     {
         auto started = merovingian::homeserver::start_client_server(restricted_config());
+        // Fixture: the runtime starts.
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const alice = register_and_login(rt, "alice");
         auto const bob = register_and_login(rt, "bob");
         auto const carol = register_and_login(rt, "carol");
         auto const allowed = create_room(rt, alice, R"({"preset":"public_chat"})");
+        // Fixture: bob joins the public allowed room.
         REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + allowed + "/join", bob, "{}").status == 200U);
         auto const restricted = create_room(
             rt, alice,
@@ -127,13 +134,19 @@ SCENARIO("A local user joins a local restricted room through an allow condition"
                 // Spec MUST: the user meets a condition, so the join succeeds.
                 REQUIRE(joined.status == 200U);
                 auto const member = member_content(rt, bob, restricted, "@bob:example.org");
+                // Spec MUST: a joined user has an m.room.member state event in the room.
                 REQUIRE(member.status == 200U);
                 auto const content = parse_object(member.body);
                 auto const* membership = string_member(content, "membership");
+                // Spec MUST: that event's content carries `membership`.
                 REQUIRE(membership != nullptr);
+                // Spec MUST: bob's membership is now join.
                 REQUIRE(*membership == "join");
                 auto const* authoriser = string_member(content, "join_authorised_via_users_server");
+                // Spec MUST: a join through a condition carries join_authorised_via_users_server
+                // (rooms/v10.md 4.3.5.2).
                 REQUIRE(authoriser != nullptr);
+                // Project policy: the authoriser is the lowest local user ID with invite power (ADR-0185).
                 REQUIRE(*authoriser == "@alice:example.org");
             }
         }
@@ -146,6 +159,7 @@ SCENARIO("A local user joins a local restricted room through an allow condition"
             {
                 // Spec MUST: "If ... no conditions are satisfied, the user will not be able to join."
                 REQUIRE(refused.status == 403U);
+                // Spec MUST: a refused join leaves carol with no membership in the room.
                 REQUIRE(member_content(rt, alice, restricted, "@carol:example.org").status != 200U);
             }
         }
@@ -158,8 +172,39 @@ SCENARIO("A local user joins a local restricted room through an allow condition"
 
             THEN("this server does not sign it on alice's behalf, and carol stays out")
             {
+                // Spec MUST: the server "MUST verify that the requesting user meets at least one of the conditions".
                 REQUIRE(forged.status != 200U);
+                // Spec MUST: carol, meeting no condition, is not able to join.
                 REQUIRE(member_content(rt, alice, restricted, "@carol:example.org").status != 200U);
+            }
+        }
+
+        WHEN("bob, already joined, changes his room display name with a copy of his join's content")
+        {
+            // Fixture: bob joins through the allow condition first.
+            REQUIRE(call(rt, "POST", "/_matrix/client/v3/rooms/" + restricted + "/join", bob, "{}").status == 200U);
+            auto const renamed =
+                call(rt, "PUT", "/_matrix/client/v3/rooms/" + restricted + "/state/m.room.member/@bob:example.org", bob,
+                     R"({"displayname":"Bobby","join_authorised_via_users_server":"@alice:example.org",)"
+                     R"("membership":"join"})");
+
+            THEN("the update is accepted, and the copied authoriser is not carried into it")
+            {
+                // Project policy: m.room.member says "When copying the membership event's content (for profile
+                // updates and similar) it is therefore encouraged to exclude this field in the copy"; this
+                // server drops it, so the update is not refused.
+                REQUIRE(renamed.status == 200U);
+                auto const member = member_content(rt, bob, restricted, "@bob:example.org");
+                // Spec MUST: the update is bob's current m.room.member state.
+                REQUIRE(member.status == 200U);
+                auto const content = parse_object(member.body);
+                auto const* displayname = string_member(content, "displayname");
+                // Spec MUST: the new state carries the display name bob set.
+                REQUIRE(displayname != nullptr);
+                // Spec MUST: the display name is the one bob set.
+                REQUIRE(*displayname == "Bobby");
+                // Project policy: the copied join_authorised_via_users_server is excluded, as the spec encourages.
+                REQUIRE(string_member(content, "join_authorised_via_users_server") == nullptr);
             }
         }
     }

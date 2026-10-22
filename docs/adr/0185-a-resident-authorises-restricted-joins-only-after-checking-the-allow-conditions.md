@@ -59,7 +59,12 @@ provider, the `send_join` acceptor and every locally composed join:
 * `compose_signed_event` refuses any locally composed join that names one of our users unless the
   decision is `authorised` for that user. This server signs every event it composes, so without
   this gate a client could name an administrator through `PUT /state/m.room.member` and skip the
-  condition check.
+  condition check. A join by a user whose current membership is already `join` is the exception:
+  it needs no authorisation (rule 4.3.5.1), and clients copy the join's content into profile
+  updates, so the field is dropped from it rather than checked. client-server-api.md, m.room.member:
+  "When copying the membership event's `content` (for profile updates and similar) it is therefore
+  encouraged to exclude this field in the copy". Refusing it would fail every per-room display
+  name change in a restricted room.
 
 ### Positive Consequences
 

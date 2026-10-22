@@ -14,7 +14,9 @@ R18). No migration.
   kept after leaving is not current. `send_join` co-signs only a join it authorises, before it is
   stored, after dropping any signature the joining server filed under this server's name; it
   returns the co-signed event. A local user's join into a local restricted room carries the field
-  too, and a client cannot name an authoriser through `PUT /state` to skip the check. Federation
+  too, and a client cannot name an authoriser through `PUT /state` to skip the check. A join by a
+  user who is already joined (a profile update that copies the join's content) has the field
+  dropped instead, as m.room.member encourages, so it is not refused. Federation
   workers relay `make_join` to main, which holds every room the conditions name (ADR-0184,
   ADR-0185).
 - **FIXED (R05):** the sender's signature on a relayed PDU, an invite, a worker-relayed event, a
@@ -28,7 +30,8 @@ R18). No migration.
 - **FIXED (R06):** `send_join`, `send_leave`, `send_knock` and `/invite` (v1, v2) refused an event
   whose content hash did not match. The spec says such an event "is redacted before being processed
   further": the acceptor and the invite handler now redact it and authorise, sign, store and return
-  the redacted copy. A signature failure is refused with 400 `M_INVALID_PARAM`, as those endpoints
+  the redacted copy. An invite for a room this server does not hold is redacted and signed under the
+  request's `room_version`, not version 10. A signature failure is refused with 400 `M_INVALID_PARAM`, as those endpoints
   say.
 - **FIXED (R18):** `GET /query/profile` refused `field=m.tz` (and any other key) with 400. Any
   field is a valid request; one the user does not have is 404 `M_NOT_FOUND`, and an unset field is

@@ -1348,6 +1348,18 @@ namespace
         return authorising == nullptr ? std::string{} : *authorising;
     }
 
+    // `user_id`'s membership in the room's current state, or empty.
+    [[nodiscard]] auto current_membership_of(database::PersistentStore const& store, std::string_view room_id,
+                                             std::string_view user_id) -> std::string
+    {
+        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
+        });
+        return state_it == store.state.end()
+                   ? std::string{}
+                   : std::string{events::extract_content_membership(find_event_json(store, state_it->event_id))};
+    }
+
     [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
                                             std::string_view sender, std::string_view target_state_key,
                                             std::string_view event_type, canonicaljson::Value const& event)
@@ -1489,6 +1501,14 @@ namespace
         // 3PID invite member events must list the matching m.room.third_party_invite
         // event in auth_events. auth_events_for_room does not inspect content, so
         // add it here when the client event carries a third_party_invite token.
+        // client-server-api.md, m.room.member `join_authorised_via_users_server`: "When copying
+        // the membership event's content (for profile updates and similar) it is therefore
+        // encouraged to exclude this field in the copy, as otherwise the event might fail event
+        // authorisation." A join by a user who is already joined needs no authorisation (rooms/v10.md
+        // 4.3.5.1), so a copied field is dropped rather than honoured or refused.
+        auto const drop_join_authoriser =
+            event_type == "m.room.member" && membership == "join" && event_state_key == sender &&
+            current_membership_of(runtime.database.persistent_store, room_id, sender) == "join";
         if (event_type == "m.room.member")
         {
             // A restricted join names its authorising user's m.room.member
@@ -1500,7 +1520,8 @@ namespace
             // "Restricted rooms": "the server MUST verify that the requesting
             // user meets at least one of the conditions"). A client cannot
             // name an authoriser through PUT /state to skip the check.
-            if (auto const authorising_user = join_authorising_user_of(canonicaljson::Value{*input});
+            if (auto const authorising_user =
+                    drop_join_authoriser ? std::string{} : join_authorising_user_of(canonicaljson::Value{*input});
                 !authorising_user.empty())
             {
                 auto const& our_server = runtime.config.server().server_name;
@@ -1563,6 +1584,19 @@ namespace
         event.push_back(canonicaljson::make_member("prev_events", string_array(prev_events)));
         event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
         auto event_content = copy_member_or_empty_object(*input, "content");
+        if (auto const* content_object = std::get_if<canonicaljson::Object>(&event_content.storage());
+            drop_join_authoriser && content_object != nullptr)
+        {
+            auto kept = canonicaljson::Object{};
+            for (auto const& member : *content_object)
+            {
+                if (member.key != "join_authorised_via_users_server")
+                {
+                    kept.push_back(member);
+                }
+            }
+            event_content = canonicaljson::Value{std::move(kept)};
+        }
         // Spec (Client-Server API, PUT /send): "In rooms with a version older than 11 they MUST move
         // the `redacts` property inside the `content` to the top level of the event." From room
         // version 11 it stays in `content` (rooms/v11.md).
