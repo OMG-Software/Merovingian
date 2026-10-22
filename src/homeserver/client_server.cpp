@@ -8983,9 +8983,11 @@ namespace
             return dispatch_err(req, rt, 401U, "M_UNKNOWN_TOKEN", refused.body);
         }
         auto const status = refused.status == 415U || refused.status == 507U ? std::uint16_t{403U} : refused.status;
+        // A failure on this server's side (5xx) is M_UNKNOWN, never a client error code.
         auto const errcode = !refused.errcode.empty() ? std::string_view{refused.errcode}
                              : status == 403U         ? std::string_view{"M_FORBIDDEN"}
                              : status == 413U         ? std::string_view{"M_TOO_LARGE"}
+                             : status >= 500U         ? std::string_view{"M_UNKNOWN"}
                                                       : std::string_view{"M_BAD_REQUEST"};
         return dispatch_err(req, rt, status, errcode, refused.body);
     }

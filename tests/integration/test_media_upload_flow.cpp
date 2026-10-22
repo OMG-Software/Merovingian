@@ -14,12 +14,16 @@
 #include "../support/json_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/sqlite_insert_fault.hpp"
+#include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -27,6 +31,22 @@ namespace
 {
 
 using namespace merovingian::tests;
+
+auto const png_bytes = std::string{"\x89PNG\r\n\x1a\npending-upload-image"};
+
+[[nodiscard]] auto sqlite_media_config(std::filesystem::path const& sqlite_path) -> merovingian::config::Config
+{
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::sqlite;
+    database.sqlite_path = sqlite_path.string();
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},  database, security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
 
 [[nodiscard]] auto pending_config(std::uint32_t media_fetch_threads) -> merovingian::config::Config
 {
@@ -63,7 +83,47 @@ using namespace merovingian::tests;
     return *token;
 }
 
+[[nodiscard]] auto errcode_of(merovingian::homeserver::DispatchResult const& result) -> std::string
+{
+    auto const body = parse_object(result.response.body);
+    auto const* errcode = string_member(body, "errcode");
+    return errcode == nullptr ? std::string{} : *errcode;
+}
+
 } // namespace
+
+SCENARIO("An upload the server fails to store is answered as a server error", "[integration][media][sqlite]")
+{
+    GIVEN("a SQLite store whose media rows cannot be written")
+    {
+        auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+        auto const path = merovingian::tests::temporary_directory() /
+                          ("merovingian-media-upload-" + std::to_string(now) + ".sqlite3");
+        {
+            auto started = merovingian::homeserver::start_client_server(sqlite_media_config(path));
+            REQUIRE(started.started);
+            auto const alice = login(started.runtime, "alice");
+            auto fault = SqliteInsertFault{path, "media", "media_insert_failure"};
+
+            WHEN("an upload is made")
+            {
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/media/v3/upload",
+                                      alice,
+                                      png_bytes,
+                                      {merovingian::http::Header{"Content-Type", "image/png"}}});
+
+                THEN("it is a 500 with M_UNKNOWN, not a client error code")
+                {
+                    REQUIRE(response.response.status == 500U);
+                    REQUIRE(errcode_of(response) == "M_UNKNOWN");
+                }
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
 
 // ADR-0211: the stored upload filename crosses from the local router to the
 // client API as a response field, never as a header, so a caller that writes a
