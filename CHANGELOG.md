@@ -1,3 +1,17 @@
+## 0.12.35
+
+- **FIXED:** `PUT /_matrix/client/v3/profile/{userId}/displayname` (and `avatar_url`) answered
+  `500` after storing the new value whenever one joined room or the presence write could not take
+  the propagated update, so Element reported a failed change that had happened. A room that refuses
+  every time (an unsupported room version, a missing create event, a non-federating room created
+  elsewhere) made every later profile change fail as well. The PUT now answers `200` once the field
+  is stored, as the endpoint's responses require; a room that fails is logged at warning
+  (`profile.propagation.room_failed`) and is sent the update at the next profile change (ADR-0182).
+- **FIXED:** profile propagation chose rooms from the runtime member list, which can name a user the
+  room's state says has left. In a public room the join it sent then rejoined them. Rooms are now
+  chosen by the user's current `m.room.member` state; a room only the list names is skipped
+  (`profile.propagation.not_member`).
+
 ## 0.12.34
 
 Fixes the six LOW findings from security audit run-1 (2026-10-20), and two defects found while

@@ -181,6 +181,7 @@
 * [0179 - A room's stored version is resolved through one accessor, and a join must match the create event](0179-a-rooms-stored-version-is-resolved-through-one-accessor.md)
 * [0180 - The outbound client refuses header fields that are not valid HTTP](0180-the-outbound-client-refuses-invalid-header-fields.md)
 * [0181 - Third-party lookups take a client outbound proxy slot and keep per-appservice timeouts](0181-third-party-lookups-take-a-client-outbound-proxy-slot.md)
+* [0182 - A profile change succeeds once stored, and reaches only rooms whose state holds the user joined](0182-a-profile-change-succeeds-once-stored-and-reaches-only-rooms-whose-state-holds-the-user-joined.md)
 
 ## Proposed Records
 

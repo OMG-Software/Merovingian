@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.34
+Version:        0.12.35
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.35-1
+- Answer 200 for a stored profile change when propagation to a room fails; send profile updates only to rooms whose state holds the user joined.
+
 * Wed Oct 21 2026 James Chapman <claude@ping.me.uk> - 0.12.34-1
 - Fix the low-severity findings of security audit run-1 (federation fan-out, remote media owner, room versions, outbound headers, thirdparty lookups).
 

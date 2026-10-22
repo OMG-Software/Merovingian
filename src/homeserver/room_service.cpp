@@ -6816,41 +6816,50 @@ namespace
 namespace
 {
 
-    // True when `user_id`'s current m.room.member event in the room is a join that already
-    // carries `profile`'s display name and avatar URL (an unset field matching an absent one).
-    [[nodiscard]] auto membership_carries_profile(database::PersistentStore const& store, std::string_view room_id,
-                                                  std::string_view user_id,
-                                                  std::optional<database::PersistentProfile> const& profile) -> bool
+    // The content of `user_id`'s current m.room.member state event in the room, or nullopt when the
+    // room's state holds none (or its event cannot be read).
+    [[nodiscard]] auto current_member_content(database::PersistentStore const& store, std::string_view room_id,
+                                              std::string_view user_id) -> std::optional<canonicaljson::Object>
     {
         auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
             return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
         });
         if (state_it == store.state.end())
         {
-            return false;
+            return std::nullopt;
         }
         auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
             return event.event_id == state_it->event_id;
         });
         if (event_it == store.events.end())
         {
-            return false;
+            return std::nullopt;
         }
         auto const parsed = canonicaljson::parse_lossless(event_it->json);
         auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
         auto const* content = root != nullptr ? object_member_as_object(*root, "content") : nullptr;
         if (parsed.error != canonicaljson::ParseError::none || content == nullptr)
         {
-            return false;
+            return std::nullopt;
         }
-        auto const field = [content](std::string_view key) {
-            auto const* value = string_member(*content, key);
-            return value != nullptr ? *value : std::string{};
-        };
+        return *content;
+    }
+
+    [[nodiscard]] auto content_string(canonicaljson::Object const& content, std::string_view key) -> std::string
+    {
+        auto const* value = string_member(content, key);
+        return value != nullptr ? *value : std::string{};
+    }
+
+    // True when the join `content` already carries `profile`'s display name and avatar URL (an
+    // unset field matching an absent one).
+    [[nodiscard]] auto member_content_carries_profile(canonicaljson::Object const& content,
+                                                      std::optional<database::PersistentProfile> const& profile) -> bool
+    {
         auto const wanted_displayname = profile.has_value() ? profile->displayname : std::string{};
         auto const wanted_avatar_url = profile.has_value() ? profile->avatar_url : std::string{};
-        return field("membership") == "join" && field("displayname") == wanted_displayname &&
-               field("avatar_url") == wanted_avatar_url;
+        return content_string(content, "displayname") == wanted_displayname &&
+               content_string(content, "avatar_url") == wanted_avatar_url;
     }
 
 } // namespace
@@ -6867,40 +6876,53 @@ namespace
     auto const& store = runtime.database.persistent_store;
     auto const profile = database::find_profile(store, *user_id);
     auto const event_json = serialize_own_join_event_json(store, *user_id);
-    if (!event_json.has_value())
-    {
-        return make_operation_result(false, {}, "profile saved but membership serialization failed", 500U);
-    }
-    // Copied first: send_event appends to each room's events while this walks the rooms.
-    auto joined_rooms = std::vector<std::string>{};
+    // Copied first: send_event appends to each room's events while this walks the rooms. A room
+    // is one the user "is a member of" when its current m.room.member state for them is a join.
+    // The runtime member list alone is not enough: it can name a user the room's state says has
+    // left (ADR-0182), and in a public room the join sent here would then rejoin them.
+    auto pending_rooms = std::vector<std::string>{};
     for (auto const& room : runtime.database.rooms)
     {
-        if (room_has_member(room, *user_id))
+        if (!room_has_member(room, *user_id))
         {
-            joined_rooms.push_back(room.room_id);
+            continue;
+        }
+        auto const content = current_member_content(store, room.room_id, *user_id);
+        if (!content.has_value() || content_string(*content, "membership") != "join")
+        {
+            log_diagnostic("profile.propagation.not_member",
+                           {
+                               {"actor",   *user_id,     false},
+                               {"room_id", room.room_id, false}
+            });
+            continue;
+        }
+        if (!member_content_carries_profile(*content, profile))
+        {
+            pending_rooms.push_back(room.room_id);
         }
     }
     auto sent = std::size_t{0U};
     auto failed = std::size_t{0U};
-    for (auto const& room_id : joined_rooms)
+    for (auto const& room_id : pending_rooms)
     {
-        if (membership_carries_profile(store, room_id, *user_id, profile))
-        {
-            continue;
-        }
-        auto const result = send_event(runtime, access_token, room_id, *event_json);
+        auto const result = event_json.has_value()
+                                ? send_event(runtime, access_token, room_id, *event_json)
+                                : make_operation_result(false, {}, "membership serialization failed");
         if (result.ok)
         {
             ++sent;
             continue;
         }
         ++failed;
-        log_diagnostic("profile.propagation.skipped", {
-                                                          {"actor",   *user_id,                      false},
-                                                          {"room_id", room_id,                       false},
-                                                          {"status",  std::to_string(result.status), false},
-                                                          {"reason",  result.reason,                 false}
-        });
+        log_diagnostic("profile.propagation.room_failed",
+                       {
+                           {"actor",   *user_id,                      false},
+                           {"room_id", room_id,                       false},
+                           {"status",  std::to_string(result.status), false},
+                           {"reason",  result.reason,                 false}
+        },
+                       observability::LogEventSeverity::warning);
     }
     // The second mechanism: "an m.presence presence status update is sent, again containing the
     // new values of the displayname and avatar_url keys, in addition to the required presence key
@@ -6918,16 +6940,18 @@ namespace
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, mutable_store.next_sync_stream_id);
     }
-    log_diagnostic("profile.propagation.completed", {
-                                                        {"actor",    *user_id,                          false},
-                                                        {"rooms",    std::to_string(sent),              false},
-                                                        {"presence", presence_sent ? "sent" : "failed", false}
-    });
-    if (failed != 0U || !presence_sent)
-    {
-        return make_operation_result(false, {}, "profile saved but propagation incomplete; retry the profile update",
-                                     500U);
-    }
+    // The profile is already stored, so the change has happened whatever follows: the request
+    // succeeds (ADR-0182). A room or presence update that failed is left for the next profile
+    // change, which sends to every room whose membership does not yet carry the profile.
+    auto const complete = failed == 0U && presence_sent;
+    log_diagnostic("profile.propagation.completed",
+                   {
+                       {"actor",    *user_id,                          false},
+                       {"rooms",    std::to_string(sent),              false},
+                       {"failed",   std::to_string(failed),            false},
+                       {"presence", presence_sent ? "sent" : "failed", false}
+    },
+                   complete ? observability::LogEventSeverity::debug : observability::LogEventSeverity::warning);
     return make_operation_result(true, {});
 }
 
