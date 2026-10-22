@@ -2723,11 +2723,12 @@ namespace
             }
             // The rules the event is redacted and signed under: the room's own
             // version where this server holds it, else the one the request
-            // carries (handle_invite fills it for v1 too).
-            auto const stored_room_version = room_version_from_store(rt->database.persistent_store, invite.room_id);
-            auto const signing_room_version = !stored_room_version.empty()   ? stored_room_version
-                                              : !invite.room_version.empty() ? invite.room_version
-                                                                             : std::string{"12"};
+            // carries (handle_invite fills it for v1 too). Only a room with no
+            // stored create takes the request's version (ADR-0179):
+            // room_version_from_store would substitute "10" for it.
+            auto const signing_room_version =
+                stored_room_version(rt->database.persistent_store, invite.room_id)
+                    .value_or(!invite.room_version.empty() ? invite.room_version : std::string{"12"});
             // Audit R06. Spec "Checks performed on receipt of a PDU", step 3:
             // "Passes hash checks, otherwise it is redacted before being
             // processed further"; "Validating hashes and signatures on received
