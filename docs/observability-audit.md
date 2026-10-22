@@ -27,6 +27,12 @@ capacity fields refer to the selected budget. Resource-failure fields use the
 global budget. No recipient identity, gateway URL or pusher credential is logged.
 Logging itself is best-effort on this already-persisted-event path.
 
+Push retries (R14, ADR-0206) log under the `rooms` logger with the recipient's user ID and the
+number of attempts made, never a gateway URL or pushkey: `push.delivery.retry_scheduled` (debug) when
+a failed notification is queued for another attempt, `push.delivery.retry_abandoned` (debug) when a
+retry's pusher was removed, and at warning severity `push.delivery.retry_dropped` when the retry
+queue (or the recipient's share of it) is full and `push.delivery.gave_up` after the last retry.
+
 
 - Admin health summaries through `/_merovingian/admin/health`.
 - Admin metrics summaries through `/_merovingian/admin/metrics`.

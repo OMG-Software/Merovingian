@@ -42,6 +42,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/remote_media_fetch_scope.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_power.hpp"
@@ -4694,6 +4695,8 @@ namespace
         // m.room.history_visibility (CSAZ-3): one filter for the request, shared by every
         // joined room's timeline.
         auto history_visibility = sync::HistoryVisibility{store, user};
+        // R15 (ADR-0205): one push-rule classifier for the request's unread counts.
+        auto const unread_classifier = PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user};
 
         log_diagnostic("sync.request",
                        {
@@ -4834,7 +4837,8 @@ namespace
             // counts for each thread in this room ... keyed by thread root ID";
             // a thread with no notifications, or the whole object, may be omitted.
             auto const unread = sync::count_unread_by_thread(
-                store, room.room_id, user, sync::read_receipt_markers(rt.homeserver, store, room.room_id, user));
+                store, room.room_id, user, sync::read_receipt_markers(rt.homeserver, store, room.room_id, user),
+                unread_classifier);
             auto const per_thread = filter.room.timeline.unread_thread_notifications;
             auto const main_thread = unread.threads.find(sync::main_thread_id);
             auto const room_counts =
@@ -5342,6 +5346,8 @@ namespace
         // m.room.history_visibility (CSAZ-3): ONE filter for the whole request, shared by
         // every room's timeline so its indexes over the store are built once.
         auto history_visibility = sync::HistoryVisibility{store, user};
+        // R15 (ADR-0205): one push-rule classifier for every count and the notification sort.
+        auto const unread_classifier = PushRuleUnreadClassifier{store, user, rt.limits.max_push_rules_per_user};
 
         auto const conn_key = sliding_sync_connection_key(
             user, device_id, ssreq.conn_id.has_value() ? std::string_view{*ssreq.conn_id} : "__default__");
@@ -5536,7 +5542,8 @@ namespace
             auto const empty_prev = std::vector<std::string>{};
             auto const it = conn.list_prev_windows.find(list_name);
             auto const& prev_win = (it != conn.list_prev_windows.end()) ? it->second : empty_prev;
-            list_results[list_name] = sync::compute_room_list(rt.homeserver, user, list, prev_win, store);
+            list_results[list_name] =
+                sync::compute_room_list(rt.homeserver, user, list, prev_win, store, unread_classifier);
         }
 
         // Collect ordered unique room IDs: lists first, then explicit subscriptions.
@@ -5649,8 +5656,9 @@ namespace
             auto const lazy_sent_it = conn.lazy_members_sent.find(room_id);
             auto const& lazy_already_sent =
                 lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
-            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
-                                                  lazy_already_sent, ignored_senders, history_visibility);
+            auto room =
+                sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
+                                          lazy_already_sent, ignored_senders, history_visibility, unread_classifier);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;

@@ -2430,3 +2430,12 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   re-validation of the stored rules on read, and 405 on setting `m.push_rules` as account data
   (ADR-0204). Residual risk: evaluation is linear in rules times event size, with a factor the
   operator sets.
+- **Unread counts as a content oracle.** Once the user's own rules decide unread counts (R15), a
+  keyword rule counted over messages from before the user joined would reveal whether history the
+  user may not see contains a word. **Mitigation:** counts start at the user's current join
+  (ADR-0205).
+- **Push retries as a memory or thread sink.** Retrying failed notifications (R14) keeps them, with
+  their event content, until they are sent. **Mitigation:** a bounded in-memory queue (1024
+  notifications, 32 per recipient) that drops rather than blocks, eight retries at most, one job
+  thread that sends them one at a time, and no `runtime.mutex` across the network call
+  (ADR-0206). Residual risk: a recipient's failing gateway can fill that recipient's share.

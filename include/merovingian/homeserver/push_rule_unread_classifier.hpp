@@ -1,0 +1,64 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/homeserver/push_room_facts.hpp"
+#include "merovingian/push/push_rules.hpp"
+#include "merovingian/sync/unread_event_classifier.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace merovingian::homeserver
+{
+
+// Counts an unread event by `user`'s push rules (R15, ADR-0205). Spec ("Receiving notifications"):
+// "Notifications are determined by the push rules which apply to an event". The ruleset is
+// loaded once, at construction (homeserver::load_push_ruleset); each room's facts, the user's
+// display name in it and the start of the user's current join are computed the first time the
+// room is asked about.
+//
+// Only events after the user's current join are counted. Earlier events are history the user
+// may not be allowed to see, and a content rule counted over them would reveal whether they
+// contain a word (ADR-0205).
+//
+// Borrows `store`, which must outlive it and not change while it is used; build one per request,
+// under runtime.mutex, and do not share it between threads.
+class PushRuleUnreadClassifier final : public sync::UnreadEventClassifier
+{
+public:
+    PushRuleUnreadClassifier(database::PersistentStore const& store, std::string_view user, std::size_t max_user_rules);
+
+    [[nodiscard]] auto counted_after(std::string_view room_id) const -> std::optional<std::uint64_t> override;
+    [[nodiscard]] auto classify(std::string_view room_id, canonicaljson::Value const& event) const
+        -> sync::UnreadEventOutcome override;
+
+private:
+    struct RoomFacts final
+    {
+        PushRoomFacts push{};
+        std::string display_name{};
+        std::optional<std::uint64_t> joined_after{};
+    };
+
+    [[nodiscard]] auto room(std::string_view room_id) const -> RoomFacts const&;
+
+    std::reference_wrapper<database::PersistentStore const> store_;
+    std::string user_;
+    push::PushRuleset ruleset_;
+    mutable std::map<std::string, RoomFacts, std::less<>> rooms_{};
+};
+
+// The stream position of the event that began `user`'s current join of `room_id`: the earliest
+// m.room.member join of theirs with no later non-join membership. nullopt when they are not
+// joined. A profile change re-sends a join, which does not restart the span.
+[[nodiscard]] auto current_join_start(database::PersistentStore const& store, std::string_view room_id,
+                                      std::string_view user) -> std::optional<std::uint64_t>;
+
+} // namespace merovingian::homeserver

@@ -322,6 +322,7 @@ shell = find_program('sh')
       'unit/test_push_rules.cpp',
       'unit/test_default_push_ruleset.cpp',
       'unit/test_user_push_rules.cpp',
+      'unit/test_push_retry_queue.cpp',
       'unit/test_push_gateway_client.cpp',
       'unit/test_push_pusher_store.cpp',
       'unit/test_openid_token_store.cpp',

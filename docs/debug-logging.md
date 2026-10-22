@@ -27,6 +27,10 @@ wait indefinitely for a severity bump or a large burst of traffic.
 budget counts. The record excludes recipient identities, gateway URLs and pusher
 credentials. Logging failure does not fail the already-persisted event.
 
+Retries of failed notifications (ADR-0206) log `push.delivery.retry_scheduled` and
+`push.delivery.retry_abandoned` at debug, and `push.delivery.retry_dropped` (queue full) and
+`push.delivery.gave_up` (last retry failed) at warning, each with `recipient` and `attempts`.
+
 ## Room creation failures
 
 `room.create.failed` (module `rooms`) is an error, not debug-only. It is

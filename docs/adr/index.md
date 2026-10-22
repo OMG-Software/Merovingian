@@ -192,6 +192,8 @@
 * [0198 - A registration without a username gets a random hexadecimal localpart](0198-a-registration-without-username-gets-a-random-hex-localpart.md)
 * [0199 - Typing expires on a periodic job, with a ceiling for clients and a timeout for federation](0199-typing-expires-on-a-periodic-job-with-a-ceiling-and-a-federation-timeout.md)
 * [0204 - Keep a user's push rules as their m.push_rules account data, applied over the current defaults](0204-keep-a-users-push-rules-as-their-m-push-rules-account-data.md)
+* [0205 - Count unread notifications by the user's push rules at read time, from the start of their join](0205-count-unread-notifications-by-push-rules-at-read-time.md)
+* [0206 - Retry failed push notifications from a bounded in-memory queue on one job thread](0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 
 ## Proposed Records

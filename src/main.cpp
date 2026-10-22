@@ -18,6 +18,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/periodic_job.hpp"
+#include "merovingian/homeserver/push_retry.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/net/listener.hpp"
@@ -824,6 +825,21 @@ struct ListenerBinding final
         sync_pool.request_stop();
         return std::nullopt;
     }
+    // Sends failed push notifications again with exponential backoff (R14, ADR-0206): delivery tasks
+    // queue a failure in memory and this one thread retries it, never under the runtime lock across
+    // the network call. Declared after the pools and the dispatcher so it stops, and clears the
+    // retry queue's wake hook, before they are torn down. Its thread starts here, after process
+    // hardening (ADR-0082).
+    auto push_retry_job = merovingian::homeserver::PushRetryJob{runtime.homeserver};
+    if (!push_retry_job.start())
+    {
+        LOG_CRITICAL("Push retry job failed to start; refusing to serve");
+        dispatcher.request_stop();
+        pool.request_stop();
+        media_fetch_pool.request_stop();
+        sync_pool.request_stop();
+        return std::nullopt;
+    }
     {
         auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = [&typing_expiry_job]() {
@@ -891,6 +907,9 @@ struct ListenerBinding final
         runtime.homeserver.appservice_delivery_wake = nullptr;
     }
     appservice_delivery_job.stop();
+    // Clears the retry queue's wake hook, then stops; a retry in progress ends within the gateway
+    // client's own timeout. Retries still queued are dropped with the process (ADR-0206).
+    push_retry_job.stop();
     {
         auto const guard = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime.homeserver.mutex};
         runtime.homeserver.typing_expiry_wake = nullptr;

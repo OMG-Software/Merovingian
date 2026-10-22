@@ -26,6 +26,7 @@
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/push/gateway_circuit_breaker.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
+#include "merovingian/push/push_retry_queue.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -569,6 +570,11 @@ struct HomeserverRuntime final
     // locked; shared by every delivery task. Behind a pointer so the runtime
     // stays movable (its mutex is not).
     std::unique_ptr<push::GatewayCircuitBreaker> push_gateway_breaker_{std::make_unique<push::GatewayCircuitBreaker>()};
+    // R14, ADR-0206: notifications waiting to be sent again after a failed attempt. Internally
+    // locked; delivery tasks fill it and the push retry job (main.cpp) drains it through
+    // retry_due_push_deliveries. In memory only: a restart forgets pending retries. Behind a
+    // pointer so the runtime stays movable.
+    std::unique_ptr<push::PushRetryQueue> push_retry_queue_{std::make_unique<push::PushRetryQueue>()};
 };
 
 // Removes every already-completed future from `futures` in place, preserving

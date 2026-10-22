@@ -95,7 +95,14 @@ covers only its own thread (`main` or the root), found by `event_thread_id()`
 through up to 3 relation hops. Do not compare an event's stream ordering with a
 single receipt position: that is the bug a threaded receipt used to cause.
 `count_unread_by_thread()` is the one walk; `/sync` reports its split when the
-filter sets `unread_thread_notifications`. A non-state event the user sent also
+filter sets `unread_thread_notifications`. What counts is the user's push rules'
+decision (R15, ADR-0205): the walk asks a `sync::UnreadEventClassifier`
+(`homeserver::PushRuleUnreadClassifier` in production) about every unread event,
+and counts only events after `counted_after()`, the start of the user's current
+join. Build one classifier per request and pass it to every count in that
+request (`/sync`, `compute_room_list`, `build_room_response`); it loads the
+user's rules once and caches each room's facts. Never decide notify or
+highlight from the event type or `m.mentions` here. A non-state event the user sent also
 reads its own thread (`read_markers_for`, ADR-0170); never let a state event do
 so, or a profile change would mark every room read.
 

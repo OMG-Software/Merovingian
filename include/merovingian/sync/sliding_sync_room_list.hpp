@@ -5,6 +5,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
+#include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <cstdint>
 #include <string>
@@ -33,5 +34,12 @@ struct RoomListResult final
 [[nodiscard]] auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user,
                                      SlidingSyncList const& list, std::vector<std::string> const& prev_window,
                                      database::PersistentStore const& store) -> RoomListResult;
+
+// As above, with the request's one classifier of unread events (R15), which the
+// `by_notification_count` sort counts with. The overload above builds its own.
+[[nodiscard]] auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user,
+                                     SlidingSyncList const& list, std::vector<std::string> const& prev_window,
+                                     database::PersistentStore const& store, UnreadEventClassifier const& unread)
+    -> RoomListResult;
 
 } // namespace merovingian::sync

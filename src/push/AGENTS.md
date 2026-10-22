@@ -14,9 +14,11 @@ Spec authority:
 | `user_push_rules.cpp` | `UserPushRules`: one user's rules over the server defaults; the Push Rules API's create, order, delete, enable and re-action edits, and their validation and bounds (R19, ADR-0204) |
 | `push_gateway_client.cpp` | `PushGatewayClient::notify`: builds and sends `POST /_matrix/push/v1/notify`, parses `rejected_pushkeys` |
 | `gateway_circuit_breaker.cpp` | `GatewayCircuitBreaker`: per-host consecutive-failure circuit with a cooldown and one probe per window (OUT-3) |
+| `push_retry_queue.cpp` | `PushRetryQueue`, `push_retry_backoff`, `push_delivery_should_retry`: the bounded queue of notifications to send again, and when (R14, ADR-0206) |
 
 The server-default ruleset is in `homeserver/default_push_ruleset.cpp`; delivery scheduling and the
-concurrency caps are in `homeserver/room_service.cpp`.
+concurrency caps are in `homeserver/room_service.cpp`; every attempt and the retry job are in
+`homeserver/push_retry.cpp`.
 
 ## Rules — non-negotiable
 
@@ -64,6 +66,13 @@ concurrency caps are in `homeserver/room_service.cpp`.
     read through the same validator, so a rule that would be refused now is skipped. Do not add a
     path that evaluates stored rules without going through `UserPushRules`
     (`homeserver::load_user_push_rules` / `load_push_ruleset`).
+13. **Failed notifications are retried from the bounded queue only** (R14, ADR-0206). An HTTP error
+    or an unreachable gateway is retried with exponential backoff (`push_retry_backoff`) up to
+    `push_retry_max_retries`; nothing else is (`push_delivery_should_retry`). The queue's bounds
+    (`push_retry_queue_capacity`, `push_retry_per_user_capacity`) drop, never block. A rejected
+    pushkey drops its queued retries. Every attempt goes through `homeserver::attempt_push_delivery`,
+    which keeps the circuit breaker and rejection handling in one place; never sleep in a delivery
+    task to retry, which would hold an in-flight slot (ADR-0028).
 
 ## Testing
 
@@ -71,6 +80,7 @@ concurrency caps are in `homeserver/room_service.cpp`.
 - `tests/unit/test_user_push_rules.cpp` — user rules over the defaults: ordering, refusals, bounds, round trip
 - `tests/conformance/test_push_rules_api_conformance.cpp` — Push Rules API and `m.push_rules`
 - `tests/unit/test_push_gateway_client.cpp` — request building, response parsing, SSRF gate
+- `tests/unit/test_push_retry_queue.cpp` — backoff, retry classification, queue bounds and concurrency
 - `tests/unit/test_push_pusher_store.cpp` — pusher persistence
 - `tests/conformance/test_push_notifications_conformance.cpp` — spec conformance
 - `tests/integration/test_push_delivery_flow.cpp` — end-to-end delivery

@@ -85,6 +85,7 @@ auto append_event(merovingian::database::PersistentStore& store, std::string_vie
 
 // Messages that should count as unread for @alice must come from someone
 // else — a user's own messages are never notifications (#417).
+// `json` gains `sender`, which push-rule evaluation reads from the event (R15).
 auto append_event_from(merovingian::database::PersistentStore& store, std::string_view sender,
                        std::string_view event_id, std::string_view room_id, std::string_view json,
                        std::uint64_t stream_ordering) -> void
@@ -93,13 +94,22 @@ auto append_event_from(merovingian::database::PersistentStore& store, std::strin
         std::string{event_id},
         std::string{room_id},
         std::string{sender},
-        std::string{json},
+        R"({"sender":")" + std::string{sender} + "\"," + std::string{json.substr(1U)},
         1U,
         stream_ordering,
         {},
         {},
         {},
     });
+}
+
+// Alice's m.room.member join of `room_id` at stream position 0: unread counts start after the
+// user's current join (R15, ADR-0205).
+auto append_alice_join(merovingian::database::PersistentStore& store, std::string_view room_id) -> void
+{
+    append_event_from(store, "@alice:example.org", std::string{"$join-"} + std::string{room_id}, room_id,
+                      R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"join"}})",
+                      0U);
 }
 
 auto append_state(merovingian::database::PersistentStore& store, std::string_view room_id, std::string_view event_type,
@@ -333,6 +343,9 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
                      3U);
         append_state(store, "!gamma:example.org", "m.room.name", "", "$gamma-name");
 
+        append_alice_join(store, "!alpha:example.org");
+        append_alice_join(store, "!beta:example.org");
+        append_alice_join(store, "!gamma:example.org");
         append_event_from(store, "@bob:example.org", "$alpha-message", "!alpha:example.org",
                           R"({"type":"m.room.message","content":{"body":"alpha"}})", 4U);
         append_event_from(store, "@bob:example.org", "$beta-message-1", "!beta:example.org",
@@ -392,6 +405,7 @@ SCENARIO("Sliding sync room lists sort by threaded unread notifications and brea
         {
             store.rooms.push_back({room_ids[i], "@alice:example.org"});
             store.memberships.push_back({room_ids[i], "@alice:example.org", "join", i + 1U});
+            append_alice_join(store, room_ids[i]);
         }
 
         append_event_from(store, "@bob:example.org", "$alpha-root", room_ids[0],

@@ -21,6 +21,27 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   `400 M_TOO_LARGE` past it, updates always allowed), and each rule is bounded: an ID of 255 bytes,
   patterns and condition strings of 512 bytes, 16 conditions, 16 actions, 4096 bytes of canonical
   JSON. Stored rules are re-validated when read.
+- **FIXED (R15, unread counts ignored push rules):** every unread count (`/sync`
+  `unread_notifications` and `unread_thread_notifications`, sliding-sync counts and the
+  `by_notification_count` sort, the Push Gateway badge) is now decided by the user's own push rules
+  (ADR-0205): an event counts as a notification when the rules notify, and as a highlight when they
+  notify with the highlight tweak. A muted room no longer counts, a keyword rule highlights, and a
+  mention the rules do not notify for no longer counts as a highlight.
+  `sync::count_unread_by_thread` stays the one walk and asks a per-request
+  `sync::UnreadEventClassifier`; delivery and counting build their evaluation context from the same
+  `push_room_facts` helpers.
+- **FIXED (audit concern 1, with R15):** unread counts no longer include events from before the
+  user's current join, which their rules were never run for and whose content a keyword rule could
+  otherwise probe.
+- **FIXED (R14, failed push notifications never retried):** a notification the gateway answers with
+  an HTTP error, or cannot be reached for, is sent again after 5 s, doubling to at most 10 minutes,
+  and given up after 8 retries (ADR-0206). Retries wait in a bounded in-memory queue (1024
+  notifications, 32 per recipient) drained by one `push-retry` job thread, never on a request
+  thread and never with `runtime.mutex` held across the network call. A pushkey the gateway rejects
+  loses its pusher and its queued retries; a retry whose pusher was removed or re-pointed is
+  dropped. A notification skipped because its gateway's circuit is open is now retried instead of
+  dropped. New log events: `push.delivery.retry_scheduled`, `push.delivery.retry_abandoned` (debug),
+  `push.delivery.retry_dropped` and `push.delivery.gave_up` (warning).
 
 ## 0.12.39
 

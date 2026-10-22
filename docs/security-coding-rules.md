@@ -1156,6 +1156,15 @@ media-fetch-pool task.
   unread event a `/sync` counts, so their size is work the client would otherwise choose (CWE-400,
   ADR-0204).
   Source: `src/push/AGENTS.md`.
+- **Unread counts start at the user's current join.** Why: the user's rules decide what counts, so a
+  keyword rule counted over earlier history would disclose whether it contains a word (CWE-203,
+  ADR-0205).
+  Source: `src/sync/AGENTS.md`.
+- **Failed push notifications are retried only from the bounded queue, on the retry job.** Never
+  sleep in a delivery task, never hold `runtime.mutex` across `notify`, and drop past the queue's
+  bounds rather than block. Why: a failing gateway must not hold delivery slots, threads or
+  unbounded memory (CWE-400, ADR-0206).
+  Source: `src/push/AGENTS.md`.
 
 ## Trust and safety
 

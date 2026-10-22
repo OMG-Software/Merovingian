@@ -34,6 +34,9 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/push_retry.hpp"
+#include "merovingian/homeserver/push_room_facts.hpp"
+#include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/redaction_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/restricted_join.hpp"
@@ -6059,84 +6062,17 @@ namespace
     // task (and repeatedly occupy a background-delivery slot) for minutes to
     // hours. The configured cap bounds sequential gateway calls per event.
 
-    // Resolves `member`'s display name FOR THIS ROOM: the `displayname` field
-    // of their current `m.room.member` state event, if present and non-empty.
-    // Spec (push-gateway-api.md, contains_display_name): the condition
-    // "matches messages where content.body contains the owner's display name
-    // in that room" — a per-room value, not the account-wide profile. A
-    // recipient with a room-specific membership display name, or a remote
-    // member whose profile row this server never learned, would otherwise be
-    // checked against the wrong (or an empty, for remote users) name, either
-    // missing a real mention or matching a stale/unrelated one. Falls back to
-    // the account-wide profile row (database::find_profile) only when the
-    // membership event carries no displayname at all — the common case where
-    // the user never overrode it for this room — and finally to an empty
-    // string, matching the prior behaviour for a member with no profile.
-    [[nodiscard]] auto room_member_display_name(database::PersistentStore const& store, std::string_view room_id,
-                                                std::string_view member) -> std::string
-    {
-        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == member;
-        });
-        if (state_it != store.state.end())
-        {
-            auto const event_it = store.events.find(state_it->event_id);
-            if (event_it != store.events.end())
-            {
-                auto parsed = canonicaljson::parse_lossless(event_it->json);
-                if (parsed.error == canonicaljson::ParseError::none)
-                {
-                    auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                    auto const* content = root != nullptr ? object_member_as_object(*root, "content") : nullptr;
-                    auto const* displayname = content != nullptr ? string_member(*content, "displayname") : nullptr;
-                    if (displayname != nullptr && !displayname->empty())
-                    {
-                        return *displayname;
-                    }
-                }
-            }
-        }
-        auto const profile = database::find_profile(store, member);
-        return profile.has_value() ? profile->displayname : std::string{};
-    }
-
-    // Reads the room's current m.room.power_levels event content, parsed as a
-    // full-event-shaped canonicaljson::Value ({"content": {...}, ...}) — the
-    // shape events::extract_user_power_level/extract_power_level_key expect.
-    // Returns a null Value (both helpers treat that as "use every default")
-    // when the room has no power_levels state yet.
-    [[nodiscard]] auto room_power_levels_event_value(database::PersistentStore const& store, std::string_view room_id)
-        -> canonicaljson::Value
-    {
-        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
-            return state.room_id == room_id && state.event_type == "m.room.power_levels" && state.state_key.empty();
-        });
-        if (state_it == store.state.end())
-        {
-            return canonicaljson::Value{};
-        }
-        auto const event_it = store.events.find(state_it->event_id);
-        if (event_it == store.events.end())
-        {
-            return canonicaljson::Value{};
-        }
-        auto parsed = canonicaljson::parse_lossless(event_it->json);
-        if (parsed.error != canonicaljson::ParseError::none)
-        {
-            return canonicaljson::Value{};
-        }
-        return std::move(parsed.value);
-    }
-
     // Sum of sync::count_notifications() across every room `user_id` is
     // currently joined to — the Push Gateway API's counts.unread definition:
     // "the number of unread messages a user has across all of the rooms they
-    // are a member of." Reuses the same per-room read-receipt baseline
-    // /sync's unread_notifications block already computes; no second unread
-    // implementation.
+    // are a member of." Reuses the same per-room read-receipt baseline and
+    // push-rule classifier /sync's unread_notifications block uses (R15); no
+    // second unread implementation.
     [[nodiscard]] auto total_unread_count(HomeserverRuntime const& runtime, std::string_view user_id) -> std::uint32_t
     {
         auto const& store = runtime.database.persistent_store;
+        auto const unread = PushRuleUnreadClassifier{
+            store, user_id, static_cast<std::size_t>(runtime.config.server().client_api.max_push_rules_per_user)};
         auto total = std::uint64_t{0U};
         for (auto const& membership : store.memberships)
         {
@@ -6145,7 +6081,7 @@ namespace
                 continue;
             }
             auto const read_markers = sync::read_receipt_markers(runtime, store, membership.room_id, user_id);
-            total += sync::count_notifications(store, membership.room_id, user_id, read_markers);
+            total += sync::count_notifications(store, membership.room_id, user_id, read_markers, unread);
         }
         return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
     }
@@ -6247,45 +6183,10 @@ namespace
             return event_row != store.events.end() ? event_row->stream_ordering : composed.stream_ordering;
         }();
 
-        auto const power_levels_value = room_power_levels_event_value(store, room.room_id);
-        // Room versions 1-9 may encode a power level as a string, and 1-5 as a
-        // float. Reading such a value as absent would silently apply a default
-        // instead of the level the room actually set, so the room's own version
-        // decides how it is read.
-        auto const* push_room_policy = rooms::find_room_version_policy(room_version_for_room(store, room.room_id));
-        auto const push_level_encoding = push_room_policy == nullptr ? events::PowerLevelEncoding::integers_or_strings
-                                                                     : events::power_level_encoding(*push_room_policy);
-        auto const sender_power_level =
-            events::extract_user_power_level(power_levels_value, sender, push_level_encoding);
-        auto notification_power_levels = std::unordered_map<std::string, std::int64_t>{};
-        if (auto const* pl_object = std::get_if<canonicaljson::Object>(&power_levels_value.storage());
-            pl_object != nullptr)
-        {
-            if (auto const* content = object_member(*pl_object, "content"); content != nullptr)
-            {
-                if (auto const* content_object = std::get_if<canonicaljson::Object>(&content->storage());
-                    content_object != nullptr)
-                {
-                    if (auto const* notifications = object_member(*content_object, "notifications");
-                        notifications != nullptr)
-                    {
-                        if (auto const* notifications_object =
-                                std::get_if<canonicaljson::Object>(&notifications->storage());
-                            notifications_object != nullptr)
-                        {
-                            for (auto const& member : *notifications_object)
-                            {
-                                if (auto const* level = std::get_if<std::int64_t>(&member.value->storage());
-                                    level != nullptr)
-                                {
-                                    notification_power_levels[member.key] = *level;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // The room's power levels, notification levels and member count, read once for every
+        // recipient. Shared with unread counting (push_room_facts.hpp, R15), so the two decide
+        // "does this notify" the same way.
+        auto const room_facts = push_room_facts(store, room.room_id, static_cast<std::uint64_t>(room.members.size()));
 
         // Spec (push-gateway-api.md): "content" is "the content field from the
         // event, if present" — omitted (along with the other event-detail
@@ -6373,15 +6274,11 @@ namespace
             // m.push_rules applied.
             auto const ruleset = load_push_ruleset(
                 store, member, static_cast<std::size_t>(runtime.config.server().client_api.max_push_rules_per_user));
-            auto context = push::PushEvaluationContext{};
-            context.receiving_user_id = member;
             // contains_display_name matches against the recipient's display
             // name IN THIS ROOM, not their account-wide profile — see
-            // room_member_display_name's doc comment above.
-            context.receiving_user_display_name = room_member_display_name(store, room.room_id, member);
-            context.room_member_count = static_cast<std::uint64_t>(room.members.size());
-            context.sender_power_level = sender_power_level;
-            context.notification_power_levels = notification_power_levels;
+            // room_member_display_name's doc comment.
+            auto const context = push_evaluation_context(room_facts, member,
+                                                         room_member_display_name(store, room.room_id, member), sender);
             auto const result = push::evaluate_push_rules(ruleset, event_parsed.value, context);
             if (!result.notify)
             {
@@ -6500,53 +6397,27 @@ namespace
     // destructor blocks until every such future has drained, so the captured
     // `runtime&` reference stays valid for as long as this task can run).
     //
-    // A rejected pushkey (the gateway's `rejected` array) means that pusher is
-    // permanently dead per spec ("Homeservers must cease sending notification
-    // requests for these pushkeys and remove the associated pushers") — this
-    // briefly re-acquires runtime.mutex to delete it. A slow, hostile, or
-    // unreachable gateway therefore cannot block or fail the request that
-    // triggered it: by the time any of this runs, send_event() has already
-    // returned its response to the client.
+    // Each delivery is one attempt_push_delivery (push_retry.hpp): an open circuit or a failure
+    // the spec says to retry ("If the endpoint returns an HTTP error code, the homeserver SHOULD
+    // retry for a reasonable amount of time using exponential backoff") goes to the retry queue,
+    // which the push retry job drains (R14, ADR-0206); a rejected pushkey loses its pusher and its
+    // queued retries. A slow, hostile, or unreachable gateway therefore cannot block or fail the
+    // request that triggered it: by the time any of this runs, send_event() has already returned
+    // its response to the client.
     auto run_pending_push_deliveries(HomeserverRuntime& runtime, std::vector<PendingPushDelivery> deliveries) -> void
     {
         auto client =
             push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
                                     &runtime.test_forced_push_gateway_resolution};
-        auto const& push_config = runtime.config.server().push;
-        auto const breaker_policy = push::GatewayCircuitBreakerPolicy{
-            push_config.gateway_failure_threshold, std::chrono::seconds{push_config.gateway_cooldown_seconds}};
-        for (auto const& delivery : deliveries)
+        for (auto& delivery : deliveries)
         {
-            // OUT-3, ADR-0151: a host that keeps failing is skipped for a
-            // cooldown, so its stalled requests stop holding delivery capacity.
-            auto const host = push::push_gateway_host(delivery.pusher.data_url);
-            if (host.has_value() && runtime.push_gateway_breaker_ != nullptr &&
-                !runtime.push_gateway_breaker_->allow(*host, std::chrono::steady_clock::now(), breaker_policy))
-            {
-                log_diagnostic("push.delivery.circuit_open",
-                               {
-                                   {"gateway_host", *host,                   false},
-                                   {"recipient",    delivery.pusher.user_id, false}
-                },
-                               observability::LogEventSeverity::warning);
-                continue;
-            }
-            auto const result = client.notify(delivery.pusher.data_url, delivery.notification);
-            // ADR-0151: only an unreachable host counts toward its circuit; any
-            // HTTP answer, a 5xx included, shows the shared host is reachable.
-            if (auto const outcome = push::gateway_circuit_outcome(result);
-                host.has_value() && runtime.push_gateway_breaker_ != nullptr &&
-                outcome != push::GatewayCircuitOutcome::not_attempted)
-            {
-                runtime.push_gateway_breaker_->record(*host, outcome == push::GatewayCircuitOutcome::reachable,
-                                                      std::chrono::steady_clock::now(), breaker_policy);
-            }
-            if (push::pushkey_was_rejected(result, delivery.pusher.pushkey))
-            {
-                auto lock = std::unique_lock<RuntimeMutex>{runtime.mutex};
-                std::ignore = database::delete_pusher(runtime.database.persistent_store, delivery.pusher.user_id,
-                                                      delivery.pusher.app_id, delivery.pusher.pushkey);
-            }
+            auto attempt = push::PushRetry{};
+            attempt.user_id = delivery.pusher.user_id;
+            attempt.app_id = delivery.pusher.app_id;
+            attempt.pushkey = delivery.pusher.pushkey;
+            attempt.gateway_url = delivery.pusher.data_url;
+            attempt.notification = std::move(delivery.notification);
+            attempt_push_delivery(runtime, client, std::move(attempt), std::chrono::steady_clock::now());
         }
     }
 

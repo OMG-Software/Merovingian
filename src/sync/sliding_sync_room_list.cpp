@@ -5,6 +5,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
 
 #include <algorithm>
@@ -311,15 +312,16 @@ namespace
         return keys;
     }
 
-    // Total number of unread m.room.message / m.room.encrypted events in the
-    // room, relative to the user's read receipts (#417). Without the receipt
+    // The room's unread notifications, relative to the user's read receipts
+    // (#417) and counted by the user's push rules (R15). Without the receipt
     // baseline this sort key degenerates to "total message count" and every
     // room sorts identically regardless of read state. The same count as the
     // room's notification_count.
     [[nodiscard]] auto notification_key(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
-                                        std::string_view room_id, std::string_view user) -> std::uint64_t
+                                        std::string_view room_id, std::string_view user,
+                                        UnreadEventClassifier const& unread) -> std::uint64_t
     {
-        return count_notifications(store, room_id, user, read_receipt_markers(rt, store, room_id, user));
+        return count_notifications(store, room_id, user, read_receipt_markers(rt, store, room_id, user), unread);
     }
 
     // content.name of an m.room.name event, or empty when it has none.
@@ -437,7 +439,15 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
                        std::vector<std::string> const& prev_window, database::PersistentStore const& store)
     -> RoomListResult
 {
-    std::ignore = rt; // rt reserved for future extensions (e.g. runtime-only state)
+    auto const unread = homeserver::PushRuleUnreadClassifier{
+        store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user)};
+    return compute_room_list(rt, user, list, prev_window, store, unread);
+}
+
+auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user, SlidingSyncList const& list,
+                       std::vector<std::string> const& prev_window, database::PersistentStore const& store,
+                       UnreadEventClassifier const& unread) -> RoomListResult
+{
 
     // Step 1 — enumerate rooms where the user is joined.
     // Use the persistent store as the source of truth rather than the runtime
@@ -478,7 +488,7 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
         notification_keys.reserve(joined_room_ids.size());
         for (auto const& room_id : joined_room_ids)
         {
-            notification_keys.emplace(room_id, notification_key(rt, store, room_id, user));
+            notification_keys.emplace(room_id, notification_key(rt, store, room_id, user, unread));
         }
     }
     auto const recency = sorts_by("by_recency") ? recency_keys(store, joined_room_ids, list.bump_event_types)

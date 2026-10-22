@@ -386,3 +386,125 @@ SCENARIO("Delivery follows the user's stored push rules, not the read-only defau
         }
     }
 }
+
+namespace
+{
+
+struct UnreadCounts final
+{
+    std::int64_t notifications{-1};
+    std::int64_t highlights{-1};
+};
+
+// The room's `unread_notifications` in an initial /sync for `token`'s user.
+[[nodiscard]] auto unread_counts(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                 std::string const& room_id) -> UnreadCounts
+{
+    auto const sync = request(runtime, "GET", "/_matrix/client/v3/sync?timeout=0", token);
+    REQUIRE(sync.status == 200U);
+    auto const body = parse_object(sync.body);
+    auto const* rooms = object_member_as_object(body, "rooms");
+    REQUIRE(rooms != nullptr);
+    auto const* join = object_member_as_object(*rooms, "join");
+    REQUIRE(join != nullptr);
+    auto const* room = object_member_as_object(*join, room_id);
+    REQUIRE(room != nullptr);
+    auto const* unread = object_member_as_object(*room, "unread_notifications");
+    REQUIRE(unread != nullptr);
+    auto const* notifications = int_member(*unread, "notification_count");
+    auto const* highlights = int_member(*unread, "highlight_count");
+    return {notifications == nullptr ? 0 : *notifications, highlights == nullptr ? 0 : *highlights};
+}
+
+} // namespace
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Receiving notifications; GET /sync unread_notifications
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#receiving-notifications
+//
+// "Servers MUST include the number of unread notifications in a client's /sync stream, and MUST
+// update it as it changes. Notifications are determined by the push rules which apply to an
+// event." highlight_count: "The number of unread notifications for this room with the highlight
+// flag set." (R15, ADR-0205)
+SCENARIO("Unread notification counts are decided by the user's push rules", "[conformance][client-server][push][r15]")
+{
+    GIVEN("alice and bob in a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        WHEN("alice mutes the room with a room rule and bob sends a message")
+        {
+            REQUIRE(request(started.runtime, "PUT", "/_matrix/client/v3/pushrules/global/room/" + room_id, alice,
+                            R"({"actions":[]})")
+                        .status == 200U);
+            send_text(started.runtime, bob, room_id, "m1", "hello");
+
+            THEN("the message is not an unread notification")
+            {
+                // Spec MUST: notifications are determined by the push rules; the room rule
+                // matches first and does not notify.
+                REQUIRE(unread_counts(started.runtime, alice, room_id).notifications == 0);
+            }
+        }
+
+        WHEN("alice adds a highlighting keyword and bob sends one message with it and one without")
+        {
+            REQUIRE(request(started.runtime, "PUT", "/_matrix/client/v3/pushrules/global/content/cake", alice,
+                            R"({"pattern":"cake","actions":["notify",{"set_tweak":"highlight"}]})")
+                        .status == 200U);
+            send_text(started.runtime, bob, room_id, "m2", "I like cake");
+            send_text(started.runtime, bob, room_id, "m3", "and tea");
+
+            THEN("both notify and only the keyword message highlights")
+            {
+                auto const counts = unread_counts(started.runtime, alice, room_id);
+                REQUIRE(counts.notifications == 2);
+                // Spec: highlight_count counts unread notifications "with the highlight flag set".
+                REQUIRE(counts.highlights == 1);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Receiving notifications; Server behaviour (Push Notifications)
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#receiving-notifications
+//
+// "When receiving a new event homeservers process push rules for each of the local users in the
+// room (excluding the sender). This may result in: Generating a new number of unread
+// notifications for the user." A user who was not in the room had no rules processed for its
+// earlier events, so they are not that user's notifications (audit concern 1, ADR-0205).
+SCENARIO("Unread notification counts start at the user's join", "[conformance][client-server][push][r15]")
+{
+    GIVEN("bob's public room with two messages sent before alice joins")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const create =
+            request(started.runtime, "POST", "/_matrix/client/v3/createRoom", bob, R"({"preset":"public_chat"})");
+        REQUIRE(create.status == 200U);
+        auto const create_body = parse_object(create.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+        send_text(started.runtime, bob, *room_id, "before1", "one");
+        send_text(started.runtime, bob, *room_id, "before2", "two");
+
+        WHEN("alice joins and bob sends one more message")
+        {
+            REQUIRE(request(started.runtime, "POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", alice, "{}")
+                        .status == 200U);
+            send_text(started.runtime, bob, *room_id, "after", "three");
+
+            THEN("only the message sent after the join is unread")
+            {
+                REQUIRE(unread_counts(started.runtime, alice, *room_id).notifications == 1);
+            }
+        }
+    }
+}

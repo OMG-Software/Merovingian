@@ -30,11 +30,11 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R11 | P2 | Global account data accepts non-object and malformed JSON | Fixed 0.12.38 |
 | R12 | P2 | Registration rejects an omitted username instead of generating one | Fixed 0.12.38 (ADR-0198) |
 | R13 | P2 | Local typing never expires; non-boolean `typing` is treated as true | Fixed 0.12.38 (ADR-0199) |
-| R15 | P2 | Unread counts ignore push-rule notify/highlight actions | Open — wave 5 |
+| R15 | P2 | Unread counts ignore push-rule notify/highlight actions | Fixed 0.12.39 (ADR-0205) |
 | R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Open — media wave (0.12.40) |
 | R19 | P2 | Push-rule mutation APIs are absent; delivery uses read-only defaults | Fixed 0.12.39 (ADR-0204) |
 | R20 | P2 | `POST /register` runs User-Interactive Authentication before the username checks | Open — unscheduled |
-| R14 | P3 | Failed push notifications are never retried (spec SHOULD) | Open — wave 5 |
+| R14 | P3 | Failed push notifications are never retried (spec SHOULD) | Fixed 0.12.39 (ADR-0206) |
 | R16 | P3 | `/search` omits visible history from rooms the user has left | Fixed 0.12.38 |
 | R18 | P3 | Federation profile queries reject `field=m.tz` | Fixed 0.12.36 |
 
@@ -114,7 +114,8 @@ unsupported, not as a violation.
 ## Concerns not promoted to findings
 
 1. Unread counts count pre-join messages in a `joined`-visibility room (no content disclosed).
-   Reconsider with R15.
+   Reconsider with R15. Fixed 0.12.39 with R15: counts start at the user's current join, because
+   a keyword rule counted over earlier history would disclose content (ADR-0205).
 2. Device-key uploads are not checked for the device's self-signature. The spec puts that
    duty on clients; recorded as a hardening question.
 3. Password login with `m.id.thirdparty` / `m.id.phone` identifiers is rejected as bad JSON.
@@ -135,5 +136,5 @@ branch CI run 39053180514 shows OpenBSD at 58 Ok, 0 Fail.
 | 2 | 0.12.36 | R04, R05, R06, R18 (federation) |
 | 3 | 0.12.37 | R07, R08, R09, appservice ping and network directory, `create_room` appservice delivery |
 | 4 | 0.12.38 | R10, R11, R12, R13, R16 (client API); R17 moved to the media wave (0.12.40); R20 found |
-| 5 | — | R19, then R15 and R14 (push rules, counts, retry) |
+| 5 | 0.12.39 | R19, then R15 and R14 (push rules, counts, retry) |
 | 6 | — | Optional endpoint gaps, after a decision on each |
