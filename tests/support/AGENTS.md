@@ -36,8 +36,11 @@ first rather than assuming every shared helper lives under `tests/support/`.
   belong in an anonymous namespace in the test file that uses them.
 - Helpers must not start a database, server, or any I/O — they are pure utilities.
   Any helper that requires I/O belongs in `tests/integration/` as a fixture class.
-- **Exception — `tls_mock_server.hpp`.** It writes a temp certificate and accepts real
-  loopback TLS connections, so it breaks the no-I/O rule. It lives here because a
-  `tests/integration/` fixture is not reachable from `tests/conformance/`, and both suites
-  need the same mock HTTPS peer. Keep the exception to this file: any new I/O helper used
-  by only one suite still belongs in that suite's directory.
+- **Exceptions — `tls_mock_server.hpp`, `mock_appservice.hpp` and `appservice_test_config.hpp`.**
+  `tls_mock_server.hpp` writes a temp certificate and accepts real loopback TLS connections,
+  `MockAppservice` (`mock_appservice.hpp`) accepts real loopback HTTP connections, and
+  `appservice_test_config.hpp` writes registration files, so all three break the no-I/O rule.
+  They live here because a `tests/integration/` fixture is not reachable from
+  `tests/conformance/`, and both suites need the same mock peers and registrations. Keep the
+  exceptions to these files: any new I/O helper used by only one suite still belongs in that
+  suite's directory.
