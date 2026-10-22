@@ -65,6 +65,19 @@ namespace
         return result.value;
     }
 
+    // As parse_content, for account-data content: it is never signed, so it is read with the
+    // general JSON parser, which keeps fractional numbers such as m.tag's `order` (spec: "A
+    // number in a range [0,1]") instead of failing and giving an empty object.
+    [[nodiscard]] auto parse_account_data_content(std::string_view json) -> canonicaljson::Value
+    {
+        auto const result = canonicaljson::parse_json(json);
+        if (result.error != canonicaljson::ParseError::none)
+        {
+            return canonicaljson::Value{canonicaljson::Object{}};
+        }
+        return result.value;
+    }
+
     // Extract the algorithm prefix from a key_id of the form "algorithm:version".
     [[nodiscard]] auto otk_algorithm(std::string const& key_id) -> std::string
     {
@@ -189,7 +202,7 @@ namespace
             }
             auto event = canonicaljson::Object{};
             event.push_back(canonicaljson::make_member("type", jstr(data.event_type)));
-            event.push_back(canonicaljson::make_member("content", parse_content(data.content_json)));
+            event.push_back(canonicaljson::make_member("content", parse_account_data_content(data.content_json)));
             auto json = jserialize(jobj(std::move(event)));
 
             if (data.room_id.empty())

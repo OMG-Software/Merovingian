@@ -234,6 +234,56 @@ SCENARIO("global account data that is not a JSON object is refused and not store
 }
 
 // Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/user/{userId}/account_data/{type} and
+//                    PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridaccount_datatype
+//
+// The request body is any JSON object; only "The request body is not a JSON object" is a 400.
+// Account data is never signed, so the canonical-JSON ban on fractional numbers does not apply:
+// m.tag's own `order` is "A number in a range `[0,1]`" (PR #522 review).
+SCENARIO("account data accepts a JSON object holding fractional and exponent numbers",
+         "[conformance][client-server][account-data][r10][r11]")
+{
+    GIVEN("a logged-in user joined to a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(account_data_config());
+        // Fixture: the homeserver must start.
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice");
+        auto const room_id = create_public_room(rt, token);
+        auto const body = std::string{R"({"order":0.5,"weight":1.5e3})"};
+
+        WHEN("the client sets that body as global and as room account data")
+        {
+            auto const global = call(rt, "PUT", global_url(alice_path, "org.example.numbers"), token, body);
+            auto const room = call(rt, "PUT", room_url(alice_path, room_id, "org.example.numbers"), token, body);
+
+            THEN("both are stored and read back with their numbers")
+            {
+                // Spec MUST: a JSON object body is stored (200), whatever numbers it holds.
+                REQUIRE(global.status == 200U);
+                // Spec MUST: a JSON object body is stored (200), whatever numbers it holds.
+                REQUIRE(room.status == 200U);
+                for (auto const& url : {global_url(alice_path, "org.example.numbers"),
+                                        room_url(alice_path, room_id, "org.example.numbers")})
+                {
+                    auto const fetched = call(rt, "GET", url, token);
+                    // Spec MUST: GET returns the stored account data content (200).
+                    REQUIRE(fetched.status == 200U);
+                    auto const content = parse_object_json(fetched.body);
+                    auto const* order = double_member(content, "order");
+                    // Spec MUST: the content is returned as it was set.
+                    REQUIRE(order != nullptr);
+                    // Spec MUST: the content is returned as it was set.
+                    REQUIRE(*order == 0.5);
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: Client Config, Server Behaviour
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#client-config
 //

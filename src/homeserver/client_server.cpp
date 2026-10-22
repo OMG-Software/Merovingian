@@ -14953,7 +14953,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // milliseconds. A body that is not a JSON object, a missing or non-boolean
                 // `typing`, or a timeout that is not a non-negative integer is refused and
                 // changes nothing (conformance audit R13).
-                auto const parsed_body = canonicaljson::parse_lossless(req.body);
+                // The general parser, not the canonical one: the body is never signed, and a
+                // fractional timeout is valid JSON (M_BAD_JSON below), not "not JSON".
+                auto const parsed_body = canonicaljson::parse_json(req.body);
                 if (parsed_body.error != canonicaljson::ParseError::none)
                 {
                     return dispatch_err(req, rt, 400U, "M_NOT_JSON", "typing body must be valid JSON");
@@ -16163,7 +16165,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     }
                     // Spec: 400 "The request body is not a JSON object", M_NOT_JSON when it
                     // is not JSON at all, M_BAD_JSON when it is JSON of another kind (R11).
-                    auto const parsed_body = canonicaljson::parse_lossless(req.body);
+                    // The general parser, not the canonical one: account data is never signed,
+                    // and any JSON object is valid content, fractional numbers included (m.tag's
+                    // `order` is "A number in a range [0,1]").
+                    auto const parsed_body = canonicaljson::parse_json(req.body);
                     if (parsed_body.error != canonicaljson::ParseError::none)
                     {
                         return dispatch_err(req, rt, 400U, "M_NOT_JSON", "account data body must be valid JSON");

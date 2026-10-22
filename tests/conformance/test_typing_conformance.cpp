@@ -209,6 +209,7 @@ SCENARIO("a typing request whose typing is not a boolean is refused and changes 
             auto const string_timeout = put_typing(rt, room, R"({"typing":true,"timeout":"30000"})");
             auto const negative_timeout = put_typing(rt, room, R"({"typing":true,"timeout":-1})");
             auto const not_json = put_typing(rt, room, R"({"typing":tru)");
+            auto const fractional_timeout = put_typing(rt, room, R"({"typing":true,"timeout":1.5})");
 
             THEN("each is refused with its 400 errcode, and bob sees no typing change")
             {
@@ -236,6 +237,10 @@ SCENARIO("a typing request whose typing is not a boolean is refused and changes 
                 REQUIRE(not_json.status == 400U);
                 // Spec MUST: a request that did not contain valid JSON is M_NOT_JSON.
                 REQUIRE(errcode_of(not_json) == "M_NOT_JSON");
+                // Spec MUST: timeout is an integer, so a fractional one is refused with 400.
+                REQUIRE(fractional_timeout.status == 400U);
+                // Spec MUST: a fractional number is valid JSON, so the errcode is M_BAD_JSON, not M_NOT_JSON.
+                REQUIRE(errcode_of(fractional_timeout) == "M_BAD_JSON");
                 auto const after = sync_typing(rt, room.bob, room.room_id, before.next_batch);
                 // Spec MUST: a refused request sets no typing state, so bob is not told alice is typing.
                 REQUIRE((!after.user_ids.has_value() || !contains(*after.user_ids, "@alice:example.org")));
