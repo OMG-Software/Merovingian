@@ -68,6 +68,13 @@ enum class PowerLevelEncoding : std::uint8_t
     integers_strings_or_floats,
 };
 [[nodiscard]] auto power_level_encoding(rooms::RoomVersionPolicy const& policy) noexcept -> PowerLevelEncoding;
+// One power-level value (a top-level level, or an entry of `events`, `notifications` or `users`)
+// read as the authorization rules read it in `encoding`: an integer; under the legacy encodings
+// also an integer written as a string, or (v1-5) a float truncated at the decimal point. nullopt
+// when it is not a level in a form `encoding` accepts, which the rules treat as invalid. A caller
+// that reads levels outside the auth rules uses this rather than its own parsing.
+[[nodiscard]] auto decode_power_level(canonicaljson::Value const& value, PowerLevelEncoding encoding) noexcept
+    -> std::optional<std::int64_t>;
 [[nodiscard]] auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id,
                                             PowerLevelEncoding encoding = PowerLevelEncoding::integers) noexcept
     -> std::int64_t;

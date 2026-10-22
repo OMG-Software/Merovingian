@@ -74,9 +74,12 @@ auto push_room_facts_from(canonicaljson::Value power_levels, std::optional<std::
     auto const* notifications = content == nullptr ? nullptr : member_object(*content, "notifications");
     if (notifications != nullptr)
     {
+        // Each level in the form the room's version allows, as the authorization rules read it
+        // (rooms/v9.md: strings are accepted "within the events, notifications and users
+        // properties"). An entry they would not read is left out, so the evaluator's default applies.
         for (auto const& member : *notifications)
         {
-            if (auto const* level = std::get_if<std::int64_t>(&member.value->storage()); level != nullptr)
+            if (auto const level = events::decode_power_level(*member.value, facts.level_encoding); level.has_value())
             {
                 facts.notification_levels[member.key] = *level;
             }

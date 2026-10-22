@@ -958,6 +958,12 @@ auto extract_content_membership(canonicaljson::Value const& event) noexcept -> s
     return membership == nullptr ? std::string{} : *membership;
 }
 
+auto decode_power_level(canonicaljson::Value const& value, PowerLevelEncoding encoding) noexcept
+    -> std::optional<std::int64_t>
+{
+    return power_level_value(&value, encoding);
+}
+
 auto power_level_encoding(rooms::RoomVersionPolicy const& policy) noexcept -> PowerLevelEncoding
 {
     if (policy.power_levels_require_integers)

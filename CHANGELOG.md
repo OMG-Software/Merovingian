@@ -77,6 +77,14 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   receipts by room in one walk. `/sync`, sliding sync and the badge give the same counts as before.
   The badge's setup is still linear in the server's memberships and receipts tables, once per badge;
   per-user store indexes are the follow-up (ADR-0207).
+- **FIXED (PR #523 review, string notification levels):** push evaluation read a room's
+  `notifications` levels only when they were JSON integers. Room versions 1-9 allow a level written
+  as a string ("This includes the nested values within the `events`, `notifications` and `users`
+  properties", rooms/v9.md), so a room that set
+  `"room": "100"` fell back to the default of 50, and a sender at 50 could notify everyone with
+  `@room`. Each entry is now read with `events::decode_power_level`, the decoder the authorization
+  rules use, in the room version's encoding. An entry the rules would not read, such as a string in
+  version 10 or later, still falls back to the default.
 - **DOCS (PR #523 review):** `docs/todos/capability-gaps.md` described `counts.unread` as the sum of
   `/sync`'s per-room counts and said unread counts skip the history-visibility filter.
   `src/sync/AGENTS.md` listed the push badge among the counts made by `count_unread_by_thread()`.
