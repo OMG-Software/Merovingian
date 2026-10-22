@@ -1949,11 +1949,12 @@ until the refresh).
   state), and is exactly what state-res v2's power/mainline ordering exists
   to make deterministic and unexploitable; see "PDU ingestion resolved
   state diverging by delivery order" above.
-- **Not covered by this phase:** the membership-acceptor path
-  (`send_join`/`send_leave`/`send_knock` acceptance,
-  `src/federation/inbound_request.cpp`) does not run this three-way check
-  and still hard-rejects a content-hash mismatch instead of redacting — see
-  `src/federation/AGENTS.md`.
+- **Membership-acceptor path:** `send_join`/`send_leave`/`send_knock`
+  acceptance runs the same three-way check in the membership acceptor
+  (`src/homeserver/local_http_router.cpp`). Since 0.12.36 (R06) a content-hash
+  mismatch there, and on `/invite`, is redacted and processed further rather
+  than refused; see "What a remote server can get accepted or signed:
+  conformance audit wave 2 (0.12.36)" below and `src/federation/AGENTS.md`.
 
 ### Gaps in room history leaving inbound PDUs unapplied (v0.12.13, ADR-0064 phase C)
 

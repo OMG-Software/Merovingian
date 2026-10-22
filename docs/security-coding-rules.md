@@ -489,7 +489,8 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Why: a first-match loop refused genuine events signed with a rotated key and let a relay
   make any event fail by listing a junk ID first; "any one verifies" accepts an event carrying
   an invalid signature by a published key, which the spec drops; an unbounded list lets one
-  event force unbounded key fetches (conformance audit R05, ADR-0183).
+  event force unbounded key fetches (CWE-347 Improper Verification of Cryptographic Signature;
+  CWE-400 Uncontrolled Resource Consumption for the bound; conformance audit R05, ADR-0183).
   Source: `src/federation/AGENTS.md`.
 
 - **This server co-signs a restricted join only after `homeserver::decide_restricted_join`
@@ -500,16 +501,17 @@ quickly finding everything a given `AGENTS.md` file contributed.
   condition is verifiable only while this server is joined to the room it names.
   Why: the auth rules check only that the named user is joined with invite power and that its
   server signed; whether the joining user met an allow condition is checked by nobody else, so
-  signing without the decision lets anyone into a restricted room (conformance audit R04,
-  ADR-0185).
+  signing without the decision lets anyone into a restricted room (CWE-863 Incorrect
+  Authorization; conformance audit R04, ADR-0185).
   Source: `src/federation/AGENTS.md`, `src/homeserver/AGENTS.md`.
 
 - **Never refuse a received event for a content-hash mismatch; redact it and continue.**
   Only a signature failure refuses (spec "Checks performed on receipt of a PDU", steps 2 and
   3). Everything after the check (authorisation, our signature, what is stored and returned)
   uses the redacted copy.
-  Why: the direct membership endpoints refused a mismatch before the acceptor could redact it
-  (conformance audit R06).
+  Why: the direct membership endpoints refused a mismatch before the acceptor could redact it.
+  Content the hash does not cover is unauthenticated, so only the redacted copy may be used
+  (CWE-345 Insufficient Verification of Data Authenticity; conformance audit R06).
   Source: `src/federation/AGENTS.md`.
 
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote

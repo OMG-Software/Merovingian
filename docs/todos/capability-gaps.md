@@ -214,7 +214,8 @@ ADR-0171). Status: `resolved` in 0.12.32: every router auth map now selects
 the authorising user's member event, so a join validly signed by the
 authorising server and naming a joined member with invite power is accepted
 on `/send`, `send_join` and backfill; one naming a non-member is still
-refused (rule 4.3.5.2). The resident-side gap above is unchanged.
+refused (rule 4.3.5.2). The resident-side gap above was resolved separately, in 0.12.36
+(R04).
 
 The other findings recorded here on the 0.12.13 branch (v1/v2 event-ID
 signatures, key validity against `origin_server_ts`, `/event/{eventId}` ID
