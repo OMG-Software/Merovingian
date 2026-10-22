@@ -13033,7 +13033,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // Spec (Events on Change of Profile Information): the change is sent as an
             // m.room.member join "to every room the user is a member of" — clients show the
-            // display name and avatar from those events, not from the profile.
+            // display name and avatar from those events, not from the profile. The field is set
+            // now, so a room that cannot take the update does not fail the request (ADR-0182).
             auto const propagated = propagate_profile_change(rt.homeserver, req.access_token);
             if (!propagated.ok)
             {

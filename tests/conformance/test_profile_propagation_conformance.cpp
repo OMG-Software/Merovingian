@@ -22,6 +22,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -225,10 +226,13 @@ struct TimelineMembership final
 
 } // namespace
 
-// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information"
+// Spec: Matrix Client-Server API v1.19, "Events on Change of Profile Information" and
+// PUT /_matrix/client/v3/profile/{userId}/{keyName}
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#events-on-change-of-profile-information
-// Both membership and presence updates should follow a successful profile change.
-SCENARIO("incomplete profile propagation reports failure and an identical update can repair it",
+//
+// The PUT answers 200 "The profile field was set." (its other responses are 400, 403 and 429).
+// Propagation follows the change; a room or presence write that fails does not unset the field.
+SCENARIO("a profile change succeeds when propagation cannot complete, and an identical update repairs it",
          "[conformance][client-server][profile][profile-propagation][profile-propagation-failure]")
 {
     GIVEN("Alice belongs to two rooms and one propagation write will fail")
@@ -251,13 +255,22 @@ SCENARIO("incomplete profile propagation reports failure and an identical update
 
         WHEN("Alice changes her profile while propagation cannot complete")
         {
-            auto const failed = merovingian::homeserver::handle_client_server_request(started.runtime, request);
+            auto const first = merovingian::homeserver::handle_client_server_request(started.runtime, request);
 
-            THEN("the response reports the partial failure and retrying completes without duplicate joins")
+            THEN("the field is set and reported as set, and retrying completes without duplicate joins")
             {
-                // Project policy: an incomplete propagation write returns HTTP 500; the spec does not prescribe this
-                // status.
-                REQUIRE(failed.response.status == 500U);
+                // Spec MUST: 200 "The profile field was set." The field is stored before propagation starts.
+                REQUIRE(first.response.status == 200U);
+                auto const profile = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/profile/@alice:example.org", alice, {}});
+                // Fixture: the profile lookup must succeed before its fields are inspected.
+                REQUIRE(profile.response.status == 200U);
+                auto const profile_body = parse_object(profile.response.body);
+                auto const* stored = string_member(profile_body, field);
+                // Spec MUST: the profile returns the field the 200 said was set.
+                REQUIRE(stored != nullptr);
+                // Spec MUST: the profile returns the value the 200 said was set.
+                REQUIRE(*stored == value);
                 auto const retry = merovingian::homeserver::handle_client_server_request(started.runtime, request);
                 // Project policy: retrying the identical request after storage recovers completes successfully.
                 REQUIRE(retry.response.status == 200U);
@@ -515,6 +528,51 @@ SCENARIO("changing the display name leaves rooms the user has left untouched",
                 // Spec SHOULD: profile updates target rooms the user is a member of, not a room already left.
                 REQUIRE(membership != nullptr);
                 // Fixture: the profile change must not undo Bob's earlier leave.
+                REQUIRE(*membership == "leave");
+            }
+        }
+    }
+
+    // The server keeps a member list per room beside the room's state; the two can disagree (a
+    // state-resolution flip, a fast-join fill that re-adds a departed member). The room's current
+    // m.room.member state is what says who is a member, and in a public room a join sent on the word
+    // of a stale list would succeed and rejoin the user.
+    GIVEN("Bob left a public room of Alice's, but the server's member list still names him")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Fixture: the server must start before room membership is exercised.
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime, "alice");
+        auto const bob = logged_in_token(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        join(started.runtime, bob, room_id);
+        auto const left = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob, "{}"});
+        // Fixture: Bob's leave must succeed before the member list is made stale.
+        REQUIRE(left.response.status == 200U);
+        auto& rooms = started.runtime.homeserver.database.rooms;
+        auto const room = std::ranges::find_if(rooms, [&](auto const& candidate) {
+            return candidate.room_id == room_id;
+        });
+        // Fixture: the room Alice created must be held in the runtime.
+        REQUIRE(room != rooms.end());
+        room->members.emplace_back("@bob:example.org");
+
+        WHEN("Bob sets his display name")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/@bob:example.org/displayname", bob,
+                                  R"({"displayname":"Robert"})"});
+
+            THEN("the field is set and his membership of that room is still leave")
+            {
+                // Spec MUST: 200 "The profile field was set."
+                REQUIRE(put.response.status == 200U);
+                auto const content = member_content(started.runtime, alice, room_id, "@bob:example.org");
+                auto const* membership = string_member(content, "membership");
+                // Spec SHOULD: profile updates target rooms the user is a member of, not a room already left.
+                REQUIRE(membership != nullptr);
+                // Fixture: the profile change must not rejoin Bob to the room he left.
                 REQUIRE(*membership == "leave");
             }
         }
