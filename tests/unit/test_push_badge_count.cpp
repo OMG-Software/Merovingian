@@ -278,3 +278,57 @@ SCENARIO("The push badge saturates at its cap", "[push][push-badge][r15]")
         }
     }
 }
+
+SCENARIO("A capped push badge falls back to the membership row when it did not reach the join",
+         "[push][push-badge][r15]")
+{
+    GIVEN("alice's join stored first, three unread messages after it, and her membership row at ordering 8")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        // The row's ordering is that of her latest membership change (a profile change, say), which
+        // is later than the join itself.
+        store.memberships.push_back({"!r:example.org", std::string{alice}, "join", 8U});
+        add_membership(store, "$r1", "!r:example.org", "join", 1U);
+        add_message(store, "$r5", "!r:example.org", 5U);
+        add_message(store, "$r8", "!r:example.org", 8U);
+        add_message(store, "$r12", "!r:example.org", 12U);
+        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
+        auto const exact = exact_total(runtime);
+
+        WHEN("the budget reaches every row but the join")
+        {
+            auto const count = badge(runtime, store.events.size() - 1U);
+
+            THEN("only events after the row's ordering count, and never more than /sync would")
+            {
+                REQUIRE(exact == 3U);
+                REQUIRE(count.capped);
+                REQUIRE(count.unread == 1U);
+                REQUIRE(count.unread <= exact);
+            }
+        }
+    }
+
+    GIVEN("the same room but a membership row with no ordering")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto& store = runtime.database.persistent_store;
+        store.memberships.push_back({"!r:example.org", std::string{alice}, "join", 0U});
+        add_membership(store, "$r1", "!r:example.org", "join", 1U);
+        add_message(store, "$r5", "!r:example.org", 5U);
+        add_message(store, "$r12", "!r:example.org", 12U);
+        merovingian::tests::record_joined_state_for_room(store, "!r:example.org", alice);
+
+        WHEN("the budget reaches every row but the join")
+        {
+            auto const count = badge(runtime, store.events.size() - 1U);
+
+            THEN("the room adds nothing")
+            {
+                REQUIRE(count.capped);
+                REQUIRE(count.unread == 0U);
+            }
+        }
+    }
+}

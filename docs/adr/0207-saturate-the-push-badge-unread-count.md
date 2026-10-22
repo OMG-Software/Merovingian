@@ -53,11 +53,20 @@ the requesting user, not once per recipient per event.
 `store.events` is not stream-ordered. Hydration selects without `ORDER BY`, PostgreSQL moves rows
 it updates, and commits land out of stream order. A capped pass therefore covers whichever rows it
 reaches, not necessarily the newest, and its badge is a lower bound that can miss recent unread
-events on a large store. In particular, a room whose join event the pass did not reach contributes
-nothing. On a store larger than the budget that is most rooms, so the badge is often 0 there.
+events on a large store.
 
-A capped pass skips whatever it cannot prove: a room whose join or unthreaded receipt target it did
-not reach, a thread whose receipt target it did not reach, a room with an own event whose thread it
+A room whose join event a capped pass did not reach counts from the user's `memberships` row
+instead, when it says `join` with a non-zero ordering. Every path that stores an accepted
+`m.room.member` event for the user rewrites that ordering: local events, profile changes and joins
+(with the event's ordering or one allocated after it), accepted federated events (with the event's),
+and startup reconciliation (with a fresh one). So a `join` row's ordering is never before the start
+of the current join, and counting only events after it can under-count but never over-count. It
+under-counts the events between the true join and the latest membership change, such as a profile
+change. A room whose join and membership row are both unusable contributes nothing. A pass that is
+not capped never uses the row, so it stays equal to `/sync`.
+
+A capped pass skips whatever it cannot prove: a room whose unthreaded receipt target it did not
+reach, a thread whose receipt target it did not reach, a room with an own event whose thread it
 could not determine, and an event whose thread it could not determine. What it cannot rule out
 without visiting every row is an unvisited row, stored out of stream order, that would have reduced
 the count: an own event in the same thread, or a membership change, with a higher stream ordering
@@ -80,7 +89,9 @@ room-scoped indexing.
 
 ### Negative Consequences
 
-* On a store larger than the budget the badge is a lower bound, often 0, until the indexes land.
+* On a store larger than the budget the badge is a lower bound until the indexes land. Rooms whose
+  join was not reached count from the membership row, missing the events before the user's latest
+  membership change.
 * The badge has a pass of its own beside `/sync`'s per-room walk. The two apply the same rules
   (`member_transition`, `join_start_from`, `event_thread_id_within`, the classifier), and a test
   holds them equal.

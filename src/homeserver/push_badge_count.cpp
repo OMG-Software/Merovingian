@@ -40,6 +40,9 @@ namespace
         // An own event whose thread could not be determined within the budget: it may cover any
         // thread, so the room counts nothing.
         bool own_thread_unknown{false};
+        // The stream ordering on the user's membership row, rewritten on every membership event
+        // they get (profile changes included), so at or after the start of the current join.
+        std::uint64_t membership_row_ordering{0U};
     };
 
     [[nodiscard]] auto has_member(canonicaljson::Object const& object, std::string_view key) noexcept -> bool
@@ -64,7 +67,7 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
     {
         if (membership.user_id == user_id && membership.membership == "join")
         {
-            rooms.try_emplace(membership.room_id);
+            rooms.try_emplace(membership.room_id).first->second.membership_row_ordering = membership.stream_ordering;
         }
     }
     auto const& receipts = runtime.database.persistent_store.receipts;
@@ -208,7 +211,15 @@ auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id
                 }
             }
         }
-        auto const start = join_start_from(std::move(facts.transitions));
+        auto start = join_start_from(std::move(facts.transitions));
+        // A capped pass that did not reach the join falls back to the membership row: every path
+        // that stores an accepted m.room.member event for the user rewrites the row's ordering with
+        // the event's or a later one, so it is never before the join start and can only under-count.
+        // Uncapped, a room with no join counts nothing, as /sync's walk does.
+        if (!start.has_value() && result.capped && facts.membership_row_ordering != 0U)
+        {
+            start = facts.membership_row_ordering;
+        }
         if (unreadable_room || !start.has_value())
         {
             continue;

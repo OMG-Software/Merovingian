@@ -54,7 +54,8 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   one pass of at most 10000 store rows, newest first, charging every row visited (thread-parent
   lookups included) before any filter, and saturates at 1000 (ADR-0207). Within the budget it
   equals the sum of `/sync`'s exact counts; past it, it is a lower bound that can miss recent unread
-  events until store indexes by stream ordering and event ID land. `/sync` unread counts stay
+  events until store indexes by stream ordering and event ID land. A room whose join the pass did not
+  reach counts from the user's membership row, whose ordering is never before the join start. `/sync` unread counts stay
   exact. Rejected and soft-failed events no longer count as unread, and a rejected leave no longer
   ends a user's join for counting.
 - **FIXED (PR #523 review, spec rate limits):** the push-rule endpoints the spec documents as

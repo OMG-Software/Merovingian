@@ -40,8 +40,9 @@ struct PushBadgeCount final
 // When the pass visits every row the badge equals the sum of those exact per-room counts.
 //
 // When it is capped it never counts more than the exact count would, except as noted in ADR-0207:
-// a room is skipped when the pass did not reach its join or the target of one of its receipts, and
-// a candidate whose thread could not be determined is skipped.
+// a room whose join it did not reach counts from its membership row's ordering instead (later than
+// or equal to the join start), a room is skipped when neither is usable or the pass did not reach the
+// target of its unthreaded receipt, and a candidate whose thread could not be determined is skipped.
 //
 // Call with runtime.mutex held.
 [[nodiscard]] auto count_push_badge(HomeserverRuntime const& runtime, std::string_view user_id,
