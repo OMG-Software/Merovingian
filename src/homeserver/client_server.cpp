@@ -1577,9 +1577,19 @@ namespace
         }
         auto const* type = string_member(*object, "type");
         auto const is_appservice_registration = type != nullptr && *type == "m.login.application_service";
+        // Spec: `username` is a string. Only an absent one is an omission (the server then
+        // generates the localpart); one of another type is malformed, never "omitted".
+        if (object_member(*object, "username") != nullptr && string_member(*object, "username") == nullptr)
+        {
+            return std::nullopt;
+        }
         auto const* username = string_member(*object, "username");
         if (username == nullptr)
         {
+            if (object_member(*object, "user") != nullptr && string_member(*object, "user") == nullptr)
+            {
+                return std::nullopt;
+            }
             username = string_member(*object, "user");
         }
         auto const* password = string_member(*object, "password");
@@ -11095,7 +11105,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto body = parse_register_body(req.body);
         if (!body.has_value())
         {
-            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must contain a password");
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "registration body must contain a password, and username must be a string");
         }
         // Spec (POST /register, `username`): "If omitted, the homeserver MUST generate a
         // Matrix ID local part" (conformance audit R12, ADR-0198).
