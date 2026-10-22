@@ -9071,13 +9071,7 @@ namespace
         auto filename = download_route_filename(req.target);
         if (filename.empty())
         {
-            for (auto const& [name, value] : local_response.headers)
-            {
-                if (name == media_filename_header)
-                {
-                    filename = core::percent_decode_path_component(value);
-                }
-            }
+            filename = local_response.media_filename;
         }
         auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
         apply_media_security_headers(response, content_type, filename);

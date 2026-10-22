@@ -527,13 +527,12 @@ namespace
     {
         auto out = response(result.status, result.ok ? result.value : result.reason);
         out.errcode = result.errcode;
-        if (result.ok && !result.media_filename.empty())
+        if (result.ok)
         {
-            // R17: the stored upload filename crosses the internal boundary
-            // percent-encoded, so it can never break the header line; the
-            // client API decodes it and builds Content-Disposition from it.
-            out.headers.emplace_back(std::string{media_filename_header},
-                                     core::percent_encode_path_component(result.media_filename));
+            // ADR-0211: the stored upload filename crosses the internal boundary
+            // in a field, never a header; the client API builds
+            // Content-Disposition from it.
+            out.media_filename = result.media_filename;
         }
         if (result.retry_after_ms > 0U)
         {

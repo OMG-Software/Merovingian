@@ -475,6 +475,7 @@ shell = find_program('sh')
       'integration/test_media_repository_security.cpp',
       'integration/test_media_on_demand_flow.cpp',
       'integration/test_remote_media_cache_flow.cpp',
+      'integration/test_media_upload_flow.cpp',
       'integration/test_url_preview_flow.cpp',
       'integration/test_remote_media_fetch_pool_flow.cpp',
       'integration/test_media_thumbnail_flow.cpp',

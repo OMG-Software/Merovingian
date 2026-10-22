@@ -42,12 +42,6 @@ struct LocalHttpRequest final
     std::string verified_key_id{};
 };
 
-// R17: the internal header in which the local router hands a download's stored
-// upload filename (percent-encoded) to the client API, which turns it into
-// Content-Disposition. Never written to the wire: the client API builds the
-// download response afresh.
-inline constexpr std::string_view media_filename_header{"X-Merovingian-Media-Filename"};
-
 struct LocalHttpResponse final
 {
     std::uint16_t status{500U};
@@ -62,6 +56,10 @@ struct LocalHttpResponse final
     // the client API can return it rather than one guessed from the status.
     // Internal only: never written to the wire by format_response.
     std::string errcode{};
+    // A media download's stored upload filename (ADR-0211), for the client API
+    // to put in Content-Disposition. Internal only, like errcode: a field, not a
+    // header, so no caller that writes `headers` to the wire can leak it.
+    std::string media_filename{};
 };
 
 // Resolves the client address to attribute a request to, honouring
