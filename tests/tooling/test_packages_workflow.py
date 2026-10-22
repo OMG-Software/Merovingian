@@ -162,6 +162,11 @@ class PackagesWorkflowTests(unittest.TestCase):
             with self.subTest(path=path):
                 content = (REPO_ROOT / path).read_text(encoding="utf-8")
                 self.assertIn(expected, content)
+                if path.endswith(".spec"):
+                    # THEN a spec carries exactly one Version tag: rpm uses the last one, so a
+                    # stale second tag (left by a merge) silently builds the wrong version.
+                    tags = [line for line in content.splitlines() if line.startswith("Version:")]
+                    self.assertEqual(len(tags), 1, f"{path} has Version tags {tags}")
 
     def test_linux_distro_package_jobs_exist(self) -> None:
         # GIVEN the package publication workflow.
