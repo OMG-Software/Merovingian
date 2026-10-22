@@ -1030,7 +1030,7 @@ media-fetch-pool task.
   Source: `src/media/AGENTS.md`.
 
 - **A download that waits for a pending upload is admitted before it waits: at most
-  `media_fetch_threads - 1` waits at once (half for one requester), and an ADR-0079 slot when it
+  `media_fetch_threads - 1` waits at once (none with a single worker) (half for one requester), and an ADR-0079 slot when it
   waits on a request thread; otherwise it answers `504 M_NOT_YET_UPLOADED` at once.**
   Why: a wait holds a worker for up to 20 s, and a client can create pending IDs freely; uncapped
   waits fill the media fetch pool and starve remote fetches, or hold main-pool workers with no

@@ -140,7 +140,7 @@ route that proxies to a remote server without one of these three is the defect. 
 Two more requests defer to the media fetch pool the same way: a download of a reserved media ID
 that waits for its upload (ADR-0212), and a URL preview (ADR-0213). A pending-upload wait is
 admitted before it starts (`await_pending_upload`): under `pending_upload_waits`, at most
-`media_fetch_threads - 1` at once, and on a request thread with an ADR-0079 slot as well; a wait
+`media_fetch_threads - 1` at once (none with a single worker), and on a request thread with an ADR-0079 slot as well; a wait
 that is not admitted answers `504 M_NOT_YET_UPLOADED` at once. Anything else that would wait on
 the media fetch pool needs the same kind of cap, or it can fill the pool. A URL preview fetches a URL a
 client names: it goes through `gated_fetch` in `url_preview_service.cpp`, which resolves and

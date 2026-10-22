@@ -60,7 +60,7 @@ respond before the timeout"). The legacy v3 download route never waits: media up
 the freeze is never served there (ADR-0068).
 
 A wait holds a worker for its whole length, so it is admitted before it starts
-(`await_pending_upload`). At most `media_fetch_threads - 1` waits run at once, and one requester
+(`await_pending_upload`). At most `media_fetch_threads - 1` waits run at once (none with a single worker), and one requester
 may hold half of them (`HomeserverRuntime::pending_upload_waits`): the media fetch pool always
 keeps a worker for remote fetches and URL previews, and two client addresses can no longer fill
 it with waits. A request served without a media fetch pool waits on its own request thread, so

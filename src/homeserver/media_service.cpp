@@ -1152,11 +1152,12 @@ namespace
 
     // ADR-0212: concurrent pending-upload waits, at most media_fetch_threads - 1
     // so the media fetch pool always keeps a worker for remote fetches and
-    // previews; one requester may hold half of them.
+    // previews; one requester may hold half of them. A single-worker pool
+    // admits no wait at all: every pending download is answered 504 at once.
     [[nodiscard]] auto pending_upload_wait_cap(HomeserverRuntime const& runtime) noexcept -> std::uint32_t
     {
         auto const threads = runtime.config.server().http.media_fetch_threads;
-        return threads > 1U ? threads - 1U : 1U;
+        return threads > 1U ? threads - 1U : 0U;
     }
 
     // ADR-0212: a download of a reserved but empty local media ID waits for

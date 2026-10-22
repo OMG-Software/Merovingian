@@ -196,6 +196,32 @@ SCENARIO("Concurrent pending-upload waits stay below the media fetch pool's size
             }
         }
     }
+
+    GIVEN("a server with a single media fetch worker and a reserved URI")
+    {
+        auto started = merovingian::homeserver::start_client_server(pending_config(1U));
+        REQUIRE(started.started);
+        // Room in the client-outbound budget, so only the wait cap can refuse.
+        started.runtime.homeserver.client_outbound_proxy_policy.global_cap = 8U;
+        started.runtime.homeserver.client_outbound_proxy_policy.per_client_cap = 8U;
+        auto const alice = login(started.runtime, "alice");
+        auto const media_id = reserve(started.runtime, alice);
+
+        WHEN("a download asks to wait for the upload")
+        {
+            auto const started_at = std::chrono::steady_clock::now();
+            auto const response = download(started.runtime, alice, media_id, 5000U);
+            auto const waited = std::chrono::steady_clock::now() - started_at;
+
+            THEN("no wait may take the only worker: the answer is 504 M_NOT_YET_UPLOADED at once")
+            {
+                REQUIRE(response.response.status == 504U);
+                REQUIRE(errcode_of(response) == "M_NOT_YET_UPLOADED");
+                REQUIRE(waited < std::chrono::seconds{2});
+                REQUIRE(started.runtime.homeserver.media_upload_notifier->waiting() == 0U);
+            }
+        }
+    }
 }
 
 SCENARIO("An upload the server fails to store is answered as a server error", "[integration][media][sqlite]")

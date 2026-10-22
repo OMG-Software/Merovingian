@@ -45,6 +45,9 @@ Media part of the conformance audit (2026-10-17): R17 and the wave-6 media endpo
   (its index holds iterators into its own list). URL previews use the shared UTF-8 validator.
 - **Migration** `026_media_upload_names_and_pending_uploads.sql` (schema v26): `media.upload_name`
   and the `media_pending_uploads` table. It follows wave 3's `025_appservice_directory.sql`.
+- **FIXED (PR #524 review):** with `server.http.media_fetch_threads = 1` a pending-upload wait could
+  take the media fetch pool's only worker. A single-worker pool now admits no wait: a download of a
+  reserved, empty media ID answers `504 M_NOT_YET_UPLOADED` at once.
 
 ## 0.12.40
 

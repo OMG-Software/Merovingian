@@ -395,7 +395,7 @@ A download of a reserved ID whose content has not arrived waits for it, at most
 then answers `504 M_NOT_YET_UPLOADED`; `timeout_ms=0` answers at once. The wait never runs on a
 main-pool thread: it is handed to the media fetch pool like a remote fetch, and it releases the
 runtime mutex while it sleeps on `MediaUploadNotifier`, which the upload signals after its commit.
-A wait is admitted first: at most `server.http.media_fetch_threads - 1` waits run at once (half of
+A wait is admitted first: at most `server.http.media_fetch_threads - 1` waits run at once (none with a single worker) (half of
 them for one requester), so the pool always keeps a worker for remote fetches and previews; a
 server with no media fetch pool waits on the request thread and then also needs an ADR-0079
 client-outbound slot. A wait that is not admitted answers `504 M_NOT_YET_UPLOADED` at once.

@@ -488,7 +488,7 @@ struct HomeserverRuntime final
     // unique_ptr so waiters keep a stable address across a runtime move.
     std::unique_ptr<MediaUploadNotifier> media_upload_notifier{std::make_unique<MediaUploadNotifier>()};
     // ADR-0212: downloads currently waiting for a reserved media ID's content.
-    // A wait holds its worker, so at most media_fetch_threads - 1 run at once
+    // A wait holds its worker, so at most media_fetch_threads - 1 run at once (none with one worker)
     // (half of those for one user): the media fetch pool always keeps a worker
     // for remote fetches and previews. Its mutex is a leaf, like the budget
     // above. Held through a unique_ptr so slots keep a stable address.
