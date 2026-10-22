@@ -161,19 +161,20 @@ SCENARIO("build_unbind_body emits the four unbind fields", "[identity][identity-
     }
 }
 
-SCENARIO("build_request_token_body includes next_link only when non-empty", "[identity][identity-body]")
+SCENARIO("build_request_token_body includes next_link only when non-empty and always send_attempt",
+         "[identity][identity-body][r09]")
 {
     GIVEN("a client_secret, email, and next_link")
     {
         WHEN("the request-token body is built with a next_link")
         {
             auto const body = merovingian::identity::build_request_token_body("s3cr3t", "alice@example.org",
-                                                                              "https://hs.example.org/next");
+                                                                              "https://hs.example.org/next", 2U);
 
-            THEN("the body includes client_secret, email, and next_link, sorted")
+            THEN("the body includes client_secret, email, next_link and send_attempt, sorted")
             {
                 REQUIRE(body == R"({"client_secret":"s3cr3t","email":"alice@example.org",)"
-                                R"("next_link":"https://hs.example.org/next"})");
+                                R"("next_link":"https://hs.example.org/next","send_attempt":2})");
             }
         }
     }
@@ -182,11 +183,24 @@ SCENARIO("build_request_token_body includes next_link only when non-empty", "[id
     {
         WHEN("the request-token body is built with an empty next_link")
         {
-            auto const body = merovingian::identity::build_request_token_body("s3cr3t", "alice@example.org", "");
+            auto const body = merovingian::identity::build_request_token_body("s3cr3t", "alice@example.org", "", 1U);
 
-            THEN("the body omits next_link entirely")
+            THEN("the body omits next_link entirely but still carries send_attempt")
             {
-                REQUIRE(body == R"({"client_secret":"s3cr3t","email":"alice@example.org"})");
+                REQUIRE(body == R"({"client_secret":"s3cr3t","email":"alice@example.org","send_attempt":1})");
+            }
+        }
+    }
+
+    GIVEN("a retry that a client numbered well above one")
+    {
+        WHEN("the request-token body is built")
+        {
+            auto const body = merovingian::identity::build_request_token_body("s3cr3t", "alice@example.org", "", 4000U);
+
+            THEN("the number is forwarded as given, not reset or clamped")
+            {
+                REQUIRE(body.find(R"("send_attempt":4000)") != std::string::npos);
             }
         }
     }
@@ -291,20 +305,22 @@ SCENARIO("parse_lookup_response extracts the bound MXID", "[identity][identity-p
     }
 }
 
-SCENARIO("build_request_msisdn_token_body emits client_secret, country, phone_number, and optional next_link",
-         "[identity][identity-body]")
+SCENARIO("build_request_msisdn_token_body emits client_secret, country, phone_number, send_attempt and optional "
+         "next_link",
+         "[identity][identity-body][r09]")
 {
-    GIVEN("client_secret, country, phone_number, and a next_link")
+    GIVEN("client_secret, country, phone_number, a next_link and a send_attempt")
     {
         WHEN("the msisdn request-token body is built with a next_link")
         {
             auto const body = merovingian::identity::build_request_msisdn_token_body("s3cr3t", "GB", "447700900000",
-                                                                                     "https://hs.example.org/next");
+                                                                                     "https://hs.example.org/next", 3U);
 
-            THEN("the body is canonical JSON with all four fields, keys sorted")
+            THEN("the body is canonical JSON with all five fields, keys sorted")
             {
                 REQUIRE(body == R"({"client_secret":"s3cr3t","country":"GB",)"
-                                R"("next_link":"https://hs.example.org/next","phone_number":"447700900000"})");
+                                R"("next_link":"https://hs.example.org/next","phone_number":"447700900000",)"
+                                R"("send_attempt":3})");
             }
         }
     }
@@ -314,11 +330,12 @@ SCENARIO("build_request_msisdn_token_body emits client_secret, country, phone_nu
         WHEN("the msisdn request-token body is built with an empty next_link")
         {
             auto const body =
-                merovingian::identity::build_request_msisdn_token_body("s3cr3t", "GB", "447700900000", "");
+                merovingian::identity::build_request_msisdn_token_body("s3cr3t", "GB", "447700900000", "", 1U);
 
-            THEN("the body omits next_link entirely")
+            THEN("the body omits next_link entirely but still carries send_attempt")
             {
-                REQUIRE(body == R"({"client_secret":"s3cr3t","country":"GB","phone_number":"447700900000"})");
+                REQUIRE(body ==
+                        R"({"client_secret":"s3cr3t","country":"GB","phone_number":"447700900000","send_attempt":1})");
             }
         }
     }
@@ -485,6 +502,66 @@ SCENARIO("build_get_validated_3pid_path puts the sid and client_secret in the qu
                 REQUIRE(path.find(' ') == std::string::npos);
                 REQUIRE(path.find("&client_secret=x") == std::string::npos);
                 REQUIRE(path.find("sid=a%26client_secret%3Dx%23y%20z&client_secret=s3cr3t") != std::string::npos);
+            }
+        }
+    }
+}
+
+// Security audit run-1, sp02.is-token-crlf-header-injection: the client sends id_access_token as a
+// JSON string, so it can hold CR or LF once unescaped, and it becomes the Authorization header.
+SCENARIO("id_access_token_is_valid accepts only text that can sit inside one bearer header",
+         "[identity][security][sp02]")
+{
+    GIVEN("tokens of the shapes real identity servers issue")
+    {
+        WHEN("each is checked")
+        {
+            THEN("they are valid")
+            {
+                for (auto const token : {std::string_view{"abc123"}, std::string_view{"A.b_c-d~e+f/g=="},
+                                         std::string_view{"syt_YWxpY2U_AbCdEf_0123456789"}, std::string_view{""}})
+                {
+                    CHECK(merovingian::identity::id_access_token_is_valid(token));
+                }
+            }
+        }
+    }
+
+    GIVEN("tokens that carry a control character, a space or a non-ASCII byte")
+    {
+        WHEN("each is checked")
+        {
+            THEN("none is valid")
+            {
+                auto const hostile = {
+                    std::string{"abc\r\nX-Injected: 1"},
+                    std::string{"abc\nX"},
+                    std::string{"abc\rX"},
+                    std::string{"abc"} + '\0' + "d",
+                    std::string{"abc\x01"},
+                    std::string{"abc\x7f"},
+                    std::string{"abc\tdef"},
+                    std::string{"abc def"},
+                    std::string{"abc\xc3\xa9"},
+                };
+                for (auto const& token : hostile)
+                {
+                    CHECK_FALSE(merovingian::identity::id_access_token_is_valid(token));
+                }
+            }
+        }
+    }
+
+    GIVEN("a token at and just past the length cap")
+    {
+        WHEN("each is checked")
+        {
+            THEN("the cap itself is valid and one byte more is not")
+            {
+                CHECK(merovingian::identity::id_access_token_is_valid(
+                    std::string(merovingian::identity::max_id_access_token_bytes, 'a')));
+                CHECK_FALSE(merovingian::identity::id_access_token_is_valid(
+                    std::string(merovingian::identity::max_id_access_token_bytes + 1U, 'a')));
             }
         }
     }

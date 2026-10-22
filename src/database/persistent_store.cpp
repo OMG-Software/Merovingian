@@ -5055,6 +5055,88 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto count_appservice_outbox_entries(PersistentStore const& store, std::string_view appservice_id)
+    -> std::size_t
+{
+    // The vector is sorted by appservice_id first, so one appservice's rows are contiguous and two
+    // binary searches bound them: this runs per event under runtime.mutex, so it must not scan.
+    auto const first = outbox_lower_bound(store.appservice_outbox, appservice_id, 0U);
+    auto const last = std::upper_bound(first, store.appservice_outbox.end(), appservice_id,
+                                       [](std::string_view id, PersistentAppserviceOutboxEntry const& entry) {
+                                           return id < entry.appservice_id;
+                                       });
+    return static_cast<std::size_t>(std::distance(first, last));
+}
+
+[[nodiscard]] auto has_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id,
+                                               std::uint64_t stream_ordering) -> bool
+{
+    auto const position = outbox_lower_bound(store.appservice_outbox, appservice_id, stream_ordering);
+    return position != store.appservice_outbox.end() && position->appservice_id == appservice_id &&
+           position->stream_ordering == stream_ordering;
+}
+
+namespace
+{
+
+    [[nodiscard]] auto same_directory_entry(PersistentAppserviceDirectoryEntry const& left,
+                                            PersistentAppserviceDirectoryEntry const& right) noexcept -> bool
+    {
+        return left.appservice_id == right.appservice_id && left.network_id == right.network_id &&
+               left.room_id == right.room_id;
+    }
+
+} // namespace
+
+[[nodiscard]] auto set_appservice_directory_entry(PersistentStore& store, PersistentAppserviceDirectoryEntry entry,
+                                                  bool listed) -> bool
+{
+    if (entry.appservice_id.empty() || entry.network_id.empty() || entry.room_id.empty())
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.appservice_directory, [&entry](PersistentAppserviceDirectoryEntry const& row) {
+            return same_directory_entry(row, entry);
+        });
+    if (listed == (existing != store.appservice_directory.end()))
+    {
+        return true; // already in the requested state
+    }
+    auto const bound = std::vector<BoundValue>{public_value(entry.appservice_id), public_value(entry.network_id),
+                                               public_value(entry.room_id)};
+    auto const statement =
+        listed ? record_statement("list_appservice_directory",
+                                  "INSERT INTO appservice_directory (appservice_id, network_id, room_id) VALUES "
+                                  "($1, $2, $3) ON CONFLICT (appservice_id, network_id, room_id) DO NOTHING",
+                                  bound)
+               : record_statement("unlist_appservice_directory",
+                                  "DELETE FROM appservice_directory WHERE appservice_id = $1 AND network_id = $2 "
+                                  "AND room_id = $3",
+                                  bound);
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    if (listed)
+    {
+        store.appservice_directory.push_back(std::move(entry));
+    }
+    else
+    {
+        store.appservice_directory.erase(existing);
+    }
+    return true;
+}
+
+[[nodiscard]] auto appservice_directory_contains(PersistentStore const& store, std::string_view appservice_id,
+                                                 std::string_view network_id, std::string_view room_id) -> bool
+{
+    return std::ranges::any_of(store.appservice_directory, [&](PersistentAppserviceDirectoryEntry const& row) {
+        return row.appservice_id == appservice_id && row.network_id == network_id && row.room_id == room_id;
+    });
+}
+
 [[nodiscard]] auto find_first_appservice_outbox_entry(PersistentStore const& store, std::string_view appservice_id)
     -> std::optional<PersistentAppserviceOutboxEntry>
 {

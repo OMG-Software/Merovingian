@@ -6,6 +6,7 @@
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -86,6 +87,18 @@ struct IdentityServerUrl final
 // anything that is not an `https://` URL with a non-empty host. No network.
 [[nodiscard]] auto parse_identity_server_url(std::string_view url) -> std::optional<IdentityServerUrl>;
 
+// The most bytes of `id_access_token` the homeserver forwards to an identity server.
+inline constexpr auto max_id_access_token_bytes = std::size_t{4096U};
+
+// True when `token` can be sent as `Authorization: Bearer <token>` without altering the request
+// around it: at most max_id_access_token_bytes, every byte printable, non-blank ASCII (0x21 to
+// 0x7E). The client supplies the token as a JSON string, so after unescaping it can hold CR, LF,
+// NUL or any other control character, and the outbound client writes header text verbatim
+// (security audit run-1, sp02.is-token-crlf-header-injection). The client-server boundary calls
+// this and answers 400 M_INVALID_PARAM; the outbound client refuses such a header independently.
+// The empty string is valid here: callers treat an empty token as absent.
+[[nodiscard]] auto id_access_token_is_valid(std::string_view token) noexcept -> bool;
+
 // Pure request-body builders. Each returns the canonical JSON body for one IS
 // endpoint. No network — unit-testable in isolation.
 [[nodiscard]] auto build_store_invite_body(std::string_view medium, std::string_view address, std::string_view room_id,
@@ -99,15 +112,21 @@ struct IdentityServerUrl final
 [[nodiscard]] auto build_unbind_body(std::string_view client_secret, std::string_view sid, std::string_view medium,
                                      std::string_view address) -> std::string;
 
+// Body for POST /_matrix/identity/v2/validate/email/requestToken. `send_attempt`
+// is required by the Identity Service API ("The server will only send an email
+// if the send_attempt is a number greater than the most recent one which it has
+// seen") and is forwarded exactly as the client gave it: dropping it makes the
+// identity server treat every retry as a fresh attempt, or refuse the request.
 [[nodiscard]] auto build_request_token_body(std::string_view client_secret, std::string_view email,
-                                            std::string_view next_link) -> std::string;
+                                            std::string_view next_link, std::uint64_t send_attempt) -> std::string;
 
 // Body for POST /_matrix/identity/v2/validate/msisdn/requestToken. `country` is a
 // two-letter ISO-3166-1 alpha-2 code; `phone_number` is the MSISDN digits. The
 // optional `next_link` is omitted when empty (matches the email builder).
+// `send_attempt` is required and forwarded as given, as for the email builder.
 [[nodiscard]] auto build_request_msisdn_token_body(std::string_view client_secret, std::string_view country,
-                                                   std::string_view phone_number, std::string_view next_link)
-    -> std::string;
+                                                   std::string_view phone_number, std::string_view next_link,
+                                                   std::uint64_t send_attempt) -> std::string;
 
 // Pure response parsers. Return nullopt on a malformed body. No network.
 [[nodiscard]] auto parse_store_invite_response(std::string_view body) -> std::optional<StoreInviteResponse>;
@@ -203,15 +222,16 @@ public:
     // persists the (sid, client_secret) pair. Authenticated.
     [[nodiscard]] auto request_email_token(std::string_view base_url, std::string_view id_access_token,
                                            std::string_view client_secret, std::string_view email,
-                                           std::string_view next_link) -> IdentityServerResult;
+                                           std::string_view next_link, std::uint64_t send_attempt)
+        -> IdentityServerResult;
 
     // POST /_matrix/identity/v2/validate/msisdn/requestToken. Starts an MSISDN
     // validation session; the IS sends an SMS token and returns a `sid`. The
     // caller persists the (sid, client_secret) pair. Authenticated.
     [[nodiscard]] auto request_msisdn_token(std::string_view base_url, std::string_view id_access_token,
                                             std::string_view client_secret, std::string_view country,
-                                            std::string_view phone_number, std::string_view next_link)
-        -> IdentityServerResult;
+                                            std::string_view phone_number, std::string_view next_link,
+                                            std::uint64_t send_attempt) -> IdentityServerResult;
 
 private:
     // Builds and performs one IS request: resolves base_url to SSRF-safe pinned

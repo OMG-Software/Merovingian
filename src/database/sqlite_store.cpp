@@ -1113,6 +1113,14 @@ namespace
                              entry.stream_id = parse_u64(column_text(row, 6));
                              store.receipts.push_back(std::move(entry));
                          }) &&
+               load_rows(connection, "SELECT appservice_id, network_id, room_id FROM appservice_directory",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentAppserviceDirectoryEntry entry{};
+                             entry.appservice_id = column_text(row, 0);
+                             entry.network_id = column_text(row, 1);
+                             entry.room_id = column_text(row, 2);
+                             store.appservice_directory.push_back(std::move(entry));
+                         }) &&
                load_rows(connection,
                          "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups",
                          [&store](sqlite3_stmt& row) {

@@ -45,6 +45,16 @@ endpoints, only calls them.
   empty `id_access_token` selects mode 2. The `client_secret`/`sid` are
   persisted (migration `007`) only for IS-bound 3PIDs so the HS can remotely
   unbind after the user's original `id_access_token` is long gone.
+- **`id_access_token` becomes an HTTP header, so it is validated before it is forwarded.** It is a JSON
+  string, which can hold CR and LF once unescaped. `id_access_token_is_valid` (printable ASCII 0x21 to
+  0x7E, at most `max_id_access_token_bytes` = 4096) is checked at every client-server route that
+  forwards the token and answers `400 M_INVALID_PARAM`; `http::OutboundClient` independently refuses a
+  header holding a control character (`OutboundError::invalid_header`, ADR-0180). A new route that
+  forwards the token calls the helper first.
+- **`send_attempt` is forwarded as the client sent it.** `build_request_token_body` and
+  `build_request_msisdn_token_body` both take it (the IS "will only send an email if the send_attempt is
+  a number greater than the most recent one which it has seen"), and `request_email_token` /
+  `request_msisdn_token` pass it through. Dropping it is a conformance defect (R09).
 - **The IS owns the store-invite token + ephemeral key, not the HS.** Per
   v1.19, `POST /store-invite` returns `{token, display_name, public_keys}` —
   the HS embeds the IS-provided `public_key`/`key_validity_url` in the

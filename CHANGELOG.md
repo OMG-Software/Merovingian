@@ -1,3 +1,40 @@
+## 0.12.37
+
+Conformance audit wave 3: the Application Service and Identity Service findings R07, R08 and R09,
+the appservice ping and network directories, and `createRoom` appservice delivery.
+
+- **FIXED (R07):** an appservice was interested in an event only through its sender, the room's
+  joined members, or the room's first alias, so an invite to one of its virtual users (who is not yet
+  joined) never reached it. Interest now includes the `state_key` of an `m.room.member` event (the
+  target) and every alias of the room (`appservice::EventInterestFacts`). An invite received over
+  federation for a room this server is not in, stored only as an outlier, is now queued too: no
+  later transaction brings it again.
+- **FIXED (R08):** `receive_ephemeral` is honoured. `m.typing`, `m.receipt` (a private read receipt
+  only for a user in the appservice's namespaces) and `m.presence` (including the one a profile
+  change sends) are queued in memory per appservice, coalesced by what they describe, bounded (512
+  items, 100 per transaction, 20000 namespace matches per presence update), and sent in the
+  transaction's `ephemeral` array, alone in an events-free transaction when no event is queued. A
+  retry resends the same items under the same ID (ADR-0190).
+- **FIXED (R09):** the four `requestToken` endpoints forward `send_attempt` to the identity server.
+- **ADDED:** `POST /_matrix/client/v1/appservice/{appserviceId}/ping` and the outbound
+  `POST /_matrix/app/v1/ping`, with `duration_ms`, `M_URL_NOT_SET`, `M_FORBIDDEN`,
+  `M_CONNECTION_FAILED`, `M_BAD_STATUS` (status and a bounded body) and `M_CONNECTION_TIMEOUT`. The
+  call releases `runtime.mutex` and holds a client-outbound slot; `transaction_id` is copied as given.
+- **ADDED:** `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}`, persisted in the
+  new `appservice_directory` table (migration `025`, schema version 25), and `third_party_instance_id`
+  / `include_all_networks` on `POST /publicRooms`. `instance_id` is now
+  `<registration id>:<protocol>:<index>` so it names the network (ADR-0192). An appservice may list
+  only a room it is interested in, under a protocol it declares.
+- **FIXED:** `createRoom` queues the events it creates for interested appservices, as does the
+  third-party invite stored on join.
+- **SECURITY:** the queue of one appservice is capped by `appservice.max_queued_events` (default
+  100000). Further events are refused, counted (`merovingian_appservice_outbox_dropped_total`),
+  logged and audited as `appservice.outbox.full` (ADR-0191, noted on ADR-0163). New metrics:
+  `merovingian_appservice_outbox_queued` and `merovingian_appservice_ephemeral_dropped_total`.
+- **SECURITY:** every client-server route that forwards an `id_access_token` refuses one that is not
+  printable ASCII without spaces of at most 4096 bytes (`400 M_INVALID_PARAM`), before the outbound
+  client's own header check (ADR-0180).
+
 ## 0.12.36
 
 Fixes the federation findings of the 17 October 2026 conformance audit (wave 2: R04, R05, R06,

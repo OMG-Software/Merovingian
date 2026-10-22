@@ -966,6 +966,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "appservice.response_max_size");
     }
+    if (current.appservice().max_queued_events != next.appservice().max_queued_events)
+    {
+        add_change(plan, "appservice.max_queued_events");
+    }
     return plan;
 }
 

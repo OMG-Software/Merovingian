@@ -8,6 +8,9 @@
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -54,7 +57,24 @@ namespace
         return canonicaljson::make_member(std::string{key}, canonicaljson::Value{std::string{value}});
     }
 
+    // A send_attempt is a positive integer the client chose; saturate rather than wrap if it ever
+    // exceeds the signed range canonical JSON can carry (the client API parses it as int64 already).
+    [[nodiscard]] auto make_send_attempt_member(std::uint64_t send_attempt) -> canonicaljson::ObjectMember
+    {
+        constexpr auto largest = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+        return canonicaljson::make_member(
+            "send_attempt", canonicaljson::Value{static_cast<std::int64_t>(std::min(send_attempt, largest))});
+    }
+
 } // namespace
+
+auto id_access_token_is_valid(std::string_view token) noexcept -> bool
+{
+    return token.size() <= max_id_access_token_bytes && std::ranges::all_of(token, [](char const character) noexcept {
+               auto const byte = static_cast<unsigned char>(character);
+               return byte >= 0x21U && byte <= 0x7EU;
+           });
+}
 
 auto parse_identity_server_url(std::string_view url) -> std::optional<IdentityServerUrl>
 {
@@ -159,8 +179,8 @@ auto build_unbind_body(std::string_view client_secret, std::string_view sid, std
     return serialize_object(std::move(obj));
 }
 
-auto build_request_token_body(std::string_view client_secret, std::string_view email, std::string_view next_link)
-    -> std::string
+auto build_request_token_body(std::string_view client_secret, std::string_view email, std::string_view next_link,
+                              std::uint64_t send_attempt) -> std::string
 {
     auto obj = canonicaljson::Object{};
     obj.push_back(make_str_member("client_secret", client_secret));
@@ -169,11 +189,13 @@ auto build_request_token_body(std::string_view client_secret, std::string_view e
     {
         obj.push_back(make_str_member("next_link", next_link));
     }
+    obj.push_back(make_send_attempt_member(send_attempt));
     return serialize_object(std::move(obj));
 }
 
 auto build_request_msisdn_token_body(std::string_view client_secret, std::string_view country,
-                                     std::string_view phone_number, std::string_view next_link) -> std::string
+                                     std::string_view phone_number, std::string_view next_link,
+                                     std::uint64_t send_attempt) -> std::string
 {
     auto obj = canonicaljson::Object{};
     obj.push_back(make_str_member("client_secret", client_secret));
@@ -183,6 +205,7 @@ auto build_request_msisdn_token_body(std::string_view client_secret, std::string
     {
         obj.push_back(make_str_member("next_link", next_link));
     }
+    obj.push_back(make_send_attempt_member(send_attempt));
     return serialize_object(std::move(obj));
 }
 
@@ -438,19 +461,20 @@ auto IdentityServerClient::unbind(std::string_view base_url, std::string_view id
 
 auto IdentityServerClient::request_email_token(std::string_view base_url, std::string_view id_access_token,
                                                std::string_view client_secret, std::string_view email,
-                                               std::string_view next_link) -> IdentityServerResult
+                                               std::string_view next_link, std::uint64_t send_attempt)
+    -> IdentityServerResult
 {
     return perform(base_url, "POST", "/_matrix/identity/v2/validate/email/requestToken", id_access_token,
-                   build_request_token_body(client_secret, email, next_link));
+                   build_request_token_body(client_secret, email, next_link, send_attempt));
 }
 
 auto IdentityServerClient::request_msisdn_token(std::string_view base_url, std::string_view id_access_token,
                                                 std::string_view client_secret, std::string_view country,
-                                                std::string_view phone_number, std::string_view next_link)
-    -> IdentityServerResult
+                                                std::string_view phone_number, std::string_view next_link,
+                                                std::uint64_t send_attempt) -> IdentityServerResult
 {
     return perform(base_url, "POST", "/_matrix/identity/v2/validate/msisdn/requestToken", id_access_token,
-                   build_request_msisdn_token_body(client_secret, country, phone_number, next_link));
+                   build_request_msisdn_token_body(client_secret, country, phone_number, next_link, send_attempt));
 }
 
 } // namespace merovingian::identity

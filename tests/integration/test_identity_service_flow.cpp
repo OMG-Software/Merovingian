@@ -148,13 +148,13 @@ constexpr auto validated_at_ms = std::uint64_t{1700000000000U};
 
 // requestToken body for an email or an msisdn; `identity_server` adds the
 // id_server / id_access_token pair that delegates the validation to it.
-[[nodiscard]] auto request_token_body(bool msisdn, std::string const& secret, MockIdentityServer const* identity_server)
-    -> std::string
+[[nodiscard]] auto request_token_body(bool msisdn, std::string const& secret, MockIdentityServer const* identity_server,
+                                      std::uint64_t send_attempt = 1U) -> std::string
 {
     auto body = std::string{R"({"client_secret":")"} + secret + R"(",)";
     body += msisdn ? R"("country":"GB","phone_number":")" + std::string{msisdn_address} + R"(",)"
                    : R"("email":")" + std::string{email_address} + R"(",)";
-    body += R"("send_attempt":1)";
+    body += R"("send_attempt":)" + std::to_string(send_attempt);
     if (identity_server != nullptr)
     {
         body += R"(,"id_server":")" + identity_server->host_port() + R"(","id_access_token":"opaque")";
@@ -530,6 +530,132 @@ SCENARIO("A delegated validation session starts unvalidated and remembers its id
                     REQUIRE(session.identity_access_token == "opaque");
                 }
                 REQUIRE(identity_server.count_requests("getValidated3pid") == 0U);
+            }
+        }
+    }
+}
+
+// Spec: Identity Service API v2, POST /validate/email/requestToken and
+// POST /validate/msisdn/requestToken (identity-service-api.md): `send_attempt` is
+// "Required": "The server will only send an email if the send_attempt is a number
+// greater than the most recent one which it has seen ... The client should increment
+// this value if they desire a new email (e.g. a reminder) to be sent."
+// R09: the homeserver parsed it but never put it on the outbound call.
+SCENARIO("All four requestToken endpoints forward the client's send_attempt to the identity server",
+         "[homeserver][identity][integration][r09]")
+{
+    GIVEN("a trusted identity server that issues a sid for every requestToken")
+    {
+        auto started = merovingian::homeserver::start_client_server(integration_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto identity_server = MockIdentityServer{identity_responses(not_validated_response())};
+        identity_server.install(runtime);
+
+        WHEN("each endpoint is called with a send_attempt above one")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            statuses.push_back(post(runtime, "/_matrix/client/v3/register/email/requestToken", {},
+                                    request_token_body(false, "secret-1", &identity_server, 7U))
+                                   .response.status);
+            statuses.push_back(post(runtime, "/_matrix/client/v3/register/msisdn/requestToken", {},
+                                    request_token_body(true, "secret-2", &identity_server, 8U))
+                                   .response.status);
+            statuses.push_back(post(runtime, "/_matrix/client/v3/account/3pid/email/requestToken", {},
+                                    request_token_body(false, "secret-3", &identity_server, 9U))
+                                   .response.status);
+            statuses.push_back(post(runtime, "/_matrix/client/v3/account/3pid/msisdn/requestToken", {},
+                                    request_token_body(true, "secret-4", &identity_server, 10U))
+                                   .response.status);
+
+            THEN("every outbound requestToken body carries that send_attempt, for email and msisdn alike")
+            {
+                REQUIRE(statuses == std::vector<std::uint16_t>(4U, 200U));
+                auto const requests = identity_server.requests();
+                auto const request_for = [&requests](std::string_view path, std::string_view secret) -> std::string {
+                    for (auto const& request : requests)
+                    {
+                        if (request.find(path) != std::string::npos && request.find(secret) != std::string::npos)
+                        {
+                            return request;
+                        }
+                    }
+                    return {};
+                };
+                auto const email_one = request_for("validate/email/requestToken", "secret-1");
+                auto const msisdn_two = request_for("validate/msisdn/requestToken", "secret-2");
+                auto const email_three = request_for("validate/email/requestToken", "secret-3");
+                auto const msisdn_four = request_for("validate/msisdn/requestToken", "secret-4");
+                REQUIRE_FALSE(email_one.empty());
+                REQUIRE_FALSE(msisdn_two.empty());
+                REQUIRE_FALSE(email_three.empty());
+                REQUIRE_FALSE(msisdn_four.empty());
+                CHECK(email_one.find(R"("send_attempt":7)") != std::string::npos);
+                CHECK(msisdn_two.find(R"("send_attempt":8)") != std::string::npos);
+                CHECK(email_three.find(R"("send_attempt":9)") != std::string::npos);
+                CHECK(msisdn_four.find(R"("send_attempt":10)") != std::string::npos);
+            }
+        }
+    }
+}
+
+// Security audit run-1, sp02.is-token-crlf-header-injection. `id_access_token` is a JSON string, so
+// "\r\n" in it arrives as real CR LF, and it becomes the Authorization header of the call to the
+// identity server. The client-server boundary refuses it before any identity-server call is made.
+SCENARIO("An id_access_token holding a line break is refused before any identity-server call",
+         "[homeserver][identity][integration][security][sp02]")
+{
+    GIVEN("a trusted identity server and a signed-in user with a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(integration_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_and_login(runtime, "alice");
+        auto identity_server = MockIdentityServer{identity_responses(not_validated_response())};
+        identity_server.install(runtime);
+        auto const hostile_token = std::string{R"("opaque\r\nX-Injected: 1")"};
+        auto const trusted = identity_server.host_port();
+
+        WHEN("each endpoint that forwards id_access_token receives one with CR LF")
+        {
+            auto statuses = std::vector<std::uint16_t>{};
+            auto errcodes = std::vector<std::string>{};
+            auto const record = [&](merovingian::homeserver::DispatchResult const& result) {
+                statuses.push_back(result.response.status);
+                auto const error_body = parse_object(result.response.body);
+                auto const* errcode = string_member(error_body, "errcode");
+                errcodes.push_back(errcode != nullptr ? *errcode : std::string{});
+            };
+            auto const with_hostile_token = [&](bool msisdn) {
+                auto body = request_token_body(msisdn, "secret-crlf", &identity_server);
+                auto const marker = std::string{R"("id_access_token":"opaque")"};
+                body.replace(body.find(marker), marker.size(), R"("id_access_token":)" + hostile_token);
+                return body;
+            };
+            record(post(runtime, "/_matrix/client/v3/register/email/requestToken", {}, with_hostile_token(false)));
+            record(post(runtime, "/_matrix/client/v3/register/msisdn/requestToken", {}, with_hostile_token(true)));
+            record(post(runtime, "/_matrix/client/v3/account/3pid/email/requestToken", {}, with_hostile_token(false)));
+            record(post(runtime, "/_matrix/client/v3/account/3pid/msisdn/requestToken", {}, with_hostile_token(true)));
+            record(post(runtime, "/_matrix/client/v3/account/3pid/bind", alice,
+                        R"({"client_secret":"secret-crlf","sid":"is-sid-42","id_server":")" + trusted +
+                            R"(","id_access_token":)" + hostile_token + "}"));
+            record(post(runtime, "/_matrix/client/v3/account/3pid", alice,
+                        R"({"three_pid_creds":{"client_secret":"secret-crlf","sid":"is-sid-42","id_server":")" +
+                            trusted + R"(","id_access_token":)" + hostile_token + "}}"));
+            auto const room = post(runtime, "/_matrix/client/v3/createRoom", alice, "{}");
+            REQUIRE(room.response.status == 200U);
+            auto const room_id = *string_member(parse_object(room.response.body), "room_id");
+            record(post(runtime, "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                        R"({"id_server":")" + trusted +
+                            R"(","medium":"email","address":"bob@example.org","id_access_token":)" + hostile_token +
+                            "}"));
+
+            THEN("every one is 400 M_INVALID_PARAM and the identity server saw no request")
+            {
+                REQUIRE(statuses == std::vector<std::uint16_t>(7U, 400U));
+                REQUIRE(errcodes == std::vector<std::string>(7U, "M_INVALID_PARAM"));
+                REQUIRE(identity_server.requests().empty());
+                REQUIRE(runtime.registration_validation_sessions.empty());
             }
         }
     }

@@ -37,12 +37,15 @@ struct AppserviceTransactionEvent final
 };
 
 // One `PUT /_matrix/app/v1/transactions/{txnId}` call's worth of events.
-// `ephemeral` data (m.presence/m.typing/m.receipt, spec v1.13) is not yet
-// implemented — see docs/todos/capability-gaps.md.
+// `ephemeral_json` is the request body's `ephemeral` array (m.presence,
+// m.typing and m.receipt, spec v1.13): each element is one already-serialized
+// event object, built by homeserver/appservice_ephemeral.hpp, and is parsed
+// back only to be embedded. The property is omitted when the list is empty.
 struct AppserviceTransaction final
 {
     std::string txn_id{};
     std::vector<AppserviceTransactionEvent> events{};
+    std::vector<std::string> ephemeral_json{};
 };
 
 // Pure builder: no network, no I/O. Unit-testable in isolation.
@@ -59,6 +62,43 @@ struct AppserviceCallResult final
     http::OutboundError error{http::OutboundError::none};
     std::string error_detail{};
 };
+
+// Why a ping did not succeed, as the client-server ping endpoint reports it
+// (Application Service API, "Pinging"): 400 M_URL_NOT_SET, 502 M_CONNECTION_FAILED,
+// 502 M_BAD_STATUS and 504 M_CONNECTION_TIMEOUT.
+enum class AppservicePingFailure : std::uint8_t
+{
+    none,
+    url_not_set,
+    connection_failed,
+    connection_timeout,
+    bad_status,
+};
+
+// Outcome of `POST /_matrix/app/v1/ping`. `duration_ms` is how long the request took from this
+// homeserver's point of view. For `bad_status`, `status` is the appservice's HTTP status and
+// `body` its response body text, cut to max_ping_body_bytes; both are untrusted text.
+struct AppservicePingResult final
+{
+    AppservicePingFailure failure{AppservicePingFailure::none};
+    std::uint16_t status{0U};
+    std::string body{};
+    std::int64_t duration_ms{0};
+    http::OutboundError error{http::OutboundError::none};
+    std::string error_detail{};
+
+    [[nodiscard]] auto ok() const noexcept -> bool
+    {
+        return failure == AppservicePingFailure::none;
+    }
+};
+
+// The most bytes of an appservice's ping response body kept for the `body` of an M_BAD_STATUS error.
+inline constexpr auto max_ping_body_bytes = std::size_t{1024U};
+
+// Pure: the request body of `POST /_matrix/app/v1/ping`: `{"transaction_id":"..."}`, the ID "copied
+// directly" from the client call (an empty string included), or `{}` when the appservice sent none.
+[[nodiscard]] auto build_ping_request_body(std::optional<std::string_view> transaction_id) -> std::string;
 
 // Outcome of a `GET /_matrix/app/v1/users/{userId}` or
 // `GET /_matrix/app/v1/rooms/{roomAlias}` query. `exists` reflects the
@@ -218,6 +258,14 @@ public:
     // immediately (no network I/O) when `registration.url` is nullopt.
     [[nodiscard]] auto send_transaction(AppserviceRegistration const& registration,
                                         AppserviceTransaction const& transaction) -> AppserviceCallResult;
+
+    // POST /_matrix/app/v1/ping — "called by the homeserver to ensure that the connection works
+    // and the hs_token the homeserver has is correct", as the direct result of the appservice
+    // calling POST /_matrix/client/v1/appservice/{appserviceId}/ping. Sends the registration's
+    // hs_token like every other call. Blocks for up to the configured total timeout, so a caller
+    // must not hold runtime.mutex (RuntimeLockRelease) while it runs.
+    [[nodiscard]] auto ping(AppserviceRegistration const& registration, std::optional<std::string_view> transaction_id)
+        -> AppservicePingResult;
 
     // GET /_matrix/app/v1/users/{userId} — spec: "The homeserver will only
     // query user IDs inside the application service's users namespace." The

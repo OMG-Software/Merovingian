@@ -823,6 +823,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     validate_count("appservice.connect_timeout_seconds", config.appservice().connect_timeout_seconds, 120U);
     validate_count("appservice.total_timeout_seconds", config.appservice().total_timeout_seconds, 300U);
     validate_bytes("appservice.response_max_size", config.appservice().response_max_size, 67108864U);
+    validate_count("appservice.max_queued_events", config.appservice().max_queued_events, 10000000U);
     if (config.appservice().connect_timeout_seconds > config.appservice().total_timeout_seconds)
     {
         findings.push_back({"appservice.connect_timeout_seconds", "must not exceed total_timeout_seconds"});

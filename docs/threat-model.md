@@ -1537,6 +1537,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   process, or a future feature lets a namespace owner influence `url` — this
   exemption must be revisited alongside it.
 
+- **Unbounded appservice queues, ephemeral fan-out under the lock, and appservice-chosen directory
+  listings (conformance wave 3, ADR-0190 to ADR-0192).** The outbox of a bridge that never returned grew
+  without bound; it is now capped per appservice (`appservice.max_queued_events`), with the refusal
+  counted, logged and audited. Ephemeral data for appservices is in memory, bounded, coalesced, and its
+  per-update namespace matching is budgeted. The appservice ping runs under the client-outbound budget
+  (ADR-0079) with `runtime.mutex` released, and only the appservice named in the path may ping it. An
+  appservice may list a room in a network directory only if it declares the protocol and has an
+  interest in the room, so it cannot publish an arbitrary private room's metadata. The client-server
+  routes that forward an `id_access_token` refuse one an identity-server header could not carry
+  (`identity::id_access_token_is_valid`, `400 M_INVALID_PARAM`), in addition to the outbound client's
+  header check (ADR-0180).
+
 - **Power-level escalation from moderator to room owner (0.12.4):**
   authorization rule 9 was implemented only for `content.users`. The scalar keys
   (`users_default`, `events_default`, `state_default`, `ban`, `redact`, `kick`,

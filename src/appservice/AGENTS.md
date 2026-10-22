@@ -10,7 +10,7 @@ assertion (`?user_id=`), and the outbound `/_matrix/app/v1/*` client.
 | `registration.cpp` | Record types, JSON parsing, namespace matching and exclusivity, registry lookup, cross-registration validation |
 | `registration_yaml.cpp` | The bounded YAML-subset parser — the format real registration files actually use |
 | `masquerade_token.cpp` | `?user_id=` identity assertion, scoped to the asserting appservice's namespaces |
-| `appservice_client.cpp` | Outbound `PUT /transactions/{txnId}`, `GET /users/{userId}`, `GET /rooms/{roomAlias}`, and the five `GET /thirdparty/*` third-party lookup calls |
+| `appservice_client.cpp` | Outbound `PUT /transactions/{txnId}` (with the optional `ephemeral` array), `POST /ping`, `GET /users/{userId}`, `GET /rooms/{roomAlias}`, and the five `GET /thirdparty/*` third-party lookup calls |
 
 ## Third-party lookups
 
@@ -27,6 +27,9 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   M_NOT_FOUND` without any outbound call. The bare `location`/`user` routes
   (alias/userid lookup) have no such ownership signal, so they fan out to
   *every* registered appservice and aggregate.
+- **Every such client request holds an ADR-0079 slot** (`admit_client_proxy`) before the first outbound
+  call, and each appservice keeps its own timeout (ADR-0181, which rejected one shared deadline because it
+  would drop later appservices' answers from the aggregate).
 - **Aggregation degrades, never fails**: an appservice that times out,
   refuses the connection, or returns a non-200/malformed body contributes
   nothing and is skipped — it does not turn the whole client request into an
@@ -34,8 +37,9 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   answer 404 (or `{}` for `/protocols`).
 - **`instance_id` is homeserver-minted**, never trusted from the appservice
   reply (spec: "This field is added to the response ... by the homeserver").
-  It is `<registration id>:<instance index>`, unique across the homeserver
-  because registration `id`s are enforced unique at load time.
+  It is `<registration id>:<protocol>:<instance index>` (see "Instance IDs"),
+  unique across the homeserver because registration `id`s are enforced unique
+  at load time and the protocol is part of the ID.
 - **Untrusted response parsing**: `parse_thirdparty_protocol_response`/
   `parse_thirdparty_location_response`/`parse_thirdparty_user_response` are
   pure, network-free, and exported specifically so the bounded/type-checked
@@ -83,6 +87,32 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   it. Namespace matching runs per member per event under `runtime.mutex`, so
   never compile a pattern on a request path. `namespace_matches(pattern, value)`
   compiles per call and is for one-off checks only.
+
+## Interest (R07)
+
+`registration_interested_in_room_event(registration, server_name, EventInterestFacts)` decides whether an
+event is queued for an appservice. The spec's definition is: the `rooms` namespace matches the room ID, the
+`aliases` namespace matches **any** alias of the room, and the `users` namespace (plus `sender_localpart`)
+matches the sender, **the target of the event**, or a joined member. The target of an `m.room.member` event is
+its `state_key`, so an invite to a virtual user who has not joined is delivered; pass it as
+`member_event_target` (callers get it from `ComposedEvent::state_key`). Only local users count
+(`appservice_owns_user` checks the server name), so a remote user matching a namespace regex never makes an
+appservice interested by itself. Never reduce the facts back to a single alias or drop the target.
+
+## Ping
+
+`AppserviceClient::ping` sends `POST /_matrix/app/v1/ping` (`{"transaction_id": ...}` or `{}`) with the
+hs_token and classifies the outcome as an `AppservicePingFailure`: `url_not_set` (400), `connection_timeout`
+(`OutboundError::timeout`, 504), `bad_status` (the appservice answered, including a refused redirect; 502 with
+its status and at most `max_ping_body_bytes` of its body) or `connection_failed` (anything else, 502). The
+caller releases `runtime.mutex` (`RuntimeLockRelease`) and holds an ADR-0079 slot for the call.
+
+## Instance IDs
+
+`instance_id` is `<registration id>:<protocol>:<index>`, the first two percent-encoded, minted by
+`thirdparty_protocol_json`. The protocol is part of it because a registration with two protocols would
+otherwise mint `id:0` twice, and so that a `third_party_instance_id` in `POST /publicRooms` resolves to the
+directory network (appservice, protocol) it names without asking the appservice (ADR-0192).
 
 ## Security rules
 

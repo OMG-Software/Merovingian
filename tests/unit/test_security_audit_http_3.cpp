@@ -385,6 +385,10 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
          "/_matrix/client/unstable/im.nheko.summary/summary/%21a%3Aexample.org",                                                             "/_matrix/client/unstable/im.nheko.summary/summary/%21b%3Aexample.org"           },
         {"/_matrix/client/unstable/im.nheko.summary/rooms/{roomIdOrAlias}/summary",
          "/_matrix/client/unstable/im.nheko.summary/rooms/%21a%3Aexample.org/summary",                                                       "/_matrix/client/unstable/im.nheko.summary/rooms/%21b%3Aexample.org/summary"     },
+        {"/_matrix/client/v1/appservice/{appserviceId}/ping",                       "/_matrix/client/v1/appservice/one/ping",
+         "/_matrix/client/v1/appservice/two/ping"                                                                                                                                                                             },
+        {"/_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}",
+         "/_matrix/client/v3/directory/list/appservice/irc/%21a%3Aexample.org",                                                              "/_matrix/client/v3/directory/list/appservice/gitter/%21b%3Aexample.org"         },
     };
 
     GIVEN("a one-request operator cap keyed on each route template")

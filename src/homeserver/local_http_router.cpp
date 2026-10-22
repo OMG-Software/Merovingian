@@ -25,6 +25,8 @@
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/server_acl.hpp"
+#include "merovingian/homeserver/appservice_delivery.hpp"
+#include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/deferred_pdu_retry.hpp"
@@ -1867,7 +1869,10 @@ namespace
                             // data the peer has already been told was accepted, and the next
                             // receipt from this user replaces it in any case. Commit any
                             // eviction with the upsert so failure preserves the old receipt.
-                            std::ignore = database::store_receipt(store, std::move(incoming), std::move(evicted));
+                            if (database::store_receipt(store, incoming, std::move(evicted)))
+                            {
+                                queue_appservice_receipt(*rt, incoming);
+                            }
                         }
                     }
                 }
@@ -1925,7 +1930,10 @@ namespace
                     {
                         state.currently_active = *currently_active;
                     }
-                    std::ignore = database::upsert_presence(rt->database.persistent_store, std::move(state));
+                    if (database::upsert_presence(rt->database.persistent_store, state))
+                    {
+                        queue_appservice_presence(*rt, state);
+                    }
                 }
                 if (rt->sync_notifier != nullptr)
                 {
@@ -2878,6 +2886,12 @@ namespace
                 {
                     return {false, 500U, "invite event persistence failed", {}};
                 }
+                // R07: an appservice's virtual user is "the target of the event". No transaction will
+                // bring this event again (this server is not in the room), so this is the only place
+                // it can be queued; this server knows no member of the room, so only the target, the
+                // sender and the room's identifiers can make an appservice interested.
+                enqueue_appservice_delivery(*rt, invite.room_id, {}, invite.event_id, stream_ordering, *sender,
+                                            *target_user);
             }
             auto const sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
             if (rt->sync_notifier != nullptr)

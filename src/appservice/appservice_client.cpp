@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -545,6 +546,31 @@ auto build_transaction_request_body(AppserviceTransaction const& transaction) ->
     }
     auto root = canonicaljson::Object{};
     root.push_back(canonicaljson::make_member("events", canonicaljson::Value{std::move(events)}));
+    // "ephemeral" is optional: it is sent only when there is something in it. An element that
+    // does not parse is skipped rather than failing the events it travels with.
+    auto ephemeral = canonicaljson::Array{};
+    for (auto const& json : transaction.ephemeral_json)
+    {
+        auto parsed = canonicaljson::parse_json(json);
+        if (parsed.error == canonicaljson::ParseError::none)
+        {
+            ephemeral.emplace_back(std::move(parsed.value));
+        }
+    }
+    if (!ephemeral.empty())
+    {
+        root.push_back(canonicaljson::make_member("ephemeral", canonicaljson::Value{std::move(ephemeral)}));
+    }
+    return canonicaljson::serialize_canonical(canonicaljson::Value{std::move(root)}).output;
+}
+
+auto build_ping_request_body(std::optional<std::string_view> transaction_id) -> std::string
+{
+    auto root = canonicaljson::Object{};
+    if (transaction_id.has_value())
+    {
+        root.push_back(make_str_member("transaction_id", *transaction_id));
+    }
     return canonicaljson::serialize_canonical(canonicaljson::Value{std::move(root)}).output;
 }
 
@@ -579,6 +605,48 @@ auto AppserviceClient::send_transaction(AppserviceRegistration const& registrati
         return {false, false, 0U, result.error, result.error_detail};
     }
     return {result.response.status == 200U, false, result.response.status, http::OutboundError::none, {}};
+}
+
+auto AppserviceClient::ping(AppserviceRegistration const& registration, std::optional<std::string_view> transaction_id)
+    -> AppservicePingResult
+{
+    auto ping_result = AppservicePingResult{};
+    if (!registration.url.has_value())
+    {
+        ping_result.failure = AppservicePingFailure::url_not_set;
+        return ping_result;
+    }
+    auto const started = std::chrono::steady_clock::now();
+    auto const [attempted, result] = call_appservice(
+        outbound_, discovery_, registration, "POST", "/_matrix/app/v1/ping", build_ping_request_body(transaction_id),
+        connect_timeout_seconds_, total_timeout_seconds_, response_max_size_bytes_, perform_);
+    ping_result.duration_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    if (!attempted)
+    {
+        ping_result.failure = AppservicePingFailure::url_not_set;
+        return ping_result;
+    }
+    auto const answered = result.ok || result.error == http::OutboundError::redirect_rejected;
+    if (!answered)
+    {
+        // A timeout is its own error ("504 M_CONNECTION_TIMEOUT"); every other way of not getting an
+        // answer (no route, refused, TLS, an unusable URL, an oversize reply) is a failed connection.
+        ping_result.failure = result.error == http::OutboundError::timeout ? AppservicePingFailure::connection_timeout
+                                                                           : AppservicePingFailure::connection_failed;
+        ping_result.error = result.error;
+        ping_result.error_detail = result.error_detail;
+        return ping_result;
+    }
+    // The spec's 200 is the only success; an appservice that redirects has answered with a status too.
+    if (result.ok && result.response.status == 200U)
+    {
+        return ping_result;
+    }
+    ping_result.failure = AppservicePingFailure::bad_status;
+    ping_result.status = result.response.status;
+    ping_result.body = result.response.body.substr(0U, max_ping_body_bytes);
+    return ping_result;
 }
 
 auto AppserviceClient::perform_query(AppserviceRegistration const& registration, std::string_view path)

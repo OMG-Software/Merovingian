@@ -15,6 +15,7 @@
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -123,6 +124,42 @@ namespace
                                               {"component", component.name,                                      true},
                                               {"status",    observability::health_status_name(component.status), true}
             }));
+        }
+
+        // Appservice queues (ADR-0190, ADR-0191): the depth of each outbox, the events refused at the
+        // appservice.max_queued_events cap, and the ephemeral items dropped at their own cap. An
+        // operator alerts on the dropped counters: a non-zero value means a bridge has been
+        // unreachable for long enough to lose events.
+        for (auto const& registration : runtime.appservices.all())
+        {
+            auto const labels = std::vector<observability::MetricLabel>{
+                {"appservice_id", registration.id, true}
+            };
+            auto const find_count = [&registration](auto const& counts) -> std::int64_t {
+                auto const found = counts.find(registration.id);
+                return found == counts.end() ? std::int64_t{0} : static_cast<std::int64_t>(found->second);
+            };
+            auto const ephemeral_dropped = [&]() -> std::int64_t {
+                auto const found = runtime.appservice_ephemeral.find(registration.id);
+                return found == runtime.appservice_ephemeral.end() ? std::int64_t{0}
+                                                                   : static_cast<std::int64_t>(found->second.dropped);
+            }();
+            metrics.push_back(make_metric(
+                "merovingian_appservice_outbox_queued",
+                static_cast<std::int64_t>(database::count_appservice_outbox_entries(store, registration.id)),
+                observability::MetricType::gauge, "Events queued for an application service and not yet delivered.",
+                labels));
+            metrics.push_back(make_metric("merovingian_appservice_outbox_dropped_total",
+                                          find_count(runtime.appservice_outbox_dropped),
+                                          observability::MetricType::counter,
+                                          "Events not queued for an application service because its outbox was at "
+                                          "appservice.max_queued_events, since the process started.",
+                                          labels));
+            metrics.push_back(make_metric("merovingian_appservice_ephemeral_dropped_total", ephemeral_dropped,
+                                          observability::MetricType::counter,
+                                          "Ephemeral items dropped from an application service's queue because it "
+                                          "was full, since the process started.",
+                                          labels));
         }
 
         auto const media_metrics = media::media_repository_metrics(runtime.media_repository);
@@ -432,6 +469,9 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , appservices(std::move(other.appservices))
     , appservice_delivery_wake(std::move(other.appservice_delivery_wake))
     , appservice_delivery_backoff(std::move(other.appservice_delivery_backoff))
+    , appservice_ephemeral(std::move(other.appservice_ephemeral))
+    , appservice_pending_ephemeral(std::move(other.appservice_pending_ephemeral))
+    , appservice_outbox_dropped(std::move(other.appservice_outbox_dropped))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
@@ -483,6 +523,9 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     appservices = std::move(other.appservices);
     appservice_delivery_wake = std::move(other.appservice_delivery_wake);
     appservice_delivery_backoff = std::move(other.appservice_delivery_backoff);
+    appservice_ephemeral = std::move(other.appservice_ephemeral);
+    appservice_pending_ephemeral = std::move(other.appservice_pending_ephemeral);
+    appservice_outbox_dropped = std::move(other.appservice_outbox_dropped);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);
@@ -536,6 +579,9 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     }
     auto const new_id = database::allocate_sync_stream_id(rt.database.persistent_store);
     rt.room_typing_stream_id[std::string{room_id}] = new_id;
+    // Every typing change (local, federated, or cleared by a message send) passes through here, so
+    // this is the one place appservices that receive ephemeral data are told (R08, ADR-0190).
+    queue_appservice_typing(rt, room_id);
     return new_id;
 }
 

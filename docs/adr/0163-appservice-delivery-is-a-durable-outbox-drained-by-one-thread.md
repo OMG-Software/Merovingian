@@ -96,3 +96,12 @@ exponential back-off.
 * `include/merovingian/homeserver/appservice_delivery.hpp`
 * `migrations/022_appservice_outbox.sql`
 * `include/merovingian/homeserver/periodic_job.hpp`
+
+## Notes
+
+* 2026-10-22 (0.12.37): the negative consequence "the queue of an appservice that never returns grows
+  without bound" is now bounded by `appservice.max_queued_events`
+  ([ADR-0191](0191-cap-queued-events-per-appservice.md)). Ephemeral data rides these transactions but
+  is held in memory, not in the outbox
+  ([ADR-0190](0190-appservice-ephemeral-data-is-in-memory-bounded-and-best-effort.md)). The decision
+  above is unchanged.
