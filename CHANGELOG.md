@@ -38,6 +38,7 @@ R18). No migration.
   `docs/event-engine.md`, `docs/threat-model.md`, `docs/security-coding-rules.md`,
   `docs/architecture.md`, `docs/todos/capability-gaps.md` and the federation, homeserver,
   federation-worker and IPC module rules updated.
+
 ## 0.12.35
 
 - **FIXED:** `PUT /_matrix/client/v3/profile/{userId}/displayname` (and `avatar_url`) answered
