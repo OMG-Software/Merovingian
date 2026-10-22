@@ -1636,9 +1636,18 @@ SCENARIO("A typing EDU waits for runtime.mutex before touching typing state",
         WHEN("a typing EDU is delivered to the sink while the lock is held, then the lock is released")
         {
             auto held = std::unique_lock<merovingian::homeserver::RuntimeMutex>{runtime->mutex};
-            auto delivered = std::async(std::launch::async, [&runtime, &envelope] {
+            // RuntimeMutex reports no waiters, so the test cannot see the sink block on it
+            // without a production hook. It waits until the thread is running the sink, then
+            // gives it time it would need only to finish unlocked work. With the fix the sink
+            // cannot finish while the lock is held, so the timing can only miss a regression
+            // under extreme load, never fail a correct build.
+            auto entering = std::promise<void>{};
+            auto entered = entering.get_future();
+            auto delivered = std::async(std::launch::async, [&runtime, &envelope, &entering] {
+                entering.set_value();
                 return runtime->federation.edu_sink(envelope).status;
             });
+            entered.wait();
             auto const finished_while_locked =
                 delivered.wait_for(std::chrono::milliseconds{300}) == std::future_status::ready;
             held.unlock();
