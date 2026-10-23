@@ -153,7 +153,7 @@ struct FileDeleter final
     {
         if (file != nullptr)
         {
-            static_cast<void>(std::fclose(file));
+            std::ignore = std::fclose(file);
         }
     }
 };
@@ -333,7 +333,7 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
         {
             before_send(request_bytes);
         }
-        static_cast<void>(connection.write(is_send ? send_join_response : make_join_response));
+        std::ignore = connection.write(is_send ? send_join_response : make_join_response);
     }
 }
 

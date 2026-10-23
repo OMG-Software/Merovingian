@@ -1277,6 +1277,16 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto open_sqlite_persistent_store(std::string const& path,
                                                 TableLoadProfile profile = TableLoadProfile::full)
     -> PersistentStoreOpenResult;
+// Creates the SQLite database at `path` if it holds no tables, then migrates its
+// schema forward to exactly `target_version` and stops: no rows are hydrated and
+// nothing past that version is applied. It builds a database as an older release
+// left it, so the upgrade path can be tested (ADR-0216); the next
+// open_sqlite_persistent_store takes it the rest of the way. Refuses a target this
+// build does not know (0 or above current_schema_version()) before opening the
+// file, and a schema already past the target, since migrations never run
+// backwards. On success `state` is the schema as read back from the database.
+[[nodiscard]] auto migrate_sqlite_schema_to(std::string const& path, std::uint32_t target_version)
+    -> MigrationApplyResult;
 [[nodiscard]] auto validate_persistent_store(PersistentStore const& store) -> MigrationValidationResult;
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;

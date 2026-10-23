@@ -30,6 +30,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -48,7 +49,7 @@ class TestSqliteConnection final
 public:
     explicit TestSqliteConnection(std::filesystem::path const& path)
     {
-        static_cast<void>(sqlite3_open(path.string().c_str(), &connection_));
+        std::ignore = sqlite3_open(path.string().c_str(), &connection_);
     }
 
     TestSqliteConnection(TestSqliteConnection const& other) = delete;

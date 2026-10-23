@@ -115,6 +115,9 @@ fi
 * Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.43-1
 - Update the SQLite, yyjson, Catch2 and curl wrap pins; remove the unused OpenSSL, LibSodium and libpq wraps.
 
+* Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.42-1
+- Test that a database written by an older release opens, migrates and serves under the new one.
+
 * Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.41-1
 - Serve named media downloads and upload filenames; add asynchronous uploads and opt-in URL previews (conformance audit, media).
 

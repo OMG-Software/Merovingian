@@ -424,7 +424,7 @@ struct FileDeleter final
     {
         if (file != nullptr)
         {
-            static_cast<void>(std::fclose(file));
+            std::ignore = std::fclose(file);
         }
     }
 };

@@ -17,7 +17,8 @@ same thing:
 **Toolchain floor (all platforms):**
 
 - **Clang ≥ 18** (`-std=c++26`) or **GCC ≥ 14**, with the matching
-  `libc++` / `libstdc++` C++26 runtime.
+  `libc++` / `libstdc++` C++26 runtime. CI builds with clang everywhere except the
+  `coverage` job, which builds with GCC 14 (ADR-0217).
 - **Meson ≥ 1.1.0** and Ninja.
 - Core dependencies are vendored and built from subprojects
   (`--wrap-mode=forcefallback`); only the base toolchain and the optional image

@@ -1348,6 +1348,25 @@ namespace
             }
         }
 
+        // Written by store_profile and the displayname/avatar updates, but never
+        // read back until 0.12.42: every profile vanished at each restart.
+        if (table_load_profile_includes("profiles", profile))
+        {
+            auto profiles = query_rows(connection, "postgresql_load_profiles",
+                                       "SELECT user_id, displayname, avatar_url FROM profiles ORDER BY user_id");
+            if (!profiles.ok)
+            {
+                return false;
+            }
+            for (auto const& row : profiles.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.profiles.push_back({row[0], row[1], row[2]});
+                }
+            }
+        }
+
         if (table_load_profile_includes("room_aliases", profile))
         {
             auto room_aliases =
@@ -1691,8 +1710,10 @@ namespace
             }
         }
 
-        auto migrations = query_rows(connection, "postgresql_load_schema_migrations",
-                                     "SELECT version, name, direction FROM schema_migrations ORDER BY version");
+        // `version` is TEXT: ORDER BY it alone puts '10' before '9'.
+        auto migrations =
+            query_rows(connection, "postgresql_load_schema_migrations",
+                       "SELECT version, name, direction FROM schema_migrations ORDER BY CAST(version AS INTEGER)");
         if (!migrations.ok)
         {
             return std::nullopt;
@@ -1771,8 +1792,10 @@ namespace
         bool held_{false};
     };
 
-    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state)
-        -> std::optional<SchemaState>
+    // Migrates forward to `target_version`: current_schema_version() on open,
+    // an older version for migrate_postgresql_schema_to.
+    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state,
+                                                std::uint32_t target_version) -> std::optional<SchemaState>
     {
         // Taken before the plan is computed and released only after it is
         // complete (this object outlives every return path below).
@@ -1791,7 +1814,13 @@ namespace
             return std::nullopt;
         }
         state = *current;
-        auto const plan = migration_plan_for(state);
+        // Another process may have migrated past the target while this one
+        // waited for the lease. Never let that turn into a downgrade plan.
+        if (state.version > target_version)
+        {
+            return std::nullopt;
+        }
+        auto const plan = migration_plan_between(state.version, target_version);
         auto const validation = migration_plan_is_valid(plan);
         if (!validation.valid)
         {
@@ -2055,6 +2084,51 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
     return {true, {}, redacted, PostgresqlConnection{std::move(handle)}};
 }
 
+auto migrate_postgresql_schema_to(std::string_view conninfo, std::uint32_t target_version) -> MigrationApplyResult
+{
+    // Checked before connecting, so a refused call touches nothing.
+    if (target_version == 0U || target_version > current_schema_version())
+    {
+        return {false, "target schema version is not one this build knows", {}};
+    }
+    auto opened = open_postgresql_connection(conninfo);
+    if (!opened.ok)
+    {
+        return {false, opened.reason, {}};
+    }
+    auto& connection = opened.connection;
+    auto const has_schema = merovingian_schema_is_initialized(connection);
+    if (!has_schema.has_value())
+    {
+        return {false, "unable to inspect PostgreSQL schema", {}};
+    }
+    if (!*has_schema && !connection.execute_transaction(postgresql_schema_bootstrap_statements()))
+    {
+        return {false, "unable to initialize PostgreSQL schema", {}};
+    }
+    auto schema = load_schema_state(connection);
+    if (!schema.has_value())
+    {
+        return {false, "unable to hydrate PostgreSQL schema state", {}};
+    }
+    if (schema->version > target_version)
+    {
+        return {false, "schema is newer than the target version; migrations never move a schema backwards",
+                std::move(*schema)};
+    }
+    if (!apply_pending_migrations(connection, *schema, target_version).has_value())
+    {
+        return {false, "unable to migrate PostgreSQL schema", std::move(*schema)};
+    }
+    // The ledger and tables as PostgreSQL now has them, not as the plan predicted.
+    auto migrated = load_schema_state(connection);
+    if (!migrated.has_value())
+    {
+        return {false, "unable to hydrate PostgreSQL schema state", {}};
+    }
+    return {true, {}, std::move(*migrated)};
+}
+
 auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role,
                                       std::string_view migration_role, TableLoadProfile profile)
     -> PersistentStoreOpenResult
@@ -2140,7 +2214,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
             });
             return {false, "unable to assume PostgreSQL migration role", {}};
         }
-        auto migrated = apply_pending_migrations(connection, store.schema);
+        auto migrated = apply_pending_migrations(connection, store.schema, current_schema_version());
         if (!migrated.has_value())
         {
             log_diagnostic(

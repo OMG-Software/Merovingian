@@ -89,7 +89,7 @@ SCENARIO("Wall-clock rate limiter: bucket rolls over on wall-clock seconds, not 
 
         for (std::uint32_t i = 0U; i < 20U; ++i)
         {
-            (void)engine.check(ip_bucket("10.0.0.1", target), target, std::string_view{});
+            std::ignore = engine.check(ip_bucket("10.0.0.1", target), target, std::string_view{});
         }
         REQUIRE_FALSE(engine.check(ip_bucket("10.0.0.1", target), target, std::string_view{}).allowed);
 
@@ -133,7 +133,7 @@ SCENARIO("Wall-clock rate limiter: per-IP and per-user buckets are independent",
         // user_id and is independent of the per-IP tier.
         for (std::uint32_t i = 0U; i < 5U; ++i)
         {
-            (void)engine.check(ip_bucket("10.0.0.1", target), target, std::string_view{"@alice:example.org"});
+            std::ignore = engine.check(ip_bucket("10.0.0.1", target), target, std::string_view{"@alice:example.org"});
         }
 
         WHEN("a 5th login comes from a different IP for the same user alice")
@@ -188,7 +188,7 @@ SCENARIO("Wall-clock rate limiter: per-user login cap of 5/60s applies across IP
         for (std::uint32_t i = 0U; i < 5U; ++i)
         {
             auto const ip = std::string{"10.0.0."} + std::to_string(i + 1U);
-            (void)engine.check(ip_bucket(ip, target), target, std::string_view{"@alice:example.org"});
+            std::ignore = engine.check(ip_bucket(ip, target), target, std::string_view{"@alice:example.org"});
         }
 
         WHEN("a 6th login is attempted for @alice from a fresh IP")

@@ -20,6 +20,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 
 #include <fcntl.h>
@@ -99,7 +100,7 @@ struct FileDeleter final
     {
         if (file != nullptr)
         {
-            static_cast<void>(std::fclose(file));
+            std::ignore = std::fclose(file);
         }
     }
 };
@@ -236,7 +237,7 @@ auto run_one_shot_tls_server(merovingian::net::TcpAcceptor& acceptor,
     {
         *captured_request = std::move(request_bytes);
     }
-    static_cast<void>(tls_connection.write(http_response));
+    std::ignore = tls_connection.write(http_response);
 }
 
 [[nodiscard]] auto json_http_response(std::string const& status_line, std::string const& body,

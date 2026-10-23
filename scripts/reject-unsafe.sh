@@ -3,6 +3,24 @@ set -euo pipefail
 
 ROOTS=(include src tests)
 
+# Every rule below that uses Perl-compatible regular expressions runs through
+# "$PCRE_GREP". The BSD greps (NetBSD, FreeBSD, OpenBSD) have no -P: each such
+# grep exits 2, which the rules read as "no match", so on those hosts the gate
+# passed without checking anything. Use GNU grep, installed as ggrep on the BSDs,
+# and refuse to run when neither grep nor ggrep has -P.
+PCRE_GREP=""
+for candidate in grep ggrep; do
+  if command -v "$candidate" >/dev/null 2>&1 && printf 'x\n' | "$candidate" -qP 'x' 2>/dev/null; then
+    PCRE_GREP="$candidate"
+    break
+  fi
+done
+if [ -z "$PCRE_GREP" ]; then
+  echo "reject-unsafe.sh needs a grep with -P (Perl regular expressions) and found none:" \
+    "install GNU grep (the ggrep package on the BSDs). Refusing to pass without checking." >&2
+  exit 2
+fi
+
 # Only scan C and C++ source files. Other files in the tree (Python test
 # scripts, embedded JavaScript, SQL migrations, shell scripts) legitimately
 # use keywords like "new", "delete", "free", and "malloc" in non-C++ contexts
@@ -19,7 +37,7 @@ reject_pattern() {
   local pattern="$1"
   local description="$2"
 
-  if grep -R --line-number --perl-regexp "${CPP_INCLUDES[@]}" "$pattern" "${ROOTS[@]}"; then
+  if "$PCRE_GREP" -R --line-number --perl-regexp "${CPP_INCLUDES[@]}" "$pattern" "${ROOTS[@]}"; then
     echo "Rejected pattern detected: ${description}"
     exit 1
   fi
@@ -31,9 +49,38 @@ reject_pattern '\bmalloc\s*\(' 'malloc'
 reject_pattern '\bcalloc\s*\(' 'calloc'
 reject_pattern '\brealloc\s*\(' 'realloc'
 reject_pattern '\bfree\s*\(' 'free'
+# Void-cast discards are banned (AGENTS.md: use std::ignore). GCC, unlike clang,
+# does not let a void cast silence warn_unused_result, so a cast that builds on
+# clang failed the GCC coverage job under -Werror (ADR-0217). Write
+# `std::ignore = expr;` instead, which silences both compilers.
+#
+# Two forms: static_cast<void>(...) and a C-style (void) cast. The C-style
+# pattern needs the character before "(void)" not to be part of a name, ")" or
+# ">", so empty parameter lists (`int f(void)`, `void (*p)(void)`) and function
+# types (`std::function<void(int)>`) are not casts. The line is read up to the
+# match a token at a time: a whole raw literal R"tag(...)tag" (any u8/u/U/L
+# prefix is read as ordinary characters first), a whole "..." or '...' literal
+# (escapes included) is stepped over, so a "//" inside one (a URL) does not hide
+# a later cast and a cast spelled inside a string is not flagged; a "//" outside
+# a literal starts a comment, which ends the search. (\x27 is the single quote.)
+# A raw literal that spans lines (tests/integration has some) cannot be read whole
+# by a line-based grep: its opening line is not searched past the R", and its
+# later lines are read as code, so a cast spelled inside one would be flagged
+# (none is today). C++ files only: C has no std::ignore, and the one C source
+# (yyjson_adapter.c) is outside this rule.
+VOID_CAST_HITS=$("$PCRE_GREP" -Rn --perl-regexp \
+  --include='*.cpp' --include='*.hpp' --include='*.cc' \
+  '^(?:R"([^()\\\s]{0,16})\(.*?\)\1"|"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27|(?!R")(?!//)[^"\x27])*?(static_cast\s*<\s*void\s*>|(?<![\w)>\]])\(\s*void\s*\)(?=\s*[\w:(*&!~"]))' \
+  "${ROOTS[@]}" || true)
+if [ -n "$VOID_CAST_HITS" ]; then
+  printf '%s\n' "$VOID_CAST_HITS"
+  echo "Rejected pattern detected: void cast (write 'std::ignore = expr;' instead, per AGENTS.md)"
+  exit 1
+fi
+
 # std::shared_ptr is allowed only with an explicit per-line annotation.
 # Add "// SHARED_PTR: reviewed — <reason>" on the same line to exempt.
-SHARED_PTR_HITS=$(grep -Rn --perl-regexp "${CPP_INCLUDES[@]}" 'std::shared_ptr' "${ROOTS[@]}" \
+SHARED_PTR_HITS=$("$PCRE_GREP" -Rn --perl-regexp "${CPP_INCLUDES[@]}" 'std::shared_ptr' "${ROOTS[@]}" \
   | grep -v 'SHARED_PTR: reviewed' || true)
 if [ -n "$SHARED_PTR_HITS" ]; then
   printf '%s\n' "$SHARED_PTR_HITS"
@@ -60,7 +107,7 @@ fi
 # keeps any unrelated manual release added to those files visible to this gate.
 #
 # Add "// LOCK_RELEASE: reviewed — <reason>" on the same line to exempt.
-LOCK_RELEASE_HITS=$(grep -Rn --perl-regexp "${CPP_INCLUDES[@]}" '(\.|->)unlock\s*\(\s*\)' include src \
+LOCK_RELEASE_HITS=$("$PCRE_GREP" -Rn --perl-regexp "${CPP_INCLUDES[@]}" '(\.|->)unlock\s*\(\s*\)' include src \
   | grep -v 'LOCK_RELEASE: reviewed' \
   | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' || true)
 if [ -n "$LOCK_RELEASE_HITS" ]; then
@@ -78,7 +125,7 @@ fi
 # src/auth/, and src/core/secret_buffer.cpp (memory locking/zeroing) may call
 # libsodium functions directly.  Anything else must route through crypto/ or
 # auth/ wrappers.
-SODIUM_HITS=$(grep -R --line-number --extended-regexp \
+SODIUM_HITS=$("$PCRE_GREP" -R --line-number --extended-regexp \
   --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.cc' --include='*.c' \
   '\b(sodium_|randombytes_|crypto_(generichash|pwhash|sign|secretbox|aead|kx|scalarmult|box|hash|core|verify|onetimeauth|shorthash|auth|kdf|secretstream|stream))([A-Za-z0-9_]*)[[:space:]]*\(' \
   include src \
@@ -91,7 +138,7 @@ if [ -n "$SODIUM_HITS" ]; then
   exit 1
 fi
 
-SODIUM_INCLUDES=$(grep -R --line-number --extended-regexp \
+SODIUM_INCLUDES=$("$PCRE_GREP" -R --line-number --extended-regexp \
   --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.cc' --include='*.c' \
   '#include[[:space:]]+(<sodium\.h>|"sodium\.h")' \
   include src \

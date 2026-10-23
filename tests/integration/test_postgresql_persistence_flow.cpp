@@ -199,6 +199,45 @@ SCENARIO("PostgreSQL persistent rows survive an open/close/reopen cycle",
     }
 }
 
+// Found by the cross-release upgrade test (ADR-0216): the PostgreSQL store wrote
+// `profiles` rows but never read them back, so every displayname and avatar
+// vanished from the API at each restart. SQLite always loaded them.
+SCENARIO("PostgreSQL user profiles survive an open/close/reopen cycle", "[database][postgresql][integration][restart]")
+{
+    GIVEN("a live PostgreSQL store holding one user's profile")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+        auto const user_id = "@profile-" + unique_test_suffix() + ":example.org";
+        REQUIRE(merovingian::database::store_profile(opened.store,
+                                                     {user_id, "Restart Profile", "mxc://example.org/restart"}));
+
+        WHEN("the store is closed and opened again")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("the profile is loaded with its displayname and avatar")
+            {
+                REQUIRE(reopened.ok);
+                auto const found = std::ranges::find_if(
+                    reopened.store.profiles, [&user_id](merovingian::database::PersistentProfile const& row) {
+                        return row.user_id == user_id;
+                    });
+                REQUIRE(found != reopened.store.profiles.end());
+                REQUIRE(found->displayname == "Restart Profile");
+                REQUIRE(found->avatar_url == "mxc://example.org/restart");
+            }
+        }
+    }
+}
+
 SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen cycle",
          "[database][postgresql][integration][restart]")
 {
@@ -1801,6 +1840,13 @@ SCENARIO("DB-6 PostgreSQL inbound admission rejects escaped NUL state keys befor
                     CHECK(rejected.accepted_stream_ordering == 0U);
                     CHECK(rejected.accepted_sync_stream_id == 0U);
                     CHECK(runtime.database.next_stream_ordering == next_stream_before);
+                    // Name what was written, so a failure here says which write leaked.
+                    auto captured_names = std::string{};
+                    for (auto const& statement : runtime.database.persistent_store.captured_statements)
+                    {
+                        captured_names += statement.name + " ";
+                    }
+                    INFO("statements written while rejecting: " << captured_names);
                     CHECK(runtime.database.persistent_store.captured_statements.empty());
                     CHECK(bool{pg_admission_snapshot(runtime.database.persistent_store) == before});
                     db::enable_statement_capture(runtime.database.persistent_store, 0U);

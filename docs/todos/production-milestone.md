@@ -19,7 +19,6 @@ and what has been deliberately dropped.
 | --- | --- | --- |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
 | Push silently discards email pushers | `kind: "email"` is accepted at registration, persisted, and then never delivered. Silent acceptance is worse than either alternative: an operator believes email push works. Gateway retry/backoff (a spec SHOULD) was added in 0.12.40 (R14, ADR-0206). | Either email delivery is implemented, or `kind: "email"` is rejected at registration with a clear error. |
-| No tested upgrade path across releases | Migrations are tested forward from an empty database and between adjacent versions. Nothing tests that a database written by an older release opens under a newer one. For a 1.0.0 that promises stability this is a larger operational risk than any remaining test-coverage item. | A database created by the previous minor series is opened, migrated and served by the candidate, in CI. |
 
 ## Release evidence, not CI gates
 
@@ -120,6 +119,20 @@ blocker for the silent-discard behaviour specifically, not for retry/backoff.
 ## Closed
 
 Retained as the record of what was verified and when.
+
+- ~~No tested upgrade path across releases.~~ Closed (0.12.42, ADR-0216):
+  `tests/integration/test_database_upgrade_flow.cpp` opens the SQLite database and
+  PostgreSQL dump that release 0.11.13 wrote over HTTP
+  (`tests/fixtures/upgrade/0.11.13/`), migrates them from schema 11 to current and
+  serves them: old access tokens, passwords, messages, aliases, media, profile, account
+  data, pushers, device keys, an old sync token, and a new event signed with the old
+  signing key. `migrate_sqlite_schema_to` / `migrate_postgresql_schema_to` build a
+  schema at any older version for synthetic per-version scenarios. SQLite runs in the
+  normal suite, PostgreSQL in `postgres-integration`. The room directory is not carried
+  over from 0.11 (owner decision: no deployments yet, and the migrations collapse into
+  one at 1.0.0, which retires this fixture until 1.1 starts). The run found two defects
+  that affected every deployment: PostgreSQL never loaded `profiles`, and both stores
+  read the migration ledger in text order.
 
 - ~~Keep real listener coverage in CI and prove the server serves requests until
   stopped by the service manager.~~ Closed (0.12.1): audited the existing

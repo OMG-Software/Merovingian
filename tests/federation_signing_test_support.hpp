@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 #include <sodium.h>
 
@@ -33,7 +34,7 @@ struct SigningKeypair final
 // keeps test expectations reproducible.
 [[nodiscard]] inline auto keypair_from_seed(std::string_view seed_text) -> SigningKeypair
 {
-    static_cast<void>(sodium_init());
+    std::ignore = sodium_init();
     auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
     crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(seed_text.data()),
                        seed_text.size(), nullptr, 0U);

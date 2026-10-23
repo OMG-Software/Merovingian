@@ -6,3 +6,5 @@
 # Windows-only scripts are the one exception.
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+# Upgrade fixtures are databases an old release wrote byte for byte (ADR-0216).
+*.sqlite3 binary

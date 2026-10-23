@@ -32,6 +32,75 @@ Meson wrap pins brought up to date; unused wraps for OS-supplied dependencies re
   older branch); `libcurl.md` no longer claims the static build uses Alpine's `curl-static`, which
   it cannot (`-Dstatic_curl_wrap=true`).
 
+## 0.12.42
+
+Production milestone blocker: a database written by an older release is now opened, migrated and
+served by the candidate, in CI (ADR-0216).
+
+- **ADDED:** `tests/fixtures/upgrade/0.11.13/`, a SQLite database and a PostgreSQL dump written over
+  HTTP by release 0.11.13 (the last of the 0.11 series, schema version 11), with a manifest of what
+  was stored. `tests/integration/test_database_upgrade_flow.cpp` starts the current runtime on each
+  and reads everything back: old access tokens and passwords, messages, aliases, media bytes,
+  profile, account data, pushers, device keys, an old sync token, a retried send replaying the event
+  the old release stored for that transaction ID, and a new event (under a transaction ID the old
+  release never saw) whose signature verifies against the signing key the old release stored, so a
+  runtime that silently signed with a replacement key would fail. `scripts/generate_upgrade_fixture.py` rebuilds a fixture from an old
+  release's commit; `docs/release-process.md` says when. It fails rather than writing a fixture that
+  lacks anything the test reads back (signed device keys need the `cryptography` package).
+- **ADDED:** `database::migrate_sqlite_schema_to` and `database::migrate_postgresql_schema_to`
+  build a schema at an older version and stop there, so tests can seed that version's rows and
+  open every older version at the current one. They only move forward, refuse a version this
+  build does not know before touching the database, and refuse a schema already past the target.
+  Both migration runners now take a target version and refuse a state already past it, so a
+  racing process can never turn a migration into a downgrade plan. Tests also pin the failure
+  paths: a schema the migrations do not expect (a column a later migration adds already present)
+  stops the upgrade with the version unchanged and the store refusing to open, on both backends.
+- **FIXED (found by the upgrade test):** the PostgreSQL store wrote `profiles` rows but never loaded
+  them, so every displayname and avatar disappeared from the API at each restart. It now loads
+  them like the SQLite store.
+- **FIXED (found by the upgrade test):** both stores read the migration ledger ordered by its `TEXT`
+  `version` column, so `'10'` sorted before `'9'` and a reloaded ledger's last entry was not the
+  newest migration. The ledger is now read in numeric order.
+- **CHANGED (coverage):** gcovr runs with `--exclude-throw-branches` (ADR-0217). The unwinding
+  edge the compiler adds to every call that may throw made executed lines read as partial, since
+  only an injected allocation failure reaches it. Decision branches still count. The flag needs
+  GCC's gcov (clang's `llvm-cov gcov` does not label those edges, so on clang it excluded nothing),
+  so the coverage job alone now builds with `gcc-14`/`g++-14` and reads its data with `gcov-14`;
+  every other job stays on clang. Branch figures change project-wide in the first report after
+  this because the measurement changed, not the tests. `tests/tooling/test_coverage_workflow.py`
+  pins the flag, the compiler and the gcov executable as real configuration lines, so a comment
+  cannot satisfy the check and none of the three can change alone.
+- **FIXED (first GCC build):** the 30 `static_cast<void>(…)` / `(void)…` discards left in the tests are
+  now `std::ignore = …`, as the coding rules require. GCC, unlike clang, does not let a void cast
+  silence `warn_unused_result` (`sodium_init`, POSIX `write`), so `-Werror` stopped the GCC
+  coverage build on them. GCC also rejected (`-Wtype-limits`) a conformance assertion that could
+  never fail: `REQUIRE(envelope->depth >= 0U)` on an unsigned field, under "depth is populated".
+  It now requires the fixture PDU's actual depth (`== 5U`), so it tests what it claims. A local
+  GCC 14 build with `ninja -k 0` found no other GCC-only error.
+- **TEST DIAGNOSTIC:** "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys" failed
+  once in CI (`captured_statements` not empty after a rejected PDU) after passing on nine earlier
+  heads and four local runs. Its check now reports the names of the statements written, so the
+  next failure identifies the leaking write instead of only saying one happened.
+- **ADDED (gate):** `scripts/reject-unsafe.sh` rejects void casts (`static_cast<void>(…)` and C-style
+  `(void)expr`) in C++ files under `include/`, `src/` and `tests/`, so the rule is enforced at
+  commit time and in CI, not just written down. Empty parameter lists (`int f(void)`), function types
+  (`std::function<void(int)>`), comments and text inside string or character literals are not
+  flagged, and a `//` inside a literal (a URL) does not hide a later cast; single-line raw literals
+  (`R"tag(...)tag"`) are read whole the same way; C files are out of scope (C has no
+  `std::ignore`). `tests/tooling/test_reject_unsafe.py` (`reject-unsafe-tooling`) runs the gate on
+  planted files; it also rejects every void cast that was on `main` before this change.
+- **FIXED (gate passed without checking on the BSDs):** every `reject-unsafe.sh` rule used `grep -P`,
+  which the NetBSD, FreeBSD and OpenBSD greps do not have. Each such grep exited 2, the rules read
+  that as "no match", and the gate passed on those hosts while checking nothing (CI enforcement was
+  unaffected: the gate itself only runs on the Ubuntu jobs). The gate now uses `grep`, else `ggrep`
+  (GNU grep on the BSDs), and refuses to run (exit 2) when neither has `-P`. Found when its new tooling
+  test failed on the NetBSD VM; the rule tests now skip on a host without such a grep, and a test that
+  puts a `-P`-less grep on `PATH` checks the refusal everywhere.
+- **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
+  `/publicRooms`. Since migration 018 a room is listed only when published, so a room upgraded from
+  0.11 is unlisted until a room administrator publishes it again. There are no deployments yet and
+  the migrations collapse into one at 1.0.0, so no backfill was added (owner decision, ADR-0216).
+
 ## 0.12.41
 
 Media part of the conformance audit (2026-10-17): R17 and the wave-6 media endpoints.

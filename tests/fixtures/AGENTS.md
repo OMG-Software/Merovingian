@@ -10,6 +10,7 @@ Static fixtures used by the integration and complement test runners.
 | `complement/client_server_v1_19.json` | Client-server API flow tests: register, login, send, sync, media |
 | `complement/sync_v1_19.json` | Sync-focused flow steps, loaded via `run_complement_fixture("sync_v1_19.json", ...)` in `test_sync_complement_fixture.cpp` |
 | `complement/federation_v1_19.json` | Federation-flow fixture; **not currently loaded by any test** (no `.cpp` references `federation_v1_19.json` — confirmed by repo-wide grep). Wire it into a fixture runner or remove it. |
+| `upgrade/<release>/` | A SQLite database, PostgreSQL dump and manifest written over HTTP by an old release's server, opened by `test_database_upgrade_flow.cpp` (ADR-0216). See `upgrade/README.md` |
 
 ## Complement fixture format
 
@@ -46,3 +47,6 @@ Each fixture file is a JSON array of steps. Each step is an object:
 - Fixture steps test complete flows end-to-end, not individual endpoints.
 - If an endpoint changes its response format, update the fixture **and** cite the spec section.
 - Do not add large binary blobs to fixture files — use `raw_body` with short placeholder bytes.
+- The one exception is `upgrade/<release>/`: its databases are evidence only because an old
+  release wrote them byte for byte, so they are committed whole and never regenerated from
+  current code (see [ADR-0216](../../docs/adr/0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md)).

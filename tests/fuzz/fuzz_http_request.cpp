@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <tuple>
 
 extern "C" auto LLVMFuzzerTestOneInput(std::uint8_t const* data, std::size_t size) -> int
 {
@@ -16,6 +17,6 @@ extern "C" auto LLVMFuzzerTestOneInput(std::uint8_t const* data, std::size_t siz
     }
 
     auto const parsed = merovingian::http::parse_request_head(input);
-    static_cast<void>(parsed);
+    std::ignore = parsed;
     return 0;
 }

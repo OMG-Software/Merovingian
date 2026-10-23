@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <sodium.h>
@@ -3439,8 +3440,8 @@ SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEE
                 auto body = std::string{"{\"username\":\"flood"};
                 body += std::to_string(index);
                 body += "\",\"password\":\"CorrectHorse7!\"}";
-                static_cast<void>(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {}, body}));
+                std::ignore = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, body});
             }
 
             auto const versions_response = merovingian::homeserver::handle_client_server_request(
@@ -4096,9 +4097,9 @@ SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Ma
 
         WHEN("a second request exhausts the per-IP bucket")
         {
-            static_cast<void>(merovingian::homeserver::handle_client_server_request(
+            std::ignore = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"first","password":"CorrectHorse7!"})"}));
+                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"first","password":"CorrectHorse7!"})"});
             auto const denied = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/register", {}, R"({"username":"second","password":"CorrectHorse7!"})"});
@@ -4167,8 +4168,8 @@ SCENARIO("Route normalization coalesces v1 room and media path parameters into s
 
         WHEN("two v1 room hierarchy requests with different room IDs arrive from the same IP")
         {
-            static_cast<void>(merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v1/rooms/!A:example.org/hierarchy", {}, {}, {}, "203.0.113.20"}));
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/rooms/!A:example.org/hierarchy", {}, {}, {}, "203.0.113.20"});
             auto const denied = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v1/rooms/!B:example.org/hierarchy", {}, {}, {}, "203.0.113.20"});
 
@@ -4181,8 +4182,8 @@ SCENARIO("Route normalization coalesces v1 room and media path parameters into s
 
         WHEN("two v1 media downloads for different remote media IDs arrive from the same IP")
         {
-            static_cast<void>(merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/mediaA", {}, {}, {}, "203.0.113.20"}));
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/mediaA", {}, {}, {}, "203.0.113.20"});
             auto const denied = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v1/media/download/matrix.org/mediaB", {}, {}, {}, "203.0.113.20"});
 
@@ -4195,9 +4196,9 @@ SCENARIO("Route normalization coalesces v1 room and media path parameters into s
 
         WHEN("two v1 room relations requests with different room and event IDs arrive from the same IP")
         {
-            static_cast<void>(merovingian::homeserver::handle_client_server_request(
+            std::ignore = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"GET", "/_matrix/client/v1/rooms/!A:example.org/relations/$event-a", {}, {}, {}, "203.0.113.20"}));
+                {"GET", "/_matrix/client/v1/rooms/!A:example.org/relations/$event-a", {}, {}, {}, "203.0.113.20"});
             auto const denied = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"GET", "/_matrix/client/v1/rooms/!B:example.org/relations/$event-b", {}, {}, {}, "203.0.113.20"});

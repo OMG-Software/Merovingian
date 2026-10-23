@@ -254,6 +254,20 @@ map, so real-server SSRF and TLS-trust behaviour is unchanged.
   third-party dependencies. Never suppress a report whose stack runs through
   `merovingian::` code — fix the race instead.
 
+## Coverage
+
+The `coverage` workflow measures line and branch coverage over the whole suite (unit,
+conformance, integration with a live PostgreSQL, smoke) and uploads it to Codecov, which
+requires 50% on a pull request's own lines (`.codecov.yml`). gcovr runs with
+`--exclude-throw-branches` (ADR-0217): the unwinding edge the compiler adds to a call that
+may throw is not counted, because only an injected allocation failure reaches it and it
+holds no code of ours. The flag works only with GCC's gcov (clang's `llvm-cov gcov` does not
+label those edges), so the coverage job alone builds with `gcc-14` and reads its data with
+`gcov-14`; every other job builds with clang. Every decision branch still counts, so a partial line means a condition
+went one way only. Cover it with a test of the other outcome, not an exclusion marker;
+`LCOV_EXCL`/`GCOVR_EXCL` are for code that is genuinely unreachable, with the reason
+beside them.
+
 ## Catch2 example
 
 ```cpp
