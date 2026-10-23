@@ -8,6 +8,7 @@ that it fails, rather than hangs or passes, on every other outcome.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -304,7 +305,10 @@ class StartupHardeningGatePortabilityTests(unittest.TestCase):
         # THEN it writes a temporary file and renames it into place, because a
         # redirect creates the file before writing it and a reader polling for
         # existence can read it empty ("server exited with status  on SIGTERM").
-        direct_writes = [line for line in commands if '>"$status_file"' in line]
+        # Any redirect (`>` or `>>`, with or without a space) whose target is
+        # the status file itself, as opposed to "$status_file.tmp".
+        direct_write = re.compile(r'>>?\s*"?\$\{?status_file\}?(?=["\s;)]|$)')
+        direct_writes = [line for line in commands if direct_write.search(line)]
         self.assertEqual(direct_writes, [])
         self.assertIn('mv "$status_file.tmp" "$status_file"', script)
 
