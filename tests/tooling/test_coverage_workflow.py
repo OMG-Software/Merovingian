@@ -35,6 +35,13 @@ class CoverageWorkflowTests(unittest.TestCase):
         # Matched as an argument line of the gcovr call, so the explanatory
         # comment above it in the workflow cannot satisfy this on its own.
         self.assertRegex(workflow, r"(?m)^[ \t]+--exclude-throw-branches[ \t]*\\[ \t]*$")
+        # AND the job builds with GCC and reads its data with the matching gcov:
+        # llvm-cov gcov does not label exception edges, so under clang the flag
+        # above silently excludes nothing.
+        self.assertRegex(workflow, r"(?m)^[ \t]+CC: gcc-14[ \t]*$")
+        self.assertRegex(workflow, r"(?m)^[ \t]+CXX: g\+\+-14[ \t]*$")
+        self.assertRegex(workflow, r"(?m)^[ \t]+--gcov-executable gcov-14[ \t]*\\[ \t]*$")
+        self.assertNotIn("llvm-cov gcov\" \\", workflow)
 
     def test_coverage_upload_excludes_the_real_server_entrypoint(self) -> None:
         # GIVEN the coverage workflow and the repository Codecov config.

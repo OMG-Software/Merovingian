@@ -13,8 +13,12 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     env:
-      CC: clang
-      CXX: clang++
+      # GCC, not clang like the other jobs: only GCC's gcov labels the
+      # unwinding edge of a call that may throw, which --exclude-throw-branches
+      # below relies on. llvm-cov gcov does not, so with clang the flag
+      # excludes nothing (ADR-0217).
+      CC: gcc-14
+      CXX: g++-14
       # A live PostgreSQL so the [postgresql] scenarios run here and the
       # PostgreSQL store is measured; without it they skip and every line of
       # postgresql_store.cpp reads as uncovered. Same database and roles as
@@ -56,6 +60,8 @@ jobs:
             catch2 \
             clang \
             flex \
+            g++-14 \
+            gcc-14 \
             gcovr \
             libpng-dev \
             libcurl4-openssl-dev \
@@ -163,9 +169,8 @@ jobs:
       - name: Generate coverage reports
         run: |
           mkdir -p coverage
-          # gcovr translates clang's gcov-compatible .gcno/.gcda files into
-          # Cobertura XML for Codecov.  llvm-cov gcov is required instead of
-          # plain gcov because the binaries were compiled with clang.
+          # gcovr translates GCC's .gcno/.gcda files into Cobertura XML for
+          # Codecov. gcov-14 must match the compiler (gcc-14) that wrote them.
           #
           # Coverage is accumulated from ALL four C++ test types that run
           # under "meson test":
@@ -182,10 +187,11 @@ jobs:
           # --exclude-throw-branches drops the compiler's exception edges
           # (ADR-0217): every call that may throw gets an unwinding branch that
           # only an injected allocation failure reaches, so counting them marks
-          # executed lines as partial. Decision branches are still counted.
+          # executed lines as partial. Decision branches are still counted. It
+          # works only because this job builds with GCC (see env above).
           gcovr \
             --root . \
-            --gcov-executable "llvm-cov gcov" \
+            --gcov-executable gcov-14 \
             --gcov-ignore-parse-errors \
             --exclude-throw-branches \
             --filter 'src/' \
@@ -219,7 +225,7 @@ jobs:
           # conformance, integration, and smoke tests — not just unit tests.
           flags: full-test-suite
           # Prevent the action running its own gcov pass — we already produced
-          # the Cobertura XML above with the correct llvm-cov gcov executable.
+          # the Cobertura XML above with the matching gcov-14 executable.
           disable_search: true
           # The Codecov action verifies its CLI binary with a GPG signature.
           # The Ubuntu 24.04 runner cannot import the Codecov keyserver key

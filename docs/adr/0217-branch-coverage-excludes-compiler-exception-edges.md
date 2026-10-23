@@ -30,16 +30,30 @@ branch coverage treat them?
 
 ## Considered Options
 
-* Exclude exception edges (`gcovr --exclude-throw-branches`)
+* Exclude exception edges (`gcovr --exclude-throw-branches`), building the coverage job
+  with GCC 14
+* The same flag with the coverage job left on clang
+* Count partially covered lines as covered in Codecov (`parsers.cobertura.partials_as_hits`)
 * Inject allocation failures in tests (a replacement global allocator failing the Nth call)
 * Keep counting them and leave `codecov/patch` red where they dominate
 * Mark the affected lines excluded (`GCOVR_EXCL_LINE`) one by one
 
 ## Decision Outcome
 
-Chosen option: "Exclude exception edges", because it removes only branches the compiler
-added and keeps every branch the code itself takes (`if`, `&&`, `||`, `?:`, loops) in the
-count. Line coverage is unaffected. Owner decision, 2026-10-23.
+Chosen option: "Exclude exception edges, building the coverage job with GCC 14", because it
+removes only branches the compiler added and keeps every branch the code itself takes
+(`if`, `&&`, `||`, `?:`, loops) in the count. Line coverage is unaffected. Owner decision,
+2026-10-23.
+
+**The flag needs GCC.** gcovr can only exclude an exception edge that gcov labels as one.
+GCC's gcov does; clang's `llvm-cov gcov` does not. Tested with gcovr 7.0 on a probe whose
+error path builds a `std::string`: under clang 18 the probe has 10 branches with or without
+the flag; under GCC 13 the flag takes it from 20 to 17, leaving the decision branches. The
+first attempt, on clang, therefore changed nothing, and patch coverage on PR #527 stayed at
+34%. The coverage job alone builds with `gcc-14`/`g++-14` and reads its data with
+`gcov-14`; every other job stays on clang. GCC ≥ 14 is already a supported compiler
+(`docs/platform-support.md`). `tests/tooling/test_coverage_workflow.py` pins the flag, the
+compiler and the gcov executable together, so none of them can change alone.
 
 A test may still need to show behaviour under an exception the code throws on purpose;
 that is ordinary test design, not a reason to count the unwinding edges.
@@ -54,8 +68,21 @@ that is ordinary test design, not a reason to count the unwinding edges.
 
 * A path that only an allocation failure reaches is no longer visible in branch coverage.
   None of those paths contains code of ours.
+* Coverage is measured on a different compiler from every other job. It is the only CI job
+  that builds with GCC, so a GCC-only warning under `-Werror` surfaces there first.
 
 ## Pros and Cons of the Options
+
+### The same flag with the coverage job left on clang
+
+* Good, because every job would use one compiler.
+* Bad, because it does nothing: `llvm-cov gcov` does not label exception edges.
+
+### Count partially covered lines as covered in Codecov
+
+* Good, because it is one line of `.codecov.yml` and works with clang.
+* Bad, because a line whose real condition only ever went one way would count as covered
+  too, which is exactly what branch coverage exists to show.
 
 ### Inject allocation failures in tests
 

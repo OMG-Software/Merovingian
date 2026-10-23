@@ -28,11 +28,14 @@ served by the candidate, in CI (ADR-0216).
   `version` column, so `'10'` sorted before `'9'` and a reloaded ledger's last entry was not the
   newest migration. The ledger is now read in numeric order.
 - **CHANGED (coverage):** gcovr runs with `--exclude-throw-branches` (ADR-0217). The unwinding
-  edge clang adds to every call that may throw made executed lines read as partial, since only an
-  injected allocation failure reaches it. Decision branches still count. Branch figures rise
-  project-wide in the first report after this change because the measurement changed, not the tests.
-  `tests/tooling/test_coverage_workflow.py` pins the flag as a gcovr argument line, so the comment
-  explaining it cannot satisfy the check alone.
+  edge the compiler adds to every call that may throw made executed lines read as partial, since
+  only an injected allocation failure reaches it. Decision branches still count. The flag needs
+  GCC's gcov (clang's `llvm-cov gcov` does not label those edges, so on clang it excluded nothing),
+  so the coverage job alone now builds with `gcc-14`/`g++-14` and reads its data with `gcov-14`;
+  every other job stays on clang. Branch figures change project-wide in the first report after
+  this because the measurement changed, not the tests. `tests/tooling/test_coverage_workflow.py`
+  pins the flag, the compiler and the gcov executable as real configuration lines, so a comment
+  cannot satisfy the check and none of the three can change alone.
 - **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
   `/publicRooms`. Since migration 018 a room is listed only when published, so a room upgraded from
   0.11 is unlisted until a room administrator publishes it again. There are no deployments yet and
