@@ -402,7 +402,7 @@ def unpadded_b64(data: bytes) -> str:
 
 
 def make_device_keys(user_id: str, device_id: str) -> dict[str, Any] | None:
-    """Real, correctly signed device keys + one signed one-time key; None if no ed25519 library is present."""
+    """Real, correctly signed device keys + one signed one-time key; None if `cryptography` is not installed."""
     try:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
@@ -436,7 +436,7 @@ def make_device_keys(user_id: str, device_id: str) -> dict[str, Any] | None:
 
 
 def run_scenario(api: Api) -> dict[str, Any]:
-    result: dict[str, Any] = {"skipped": []}
+    result: dict[str, Any] = {}
     users: dict[str, dict[str, Any]] = {}
     for spec in (ALICE, BOB):
         lp = spec["localpart"]
@@ -530,19 +530,18 @@ def run_scenario(api: Api) -> dict[str, Any]:
            ACCOUNT_DATA_CONTENT, token=a_tok)
     api.ok("alice set pusher", "POST", "/_matrix/client/v3/pushers/set", PUSHER, token=a_tok)
 
+    # The upgrade test reads these keys back, so a fixture without them is incomplete: fail, never skip.
     keys = make_device_keys(alice["user_id"], alice["device_id"])
     if keys is None:
-        result["skipped"].append("keys/upload: python 'cryptography' package not installed, cannot sign device keys")
-    else:
-        status, parsed = api.request("alice keys/upload", "POST", "/_matrix/client/v3/keys/upload",
-                                     {"device_keys": keys["device_keys"], "one_time_keys": keys["one_time_keys"]},
-                                     token=a_tok)
-        if 200 <= status < 300:
-            result["device_keys"] = {"device_keys": keys["device_keys"],
-                                     "one_time_keys": keys["one_time_keys"],
-                                     "ed25519_public_key": keys["ed25519_public_key"]}
-        else:
-            result["skipped"].append(f"keys/upload rejected with {status}: {parsed!r}")
+        raise FixtureError("keys/upload: the python 'cryptography' package is required to sign device keys")
+    status, parsed = api.request("alice keys/upload", "POST", "/_matrix/client/v3/keys/upload",
+                                 {"device_keys": keys["device_keys"], "one_time_keys": keys["one_time_keys"]},
+                                 token=a_tok)
+    if not 200 <= status < 300:
+        raise FixtureError(f"keys/upload rejected with {status}: {parsed!r}")
+    result["device_keys"] = {"device_keys": keys["device_keys"],
+                             "one_time_keys": keys["one_time_keys"],
+                             "ed25519_public_key": keys["ed25519_public_key"]}
 
     # Read-back checks, so a fixture is only produced from a server that really holds the data.
     got = api.ok("alice read messages", "GET",
@@ -705,8 +704,6 @@ def main() -> int:
     for backend in ("sqlite", "postgresql"):
         for call in manifest[backend]["non_2xx"]:
             log(f"[{backend}] non-2xx: {call}")
-        for note in manifest[backend]["skipped"]:
-            log(f"[{backend}] skipped: {note}")
     return 0
 
 

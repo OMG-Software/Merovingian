@@ -9,13 +9,16 @@ served by the candidate, in CI (ADR-0216).
   and reads everything back: old access tokens and passwords, messages, aliases, media bytes,
   profile, account data, pushers, device keys, an old sync token, and a new event signed with the
   old, decrypted signing key. `scripts/generate_upgrade_fixture.py` rebuilds a fixture from an old
-  release's commit; `docs/release-process.md` says when.
+  release's commit; `docs/release-process.md` says when. It fails rather than writing a fixture that
+  lacks anything the test reads back (signed device keys need the `cryptography` package).
 - **ADDED:** `database::migrate_sqlite_schema_to` and `database::migrate_postgresql_schema_to`
   build a schema at an older version and stop there, so tests can seed that version's rows and
   open every older version at the current one. They only move forward, refuse a version this
   build does not know before touching the database, and refuse a schema already past the target.
   Both migration runners now take a target version and refuse a state already past it, so a
-  racing process can never turn a migration into a downgrade plan.
+  racing process can never turn a migration into a downgrade plan. Tests also pin the failure
+  paths: a schema the migrations do not expect (a column a later migration adds already present)
+  stops the upgrade with the version unchanged and the store refusing to open, on both backends.
 - **FIXED (found by the upgrade test):** the PostgreSQL store wrote `profiles` rows but never loaded
   them, so every displayname and avatar disappeared from the API at each restart. It now loads
   them like the SQLite store.

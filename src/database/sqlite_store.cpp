@@ -613,7 +613,7 @@ namespace
 
     // Migrates `state` forward to `target_version`: current_schema_version()
     // on open, an older version for migrate_sqlite_schema_to.
-    auto apply_pending_migrations(sqlite3& connection, SchemaState state, std::uint32_t target_version)
+    [[nodiscard]] auto apply_pending_migrations(sqlite3& connection, SchemaState state, std::uint32_t target_version)
         -> std::optional<SchemaState>
     {
         // Never let a schema already past the target turn into a downgrade plan.

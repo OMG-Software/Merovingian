@@ -658,6 +658,80 @@ SCENARIO("A SQLite schema is never migrated past this build or backwards", "[dat
                 REQUIRE(again.state.version == previous_series_schema_version);
             }
         }
+
+        WHEN("it is asked for version 0, which no schema has")
+        {
+            auto const zero = merovingian::database::migrate_sqlite_schema_to(path.string(), 0U);
+
+            THEN("it refuses")
+            {
+                REQUIRE_FALSE(zero.ok);
+            }
+        }
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A SQLite database that cannot be opened is refused", "[database][upgrade][sqlite]")
+{
+    GIVEN("a database path whose parent is a regular file, not a directory")
+    {
+        auto const parent = unique_sqlite_path("not-a-directory");
+        {
+            auto output = std::ofstream{parent};
+            output << "not a directory" << '\n';
+        }
+        auto const path = parent / "merovingian.sqlite3";
+
+        WHEN("the schema is migrated to an older version")
+        {
+            auto const migrated =
+                merovingian::database::migrate_sqlite_schema_to(path.string(), previous_series_schema_version);
+
+            THEN("it refuses and leaves the file as it was")
+            {
+                REQUIRE_FALSE(migrated.ok);
+                REQUIRE(std::filesystem::is_regular_file(parent));
+            }
+        }
+        std::filesystem::remove(parent);
+    }
+}
+
+// A schema the migrations do not expect (here, a column migration 14 adds that
+// is already there) must stop the upgrade where it was: never record a step that
+// did not apply, and never serve from a half-migrated schema.
+SCENARIO("A SQLite schema the migrations do not expect stops the upgrade where it was", "[database][upgrade][sqlite]")
+{
+    GIVEN("a database at version 13 that already has the column migration 14 adds")
+    {
+        auto const path = unique_sqlite_path("unexpected");
+        std::filesystem::remove(path);
+        REQUIRE(merovingian::database::migrate_sqlite_schema_to(path.string(), 13U).ok);
+        REQUIRE(sqlite_execute(path, "ALTER TABLE users ADD COLUMN deactivated TEXT NOT NULL DEFAULT 'false'", {}));
+
+        WHEN("it is migrated to version 14")
+        {
+            auto const migrated = merovingian::database::migrate_sqlite_schema_to(path.string(), 14U);
+
+            THEN("the migration fails and the schema is still at version 13")
+            {
+                REQUIRE_FALSE(migrated.ok);
+                auto const again = merovingian::database::migrate_sqlite_schema_to(path.string(), 13U);
+                REQUIRE(again.ok);
+                REQUIRE(again.state.version == 13U);
+            }
+        }
+
+        WHEN("it is opened as a persistent store")
+        {
+            auto const opened = merovingian::database::open_sqlite_persistent_store(path.string());
+
+            THEN("the store refuses to open rather than serve a half-migrated schema")
+            {
+                REQUIRE_FALSE(opened.ok);
+            }
+        }
         std::filesystem::remove(path);
     }
 }
@@ -756,6 +830,103 @@ SCENARIO("A PostgreSQL schema can be built at an older version and stops there",
                 REQUIRE(migrated.state.version == previous_series_schema_version);
                 REQUIRE(has_table(migrated.state, "openid_tokens"));
                 REQUIRE_FALSE(has_table(migrated.state, "login_tokens"));
+            }
+        }
+    }
+}
+
+SCENARIO("A PostgreSQL schema is never migrated past this build or backwards",
+         "[database][upgrade][postgresql][integration]")
+{
+    GIVEN("a PostgreSQL database at the previous minor series' version")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const scratch = ScratchPostgresqlDatabase{uri};
+        REQUIRE(scratch.created());
+        REQUIRE(
+            merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), previous_series_schema_version).ok);
+
+        WHEN("it is asked for a version newer than this build knows, or for version 0")
+        {
+            auto const ahead = merovingian::database::migrate_postgresql_schema_to(
+                scratch.conninfo(), merovingian::database::current_schema_version() + 1U);
+            auto const zero = merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 0U);
+
+            THEN("both are refused and the schema stays where it was")
+            {
+                REQUIRE_FALSE(ahead.ok);
+                REQUIRE_FALSE(zero.ok);
+                auto const again = merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(),
+                                                                                       previous_series_schema_version);
+                REQUIRE(again.ok);
+                REQUIRE(again.state.version == previous_series_schema_version);
+            }
+        }
+
+        WHEN("it is asked for an older version than it holds")
+        {
+            auto const backwards = merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 5U);
+
+            THEN("it refuses and the schema stays where it was")
+            {
+                REQUIRE_FALSE(backwards.ok);
+                REQUIRE(backwards.state.version == previous_series_schema_version);
+            }
+        }
+    }
+}
+
+SCENARIO("A PostgreSQL schema the migrations do not expect stops the upgrade where it was",
+         "[database][upgrade][postgresql][integration]")
+{
+    GIVEN("a PostgreSQL database at version 13 that already has the column migration 14 adds")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto const scratch = ScratchPostgresqlDatabase{uri};
+        REQUIRE(scratch.created());
+        REQUIRE(merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 13U).ok);
+        REQUIRE(
+            pg_execute(scratch.conninfo(), "ALTER TABLE users ADD COLUMN deactivated TEXT NOT NULL DEFAULT 'false'"));
+
+        WHEN("it is migrated to version 14")
+        {
+            auto const migrated = merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 14U);
+
+            THEN("the migration fails and the schema is still at version 13")
+            {
+                REQUIRE_FALSE(migrated.ok);
+                auto const again = merovingian::database::migrate_postgresql_schema_to(scratch.conninfo(), 13U);
+                REQUIRE(again.ok);
+                REQUIRE(again.state.version == 13U);
+            }
+        }
+    }
+}
+
+SCENARIO("A PostgreSQL server that cannot be reached is refused", "[database][upgrade][postgresql]")
+{
+    GIVEN("a connection string for a loopback port with nothing listening")
+    {
+        auto const conninfo = std::string{"postgresql://merovingian_test@127.0.0.1:1/merovingian_test?sslmode=disable"};
+
+        WHEN("the schema is migrated to an older version")
+        {
+            auto const migrated =
+                merovingian::database::migrate_postgresql_schema_to(conninfo, previous_series_schema_version);
+
+            THEN("it refuses")
+            {
+                REQUIRE_FALSE(migrated.ok);
             }
         }
     }

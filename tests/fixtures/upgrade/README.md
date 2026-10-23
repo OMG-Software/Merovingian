@@ -27,8 +27,8 @@ Passwords and tokens in the manifest are test values for a test-only fixture.
 ## Regenerating
 
 Run inside Linux or WSL as an unprivileged user, with git, meson, ninja, clang++,
-python3 (the `cryptography` package signs the uploaded device keys) and the
-PostgreSQL server binaries installed:
+the PostgreSQL server binaries, and python3 with the `cryptography` package
+(required: it signs the uploaded device keys, and generation fails without it):
 
 ```sh
 python3 scripts/generate_upgrade_fixture.py \
