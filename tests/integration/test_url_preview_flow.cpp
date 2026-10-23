@@ -283,15 +283,24 @@ SCENARIO("A URL preview returns the page's OpenGraph data with its image stored 
     }
 }
 
+// ADR-0213: every fetch a preview makes (the page, each redirect it follows, the og:image) goes
+// through one SSRF gate that resolves the host, refuses it if any address is private, loopback,
+// link-local, CGNAT, reserved or denied, and pins the connection to the checked addresses. These
+// cases attack that gate from each direction a client can: a literal address, a name that
+// resolves into a protected range, a redirect and an image reference.
 SCENARIO("URL previews refuse private, loopback, link-local and metadata destinations",
          "[integration][media][url-preview][preview][security][ssrf]")
 {
     GIVEN("URL previews enabled")
     {
+        // fixture.asked records every host the scripted resolver was asked about, so an empty
+        // list proves a URL was refused before any DNS lookup.
         auto fixture = PreviewFixture{};
 
         WHEN("literal addresses in protected ranges are previewed")
         {
+            // IPv4 loopback, RFC 1918, link-local and the cloud metadata address; IPv6 loopback,
+            // link-local, ULA and the IPv4-mapped loopback form; CGNAT and the unspecified address.
             auto const targets = std::vector<std::string>{
                 "https://127.0.0.1/", "http://127.0.0.1:8008/_matrix/client/versions",
                 "http://10.0.0.1/",   "http://192.168.1.1/",
@@ -318,6 +327,8 @@ SCENARIO("URL previews refuse private, loopback, link-local and metadata destina
 
         WHEN("names that resolve into protected ranges are previewed")
         {
+            // Each name passes URL parsing and is refused only after resolution. mixed.test answers
+            // one public and one loopback address: a single bad address refuses the host.
             auto const ipv4 = fixture.preview("https://intranet.test/secret");
             auto const ula = fixture.preview("https://ula.test/");
             auto const link_local = fixture.preview("https://linklocal.test/");
@@ -336,6 +347,7 @@ SCENARIO("URL previews refuse private, loopback, link-local and metadata destina
 
             THEN("the refusal does not say why, so it is no oracle for internal names")
             {
+                // A refused address and a name that does not resolve must look identical.
                 REQUIRE(ipv4.response.body == ula.response.body);
                 auto const unknown = fixture.preview("https://nonexistent.test/");
                 REQUIRE(unknown.response.status == 502U);
@@ -345,6 +357,7 @@ SCENARIO("URL previews refuse private, loopback, link-local and metadata destina
 
         WHEN("a URL with another scheme, credentials or no host is previewed")
         {
+            // Malformed parameters are a 400 before the gate: they never reach the resolver.
             auto const file = fixture.preview("file:///etc/passwd");
             auto const gopher = fixture.preview("gopher://example.com/");
             auto const userinfo = fixture.preview("https://user:pass@example.com/");
@@ -363,6 +376,7 @@ SCENARIO("URL previews refuse private, loopback, link-local and metadata destina
         }
     }
 
+    // The gate follows redirects itself (the HTTP client never does), so each hop is checked.
     GIVEN("a public page that redirects into a private address")
     {
         auto fixture = PreviewFixture{};
@@ -388,6 +402,7 @@ SCENARIO("URL previews refuse private, loopback, link-local and metadata destina
         }
     }
 
+    // The image a page names is fetched through the same gate as the page.
     GIVEN("a public page whose og:image points into a private address")
     {
         auto fixture = PreviewFixture{};
@@ -419,6 +434,7 @@ SCENARIO("URL previews refuse private, loopback, link-local and metadata destina
         }
     }
 
+    // url_preview_max_redirects bounds the chain, so a redirect loop cannot hold a worker.
     GIVEN("a page that redirects more times than the cap allows")
     {
         auto fixture = PreviewFixture{};
