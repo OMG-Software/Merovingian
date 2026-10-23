@@ -267,11 +267,16 @@ struct ClientApiConfig final
     //     membership in; updating a held type is always allowed. The m.tag
     //     and m.fully_read rows the tags and read-marker APIs write count
     //     towards it but are never refused. ADR-0197.
+    //   - max_push_rules_per_user: user-defined push rules (created through
+    //     PUT /pushrules/global/{kind}/{ruleId}, across all five kinds) per
+    //     user; server-default rules are not counted and updating an existing
+    //     rule is always allowed.
     std::uint32_t max_one_time_keys_per_device{1000U};
     std::uint32_t max_key_signatures_per_user{10000U};
     std::uint32_t max_filters_per_user{1000U};
     std::uint32_t max_global_account_data_per_user{1000U};
     std::uint32_t max_room_account_data_per_room{100U};
+    std::uint32_t max_push_rules_per_user{200U};
     std::uint32_t max_public_rooms_page_size{1000U};
     std::uint32_t max_hierarchy_rooms{1000U};
 };

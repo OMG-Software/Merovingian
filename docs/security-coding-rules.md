@@ -1148,6 +1148,26 @@ media-fetch-pool task.
   several stars (CWE-1333). A randomised test pins the answers to the old implementation
   (ADR-0175).
   Source: `src/push/AGENTS.md`.
+- **A user's push rules are bounded on write and re-validated on read.** At most
+  `server.client_api.max_push_rules_per_user` user-defined rules, each with bounded ID, pattern and
+  string lengths, condition and action counts and canonical size; the stored `m.push_rules` content
+  is read through the same validator, and clients cannot set it through the account-data API (405).
+  Why: a client's rules are evaluated under the runtime lock for every event it receives and every
+  unread event a `/sync` counts, so their size is work the client would otherwise choose (CWE-400,
+  ADR-0204).
+  Source: `src/push/AGENTS.md`.
+- **Unread counts, the push badge included, count only events the user may see, from their current
+  join.** Every counted event passes `sync::HistoryVisibility::can_see` (`unread.visible()`,
+  `classifier.visible()`); the join boundary alone does not exclude a backfilled pre-join event,
+  which is ordered after the join. Why: the user's rules decide what counts, so a keyword rule
+  counted over history they may not see would disclose whether it contains a word (CWE-203,
+  ADR-0205).
+  Source: `src/sync/AGENTS.md`.
+- **Failed push notifications are retried only from the bounded queue, on the retry job.** Never
+  sleep in a delivery task, never hold `runtime.mutex` across `notify`, and drop past the queue's
+  bounds rather than block. Why: a failing gateway must not hold delivery slots, threads or
+  unbounded memory (CWE-400, ADR-0206).
+  Source: `src/push/AGENTS.md`.
 
 ## Trust and safety
 

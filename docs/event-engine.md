@@ -503,6 +503,13 @@ stating explicitly, because all three were defects (the first two until
   v1-v9; plus floats, truncated, in v1-v5: EVT-12 (d), ADR-0150). **The
   resolver and `authorization.cpp` must agree on this**: if they disagree,
   events are ordered by a power level the auth rules cannot see.
+- **Code outside the auth rules reads a single power-level value through
+  `events::decode_power_level(value, encoding)`**, the decoder the rules use
+  for every level and every entry of `events`, `notifications` and `users`.
+  Push evaluation reads a room's `notifications` levels this way, so a v1-v9
+  `"room": "100"` raises the `@room` threshold to 100 instead of falling back
+  to 50 (PR #523 review). A value the rules would not read (a string in v10+)
+  is left out, and the evaluator's default applies.
 - **The auth-event map built from resolved state includes
   `authorising_user_member`.** The restricted-join branch of the auth rules
   needs the `m.room.member` event of the user named by

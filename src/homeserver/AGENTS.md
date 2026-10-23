@@ -23,7 +23,12 @@ This is the largest and most complex module — read this file carefully before 
 | `room_power.cpp` | `may_send_state_event()`: whether a user may send a state event of a type in a room's current state, judged as the auth rules judge it (CSAZ-12) |
 | `restricted_join.cpp` | `decide_restricted_join()`: as the resident, whether a user meets a restricted room's allow conditions and which local user authorises the join (R04, ADR-0185) |
 | `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
-| `default_push_ruleset.cpp` | The server-default push ruleset returned by `/pushrules/` |
+| `default_push_ruleset.cpp` | The server-default push ruleset (`homeserver::default_push_ruleset`) |
+| `stored_push_rules.cpp` | `load_user_push_rules` / `load_push_ruleset`: a user's push rules from their `m.push_rules` account data over the defaults (ADR-0204) |
+| `push_room_facts.cpp` | `push_room_facts`, `room_member_display_name`, `push_evaluation_context`: the evaluation context push delivery and unread counting share |
+| `push_badge_count.cpp` | `count_push_badge`: the Push Gateway `counts.unread` from one walk of the events, newest first in stream order, that stops once every room is settled, at most 10000 rows (ADR-0207) |
+| `push_rule_unread_classifier.cpp` | `PushRuleUnreadClassifier`: counts unread events by the user's push rules, from the start of their current join (R15, ADR-0205) |
+| `push_retry.cpp` | `attempt_push_delivery` (every push attempt: circuit breaker, rejected pushkeys, scheduling retries) and `PushRetryJob`, the one thread that sends retries (R14, ADR-0206) |
 | `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
 | `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
 | `federation_request_routing.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
@@ -232,11 +237,21 @@ client, sender or remote server controls, and per-user rows that requests scan m
   affected room its new typing list; it never rescans the table per expired room (R13).
 - Sliding sync classifies `room_subscriptions` through one `sync::room_access_index` per request
   (ADR-0174).
+- A user's push rules are evaluated for every event they receive. `PUT /pushrules/...` refuses a new
+  rule past `max_push_rules_per_user` with `400 M_TOO_LARGE` and bounds each rule (ADR-0204);
+  `m.push_rules` cannot be set through the account-data API (405).
+- Push delivery's badge count (`counts.unread`, `count_push_badge`) runs per recipient per event.
+  It walks `store.events.in_stream_order()` newest first, stops once every joined room is settled,
+  visits at most `push_badge_row_budget` (10000) rows, and saturates at `push_badge_unread_cap`
+  (1000) (ADR-0207); do not replace it with a per-room or unbounded count. Its setup walks each
+  table a fixed number of times (`PushBadgeCount::table_walks`), whatever the number of rooms:
+  nothing per room may walk a whole table.
 
 ## A room's version comes from its create event, through one accessor (ADR-0179)
 
 Read a stored room's version only through `stored_room_version` / `stored_room_version_policy`
-(`stored_room_version.hpp`), or `declared_room_version` for a create event in hand. A create event
+(`stored_room_version.hpp`), or `declared_room_version` for a create event in hand
+(`stored_create_room_version` when what is in hand is the stored create event's JSON). A create event
 without `room_version` is version 1, which has no policy: refuse the room on `nullptr`, never
 substitute a default. The accessor never returns an empty string (an unusable declaration is version
 1 too), because several parsers replace an empty version with `"12"`. Only a room with no stored

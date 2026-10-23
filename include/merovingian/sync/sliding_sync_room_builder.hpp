@@ -7,6 +7,7 @@
 #include "merovingian/sync/history_visibility.hpp"
 #include "merovingian/sync/read_markers.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
+#include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -56,15 +57,17 @@ namespace merovingian::sync
 // As above, with the request's shared `visibility` filter (CSAZ-3). A sliding sync request
 // serves many rooms for one user, so the caller builds ONE HistoryVisibility for the whole
 // request and passes it to every room: its indexes over the store are built once, not per room.
-// The timeline only ever contains events `visibility` lets the user see. The overload above
-// builds a filter of its own for a single room.
+// The timeline only ever contains events `visibility` lets the user see. `unread` is the
+// request's one classifier of unread events (R15), shared across rooms in the same way. The
+// overload above builds a filter and a classifier of its own for a single room.
 [[nodiscard]] auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id,
                                        std::string_view user, SlidingSyncRoomSubscription const& sub,
                                        std::uint64_t room_since_event_ordering, bool is_initial,
                                        database::PersistentStore const& store,
                                        std::unordered_set<std::string> const& lazy_members_already_sent,
                                        std::unordered_set<std::string> const& ignored_senders,
-                                       HistoryVisibility& visibility) -> SlidingSyncRoomResponse;
+                                       HistoryVisibility& visibility, UnreadEventClassifier const& unread)
+    -> SlidingSyncRoomResponse;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
 // room-config combination: when a room matches both a list and a
@@ -99,25 +102,25 @@ struct ThreadNotificationCounts final
     [[nodiscard]] auto total() const noexcept -> NotificationCounts;
 };
 
-// The room's unread counts per thread: the `m.room.message` /
-// `m.room.encrypted` events (notifications) and the events whose m.mentions
-// names `user` (highlights) that `markers` do not cover, excluding the user's
-// own events. `/sync` reports them split by thread when the filter sets
-// `unread_thread_notifications`, and summed otherwise.
+// The room's unread counts per thread: the events `markers` do not cover, after
+// `unread.counted_after(room_id)` and not sent by `user`, that `unread` classifies as
+// notifications, and of those the highlights (R15, ADR-0205). Spec: "Notifications are
+// determined by the push rules which apply to an event". `/sync` reports them split by thread
+// when the filter sets `unread_thread_notifications`, and summed otherwise.
 [[nodiscard]] auto count_unread_by_thread(database::PersistentStore const& store, std::string_view room_id,
-                                          std::string_view user, ReadMarkers const& markers)
-    -> ThreadNotificationCounts;
+                                          std::string_view user, ReadMarkers const& markers,
+                                          UnreadEventClassifier const& unread) -> ThreadNotificationCounts;
 
-// Number of `m.room.message` / `m.room.encrypted` events in the room that
-// `markers` do not cover, excluding the user's own events. Used for both
-// sliding sync and the legacy /sync `unread_notifications.notification_count`.
+// count_unread_by_thread()'s notifications, summed over threads. Used for both sliding sync
+// and the legacy /sync `unread_notifications.notification_count`.
 [[nodiscard]] auto count_notifications(database::PersistentStore const& store, std::string_view room_id,
-                                       std::string_view user, ReadMarkers const& markers) -> std::uint64_t;
+                                       std::string_view user, ReadMarkers const& markers,
+                                       UnreadEventClassifier const& unread) -> std::uint64_t;
 
-// Subset of count_notifications() whose content mentions `user` via
-// `m.mentions.user_ids` (MSC3952 / Matrix v1.7+). Used for both sliding sync
-// and the legacy /sync `unread_notifications.highlight_count`.
+// count_unread_by_thread()'s highlights, summed over threads. Used for both sliding sync and
+// the legacy /sync `unread_notifications.highlight_count`.
 [[nodiscard]] auto count_highlights(database::PersistentStore const& store, std::string_view room_id,
-                                    std::string_view user, ReadMarkers const& markers) -> std::uint64_t;
+                                    std::string_view user, ReadMarkers const& markers,
+                                    UnreadEventClassifier const& unread) -> std::uint64_t;
 
 } // namespace merovingian::sync

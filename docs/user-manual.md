@@ -458,7 +458,7 @@ Client traffic has generic/media/sync/federation defaults of 600/120/3000/3000 r
 
 Notification history retains the newest `max_notifications_retained_per_user` rows per user (default 1,000), including when push delivery is disabled. Raising retention preserves future rows; it cannot restore entries already pruned.
 
-Five per-user caps bound end-to-end key material, filters and account data. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. `max_global_account_data_per_user` limits the global (non-room) account-data types a user stores through `PUT /user/{userId}/account_data/{type}`; updating a type the user already holds always succeeds, and room account data is not counted. `max_room_account_data_per_room` limits the account-data types a user stores for one room through `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`; updating a held type always succeeds, the tags and read-marker APIs are never refused (their `m.tag` and `m.fully_read` rows still count), and the room must be one the user is or was a member of. The Matrix specification has no way to delete account data, so a user at either cap cannot make room: every new type is refused with `M_TOO_LARGE` until an operator raises the cap. Each device keeps one fallback key per algorithm, as the Matrix specification requires; a new fallback key replaces the previous one.
+Six per-user caps bound end-to-end key material, filters, account data and push rules. A request that would take a user over a cap is refused with HTTP 400 `M_TOO_LARGE` and stores nothing from that request; stored rows are never evicted to make room, so a client at its cap must delete or consume entries first. `max_one_time_keys_per_device` limits the one-time keys held for one device on `/keys/upload` (key IDs the device already holds are not counted twice, and a refused upload stores no device, one-time or fallback keys). `max_key_signatures_per_user` limits the distinct (target user, target key) pairs a user has signed through `/keys/signatures/upload`. `max_filters_per_user` limits the filters stored through `POST /user/{userId}/filter`; a filter identical to one the user already stores (compared in canonical JSON form; new filters are stored in that form) returns the existing `filter_id` instead of storing a duplicate, even at the cap. `max_global_account_data_per_user` limits the global (non-room) account-data types a user stores through `PUT /user/{userId}/account_data/{type}`; updating a type the user already holds always succeeds, and room account data is not counted. `max_room_account_data_per_room` limits the account-data types a user stores for one room through `PUT /user/{userId}/rooms/{roomId}/account_data/{type}`; updating a held type always succeeds, the tags and read-marker APIs are never refused (their `m.tag` and `m.fully_read` rows still count), and the room must be one the user is or was a member of. The Matrix specification has no way to delete account data, so a user at either cap cannot make room: every new type is refused with `M_TOO_LARGE` until an operator raises the cap. `max_push_rules_per_user` limits the user-defined push rules (created through `PUT /pushrules/global/{kind}/{ruleId}`, counted across all five kinds) a user holds; a `PUT` that would create one more is refused with `M_TOO_LARGE`, updating an existing rule always succeeds, server-default rules are not counted, and deleting a rule makes room. Each device keeps one fallback key per algorithm, as the Matrix specification requires; a new fallback key replaces the previous one.
 
 The HTTP generic body cap and the client API body cap both apply to ordinary client JSON requests; raise both if necessary. Federation `/send` instead uses `security.federation.max_transaction_size`. Media uploads retain authenticated admission and their media-specific cap. Head byte/count limits remain enforced before bodies. Sync admission is clamped to the configured sync worker count; the per-device and per-user caps cannot exceed global admission.
 
@@ -503,6 +503,7 @@ Pending-join limits apply per room, except `pending_join_max_rooms`, which is pr
 | `max_filters_per_user` | `1000` | 1..100,000 |
 | `max_global_account_data_per_user` | `1000` | 1..100,000 |
 | `max_room_account_data_per_room` | `100` | 1..100,000 |
+| `max_push_rules_per_user` | `200` | 1..10,000 |
 | `max_body_size` | `1MiB` | 1 byte..64MiB |
 
 `server.http.*`:
@@ -537,8 +538,8 @@ updating or deleting an existing pusher is always allowed. A gateway host (its
 case-folded `host:port`) that cannot be reached `gateway_failure_threshold` times in a
 row (a DNS, connection, TLS or timeout failure) is not contacted for
 `gateway_cooldown_seconds`; after that one delivery per cooldown is let through as a
-probe until one reaches it, and deliveries skipped meanwhile are dropped and logged
-(`push.delivery.circuit_open`). Any HTTP answer, a 5xx or 429 included, counts as
+probe until one reaches it, and deliveries skipped meanwhile are logged
+(`push.delivery.circuit_open`) and retried like failed ones (below). Any HTTP answer, a 5xx or 429 included, counts as
 reaching the host: a gateway shared by many users is never closed to all of them
 because it keeps refusing one user's pusher. A gateway's `rejected` list removes only
 the pushers whose pushkeys it names. OUT-3, ADR-0151.
@@ -546,11 +547,21 @@ the pushers whose pushkeys it names. OUT-3, ADR-0151.
 The in-flight limit counts recipient batches, not whole events: gateways for one
 recipient run sequentially in that recipient's task. For global limit `G`, each
 recipient can hold at most `G > 1 ? min(8, G - 1) : 1` batches. At either bound,
-only that batch is dropped; no persistent retry queue is added. At `G=1`, delivery
+only that batch is dropped; dropped batches are not retried. At `G=1`, delivery
 remains serial and there is no reserved parallel capacity for another recipient.
 Use at least two slots for single-recipient isolation. Several recipients can
 still collectively fill the global budget; this is not a fairness guarantee.
 See [ADR-0140](adr/0140-isolate-push-delivery-capacity-per-recipient.md).
+
+A notification the gateway answers with an HTTP error status, or that could not reach the
+gateway, is sent again 5 seconds later, then after 10, 20 and so on up to 10 minutes, and given up
+after 8 retries, about 20 minutes after the first attempt (`push.delivery.gave_up`). One
+`push-retry` thread sends retries; they never hold a request thread. At most 1,024 notifications
+wait for a retry, 32 per recipient; past that a retry is dropped and logged
+(`push.delivery.retry_dropped`). A pushkey the gateway rejects stops its retries along with its
+pusher, and a retry whose pusher has been removed is not sent. Retries are kept in memory and do
+not survive a restart. These limits are fixed. See
+[ADR-0206](adr/0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md).
 
 `security.federation.backfill.*`:
 

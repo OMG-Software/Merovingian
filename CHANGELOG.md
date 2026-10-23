@@ -1,3 +1,107 @@
+## 0.12.40
+
+Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-report-2026-10-17.md`.
+
+- **FIXED (R19, push-rule mutation APIs absent):** `PUT` and `DELETE /pushrules/global/{kind}/{ruleId}`,
+  `PUT .../enabled` and `PUT .../actions` are implemented. A new rule is enabled and becomes the most
+  important user-defined rule of its kind unless `before`/`after` place it (`before` wins when both
+  are given). Rule IDs starting with `.` (reserved for server defaults), containing `/` or `\`, or
+  (room and sender rules) not a room or user ID are refused with `400 M_INVALID_PARAM`; a placement
+  that names no rule answers `400 M_UNKNOWN`, and one relative to a server-default rule
+  `400 M_INVALID_PARAM`. Server-default rules can be enabled, disabled and given new actions but not
+  created or deleted. Historical `dont_notify` and `coalesce` actions are stripped.
+  A user's rules are kept as their `m.push_rules` account data and applied over the current server
+  defaults (ADR-0204), so a change reaches the user's clients in the `account_data` section of
+  `/sync`, and push delivery now evaluates the user's own rules instead of the read-only defaults.
+  `PUT /user/{userId}/account_data/m.push_rules` and `.../m.fully_read` are refused with 405, as the
+  spec requires for server-managed types. The conformance scenarios that asserted `404 M_UNRECOGNIZED`
+  for these endpoints now assert the spec's answers.
+- **SECURITY (bounded work under the runtime lock):** rules are evaluated under `runtime.mutex` for
+  every recipient of every event, so a user holds at most
+  `server.client_api.max_push_rules_per_user` user-defined rules (new, default 200, at most 10000;
+  `400 M_TOO_LARGE` past it, updates always allowed), and each rule is bounded: an ID of 255 bytes,
+  patterns and condition strings of 512 bytes, 16 conditions, 16 actions, 4096 bytes of canonical
+  JSON. Stored rules are re-validated when read.
+- **FIXED (R15, unread counts ignored push rules):** every unread count (`/sync`
+  `unread_notifications` and `unread_thread_notifications`, sliding-sync counts and the
+  `by_notification_count` sort, the Push Gateway badge) is now decided by the user's own push rules
+  (ADR-0205): an event counts as a notification when the rules notify, and as a highlight when they
+  notify with the highlight tweak. A muted room no longer counts, a keyword rule highlights, and a
+  mention the rules do not notify for no longer counts as a highlight.
+  `sync::count_unread_by_thread` stays the one walk and asks a per-request
+  `sync::UnreadEventClassifier`; delivery and counting build their evaluation context from the same
+  `push_room_facts` helpers.
+- **FIXED (audit concern 1, with R15):** unread counts no longer include events from before the
+  user's current join, which their rules were never run for and whose content a keyword rule could
+  otherwise probe.
+- **FIXED (R14, failed push notifications never retried):** a notification the gateway answers with
+  an HTTP error, or cannot be reached for, is sent again after 5 s, doubling to at most 10 minutes,
+  and given up after 8 retries (ADR-0206). Retries wait in a bounded in-memory queue (1024
+  notifications, 32 per recipient) drained by one `push-retry` job thread, never on a request
+  thread and never with `runtime.mutex` held across the network call. A pushkey the gateway rejects
+  loses its pusher and its queued retries; a retry whose pusher was removed or re-pointed is
+  dropped. A notification skipped because its gateway's circuit is open is now retried instead of
+  dropped. New log events: `push.delivery.retry_scheduled`, `push.delivery.retry_abandoned` (debug),
+  `push.delivery.retry_dropped` and `push.delivery.gave_up` (warning).
+- **FIXED (PR #523 review):** delivery loads each recipient's push rules once (the badge count reused
+  a second load under `runtime.mutex`); sliding sync builds its unread classifier only after the
+  `M_UNKNOWN_POS` and long-poll returns; a push retry that fails late in a long batch is scheduled
+  from when it failed, not from when the batch began; and the log-field and capability-gap docs
+  match the code.
+- **SECURITY (PR #523 review, bounded work under the runtime lock):** the push badge
+  (`counts.unread`) re-ran the exact per-room unread walk for every joined room, each scanning the
+  whole store, under `runtime.mutex` for every recipient of every event. `count_push_badge` now makes
+  one walk of at most 10000 rows and saturates at 1000 (ADR-0207; see the stream-order entry below
+  for how the walk runs). `/sync` unread counts stay exact. Rejected and soft-failed events no longer count as unread, and a rejected leave no longer
+  ends a user's join for counting.
+- **FIXED (PR #523 review, spec rate limits):** the push-rule endpoints the spec documents as
+  "Rate-limited: No" (all `GET`, `DELETE`, and `PUT .../enabled` and `.../actions`) could be answered
+  429; they now bypass the rate limiter. `PUT /pushrules/global/{kind}/{ruleId}` ("Rate-limited:
+  Yes") keeps its bucket, including for a rule named `enabled` or `actions`.
+- **SECURITY (PR #523 review, unread counts and history visibility):** an event the timeline
+  withholds, such as one backfilled from before the user's join and stored after it, was still
+  counted (and highlighted by keyword rules), revealing something about history the user may not
+  read. Every counted event now passes the same `HistoryVisibility` filter as the timeline
+  (ADR-0205).
+- **SECURITY (PR #523 review, per-room table walks under the runtime lock):** the unread classifier
+  walked the whole `memberships`, current `state` and `events` tables again for each room it was
+  asked about. In `/sync` this happened per room for every request; in the push badge it happened for
+  every recipient of every event. A capped badge also walked all of the user's read receipts again
+  for each room. The classifier now builds its room facts and every room's join start once per
+  request: one walk each of the memberships, the current state and the events, plus the user's
+  profile. Events are looked up by ID (ADR-0215). `/sync`, sliding sync and the badge give the same
+  counts as before. The badge's setup is still linear in the server's memberships and receipts
+  tables, once per badge; per-user indexes on them are a follow-up (ADR-0207).
+- **FIXED (PR #523 review, string notification levels):** push evaluation read a room's
+  `notifications` levels only when they were JSON integers. Room versions 1-9 allow a level written
+  as a string ("This includes the nested values within the `events`, `notifications` and `users`
+  properties", rooms/v9.md), so a room that set
+  `"room": "100"` fell back to the default of 50, and a sender at 50 could notify everyone with
+  `@room`. Each entry is now read with `events::decode_power_level`, the decoder the authorization
+  rules use, in the room version's encoding. An entry the rules would not read, such as a string in
+  version 10 or later, still falls back to the default.
+- **FIXED (PR #523 review, a capped badge could count what /sync does not):** the badge's walk
+  followed the order rows were stored in, which is not stream order. A capped walk could reach a
+  message without reaching the user's later own message in the same thread, and count a message
+  they had read. The walk now runs newest first in true stream order over the indexed event table
+  (ADR-0215). It resolves each read receipt's position by event ID before it starts, and looks
+  thread parents up by ID at no cost to its budget. It stops as soon as every joined room is
+  settled: past a non-join membership change, or at a join under the unthreaded read marker. An
+  uncapped badge equals `/sync`'s count. A capped one counts only events above the lowest row
+  visited, so it never counts one `/sync` would not (ADR-0207, amended).
+- **CHANGED (PR #523 review, one history filter per request):** `build_room_response`'s
+  convenience overload built a `HistoryVisibility` for the request and then a classifier that
+  built a second one of its own. The classifier now borrows the request's filter, so the two share
+  one set of lazy indexes. Counts are unchanged.
+- **DOCS (PR #523 review):** `docs/threat-model.md` said unread counts do not go through the history
+  visibility filter and named only the join boundary as the mitigation. It, the security coding
+  rules and the audit report now say every counted event, the push badge's included, passes
+  `HistoryVisibility::can_see`, which is what excludes a backfilled pre-join event.
+- **DOCS (PR #523 review):** `docs/todos/capability-gaps.md` described `counts.unread` as the sum of
+  `/sync`'s per-room counts and said unread counts skip the history-visibility filter.
+  `src/sync/AGENTS.md` listed the push badge among the counts made by `count_unread_by_thread()`.
+  Each now matches ADR-0205 and ADR-0207.
+
 ## 0.12.39
 
 Indexes the in-memory event store by event ID and by stream order (ADR-0215). Deferred from the

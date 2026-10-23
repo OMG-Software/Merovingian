@@ -31,8 +31,8 @@ enum class HistoryVisibilityValue
 // The room's CURRENT visibility, read from the current-state table. `shared` when the room
 // has no `m.room.history_visibility` event. Only for gating who may reach a read endpoint at
 // all (peeking a `world_readable` room); it never decides whether one event is visible.
-[[nodiscard]] auto current_history_visibility(database::PersistentStore const& store,
-                                              std::string_view room_id) -> HistoryVisibilityValue;
+[[nodiscard]] auto current_history_visibility(database::PersistentStore const& store, std::string_view room_id)
+    -> HistoryVisibilityValue;
 
 // True when the room's current visibility is `world_readable`.
 [[nodiscard]] auto room_is_world_readable(database::PersistentStore const& store, std::string_view room_id) -> bool;
@@ -80,6 +80,10 @@ public:
     // True when `event_id` names a stored event the user may see; false for an unknown ID.
     [[nodiscard]] auto can_see_event_id(std::string_view event_id) -> bool;
 
+    // The stored event `event_id` names, or nullptr: a hash lookup through the store's event-ID
+    // index (ADR-0215), with no walk of the events.
+    [[nodiscard]] auto find_event(std::string_view event_id) -> database::PersistentEvent const*;
+
 private:
     struct GroupView final
     {
@@ -101,7 +105,6 @@ private:
         std::string_view event_id{};
     };
 
-    [[nodiscard]] auto find_event(std::string_view event_id) -> database::PersistentEvent const*;
     [[nodiscard]] auto state_group_of(std::string_view event_id) -> std::optional<std::string_view>;
     [[nodiscard]] auto lookup_in_group(std::string_view group_id, std::string_view event_type,
                                        std::string_view state_key) -> LookupResult;

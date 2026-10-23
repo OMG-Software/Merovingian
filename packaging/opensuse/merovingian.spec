@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.39
+Version:        0.12.40
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.40-1
+- Let users create, delete, enable and reorder push rules; count unread notifications by push rule; retry failed push notifications.
+
 * Thu Oct 22 2026 James Chapman <claude@ping.me.uk> - 0.12.39-1
 - Index the in-memory event store by event ID and by stream order.
 

@@ -2167,9 +2167,12 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   it was sent (rule 2 from their own membership timeline, undeterminable means denied), and
   `shared` or `world_readable` history from that period is not shown to later joiners or
   peekers until state is recorded for it. The unread counts
-  (`notification_count`, `highlight_count`, and the `by_notification_count` room ordering)
-  still count every event after the user's read receipt without the filter, so a newcomer to a
-  `joined` room can learn how many messages preceded their join (never their content). `/notifications` rows are
+  (`notification_count`, `highlight_count`, the `by_notification_count` room ordering and the push
+  badge) count only events that pass the same `sync::HistoryVisibility::can_see` filter
+  (`unread.visible()`, the badge's `classifier.visible()`), and since 0.12.40 only events after the
+  start of the user's current join (ADR-0205), so they no longer reveal how many messages preceded
+  it. What remains is that a user who left and rejoined is not counted the events they could see
+  before leaving. `/notifications` rows are
   returned as recorded: they were created for a user who was joined at delivery, and are not
   re-filtered. `/messages` examines at most `server.client_api.max_messages_events_examined`
   (default 10,000) events per
@@ -2388,7 +2391,8 @@ run, so each was a way for one party to slow the whole server (CWE-407).
 - **Push glob matching.** `event_match` allocated per character, and `content.body` matching
   was quadratic in the body, for every local recipient of every event. **Mitigation:** linear
   matchers with no per-character allocation, checked against the old implementation
-  (ADR-0175). Residual risk: none known; user push rules are not yet evaluated server-side.
+  (ADR-0175). Residual risk: user push rules are evaluated server-side since 0.12.40; see
+  "Conformance audit wave 5" below.
 - **Global account data.** One user could add types without bound, growing the rows every
   account-data read scans. **Mitigation:** a configurable per-user cap on global types,
   `400 M_TOO_LARGE` beyond it (ADR-0173). Residual risk: the scans are still linear in the
@@ -2420,3 +2424,24 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
 - **Unadmitted third-party lookups.** `/thirdparty/*` held request threads with no proxy slot.
   **Mitigation:** each takes an ADR-0079 slot (ADR-0181). Residual risk: a request can still take up
   to the sum of the appservices' timeouts.
+
+### Conformance audit wave 5 (0.12.40)
+
+- **Client-chosen push rules evaluated under the runtime lock.** The Push Rules API (R19) lets a
+  client store rules the server evaluates for every event the user receives. **Mitigation:** a
+  per-user rule cap (`server.client_api.max_push_rules_per_user`, default 200), per-rule bounds,
+  re-validation of the stored rules on read, and 405 on setting `m.push_rules` as account data
+  (ADR-0204). Residual risk: evaluation is linear in rules times event size, with a factor the
+  operator sets.
+- **Unread counts as a content oracle.** Once the user's own rules decide unread counts (R15), a
+  keyword rule counted over messages from before the user joined would reveal whether history the
+  user may not see contains a word. **Mitigation:** every counted event, in the unread counts and
+  the push badge, passes `sync::HistoryVisibility::can_see` (`unread.visible()`,
+  `classifier.visible()`), the filter the timeline uses (ADR-0205). The filter, not the join
+  boundary, excludes an event backfilled from before the join, which is ordered after it. Counts
+  also start at the user's current join, so they do not reveal how many messages preceded it.
+- **Push retries as a memory or thread sink.** Retrying failed notifications (R14) keeps them, with
+  their event content, until they are sent. **Mitigation:** a bounded in-memory queue (1024
+  notifications, 32 per recipient) that drops rather than blocks, eight retries at most, one job
+  thread that sends them one at a time, and no `runtime.mutex` across the network call
+  (ADR-0206). Residual risk: a recipient's failing gateway can fill that recipient's share.

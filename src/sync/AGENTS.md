@@ -86,18 +86,49 @@ Receipts are durable rows (`database::store_receipt`, ADR-0169), keyed by
 
 ## Unread counts
 
-Every unread count (`/sync` `unread_notifications`, sliding sync, the
-`by_notification_count` sort, the push badge, `GET /notifications` `read`) is
-computed from `read_receipt_markers()` with `count_notifications()` /
-`count_highlights()`. Spec: "the server is to partition the notification count
-to each thread". An unthreaded receipt covers every earlier event; a threaded one
-covers only its own thread (`main` or the root), found by `event_thread_id()`
-through up to 3 relation hops. Do not compare an event's stream ordering with a
-single receipt position: that is the bug a threaded receipt used to cause.
-`count_unread_by_thread()` is the one walk; `/sync` reports its split when the
-filter sets `unread_thread_notifications`. A non-state event the user sent also
+Every unread count `/sync` and sliding sync report (`unread_notifications`, sliding
+sync's counts, the `by_notification_count` sort) is computed from
+`read_receipt_markers()` with `count_notifications()` / `count_highlights()`;
+`GET /notifications` `read` asks the same markers (`ReadMarkers::covers()`). The
+push badge has a pass of its own (below). Spec: "the server is to partition the
+notification count to each thread". An unthreaded receipt covers every earlier
+event; a threaded one covers only its own thread (`main` or the root), found by
+`event_thread_id()` through up to 3 relation hops.
+Do not compare an event's stream ordering with a single receipt position: that
+is the bug a threaded receipt used to cause. A non-state event the user sent also
 reads its own thread (`read_markers_for`, ADR-0170); never let a state event do
 so, or a profile change would mark every room read.
+
+`count_unread_by_thread()` is the one walk for these counts; `/sync` reports its
+split when the filter sets `unread_thread_notifications`. What counts is the
+user's push rules' decision (R15, ADR-0205): the walk asks a
+`sync::UnreadEventClassifier` (`homeserver::PushRuleUnreadClassifier` in
+production) about every unread event, and counts only events after
+`counted_after()`, the start of the user's current join. Never decide notify or
+highlight from the event type or `m.mentions` here. Only `accepted` events the
+user may see count: the walk asks `unread.visible()` (`HistoryVisibility::can_see`,
+the request's own filter for `/sync` and sliding sync) before it classifies,
+because a backfilled event from before the join is ordered after it.
+
+Build one classifier per request and pass it to every count in that request
+(`/sync`, `compute_room_list`, `build_room_response`). It loads the user's rules
+once, and on first use gathers every room's facts and join start from one walk
+each of the memberships, the current state and the events (event lookups through
+the request's `HistoryVisibility` index). Never add a lookup to it that walks a
+whole table per room (ADR-0207).
+
+The push badge (`homeserver::count_push_badge`, the Push Gateway `counts.unread`)
+does not use `count_unread_by_thread()`: it runs under `runtime.mutex` for every
+recipient of every event, so it makes one walk of the events, newest first in
+stream order (`in_stream_order()`, ADR-0215), stops once every room is settled,
+visits at most 10000 rows and saturates at 1000 (ADR-0207). It applies the same
+rules through shared helpers (`member_transition`, `join_start_from`,
+`event_thread_id`, the classifier) and resolves receipt positions as
+`read_markers_for()` does; tests hold it equal to the walk whenever it is not
+capped. Change one, change both. Capped, it is a lower bound that never counts an
+event `/sync` would not. Its setup walks each table a fixed number of times
+(`PushBadgeCount::table_walks`), whatever the number of rooms. `/sync` and
+sliding sync stay exact.
 
 ## History visibility and room read access
 

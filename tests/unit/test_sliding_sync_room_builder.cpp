@@ -2,15 +2,19 @@
 
 #include "../support/room_history_fixture.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/homeserver/push_rule_unread_classifier.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/sync/unread_event_classifier.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -18,6 +22,98 @@
 
 namespace
 {
+
+// Alice's m.room.member join at `stream_ordering`: unread counts start after the user's current
+// join (R15, ADR-0205).
+auto append_alice_join(merovingian::database::PersistentStore& store, std::uint64_t stream_ordering) -> void
+{
+    store.events.push_back({"$alice_join",
+                            "!room:example.org",
+                            "@alice:example.org",
+                            R"({"type":"m.room.member","sender":"@alice:example.org","state_key":"@alice:example.org",)"
+                            R"("content":{"membership":"join"}})",
+                            1U,
+                            stream_ordering,
+                            {},
+                            {},
+                            {}});
+}
+
+// Counts what it is told to: every m.room.message notifies, and highlights when its body is
+// "loud". Counting starts after `after`.
+class StubClassifier final : public merovingian::sync::UnreadEventClassifier
+{
+public:
+    explicit StubClassifier(std::optional<std::uint64_t> after)
+        : after_{after}
+    {
+    }
+
+    [[nodiscard]] auto counted_after(std::string_view /*room_id*/) const -> std::optional<std::uint64_t> override
+    {
+        return after_;
+    }
+
+    [[nodiscard]] auto classify(std::string_view /*room_id*/, merovingian::canonicaljson::Value const& event) const
+        -> merovingian::sync::UnreadEventOutcome override
+    {
+        ++calls_;
+        auto const& object = std::get<merovingian::canonicaljson::Object>(event.storage());
+        auto is_message = false;
+        auto is_loud = false;
+        for (auto const& member : object)
+        {
+            if (member.key == "type")
+            {
+                is_message = std::get<std::string>(member.value->storage()) == "m.room.message";
+            }
+            if (member.key == "content")
+            {
+                for (auto const& field : std::get<merovingian::canonicaljson::Object>(member.value->storage()))
+                {
+                    is_loud =
+                        is_loud || (field.key == "body" && std::get<std::string>(field.value->storage()) == "loud");
+                }
+            }
+        }
+        return {is_message, is_message && is_loud};
+    }
+
+    [[nodiscard]] auto visible(merovingian::database::PersistentEvent const& /*event*/) const -> bool override
+    {
+        return true;
+    }
+
+    // How many events the walk asked about.
+    [[nodiscard]] auto calls() const noexcept -> std::size_t
+    {
+        return calls_;
+    }
+
+private:
+    std::optional<std::uint64_t> after_;
+    mutable std::size_t calls_{0U};
+};
+
+// `count` messages from bob in !room:example.org at stream positions from `first`.
+auto append_bob_messages(merovingian::database::PersistentStore& store, std::size_t count, std::uint64_t first,
+                         std::string_view body = "hi") -> void
+{
+    for (auto i = std::size_t{0U}; i < count; ++i)
+    {
+        store.events.push_back({"$m" + std::to_string(first + i),
+                                "!room:example.org",
+                                "@bob:example.org",
+                                std::string{R"({"type":"m.room.message","sender":"@bob:example.org",)"} +
+                                    R"("room_id":"!room:example.org","content":{"body":")" + std::string{body} +
+                                    R"("}})",
+                                1U,
+                                first + i,
+                                {},
+                                {},
+                                {}});
+    }
+}
 
 auto append_event(merovingian::database::PersistentStore& store, std::string_view event_id, std::string_view room_id,
                   std::string_view json, std::uint64_t stream_ordering) -> void
@@ -506,9 +602,13 @@ SCENARIO("Sliding sync notification counts are baselined on the user's read rece
 
         auto const message_json = R"({"type":"m.room.message","sender":"@bob:example.org",)"
                                   R"("content":{"body":"hi"}})";
+        append_alice_join(store, 5U);
         store.events.push_back({"$m1", "!room:example.org", "@bob:example.org", message_json, 1U, 10U, {}, {}, {}});
         store.events.push_back({"$m2", "!room:example.org", "@bob:example.org", message_json, 1U, 20U, {}, {}, {}});
         store.events.push_back({"$m3", "!room:example.org", "@bob:example.org", message_json, 1U, 30U, {}, {}, {}});
+
+        // Fixture: alice may read the room (CSAZ-3), so its events are hers to count.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
 
         auto receipt = merovingian::database::PersistentReceipt{};
         receipt.room_id = "!room:example.org";
@@ -563,6 +663,7 @@ SCENARIO("Sliding sync notification counts exclude the user's own messages",
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         auto store = merovingian::database::PersistentStore{};
+        append_alice_join(store, 5U);
 
         store.events.push_back({"$own",
                                 "!room:example.org",
@@ -608,6 +709,7 @@ SCENARIO("count_notifications counts m.room.message and m.room.encrypted after r
         auto const alice_message = R"({"type":"m.room.message","sender":"@alice:example.org",)"
                                    R"("content":{"body":"mine"}})";
 
+        append_alice_join(store, 5U);
         store.events.push_back({"$before", "!room:example.org", "@bob:example.org", bob_message, 1U, 10U, {}, {}, {}});
         store.events.push_back(
             {"$after_message", "!room:example.org", "@bob:example.org", bob_message, 1U, 30U, {}, {}, {}});
@@ -618,15 +720,19 @@ SCENARIO("count_notifications counts m.room.message and m.room.encrypted after r
         store.events.push_back(
             {"$after_own", "!room:example.org", "@alice:example.org", alice_message, 1U, 60U, {}, {}, {}});
 
+        // Fixture: alice may read the room (CSAZ-3), so its events are hers to count.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
+
         WHEN("count_notifications is called for alice with read_ordering 20")
         {
+            auto const rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
             auto const count = merovingian::sync::count_notifications(store, "!room:example.org", "@alice:example.org",
-                                                                      merovingian::sync::ReadMarkers{20U, {}});
+                                                                      merovingian::sync::ReadMarkers{20U, {}}, rules);
 
             THEN("only the after-baseline message and encrypted event from bob count")
             {
-                // $before is at/before the baseline, $after_state is not a
-                // message/encrypted type, and $after_own is alice's own event.
+                // $before is at/before the baseline, no default push rule notifies
+                // for $after_state, and $after_own is alice's own event.
                 REQUIRE(count == 2U);
             }
         }
@@ -652,6 +758,7 @@ SCENARIO("count_highlights counts only after-baseline events mentioning the user
             R"({"type":"m.room.message","sender":"@alice:example.org",)"
             R"("content":{"body":"noting myself","m.mentions":{"user_ids":["@alice:example.org"]}}})";
 
+        append_alice_join(store, 5U);
         store.events.push_back(
             {"$before_mention", "!room:example.org", "@bob:example.org", mentions_alice, 1U, 10U, {}, {}, {}});
         store.events.push_back(
@@ -663,10 +770,14 @@ SCENARIO("count_highlights counts only after-baseline events mentioning the user
         store.events.push_back(
             {"$after_own_mention", "!room:example.org", "@alice:example.org", alice_self_mention, 1U, 60U, {}, {}, {}});
 
+        // Fixture: alice may read the room (CSAZ-3), so its events are hers to count.
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
+
         WHEN("count_highlights is called for alice with read_ordering 20")
         {
+            auto const rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
             auto const count = merovingian::sync::count_highlights(store, "!room:example.org", "@alice:example.org",
-                                                                   merovingian::sync::ReadMarkers{20U, {}});
+                                                                   merovingian::sync::ReadMarkers{20U, {}}, rules);
 
             THEN("only the after-baseline event mentioning alice by another sender counts")
             {
@@ -674,6 +785,48 @@ SCENARIO("count_highlights counts only after-baseline events mentioning the user
                 // mentions someone else, $after_no_mention has no m.mentions, and
                 // $after_own_mention is alice's own event.
                 REQUIRE(count == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("count_unread_by_thread counts what the classifier decides, after its starting position only",
+         "[sync][sliding-sync][room-builder][receipts][r15]")
+{
+    GIVEN("messages from bob at 10, 20 and 30, the last two loud, and a name change at 40")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        auto const quiet = R"({"type":"m.room.message","sender":"@bob:example.org","content":{"body":"quiet"}})";
+        auto const loud = R"({"type":"m.room.message","sender":"@bob:example.org","content":{"body":"loud"}})";
+        auto const name = R"({"type":"m.room.name","sender":"@bob:example.org","content":{"name":"x"}})";
+        store.events.push_back({"$q", "!room:example.org", "@bob:example.org", quiet, 1U, 10U, {}, {}, {}});
+        store.events.push_back({"$l1", "!room:example.org", "@bob:example.org", loud, 1U, 20U, {}, {}, {}});
+        store.events.push_back({"$l2", "!room:example.org", "@bob:example.org", loud, 1U, 30U, {}, {}, {}});
+        store.events.push_back({"$n", "!room:example.org", "@bob:example.org", name, 1U, 40U, {}, {}, {}});
+
+        WHEN("the classifier counts from position 15")
+        {
+            auto const counts =
+                merovingian::sync::count_unread_by_thread(store, "!room:example.org", "@alice:example.org",
+                                                          merovingian::sync::ReadMarkers{0U, {}}, StubClassifier{15U});
+
+            THEN("the two later messages notify and both highlight; the earlier one and the name change do not")
+            {
+                REQUIRE(counts.total().notification_count == 2U);
+                REQUIRE(counts.total().highlight_count == 2U);
+            }
+        }
+
+        WHEN("the classifier counts nothing (the user is not joined)")
+        {
+            auto const counts = merovingian::sync::count_unread_by_thread(
+                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}},
+                StubClassifier{std::nullopt});
+
+            THEN("nothing is unread")
+            {
+                REQUIRE(counts.total().notification_count == 0U);
+                REQUIRE(counts.threads.empty());
             }
         }
     }
@@ -982,6 +1135,114 @@ SCENARIO("MSC4186 multi-list fold is associative across three list windows",
                     });
                 };
                 REQUIRE(same_set(left_folded.required_state, reordered.required_state));
+            }
+        }
+    }
+}
+
+SCENARIO("Rejected and soft-failed events never count as unread", "[sync][receipts][r15]")
+{
+    GIVEN("one accepted, one rejected and one soft-failed message")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        append_bob_messages(store, 3U, 10U);
+        store.events.modify(store.events.begin() + 1, [](merovingian::database::PersistentEvent& event) {
+            event.status = "rejected";
+        });
+        store.events.modify(store.events.begin() + 2, [](merovingian::database::PersistentEvent& event) {
+            event.status = "soft_failed";
+        });
+        auto const classifier = StubClassifier{0U};
+
+        WHEN("alice's unread count is computed")
+        {
+            auto const counts = merovingian::sync::count_unread_by_thread(
+                store, "!room:example.org", "@alice:example.org", merovingian::sync::ReadMarkers{0U, {}}, classifier);
+
+            THEN("only the accepted message counts, and the others are not even classified")
+            {
+                REQUIRE(counts.total().notification_count == 1U);
+                REQUIRE(classifier.calls() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("A rejected leave does not end the user's join for unread counting", "[sync][receipts][r15]")
+{
+    GIVEN("alice joined at 5 and a rejected leave of hers at 8")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        append_alice_join(store, 5U);
+        store.events.push_back({"$alice_leave",
+                                "!room:example.org",
+                                "@alice:example.org",
+                                R"({"type":"m.room.member","sender":"@alice:example.org",)"
+                                R"("state_key":"@alice:example.org","content":{"membership":"leave"}})",
+                                1U,
+                                8U,
+                                {},
+                                {},
+                                {}});
+        store.events.modify(store.events.find("$alice_leave"), [](merovingian::database::PersistentEvent& event) {
+            event.status = "rejected";
+        });
+
+        WHEN("the start of her current join is found")
+        {
+            auto const start =
+                merovingian::homeserver::current_join_start(store, "!room:example.org", "@alice:example.org");
+
+            THEN("it is still her join")
+            {
+                REQUIRE(start.has_value());
+                REQUIRE(*start == 5U);
+            }
+        }
+    }
+}
+
+SCENARIO("A late event the user may not see is not counted as unread", "[sync][receipts][r15][history-visibility]")
+{
+    GIVEN("alice joined, one visible message, and a later-stored event from before her join in a joined-only room")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        append_alice_join(store, 5U);
+        append_bob_messages(store, 1U, 10U);
+        merovingian::tests::record_joined_state_for_room(store, "!room:example.org", "@alice:example.org");
+
+        // Backfilled history: stored after her join, but its state is the room's before she joined.
+        store.events.push_back({"$hv",
+                                "!fixture-state-holder:example.org",
+                                "@bob:example.org",
+                                R"({"type":"m.room.history_visibility","state_key":"",)"
+                                R"("content":{"history_visibility":"joined"}})",
+                                1U,
+                                2U,
+                                {},
+                                {},
+                                {}});
+        append_bob_messages(store, 1U, 20U, "secret");
+        auto const group = merovingian::database::create_or_reuse_state_group(
+            store, "!room:example.org", "sg:fixture:before-alice", std::nullopt,
+            {
+                {std::string{}, "m.room.history_visibility", std::string{}, "$hv"}
+        });
+        REQUIRE(group.has_value());
+        REQUIRE(merovingian::database::set_event_state_group(store, "$m20", *group));
+
+        WHEN("alice's unread count is computed by her push rules")
+        {
+            auto const rules = merovingian::homeserver::PushRuleUnreadClassifier{store, "@alice:example.org", 200U};
+            auto const count = merovingian::sync::count_notifications(store, "!room:example.org", "@alice:example.org",
+                                                                      merovingian::sync::ReadMarkers{0U, {}}, rules);
+
+            THEN("only the message she may see counts")
+            {
+                // Fixture: the timeline withholds $m20 from alice (history visibility "joined").
+                REQUIRE(merovingian::sync::HistoryVisibility{store, "@alice:example.org"}.can_see(
+                            store.events.back()) == false);
+                REQUIRE(count == 1U);
             }
         }
     }
