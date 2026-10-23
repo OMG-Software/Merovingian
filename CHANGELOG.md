@@ -9,7 +9,8 @@ served by the candidate, in CI (ADR-0216).
   and reads everything back: old access tokens and passwords, messages, aliases, media bytes,
   profile, account data, pushers, device keys, an old sync token, a retried send replaying the event
   the old release stored for that transaction ID, and a new event (under a transaction ID the old
-  release never saw) signed with the old, decrypted signing key. `scripts/generate_upgrade_fixture.py` rebuilds a fixture from an old
+  release never saw) whose signature verifies against the signing key the old release stored, so a
+  runtime that silently signed with a replacement key would fail. `scripts/generate_upgrade_fixture.py` rebuilds a fixture from an old
   release's commit; `docs/release-process.md` says when. It fails rather than writing a fixture that
   lacks anything the test reads back (signed device keys need the `cryptography` package).
 - **ADDED:** `database::migrate_sqlite_schema_to` and `database::migrate_postgresql_schema_to`

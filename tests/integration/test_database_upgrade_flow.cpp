@@ -12,12 +12,15 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/stored_room_version.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -152,6 +155,52 @@ struct PgClear final
     auto const result = std::unique_ptr<PGresult, PgClear>{PQexec(connection.get(), script.c_str())};
     auto const status = PQresultStatus(result.get());
     return status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
+}
+
+// The server signing key the old release stored for example.org, read from its
+// own database rather than the manifest: what the runtime must keep signing with.
+struct FixtureSigningKey final
+{
+    std::string key_id{};
+    std::string public_key{};
+};
+
+[[nodiscard]] auto sqlite_fixture_signing_key(std::filesystem::path const& path) -> FixtureSigningKey
+{
+    auto* raw = static_cast<sqlite3*>(nullptr);
+    auto const opened = sqlite3_open_v2(path.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr);
+    auto const connection = std::unique_ptr<sqlite3, SqliteClose>{raw};
+    auto* raw_statement = static_cast<sqlite3_stmt*>(nullptr);
+    if (opened != SQLITE_OK ||
+        sqlite3_prepare_v2(connection.get(),
+                           "SELECT key_id, public_key FROM server_signing_keys WHERE server_name = 'example.org'", -1,
+                           &raw_statement, nullptr) != SQLITE_OK)
+    {
+        return {};
+    }
+    auto const statement = std::unique_ptr<sqlite3_stmt, SqliteFinalize>{raw_statement};
+    if (sqlite3_step(statement.get()) != SQLITE_ROW)
+    {
+        return {};
+    }
+    auto const text = [&statement](int column) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        auto const* value = reinterpret_cast<char const*>(sqlite3_column_text(statement.get(), column));
+        return value == nullptr ? std::string{} : std::string{value};
+    };
+    return {text(0), text(1)};
+}
+
+[[nodiscard]] auto postgresql_fixture_signing_key(std::string const& conninfo) -> FixtureSigningKey
+{
+    auto const connection = std::unique_ptr<PGconn, PgFinish>{PQconnectdb(conninfo.c_str())};
+    auto const result = std::unique_ptr<PGresult, PgClear>{PQexec(
+        connection.get(), "SELECT key_id, public_key FROM server_signing_keys WHERE server_name = 'example.org'")};
+    if (PQresultStatus(result.get()) != PGRES_TUPLES_OK || PQntuples(result.get()) != 1)
+    {
+        return {};
+    }
+    return {PQgetvalue(result.get(), 0, 0), PQgetvalue(result.get(), 0, 1)};
 }
 
 [[nodiscard]] auto postgresql_uri_from_environment() -> std::string
@@ -616,6 +665,42 @@ auto require_fixture_served(FixtureView const& view, FixtureExpectations const& 
     REQUIRE(view.read_new_event.body.find("sent after the upgrade") != std::string::npos);
 }
 
+// The event created after the upgrade carries example.org's signature under the
+// old release's key ID, and that signature verifies against the old public key:
+// the runtime decrypted the old secret rather than signing with a replacement.
+auto require_signed_with_fixture_key(merovingian::homeserver::ClientServerRuntime& runtime,
+                                     FixtureExpectations const& expected, FixtureView const& view,
+                                     FixtureSigningKey const& key) -> void
+{
+    REQUIRE_FALSE(key.key_id.empty());
+    REQUIRE_FALSE(key.public_key.empty());
+    auto const& store = runtime.homeserver.database.persistent_store;
+    auto const event_id = json_string_field(view.send_into_old_room.body, "event_id");
+    auto const stored = store.events.find(event_id);
+    REQUIRE(stored != store.events.end());
+    auto const parsed = merovingian::canonicaljson::parse_lossless(stored->json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    REQUIRE(event != nullptr);
+    auto const* signatures = merovingian::tests::object_member_as_object(*event, "signatures");
+    REQUIRE(signatures != nullptr);
+    auto const* by_server = merovingian::tests::object_member_as_object(*signatures, "example.org");
+    REQUIRE(by_server != nullptr);
+    auto const* signature = merovingian::tests::string_member(*by_server, key.key_id);
+    INFO("signing key " << key.key_id);
+    REQUIRE(signature != nullptr);
+
+    auto const* policy = merovingian::homeserver::stored_room_version_policy(store, expected.private_room_id);
+    REQUIRE(policy != nullptr);
+    auto const payload = merovingian::events::make_event_signing_payload(parsed.value, *policy);
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const verified = merovingian::crypto::ed25519_verify(
+        merovingian::crypto::Ed25519PublicKey{merovingian::events::matrix_bytes_from_base64(key.public_key)},
+        payload.output,
+        merovingian::crypto::Ed25519Signature{merovingian::events::matrix_bytes_from_base64(*signature)});
+    REQUIRE(verified.valid);
+}
+
 } // namespace
 
 SCENARIO("A SQLite schema can be built at an older version and stops there", "[database][upgrade][sqlite]")
@@ -1005,6 +1090,7 @@ SCENARIO("The previous release's own SQLite database is migrated and served by t
                                    std::filesystem::copy_options::overwrite_existing);
         std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
         auto const master_key = write_fixture_master_key(expected.master_key_hex);
+        auto const signing_key = sqlite_fixture_signing_key(path);
 
         WHEN("the current runtime starts on it")
         {
@@ -1018,6 +1104,7 @@ SCENARIO("The previous release's own SQLite database is migrated and served by t
                 REQUIRE(started.runtime.homeserver.database.schema_version ==
                         merovingian::database::current_schema_version());
                 require_fixture_served(view, expected);
+                require_signed_with_fixture_key(started.runtime, expected, view, signing_key);
             }
         }
         std::filesystem::remove(path);
@@ -1042,6 +1129,7 @@ SCENARIO("The previous release's own PostgreSQL database is migrated and served 
         REQUIRE(pg_execute_script(scratch.conninfo(), read_binary_file(fixture_directory() / "postgresql.sql")));
         auto const uri_file = write_uri_file(scratch.conninfo());
         auto const master_key = write_fixture_master_key(expected.master_key_hex);
+        auto const signing_key = postgresql_fixture_signing_key(scratch.conninfo());
 
         WHEN("the current runtime starts on it")
         {
@@ -1055,6 +1143,7 @@ SCENARIO("The previous release's own PostgreSQL database is migrated and served 
                 REQUIRE(started.runtime.homeserver.database.schema_version ==
                         merovingian::database::current_schema_version());
                 require_fixture_served(view, expected);
+                require_signed_with_fixture_key(started.runtime, expected, view, signing_key);
             }
         }
         std::filesystem::remove(uri_file);
