@@ -807,6 +807,28 @@ value. Test fixtures that do not exercise persistence select it through
   current-schema upgrade coverage separately tracks schema-version bumps.
 - Integration coverage proving SQLite users, sessions, rooms, and events survive
   a homeserver runtime restart.
+- Upgrade coverage across releases (`tests/integration/test_database_upgrade_flow.cpp`,
+  ADR-0216). `migrate_sqlite_schema_to` and `migrate_postgresql_schema_to` build a
+  schema at an older version and stop there: they bootstrap an empty database,
+  apply migrations forward to exactly the target, and hydrate nothing. They refuse
+  a version this build does not know before touching the database, and a schema
+  already past the target, since migrations never run backwards. Tests use them to
+  open a database at every older version, and to seed the previous minor series'
+  rows (in that series' column shapes) and serve them from the current runtime.
+  `tests/fixtures/upgrade/0.11.13/` holds a SQLite database and a PostgreSQL dump
+  written over HTTP by release 0.11.13 (schema version 11), which the current
+  runtime must open, migrate and serve: its users log in, their old access tokens
+  still authenticate, their rooms, messages, aliases, media, profile, account data,
+  pushers and device keys are returned, a client's old sync token still works, and a
+  new event in an old room is signed with the old, decrypted signing key. The room
+  directory is not carried over: 0.11 listed rooms by join rule and stored no choice
+  to publish. The fixture is removed when the migrations collapse at 1.0.0.
+- Both stores read the migration ledger in numeric order
+  (`ORDER BY CAST(version AS INTEGER)`): `schema_migrations.version` is `TEXT`, and
+  ordering by it alone put `'10'` before `'9'`.
+- The PostgreSQL store hydrates `profiles` like the SQLite store. Before 0.12.42 it
+  wrote them but never read them back, so displaynames and avatars disappeared at
+  every restart.
 - Live PostgreSQL integration coverage: a dedicated GitHub Actions workflow
   (`.github/workflows/postgres-integration.yml`) starts a PostgreSQL 16
   service, provisions a `merovingian_migration` role with DDL grants and a

@@ -1,3 +1,32 @@
+## 0.12.42
+
+Production milestone blocker: a database written by an older release is now opened, migrated and
+served by the candidate, in CI (ADR-0216).
+
+- **ADDED:** `tests/fixtures/upgrade/0.11.13/`, a SQLite database and a PostgreSQL dump written over
+  HTTP by release 0.11.13 (the last of the 0.11 series, schema version 11), with a manifest of what
+  was stored. `tests/integration/test_database_upgrade_flow.cpp` starts the current runtime on each
+  and reads everything back: old access tokens and passwords, messages, aliases, media bytes,
+  profile, account data, pushers, device keys, an old sync token, and a new event signed with the
+  old, decrypted signing key. `scripts/generate_upgrade_fixture.py` rebuilds a fixture from an old
+  release's commit; `docs/release-process.md` says when.
+- **ADDED:** `database::migrate_sqlite_schema_to` and `database::migrate_postgresql_schema_to`
+  build a schema at an older version and stop there, so tests can seed that version's rows and
+  open every older version at the current one. They only move forward, refuse a version this
+  build does not know before touching the database, and refuse a schema already past the target.
+  Both migration runners now take a target version and refuse a state already past it, so a
+  racing process can never turn a migration into a downgrade plan.
+- **FIXED (found by the upgrade test):** the PostgreSQL store wrote `profiles` rows but never loaded
+  them, so every displayname and avatar disappeared from the API at each restart. It now loads
+  them like the SQLite store.
+- **FIXED (found by the upgrade test):** both stores read the migration ledger ordered by its `TEXT`
+  `version` column, so `'10'` sorted before `'9'` and a reloaded ledger's last entry was not the
+  newest migration. The ledger is now read in numeric order.
+- **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
+  `/publicRooms`. Since migration 018 a room is listed only when published, so a room upgraded from
+  0.11 is unlisted until a room administrator publishes it again. There are no deployments yet and
+  the migrations collapse into one at 1.0.0, so no backfill was added (owner decision, ADR-0216).
+
 ## 0.12.41
 
 Media part of the conformance audit (2026-10-17): R17 and the wave-6 media endpoints.

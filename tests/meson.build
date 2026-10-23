@@ -484,6 +484,7 @@ shell = find_program('sh')
       'integration/test_observability_flow.cpp',
       'integration/test_pdu_ingestion_backfill_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
+      'integration/test_database_upgrade_flow.cpp',
       'integration/test_receipt_persistence_flow.cpp',
       'integration/test_database_nul_http_flow.cpp',
       'integration/test_database_nul_remaining_query_flow.cpp',
@@ -519,7 +520,8 @@ shell = find_program('sh')
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
-    cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args],
+    cpp_args: [thumbnail_test_args, thumbnail_gate_test_args, federation_worker_test_args, server_test_args,
+               '-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
   )
 
 # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail

@@ -526,7 +526,9 @@ namespace
     {
         auto state = SchemaState{};
         state.tables = load_table_names(connection);
-        auto statement = prepare(connection, "SELECT version, name, direction FROM schema_migrations ORDER BY version");
+        // `version` is TEXT: ORDER BY it alone puts '10' before '9'.
+        auto statement = prepare(
+            connection, "SELECT version, name, direction FROM schema_migrations ORDER BY CAST(version AS INTEGER)");
         if (!statement.has_value())
         {
             return state;
@@ -609,9 +611,17 @@ namespace
         return std::string_view{reinterpret_cast<char const*>(recorded)} == migration_direction_name(step.direction);
     }
 
-    auto apply_pending_migrations(sqlite3& connection, SchemaState state) -> std::optional<SchemaState>
+    // Migrates `state` forward to `target_version`: current_schema_version()
+    // on open, an older version for migrate_sqlite_schema_to.
+    auto apply_pending_migrations(sqlite3& connection, SchemaState state, std::uint32_t target_version)
+        -> std::optional<SchemaState>
     {
-        auto const plan = migration_plan_for(state);
+        // Never let a schema already past the target turn into a downgrade plan.
+        if (state.version > target_version)
+        {
+            return std::nullopt;
+        }
+        auto const plan = migration_plan_between(state.version, target_version);
         auto const validation = migration_plan_is_valid(plan);
         if (!validation.valid)
         {
@@ -1408,6 +1418,42 @@ namespace detail
 
 } // namespace detail
 
+auto migrate_sqlite_schema_to(std::string const& path, std::uint32_t target_version) -> MigrationApplyResult
+{
+    // Checked before the file is opened, so a refused call creates nothing.
+    if (target_version == 0U || target_version > current_schema_version())
+    {
+        return {false, "target schema version is not one this build knows", {}};
+    }
+    auto connection = open_sqlite_connection(path, false);
+    if (!connection.has_value())
+    {
+        return {false, "unable to open SQLite persistent store", {}};
+    }
+    auto& sqlite = **connection;
+    if (!execute_sql(sqlite, "PRAGMA foreign_keys = ON"))
+    {
+        return {false, "unable to configure SQLite persistent store", {}};
+    }
+    if (load_table_names(sqlite).empty() && !initialize_current_schema(sqlite))
+    {
+        return {false, "unable to initialize SQLite schema", {}};
+    }
+    auto state = load_schema_state(sqlite);
+    if (state.version > target_version)
+    {
+        return {false, "schema is newer than the target version; migrations never move a schema backwards",
+                std::move(state)};
+    }
+    auto migrated = apply_pending_migrations(sqlite, state, target_version);
+    if (!migrated.has_value())
+    {
+        return {false, "unable to migrate SQLite schema", std::move(state)};
+    }
+    // The ledger and tables as SQLite now has them, not as the plan predicted.
+    return {true, {}, load_schema_state(sqlite)};
+}
+
 auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile profile) -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
@@ -1470,7 +1516,7 @@ auto open_sqlite_persistent_store(std::string const& path, TableLoadProfile prof
                                               {"current_version", std::to_string(store.schema.version),     false},
                                               {"target_version",  std::to_string(current_schema_version()), false}
         });
-        auto migrated = apply_pending_migrations(sqlite, store.schema);
+        auto migrated = apply_pending_migrations(sqlite, store.schema, current_schema_version());
         if (!migrated.has_value())
         {
             log_diagnostic("store.rejected",

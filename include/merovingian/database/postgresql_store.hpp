@@ -89,6 +89,12 @@ struct PostgresqlConnectionOpenResult final
 [[nodiscard]] auto decode_postgresql_bytea_hex(std::string_view hex_text) -> std::optional<std::string>;
 [[nodiscard]] auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>;
 [[nodiscard]] auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult;
+// The PostgreSQL counterpart of migrate_sqlite_schema_to (ADR-0216): bootstraps an
+// empty database, migrates its schema forward to exactly `target_version` under the
+// migration advisory lock, and stops. Runs as the connecting role; it is for
+// building older-release databases in tests and offline tooling, not for serving.
+[[nodiscard]] auto migrate_postgresql_schema_to(std::string_view conninfo, std::uint32_t target_version)
+    -> MigrationApplyResult;
 // `runtime_role` is the DML-only role from packaging/postgresql/provision-roles.sql;
 // it is recorded on the store and assumed by every connection opened from it,
 // not just this one, because connections are created per operation. Empty

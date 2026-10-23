@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.41
+Version:        0.12.42
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.42-1
+- Test that a database written by an older release opens, migrates and serves under the new one.
+
 * Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.41-1
 - Serve named media downloads and upload filenames; add asynchronous uploads and opt-in URL previews (conformance audit, media).
 
