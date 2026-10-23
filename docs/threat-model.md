@@ -2167,10 +2167,12 @@ membership. No whole-finding or release acceptance is claimed. See proposed
   it was sent (rule 2 from their own membership timeline, undeterminable means denied), and
   `shared` or `world_readable` history from that period is not shown to later joiners or
   peekers until state is recorded for it. The unread counts
-  (`notification_count`, `highlight_count`, and the `by_notification_count` room ordering) do not
-  go through the filter, but since 0.12.40 they count only events after the start of the user's
-  current join (ADR-0205), so they no longer reveal how many messages preceded it. What remains is
-  that a user who left and rejoined is not counted the events they could see before leaving. `/notifications` rows are
+  (`notification_count`, `highlight_count`, the `by_notification_count` room ordering and the push
+  badge) count only events that pass the same `sync::HistoryVisibility::can_see` filter
+  (`unread.visible()`, the badge's `classifier.visible()`), and since 0.12.40 only events after the
+  start of the user's current join (ADR-0205), so they no longer reveal how many messages preceded
+  it. What remains is that a user who left and rejoined is not counted the events they could see
+  before leaving. `/notifications` rows are
   returned as recorded: they were created for a user who was joined at delivery, and are not
   re-filtered. `/messages` examines at most `server.client_api.max_messages_events_examined`
   (default 10,000) events per
@@ -2433,8 +2435,11 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   operator sets.
 - **Unread counts as a content oracle.** Once the user's own rules decide unread counts (R15), a
   keyword rule counted over messages from before the user joined would reveal whether history the
-  user may not see contains a word. **Mitigation:** counts start at the user's current join
-  (ADR-0205).
+  user may not see contains a word. **Mitigation:** every counted event, in the unread counts and
+  the push badge, passes `sync::HistoryVisibility::can_see` (`unread.visible()`,
+  `classifier.visible()`), the filter the timeline uses (ADR-0205). The filter, not the join
+  boundary, excludes an event backfilled from before the join, which is ordered after it. Counts
+  also start at the user's current join, so they do not reveal how many messages preceded it.
 - **Push retries as a memory or thread sink.** Retrying failed notifications (R14) keeps them, with
   their event content, until they are sent. **Mitigation:** a bounded in-memory queue (1024
   notifications, 32 per recipient) that drops rather than blocks, eight retries at most, one job

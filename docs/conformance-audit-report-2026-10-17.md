@@ -114,8 +114,9 @@ unsupported, not as a violation.
 ## Concerns not promoted to findings
 
 1. Unread counts count pre-join messages in a `joined`-visibility room (no content disclosed).
-   Reconsider with R15. Fixed 0.12.40 with R15: counts start at the user's current join, because
-   a keyword rule counted over earlier history would disclose content (ADR-0205).
+   Reconsider with R15. Fixed 0.12.40 with R15: counts start at the user's current join and count
+   only events that pass `sync::HistoryVisibility::can_see`, because a keyword rule counted over
+   history the user may not see would disclose content (ADR-0205).
 2. Device-key uploads are not checked for the device's self-signature. The spec puts that
    duty on clients; recorded as a hardening question.
 3. Password login with `m.id.thirdparty` / `m.id.phone` identifiers is rejected as bad JSON.

@@ -93,6 +93,10 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   convenience overload built a `HistoryVisibility` for the request and then a classifier that
   built a second one of its own. The classifier now borrows the request's filter, so the two share
   one set of lazy indexes. Counts are unchanged.
+- **DOCS (PR #523 review):** `docs/threat-model.md` said unread counts do not go through the history
+  visibility filter and named only the join boundary as the mitigation. It, the security coding
+  rules and the audit report now say every counted event, the push badge's included, passes
+  `HistoryVisibility::can_see`, which is what excludes a backfilled pre-join event.
 - **DOCS (PR #523 review):** `docs/todos/capability-gaps.md` described `counts.unread` as the sum of
   `/sync`'s per-room counts and said unread counts skip the history-visibility filter.
   `src/sync/AGENTS.md` listed the push badge among the counts made by `count_unread_by_thread()`.

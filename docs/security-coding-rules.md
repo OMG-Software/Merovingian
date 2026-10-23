@@ -1156,8 +1156,11 @@ media-fetch-pool task.
   unread event a `/sync` counts, so their size is work the client would otherwise choose (CWE-400,
   ADR-0204).
   Source: `src/push/AGENTS.md`.
-- **Unread counts start at the user's current join.** Why: the user's rules decide what counts, so a
-  keyword rule counted over earlier history would disclose whether it contains a word (CWE-203,
+- **Unread counts, the push badge included, count only events the user may see, from their current
+  join.** Every counted event passes `sync::HistoryVisibility::can_see` (`unread.visible()`,
+  `classifier.visible()`); the join boundary alone does not exclude a backfilled pre-join event,
+  which is ordered after the join. Why: the user's rules decide what counts, so a keyword rule
+  counted over history they may not see would disclose whether it contains a word (CWE-203,
   ADR-0205).
   Source: `src/sync/AGENTS.md`.
 - **Failed push notifications are retried only from the bounded queue, on the retry job.** Never
