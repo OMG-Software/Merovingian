@@ -123,6 +123,12 @@ shell = find_program('sh')
   )
 
   test(
+    'reject-unsafe-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_reject_unsafe.py'],
+  )
+
+  test(
     'live-integration-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_live_integration_registration.py'],

@@ -31,6 +31,27 @@ reject_pattern '\bmalloc\s*\(' 'malloc'
 reject_pattern '\bcalloc\s*\(' 'calloc'
 reject_pattern '\brealloc\s*\(' 'realloc'
 reject_pattern '\bfree\s*\(' 'free'
+# Void-cast discards are banned (AGENTS.md: use std::ignore). GCC, unlike clang,
+# does not let a void cast silence warn_unused_result, so a cast that builds on
+# clang failed the GCC coverage job under -Werror (ADR-0217). Write
+# `std::ignore = expr;` instead, which silences both compilers.
+#
+# Two forms: static_cast<void>(...) and a C-style (void) cast. The C-style
+# pattern needs the character before "(void)" not to be part of a name, ")" or
+# ">", so empty parameter lists (`int f(void)`, `void (*p)(void)`) and function
+# types (`std::function<void(int)>`) are not casts. Any "//" earlier on the line
+# makes the match a comment. C++ files only: C has no std::ignore, and the one C
+# source (yyjson_adapter.c) is outside this rule.
+VOID_CAST_HITS=$(grep -Rn --perl-regexp \
+  --include='*.cpp' --include='*.hpp' --include='*.cc' \
+  '^(?:(?!//).)*?(static_cast\s*<\s*void\s*>|(?<![\w)>\]])\(\s*void\s*\)(?=\s*[\w:(*&!~"]))' \
+  "${ROOTS[@]}" || true)
+if [ -n "$VOID_CAST_HITS" ]; then
+  printf '%s\n' "$VOID_CAST_HITS"
+  echo "Rejected pattern detected: void cast (write 'std::ignore = expr;' instead, per AGENTS.md)"
+  exit 1
+fi
+
 # std::shared_ptr is allowed only with an explicit per-line annotation.
 # Add "// SHARED_PTR: reviewed — <reason>" on the same line to exempt.
 SHARED_PTR_HITS=$(grep -Rn --perl-regexp "${CPP_INCLUDES[@]}" 'std::shared_ptr' "${ROOTS[@]}" \
