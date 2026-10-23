@@ -8,6 +8,10 @@ Rules:
 - Good security is always more important. Code defensively.
 - RAII is non negotiable, use it.
 - Prefer references over pointers.
+- Discard a result with `std::ignore = expr;`, never a void cast (`static_cast<void>(expr)` or
+  `(void)expr`). GCC, unlike clang, does not let a void cast silence `warn_unused_result`, so
+  a cast that builds on clang breaks the GCC coverage build under `-Werror`.
+  `scripts/reject-unsafe.sh` rejects void casts in C++ files under `include/`, `src/` and `tests/`.
 - Top level namespace should be `merovingian`.
 - Format C++ code with clang-format using the .clang-format file in the project root.
 - Never code against `main` (it's blocked for merge), always use an alternate branch and open a pull request.

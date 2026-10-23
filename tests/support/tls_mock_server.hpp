@@ -144,7 +144,7 @@ struct FileDeleter final
     {
         if (file != nullptr)
         {
-            static_cast<void>(std::fclose(file));
+            std::ignore = std::fclose(file);
         }
     }
 };
@@ -296,7 +296,7 @@ inline auto run_one_shot_tls_server(merovingian::net::TcpAcceptor& acceptor,
     {
         *captured_request = std::move(request_bytes);
     }
-    static_cast<void>(tls_connection.write(http_response));
+    std::ignore = tls_connection.write(http_response);
 }
 
 // Multi-shot path-dispatching TLS server. Loops `responses.size()` iterations,
@@ -371,11 +371,11 @@ inline auto run_path_dispatch_tls_server(merovingian::net::TcpAcceptor& acceptor
         }
         if (chosen == path_responses.size())
         {
-            static_cast<void>(connection.write(path_responses.front().second));
+            std::ignore = connection.write(path_responses.front().second);
             continue;
         }
         served[chosen] = true;
-        static_cast<void>(connection.write(path_responses[chosen].second));
+        std::ignore = connection.write(path_responses[chosen].second);
     }
 }
 
@@ -438,7 +438,7 @@ inline auto run_stalling_tls_server(merovingian::net::TcpAcceptor& acceptor,
     {
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
-    static_cast<void>(tls_connection.write(http_response));
+    std::ignore = tls_connection.write(http_response);
 }
 
 // Spins until `flag` is set or `timeout` elapses. Returns whether the flag was

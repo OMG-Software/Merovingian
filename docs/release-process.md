@@ -66,6 +66,25 @@ The packaged tarballs include:
 - `README.md`
 - `LICENSE`
 
+## Starting a minor series: the upgrade fixture
+
+A database written by the previous minor series must open, migrate and serve under
+every candidate (ADR-0216). When the first version of a minor series is cut (for
+example 0.13.0), add the fixture of the last release of the series before it:
+
+```bash
+python scripts/generate_upgrade_fixture.py <last-release-commit> tests/fixtures/upgrade/<last-release-version>
+```
+
+Then set `previous_series_schema_version` and `previous_series_fixture_release` in
+`tests/integration/test_database_upgrade_flow.cpp` to that release and remove the
+previous fixture directory. Never regenerate a fixture from current code: it is
+evidence only because the old release wrote it.
+
+At 1.0.0 the migrations collapse into one initial schema, so a pre-1.0 database can no
+longer be opened: that change removes the 0.11.13 fixture and its scenarios, and the
+first post-1.0 fixture comes from the last 1.0.x release when 1.1 starts (ADR-0216).
+
 ## Verifying release signatures
 
 Every release tarball and package is accompanied by a detached GPG signature

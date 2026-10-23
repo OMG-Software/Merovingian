@@ -202,8 +202,11 @@ SCENARIO("parse_inbound_pdu_envelope extracts the full PDU envelope", "[pdu][for
 
             THEN("depth is populated")
             {
-                // Spec MUST: depth is a required non-negative integer.
-                REQUIRE(envelope->depth >= 0U);
+                // Spec MUST: depth is a required integer (room versions, PDU format:
+                // "The maximum depth of the prev_events, plus one"). The fixture
+                // carries 5. `depth` is unsigned, so `>= 0` held for any value and
+                // tested nothing (GCC: -Wtype-limits); require the parsed value.
+                REQUIRE(envelope->depth == 5U);
             }
 
             THEN("prev_events is populated")

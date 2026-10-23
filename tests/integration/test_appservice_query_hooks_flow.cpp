@@ -32,6 +32,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <unistd.h>
@@ -72,7 +73,7 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
     {
         *captured_request = request_bytes;
     }
-    static_cast<void>(::write(client_fd, http_response.data(), http_response.size()));
+    std::ignore = ::write(client_fd, http_response.data(), http_response.size());
     ::close(client_fd);
 }
 
