@@ -40,14 +40,19 @@ reject_pattern '\bfree\s*\(' 'free'
 # pattern needs the character before "(void)" not to be part of a name, ")" or
 # ">", so empty parameter lists (`int f(void)`, `void (*p)(void)`) and function
 # types (`std::function<void(int)>`) are not casts. The line is read up to the
-# match a token at a time: a whole "..." or '...' literal (escapes included) is
-# stepped over, so a "//" inside one (a URL) does not hide a later cast and a
-# cast spelled inside a string is not flagged; a "//" outside a literal starts a
-# comment, which ends the search. (\x27 is the single quote.) C++ files only: C
-# has no std::ignore, and the one C source (yyjson_adapter.c) is outside this rule.
+# match a token at a time: a whole raw literal R"tag(...)tag" (any u8/u/U/L
+# prefix is read as ordinary characters first), a whole "..." or '...' literal
+# (escapes included) is stepped over, so a "//" inside one (a URL) does not hide
+# a later cast and a cast spelled inside a string is not flagged; a "//" outside
+# a literal starts a comment, which ends the search. (\x27 is the single quote.)
+# A raw literal that spans lines (tests/integration has some) cannot be read whole
+# by a line-based grep: its opening line is not searched past the R", and its
+# later lines are read as code, so a cast spelled inside one would be flagged
+# (none is today). C++ files only: C has no std::ignore, and the one C source
+# (yyjson_adapter.c) is outside this rule.
 VOID_CAST_HITS=$(grep -Rn --perl-regexp \
   --include='*.cpp' --include='*.hpp' --include='*.cc' \
-  '^(?:"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27|(?!//)[^"\x27])*?(static_cast\s*<\s*void\s*>|(?<![\w)>\]])\(\s*void\s*\)(?=\s*[\w:(*&!~"]))' \
+  '^(?:R"([^()\\\s]{0,16})\(.*?\)\1"|"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27|(?!R")(?!//)[^"\x27])*?(static_cast\s*<\s*void\s*>|(?<![\w)>\]])\(\s*void\s*\)(?=\s*[\w:(*&!~"]))' \
   "${ROOTS[@]}" || true)
 if [ -n "$VOID_CAST_HITS" ]; then
   printf '%s\n' "$VOID_CAST_HITS"

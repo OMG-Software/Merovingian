@@ -82,6 +82,15 @@ class RejectUnsafeVoidCastTests(unittest.TestCase):
             {"src/b.cpp": 'void g() { auto s = "a \\" // b"; static_cast<void>(compute()); }\n'}
         )
 
+    def test_raw_string_literals_are_read_whole(self) -> None:
+        # GIVEN raw string literals, which may hold unescaped quotes and parentheses.
+        # WHEN the gate runs.
+        # THEN a cast spelled inside one is not code and is accepted...
+        self.assert_accepted({"src/a.cpp": 'auto const s = R"tag(text " (void)x )tag";\n'})
+        self.assert_accepted({"src/b.cpp": 'auto const s = u8R"q(say "static_cast<void>(x)")q";\n'})
+        # AND a real cast after one is still rejected.
+        self.assert_rejected({"src/c.cpp": 'void f() { auto s = R"(a "b")"; (void)compute(); }\n'})
+
     def test_std_ignore_and_void_in_types_are_accepted(self) -> None:
         # GIVEN std::ignore discards, function types and C-style empty parameter lists.
         source = (
