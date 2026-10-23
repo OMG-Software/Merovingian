@@ -73,27 +73,8 @@ namespace
     [[nodiscard]] auto find_event(database::PersistentStore const& store, std::string_view event_id)
         -> database::PersistentEvent const*
     {
-        auto const it = std::ranges::find_if(store.events, [event_id](database::PersistentEvent const& event) {
-            return event.event_id == event_id;
-        });
+        auto const it = store.events.find(event_id);
         return it == store.events.end() ? nullptr : &*it;
-    }
-
-    // Like `find_event`, but scans from the newest stored event backwards. The
-    // store has no event index, and the events a get_missing_events walk visits
-    // are the recently stored ones, so this finds them without crossing the whole
-    // history.
-    [[nodiscard]] auto find_event_newest_first(database::PersistentStore const& store, std::string_view event_id)
-        -> database::PersistentEvent const*
-    {
-        for (auto it = store.events.rbegin(); it != store.events.rend(); ++it)
-        {
-            if (it->event_id == event_id)
-            {
-                return &*it;
-            }
-        }
-        return nullptr;
     }
 
     // The server name of a `@localpart:server_name` user ID: everything after the
@@ -764,7 +745,7 @@ auto build_get_missing_events_response(database::PersistentStore const& store, s
         auto const id = std::move(queue.front());
         queue.pop_front();
         ++lookups;
-        auto const* event = find_event_newest_first(store, id);
+        auto const* event = find_event(store, id);
         if (event == nullptr || event->room_id != room_id || event->json.empty() ||
             static_cast<std::int64_t>(event->depth) < *min_depth)
         {

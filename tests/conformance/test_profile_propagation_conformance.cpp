@@ -633,18 +633,21 @@ SCENARIO("changing the display name leaves rooms the user has left untouched",
             });
             // Fixture: Bob's join must be in the room's current state before it is made unreadable.
             REQUIRE(state != store.state.end());
-            auto const event = std::ranges::find_if(store.events, [&](auto const& row) {
-                return row.event_id == state->event_id;
-            });
+            auto const event = store.events.find(state->event_id);
             // Fixture: the state row must name a stored event.
             REQUIRE(event != store.events.end());
             if (shape == "member event missing")
             {
-                store.events.erase(event);
+                auto const member_event_id = event->event_id;
+                REQUIRE(store.events.erase_if([&](auto const& row) {
+                    return row.event_id == member_event_id;
+                }) == 1U);
             }
             else
             {
-                event->json = "{";
+                store.events.modify(event, [](auto& row) {
+                    row.json = "{";
+                });
             }
         }
         else

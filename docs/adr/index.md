@@ -191,6 +191,7 @@
 * [0197 - Room account data needs a membership in the room and is capped per room](0197-room-account-data-needs-a-membership-and-is-capped-per-room.md)
 * [0198 - A registration without a username gets a random hexadecimal localpart](0198-a-registration-without-username-gets-a-random-hex-localpart.md)
 * [0199 - Typing expires on a periodic job, with a ceiling for clients and a timeout for federation](0199-typing-expires-on-a-periodic-job-with-a-ceiling-and-a-federation-timeout.md)
+* [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 
 ## Proposed Records
 

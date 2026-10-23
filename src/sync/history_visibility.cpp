@@ -94,13 +94,11 @@ auto current_history_visibility(database::PersistentStore const& store, std::str
         {
             continue;
         }
-        for (auto const& event : store.events)
+        auto const event = store.events.find(state.event_id);
+        if (event != store.events.end())
         {
-            if (event.event_id == state.event_id)
-            {
-                auto const value = content_string_of(event.json, "history_visibility");
-                return value.has_value() ? parse_history_visibility(*value) : HistoryVisibilityValue::shared;
-            }
+            auto const value = content_string_of(event->json, "history_visibility");
+            return value.has_value() ? parse_history_visibility(*value) : HistoryVisibilityValue::shared;
         }
         return HistoryVisibilityValue::shared;
     }
@@ -116,20 +114,6 @@ HistoryVisibility::HistoryVisibility(database::PersistentStore const& store, std
     : store_{store}
     , user_id_{user_id}
 {
-}
-
-auto HistoryVisibility::ensure_event_index() -> void
-{
-    if (event_index_built_)
-    {
-        return;
-    }
-    events_by_id_.reserve(store_.events.size());
-    for (auto const& event : store_.events)
-    {
-        events_by_id_.emplace(event.event_id, &event);
-    }
-    event_index_built_ = true;
 }
 
 auto HistoryVisibility::ensure_event_group_index() -> void
@@ -166,9 +150,8 @@ auto HistoryVisibility::ensure_group_index() -> void
 
 auto HistoryVisibility::find_event(std::string_view event_id) -> database::PersistentEvent const*
 {
-    ensure_event_index();
-    auto const found = events_by_id_.find(event_id);
-    return found == events_by_id_.end() ? nullptr : found->second;
+    auto const found = store_.events.find(event_id);
+    return found == store_.events.end() ? nullptr : &*found;
 }
 
 auto HistoryVisibility::state_group_of(std::string_view event_id) -> std::optional<std::string_view>

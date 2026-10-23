@@ -94,9 +94,7 @@ auto attach_redacted_because(PersistentStore const& store, std::string_view even
     {
         return;
     }
-    auto const redaction = std::ranges::find_if(store.events, [&redaction_id](PersistentEvent const& event) {
-        return event.event_id == *redaction_id;
-    });
+    auto const redaction = store.events.find(*redaction_id);
     if (redaction == store.events.end())
     {
         return;

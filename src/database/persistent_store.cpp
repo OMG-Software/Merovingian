@@ -183,24 +183,19 @@ namespace
         return std::nullopt;
     }
 
-    [[nodiscard]] auto state_matches_persisted_event(PersistentStore const& store, PersistentStateEvent const& state)
-        -> bool
-    {
-        auto const iterator = std::ranges::find_if(store.events, [&state](PersistentEvent const& event) {
-            auto const event_type = top_level_json_string_field(event.json, "type");
-            auto const state_key = top_level_json_string_field(event.json, "state_key");
-            return event.event_id == state.event_id && event.room_id == state.room_id &&
-                   event_type == state.event_type && state_key == state.state_key;
-        });
-        return iterator != store.events.end();
-    }
-
     [[nodiscard]] auto state_matches_event(PersistentEvent const& event, PersistentStateEvent const& state) -> bool
     {
         auto const event_type = top_level_json_string_field(event.json, "type");
         auto const state_key = top_level_json_string_field(event.json, "state_key");
         return event.event_id == state.event_id && event.room_id == state.room_id && event_type == state.event_type &&
                state_key == state.state_key;
+    }
+
+    [[nodiscard]] auto state_matches_persisted_event(PersistentStore const& store, PersistentStateEvent const& state)
+        -> bool
+    {
+        auto const event = store.events.find(state.event_id);
+        return event != store.events.end() && state_matches_event(*event, state);
     }
 
     [[nodiscard]] auto room_exists(PersistentStore const& store, std::string_view room_id) -> bool
@@ -248,9 +243,7 @@ namespace
 
     [[nodiscard]] auto event_exists(PersistentStore const& store, std::string_view event_id) -> bool
     {
-        return std::ranges::any_of(store.events, [event_id](PersistentEvent const& existing) {
-            return existing.event_id == event_id;
-        });
+        return store.events.contains(event_id);
     }
 
     // Composite key for the in-memory state_transitions index. NUL bytes are safe
@@ -293,13 +286,6 @@ namespace
             }
         }
 
-        auto event_index = std::unordered_map<std::string_view, PersistentEvent const*>{};
-        event_index.reserve(store.events.size() * 2U);
-        for (auto const& event : store.events)
-        {
-            event_index[event.event_id] = &event;
-        }
-
         auto visited = std::unordered_set<std::string>{};
         auto queue = std::deque<std::string>{};
         for (auto const& id : prev_event_ids)
@@ -321,12 +307,11 @@ namespace
                 {
                     return std::string{id};
                 }
-                auto const iterator = event_index.find(id);
-                if (iterator == event_index.end())
+                auto const event = store.events.find(id);
+                if (event == store.events.end())
                 {
                     continue;
                 }
-                auto const* event = iterator->second;
                 for (auto const& parent : event->prev_event_ids)
                 {
                     if (visited.insert(parent).second)
@@ -1262,40 +1247,47 @@ auto write_connections_opened(PersistentStore const& store) -> std::uint64_t
 
 auto reconstruct_event_relations(PersistentStore& store) -> void
 {
-    auto index_by_event_id = std::unordered_map<std::string, std::size_t>{};
-    index_by_event_id.reserve(store.events.size());
-    for (auto i = std::size_t{0U}; i < store.events.size(); ++i)
-    {
-        auto& event = store.events[i];
-        event.prev_event_ids.clear();
-        event.auth_event_ids.clear();
-        event.signatures.clear();
-        index_by_event_id.emplace(event.event_id, i);
-    }
+    // Gathered by row position first, then written with one modify() per row.
+    auto const count = store.events.size();
+    auto prev_event_ids = std::vector<std::vector<std::string>>(count);
+    auto auth_event_ids = std::vector<std::vector<std::string>>(count);
+    auto signatures = std::vector<std::vector<events::EventSignature>>(count);
+    auto const position_of = [&store](std::string_view event_id) -> std::optional<std::size_t> {
+        auto const event = store.events.find(event_id);
+        if (event == store.events.end())
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(event - store.events.begin());
+    };
     for (auto const& edge : store.event_edges)
     {
-        auto const it = index_by_event_id.find(edge.event_id);
-        if (it != index_by_event_id.end())
+        if (auto const position = position_of(edge.event_id))
         {
-            store.events[it->second].prev_event_ids.push_back(edge.prev_event_id);
+            prev_event_ids[*position].push_back(edge.prev_event_id);
         }
     }
     for (auto const& auth : store.event_auth)
     {
-        auto const it = index_by_event_id.find(auth.event_id);
-        if (it != index_by_event_id.end())
+        if (auto const position = position_of(auth.event_id))
         {
-            store.events[it->second].auth_event_ids.push_back(auth.auth_event_id);
+            auth_event_ids[*position].push_back(auth.auth_event_id);
         }
     }
     for (auto const& signature : store.event_signatures)
     {
-        auto const it = index_by_event_id.find(signature.event_id);
-        if (it != index_by_event_id.end())
+        if (auto const position = position_of(signature.event_id))
         {
-            store.events[it->second].signatures.push_back(
-                {signature.server_name, signature.key_id, signature.signature});
+            signatures[*position].push_back({signature.server_name, signature.key_id, signature.signature});
         }
+    }
+    for (auto position = std::size_t{0U}; position < count; ++position)
+    {
+        store.events.modify(store.events.begin() + static_cast<std::ptrdiff_t>(position), [&](PersistentEvent& event) {
+            event.prev_event_ids = std::move(prev_event_ids[position]);
+            event.auth_event_ids = std::move(auth_event_ids[position]);
+            event.signatures = std::move(signatures[position]);
+        });
     }
 }
 
@@ -1347,7 +1339,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     std::erase_if(store.state, [&](PersistentStateEvent const& s) {
         return s.room_id == room_id;
     });
-    std::erase_if(store.events, [&](PersistentEvent const& e) {
+    std::ignore = store.events.erase_if([&](PersistentEvent const& e) {
         return e.room_id == room_id;
     });
     std::erase_if(store.event_edges, [&](PersistentEventEdge const& e) {
@@ -1391,8 +1383,8 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
             store.event_signatures.push_back(
                 {event.event_id, signature.server_name, signature.key_id, signature.signature});
         }
-        store.events.push_back(std::move(event));
     }
+    std::ignore = store.events.insert_all(std::move(snapshot->events));
     return true;
 }
 
@@ -2125,7 +2117,7 @@ namespace
     append_event_graph_rows(store, event);
     note_event_for_redactions(store, event);
     auto stored_event_id = event.event_id;
-    store.events.push_back(std::move(event));
+    std::ignore = store.events.insert(std::move(event));
     notify_redaction_observer(store, stored_event_id);
     return true;
 }
@@ -2337,7 +2329,7 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 {
     // Idempotent duplicate guard: a concurrent prepare/commit for the same event
     // may have raced us to the backend. If the event is already mirrored in memory,
-    // drop this application so stream_ordering and vector order stay consistent.
+    // drop this application so the in-memory row and its indexes stay as first stored.
     if (event_exists(store, update.event.event_id))
     {
         return;
@@ -2353,7 +2345,7 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
                        {"has_state",       update.state.has_value() ? "true" : "false",  false}
     });
     append_event_graph_rows(store, update.event);
-    store.events.push_back(update.event);
+    std::ignore = store.events.insert(update.event);
     note_event_for_redactions(store, update.event);
     if (update.state.has_value())
     {
@@ -2711,9 +2703,7 @@ namespace
     {
         return false;
     }
-    auto const existing = std::ranges::find_if(store.events, [event_id](PersistentEvent const& event) {
-        return event.event_id == event_id;
-    });
+    auto const existing = store.events.find(event_id);
     if (existing == store.events.end())
     {
         return false;
@@ -2724,7 +2714,9 @@ namespace
     {
         return false;
     }
-    existing->status = std::string{status};
+    store.events.modify(existing, [status](PersistentEvent& event) {
+        event.status = std::string{status};
+    });
     return true;
 }
 
@@ -2769,9 +2761,7 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
 
 [[nodiscard]] auto replace_event_json(PersistentStore& store, std::string_view event_id, std::string json) -> bool
 {
-    auto const existing = std::ranges::find_if(store.events, [event_id](PersistentEvent const& event) {
-        return event.event_id == event_id;
-    });
+    auto const existing = store.events.find(event_id);
     if (existing == store.events.end())
     {
         return false;
@@ -2784,16 +2774,16 @@ auto mark_redaction_applied(PersistentStore& store, std::string_view redaction_e
     {
         return false;
     }
-    existing->json = std::move(json);
+    store.events.modify(existing, [&json](PersistentEvent& event) {
+        event.json = std::move(json);
+    });
     return true;
 }
 
 [[nodiscard]] auto find_event_status(PersistentStore const& store, std::string_view event_id)
     -> std::optional<std::string>
 {
-    auto const existing = std::ranges::find_if(store.events, [event_id](PersistentEvent const& event) {
-        return event.event_id == event_id;
-    });
+    auto const existing = store.events.find(event_id);
     return existing == store.events.end() ? std::nullopt : std::optional<std::string>{existing->status};
 }
 

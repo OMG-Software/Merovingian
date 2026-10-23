@@ -86,15 +86,9 @@ namespace
                                               std::string_view user_id, std::string_view ending_event_id)
         -> std::optional<database::PersistentEvent const*>
     {
-        auto events_by_id = std::unordered_map<std::string_view, database::PersistentEvent const*>{};
-        events_by_id.reserve(store.events.size());
-        for (auto const& event : store.events)
-        {
-            events_by_id.emplace(event.event_id, &event);
-        }
-        auto const find = [&events_by_id](std::string_view id) -> database::PersistentEvent const* {
-            auto const found = events_by_id.find(id);
-            return found == events_by_id.end() ? nullptr : found->second;
+        auto const find = [&store](std::string_view id) -> database::PersistentEvent const* {
+            auto const found = store.events.find(id);
+            return found == store.events.end() ? nullptr : &*found;
         };
 
         auto child = std::string_view{};
@@ -161,16 +155,11 @@ auto room_read_access_for(database::PersistentStore const& store, std::string_vi
         {
             return {};
         }
-        for (auto const& event : store.events)
+        auto const event = store.events.find(*member_event_id);
+        if (event != store.events.end() && !event_is_withheld(*event) &&
+            membership_of_json(event->json) == std::optional<std::string>{"join"})
         {
-            if (event.event_id == *member_event_id)
-            {
-                if (!event_is_withheld(event) && membership_of_json(event.json) == std::optional<std::string>{"join"})
-                {
-                    return {RoomReadKind::current, {}, 0U};
-                }
-                return {};
-            }
+            return {RoomReadKind::current, {}, 0U};
         }
         return {};
     }

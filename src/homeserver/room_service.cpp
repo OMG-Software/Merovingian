@@ -955,9 +955,7 @@ namespace
     [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
         -> std::optional<std::string>
     {
-        auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
-            return current.event_id == event_id;
-        });
+        auto const event = store.events.find(event_id);
         return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
     }
 
@@ -1317,18 +1315,13 @@ namespace
     [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
         -> canonicaljson::Value
     {
-        for (auto const& event : store.events)
+        auto const event = store.events.find(event_id);
+        if (event == store.events.end())
         {
-            if (event.event_id == event_id)
-            {
-                auto const parsed = canonicaljson::parse_lossless(event.json);
-                if (parsed.error == canonicaljson::ParseError::none)
-                {
-                    return parsed.value;
-                }
-            }
+            return {};
         }
-        return {};
+        auto const parsed = canonicaljson::parse_lossless(event->json);
+        return parsed.error == canonicaljson::ParseError::none ? parsed.value : canonicaljson::Value{};
     }
 
     // Extracts content.third_party_invite.signed.token from an in-progress
@@ -3779,9 +3772,8 @@ namespace
                 // used as the join event's state-before.
                 pe.status = "outlier";
                 if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state) &&
-                    !std::ranges::any_of(runtime.database.persistent_store.events, [&](auto const& stored) {
-                        return stored.event_id == event_id && stored.room_id == room_id;
-                    }))
+                    runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
+                        runtime.database.persistent_store.events.end())
                 {
                     continue;
                 }
@@ -4838,9 +4830,8 @@ namespace
                     pe.status = "outlier";
                     if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe),
                                                           std::nullopt) &&
-                        !std::ranges::any_of(runtime.database.persistent_store.events, [&](auto const& stored) {
-                            return stored.event_id == event_id && stored.room_id == room_id;
-                        }))
+                        runtime.database.persistent_store.events.find_in_room(room_id, event_id) ==
+                            runtime.database.persistent_store.events.end())
                     {
                         return make_operation_result(false, {}, "join auth-chain persistence failed", 500U);
                     }
@@ -5336,10 +5327,7 @@ namespace
             });
         if (state_it != runtime.database.persistent_store.state.end())
         {
-            auto const event_it =
-                std::ranges::find_if(runtime.database.persistent_store.events, [&](database::PersistentEvent const& e) {
-                    return e.event_id == state_it->event_id;
-                });
+            auto const event_it = runtime.database.persistent_store.events.find(state_it->event_id);
             if (event_it != runtime.database.persistent_store.events.end())
             {
                 auto const parsed = canonicaljson::parse_lossless(event_it->json);
@@ -6092,9 +6080,7 @@ namespace
         });
         if (state_it != store.state.end())
         {
-            auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
-                return event.event_id == state_it->event_id;
-            });
+            auto const event_it = store.events.find(state_it->event_id);
             if (event_it != store.events.end())
             {
                 auto parsed = canonicaljson::parse_lossless(event_it->json);
@@ -6129,9 +6115,7 @@ namespace
         {
             return canonicaljson::Value{};
         }
-        auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
-            return event.event_id == state_it->event_id;
-        });
+        auto const event_it = store.events.find(state_it->event_id);
         if (event_it == store.events.end())
         {
             return canonicaljson::Value{};
@@ -6259,9 +6243,7 @@ namespace
         // composed.stream_ordering; used below both for the pagination key
         // and, indirectly, for the read/unread threshold.
         auto const persisted_stream_ordering = [&]() -> std::uint64_t {
-            auto const event_row = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
-                return event.event_id == composed.event_id;
-            });
+            auto const event_row = store.events.find(composed.event_id);
             return event_row != store.events.end() ? event_row->stream_ordering : composed.stream_ordering;
         }();
 
@@ -7034,9 +7016,7 @@ namespace
         {
             return std::nullopt;
         }
-        auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
-            return event.event_id == state_it->event_id;
-        });
+        auto const event_it = store.events.find(state_it->event_id);
         if (event_it == store.events.end())
         {
             return std::nullopt;
@@ -7259,16 +7239,9 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     auto state_array = canonicaljson::Array{};
     for (auto const& state_event_id : *state_ids)
     {
-        auto const* event = static_cast<database::PersistentEvent const*>(nullptr);
-        for (auto const& candidate : runtime.database.persistent_store.events)
-        {
-            if (candidate.event_id == state_event_id)
-            {
-                event = &candidate;
-                break;
-            }
-        }
-        if (event != nullptr)
+        auto const& events = runtime.database.persistent_store.events;
+        auto const event = events.find(state_event_id);
+        if (event != events.end())
         {
             state_array.push_back(client_event_with_id(runtime.database.persistent_store, *event));
         }
@@ -7407,9 +7380,7 @@ namespace
     // Room History Visibility (CSAZ-3): one filter for the request. A parent the user may not
     // see is "not found", like GET /event, and children they may not see are not listed.
     auto visibility = sync::HistoryVisibility{store, *user_id};
-    auto const parent = std::ranges::find_if(store.events, [&request](database::PersistentEvent const& event) {
-        return event.room_id == request.room_id && event.event_id == request.event_id;
-    });
+    auto const parent = store.events.find_in_room(request.room_id, request.event_id);
     if (parent == store.events.end() || !visibility.can_see(*parent))
     {
         return make_operation_result(false, {}, "parent event not found", 404U);

@@ -263,12 +263,8 @@ auto load_room_server_acl(database::PersistentStore const& store, std::string_vi
         return std::nullopt;
     }
 
-    for (auto const& event : store.events)
+    for (auto const& event : store.events.with_id(acl_event_id))
     {
-        if (event.event_id != acl_event_id)
-        {
-            continue;
-        }
         auto const parsed = canonicaljson::parse_lossless(event.json);
         if (parsed.error != canonicaljson::ParseError::none)
         {

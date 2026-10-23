@@ -14,14 +14,15 @@
 #include <algorithm>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace
 {
 using namespace merovingian;
 
-[[nodiscard]] auto stored_event(std::string id, std::string json,
-                                std::string status = "accepted") -> database::PersistentEvent
+[[nodiscard]] auto stored_event(std::string id, std::string json, std::string status = "accepted")
+    -> database::PersistentEvent
 {
     return {std::move(id), "!create", "@admin:example.org", std::move(json), 1U, 0U, {}, {}, {}, std::move(status)};
 }
@@ -120,29 +121,29 @@ SCENARIO("Reauthorized auth-difference candidates retain trusted receipt metadat
     {
         using namespace merovingian;
         auto store = database::PersistentStore{};
-        store.events = {
-            stored_event(
-                "$create",
-                R"({"type":"m.room.create","state_key":"","sender":"@admin:example.org","content":{"creator":"@admin:example.org","room_version":"10"},"auth_events":[]})"),
-            stored_event(
-                "$pl",
-                R"({"type":"m.room.power_levels","state_key":"","sender":"@admin:example.org","content":{"state_default":50,"users":{"@admin:example.org":100,"@mod:example.org":50}},"auth_events":["$create"]})"),
-            stored_event(
-                "$jr",
-                R"({"type":"m.room.join_rules","state_key":"","sender":"@admin:example.org","content":{"join_rule":"public"},"auth_events":["$create"]})"),
-            stored_event(
-                "$admin",
-                R"({"type":"m.room.member","state_key":"@admin:example.org","sender":"@admin:example.org","content":{"membership":"join"},"auth_events":["$create","$jr"]})"),
-            stored_event(
-                "$mod",
-                R"({"type":"m.room.member","state_key":"@mod:example.org","sender":"@mod:example.org","origin_server_ts":10,"content":{"membership":"join"},"auth_events":["$create","$jr","$pl"]})",
-                "rejected"),
-            stored_event(
-                "$a",
-                R"({"type":"m.room.topic","state_key":"","sender":"@mod:example.org","origin_server_ts":30,"content":{"topic":"A"},"auth_events":["$create","$pl","$mod"]})"),
-            stored_event(
-                "$b",
-                R"({"type":"m.room.topic","state_key":"","sender":"@admin:example.org","origin_server_ts":40,"content":{"topic":"B"},"auth_events":["$create","$pl","$admin"]})")};
+        std::ignore = store.events.insert_all(
+            {stored_event(
+                 "$create",
+                 R"({"type":"m.room.create","state_key":"","sender":"@admin:example.org","content":{"creator":"@admin:example.org","room_version":"10"},"auth_events":[]})"),
+             stored_event(
+                 "$pl",
+                 R"({"type":"m.room.power_levels","state_key":"","sender":"@admin:example.org","content":{"state_default":50,"users":{"@admin:example.org":100,"@mod:example.org":50}},"auth_events":["$create"]})"),
+             stored_event(
+                 "$jr",
+                 R"({"type":"m.room.join_rules","state_key":"","sender":"@admin:example.org","content":{"join_rule":"public"},"auth_events":["$create"]})"),
+             stored_event(
+                 "$admin",
+                 R"({"type":"m.room.member","state_key":"@admin:example.org","sender":"@admin:example.org","content":{"membership":"join"},"auth_events":["$create","$jr"]})"),
+             stored_event(
+                 "$mod",
+                 R"({"type":"m.room.member","state_key":"@mod:example.org","sender":"@mod:example.org","origin_server_ts":10,"content":{"membership":"join"},"auth_events":["$create","$jr","$pl"]})",
+                 "rejected"),
+             stored_event(
+                 "$a",
+                 R"({"type":"m.room.topic","state_key":"","sender":"@mod:example.org","origin_server_ts":30,"content":{"topic":"A"},"auth_events":["$create","$pl","$mod"]})"),
+             stored_event(
+                 "$b",
+                 R"({"type":"m.room.topic","state_key":"","sender":"@admin:example.org","origin_server_ts":40,"content":{"topic":"B"},"auth_events":["$create","$pl","$admin"]})")});
         auto const lookup = homeserver::make_store_event_lookup(store);
         auto const create = reference(lookup, "$create");
         auto const pl = reference(lookup, "$pl");

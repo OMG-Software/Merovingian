@@ -27,9 +27,7 @@ namespace
     [[nodiscard]] auto find_event(database::PersistentStore const& store, std::string_view event_id)
         -> database::PersistentEvent const*
     {
-        auto const it = std::ranges::find_if(store.events, [event_id](database::PersistentEvent const& event) {
-            return event.event_id == event_id;
-        });
+        auto const it = store.events.find(event_id);
         return it == store.events.end() ? nullptr : &*it;
     }
 

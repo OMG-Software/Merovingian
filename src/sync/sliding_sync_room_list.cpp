@@ -163,12 +163,8 @@ namespace
                 continue;
             }
             // Find the event JSON for this state entry.
-            for (auto const& ev : store.events)
+            for (auto const& ev : store.events.with_id(se.event_id))
             {
-                if (ev.event_id != se.event_id)
-                {
-                    continue;
-                }
                 auto const parsed = canonicaljson::parse_lossless(ev.json);
                 if (parsed.error != canonicaljson::ParseError::none)
                 {

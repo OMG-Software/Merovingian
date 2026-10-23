@@ -1,3 +1,33 @@
+## 0.12.39
+
+Indexes the in-memory event store by event ID and by stream order (ADR-0215). Deferred from the
+review of PR #523 (conformance audit wave 5), whose capped push-badge count (ADR-0207) could not stop
+early or look thread parents up cheaply.
+
+- **CHANGED (`database::EventTable`):** `PersistentStore::events` is now an `EventTable` that owns
+  the rows and keeps an event-ID → position map and a stream-order index of positions. The rows are
+  read-only through it. Every change goes through `insert`/`push_back`, `insert_all`, `erase_if`,
+  `modify`, `extract` or `clear`, so a writer cannot leave an index stale. `modify` cannot change a
+  row's `event_id` or `stream_ordering`. An event ID is held at most once.
+- **CHANGED (lookups):** about fifty linear scans of every stored event by event ID, all under
+  `runtime.mutex`, are now hash lookups (`find`, `contains`, `find_in_room`, `with_id`). They include
+  `sync::event_thread_id`'s up to three parent hops, history visibility, room read access, sliding
+  sync's required state, heroes and room list, `/event`, `/context`, `/relations`, `/redact`,
+  `/report`, read markers, notifications, the send_join auth chain (which also built a per-request
+  map of every event in the room), auth-event maps, server ACLs, the stored room version,
+  appservice delivery, space hierarchy, power levels, state bookkeeping, the federation event
+  query, and the database's own status, redaction, state-match and duplicate checks.
+- **CHANGED (stream order):** `events.in_stream_order()` visits events by ascending
+  `stream_ordering` whatever order they were hydrated (SQLite: no `ORDER BY`; PostgreSQL: event-ID
+  order, and an updated row moves) or committed in (stream orderings commit out of order across
+  rooms). Hydration and `reload_room` add their rows with `insert_all`, which sorts once instead of
+  shifting the index per row.
+- **TESTS:** `tests/unit/test_event_table.cpp` (new) covers lookups and stream order after
+  out-of-order insertion, duplicates, removal, modification, bulk insertion and copies, and on SQLite
+  after out-of-order hydration, a status update, a redaction and a room reload. PostgreSQL scenarios in
+  `tests/integration/test_postgresql_persistence_flow.cpp` cover hydration after a status update moves
+  the row.
+
 ## 0.12.38
 
 Conformance audit (2026-10-17) wave 4: the Client-Server API findings R10, R11, R12, R13 and R16.

@@ -142,14 +142,8 @@ namespace
     [[nodiscard]] auto find_event(database::PersistentStore const& store, std::string_view event_id)
         -> database::PersistentEvent const*
     {
-        for (auto const& event : store.events)
-        {
-            if (event.event_id == event_id)
-            {
-                return &event;
-            }
-        }
-        return nullptr;
+        auto const found = store.events.find(event_id);
+        return found == store.events.end() ? nullptr : &*found;
     }
 
     [[nodiscard]] auto state_event_json(database::PersistentStore const& store, std::string_view room_id,

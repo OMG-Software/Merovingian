@@ -124,15 +124,12 @@ private:
     [[nodiscard]] auto joined_when_sent(database::PersistentEvent const& event) -> bool;
     [[nodiscard]] auto allows(HistoryVisibilityValue visibility, std::string_view membership,
                               database::PersistentEvent const& event) -> bool;
-    auto ensure_event_index() -> void;
     auto ensure_event_group_index() -> void;
     auto ensure_group_index() -> void;
 
     database::PersistentStore const& store_;
     std::string user_id_;
 
-    bool event_index_built_{false};
-    std::unordered_map<std::string_view, database::PersistentEvent const*> events_by_id_{};
     bool event_group_index_built_{false};
     std::unordered_map<std::string_view, std::string_view> group_by_event_{};
     bool group_index_built_{false};

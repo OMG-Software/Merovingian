@@ -593,7 +593,7 @@ auto fed10_persist_remote_room(merovingian::homeserver::HomeserverRuntime& runti
     tests::remote_room::seed_room_with_genesis_state_group(runtime, room_id);
     auto& store = runtime.database.persistent_store;
     auto rooms = std::move(store.rooms);
-    auto events = std::move(store.events);
+    auto events = store.events.extract();
     auto state = std::move(store.state);
     auto memberships = std::move(store.memberships);
     store.rooms.clear();

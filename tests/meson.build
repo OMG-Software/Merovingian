@@ -178,6 +178,7 @@ shell = find_program('sh')
       'unit/test_database_security_boundaries.cpp',
       'unit/test_observability_bounded_text.cpp',
       'unit/test_database_persistence.cpp',
+      'unit/test_event_table.cpp',
       'unit/test_state_groups.cpp',
       'unit/test_state_bookkeeping.cpp',
       'unit/test_local_event_state_bookkeeping.cpp',

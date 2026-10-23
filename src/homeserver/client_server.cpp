@@ -1076,9 +1076,7 @@ namespace
     [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
         -> std::optional<std::string>
     {
-        auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
-            return current.event_id == event_id;
-        });
+        auto const event = store.events.find(event_id);
         return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
     }
 
@@ -4308,9 +4306,7 @@ namespace
             {
                 continue;
             }
-            auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
-                return candidate.event_id == state_entry.event_id;
-            });
+            auto const event = store.events.find(state_entry.event_id);
             if (event == store.events.end() ||
                 !sync::event_passes_filter(filter, state_entry.event_type, event->sender_user_id))
             {
@@ -4452,9 +4448,7 @@ namespace
         {
             return false;
         }
-        auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
-            return candidate.event_id == state_entry->event_id;
-        });
+        auto const event = store.events.find(state_entry->event_id);
         if (event == store.events.end() || event->stream_ordering <= since_ordering)
         {
             return false;
@@ -7791,9 +7785,7 @@ namespace
         auto state_events = canonicaljson::Array{};
         for (auto const& event_id : state_event_ids)
         {
-            auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
-                return candidate.event_id == event_id;
-            });
+            auto const event = store.events.find(event_id);
             if (event == store.events.end() ||
                 !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
             {
@@ -9804,9 +9796,7 @@ namespace
         auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](LocalRoom const& current) {
             return current.room_id == room_id;
         });
-        auto const event = std::ranges::find_if(store.events, [&event_id](database::PersistentEvent const& stored) {
-            return stored.event_id == event_id;
-        });
+        auto const event = store.events.find(event_id);
         if (room == rt.homeserver.database.rooms.end() || !joined(*room, user) || event == store.events.end() ||
             event->room_id != room_id || !sync::HistoryVisibility{store, user}.can_see(*event))
         {
@@ -13014,9 +13004,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 next_token = std::to_string(notification.stream_ordering);
                 break;
             }
-            auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
-                return event.event_id == notification.event_id;
-            });
+            auto const event_it = store.events.find(notification.event_id);
             if (event_it == store.events.end())
             {
                 // Defensive: the event row is gone (should not normally
@@ -14208,10 +14196,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                            });
                 if (suspended)
                 {
-                    auto const target_event = std::ranges::find_if(rt.homeserver.database.persistent_store.events,
-                                                                   [&redact](database::PersistentEvent const& event) {
-                                                                       return event.event_id == redact->event_id;
-                                                                   });
+                    auto const target_event = rt.homeserver.database.persistent_store.events.find(redact->event_id);
                     if (target_event == rt.homeserver.database.persistent_store.events.end() ||
                         target_event->sender_user_id != *user)
                     {
@@ -14452,9 +14437,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
                 }
-                auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
-                    return current.room_id == path->room_id && current.event_id == path->event_id;
-                });
+                auto const event = store.events.find_in_room(path->room_id, path->event_id);
                 // ADR-0064 phase B2: a rejected or soft-failed event is
                 // never relayed to clients (spec "Rejection", "Soft
                 // failure") — treated the same as not found, so a member
@@ -14489,9 +14472,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
                 }
-                auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
-                    return current.room_id == path->room_id && current.event_id == path->event_id;
-                });
+                auto const event = store.events.find_in_room(path->room_id, path->event_id);
                 // ADR-0064 phase B2: same fail-closed 404 as GET .../event/{eventId}
                 // above for a rejected or soft-failed target event, and for one the user may
                 // not see (Room History Visibility, CSAZ-3).
@@ -14573,10 +14554,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     }
                     for (auto const& candidate_id : *readable_ids)
                     {
-                        auto const candidate =
-                            std::ranges::find_if(store.events, [&](database::PersistentEvent const& e) {
-                                return e.event_id == candidate_id;
-                            });
+                        auto const candidate = store.events.find(candidate_id);
                         if (candidate == store.events.end())
                         {
                             continue;
@@ -14605,9 +14583,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "state event not found");
                 }
 
-                auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& e) {
-                    return e.event_id == resolved_event_id;
-                });
+                auto const event_it = store.events.find(resolved_event_id);
                 if (event_it == store.events.end())
                 {
                     return dispatch_err(req, rt, 500U, "M_UNKNOWN", "state event missing from event store");
@@ -14839,10 +14815,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     }
                     for (auto const& state_event_id : *state_ids)
                     {
-                        auto const event_it = std::ranges::find_if(
-                            store.events, [&state_event_id](database::PersistentEvent const& event) {
-                                return event.event_id == state_event_id;
-                            });
+                        auto const event_it = store.events.find(state_event_id);
                         if (event_it == store.events.end())
                         {
                             continue;
@@ -14871,10 +14844,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             continue;
                         }
-                        auto const event_it =
-                            std::ranges::find_if(store.events, [&state_entry](database::PersistentEvent const& event) {
-                                return event.event_id == state_entry.event_id;
-                            });
+                        auto const event_it = store.events.find(state_entry.event_id);
                         if (event_it == store.events.end())
                         {
                             continue;

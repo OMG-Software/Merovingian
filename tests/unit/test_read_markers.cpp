@@ -168,11 +168,13 @@ SCENARIO("read_markers_for counts the user's own non-state events as reading the
         add_event(store, "$alice_thread", relates_to("m.thread", "$root"), 30U);
         add_event(store, "$alice_state", R"({"type":"m.room.member","state_key":"@alice:example.org","content":{}})",
                   40U);
-        for (auto& event : store.events)
+        for (auto event = store.events.begin(); event != store.events.end(); ++event)
         {
-            if (event.event_id != "$root")
+            if (event->event_id != "$root")
             {
-                event.sender_user_id = "@alice:example.org";
+                store.events.modify(event, [](merovingian::database::PersistentEvent& row) {
+                    row.sender_user_id = "@alice:example.org";
+                });
             }
         }
 

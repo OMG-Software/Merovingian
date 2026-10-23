@@ -31,9 +31,7 @@ namespace
         {
             return canonicaljson::Value{};
         }
-        auto const event = std::ranges::find_if(store.events, [&state](database::PersistentEvent const& stored) {
-            return stored.event_id == state->event_id;
-        });
+        auto const event = store.events.find(state->event_id);
         if (event == store.events.end())
         {
             return canonicaljson::Value{};
