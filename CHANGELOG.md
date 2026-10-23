@@ -43,6 +43,10 @@ served by the candidate, in CI (ADR-0216).
   never fail: `REQUIRE(envelope->depth >= 0U)` on an unsigned field, under "depth is populated".
   It now requires the fixture PDU's actual depth (`== 5U`), so it tests what it claims. A local
   GCC 14 build with `ninja -k 0` found no other GCC-only error.
+- **TEST DIAGNOSTIC:** "DB-6 PostgreSQL inbound admission rejects escaped NUL state keys" failed
+  once in CI (`captured_statements` not empty after a rejected PDU) after passing on nine earlier
+  heads and four local runs. Its check now reports the names of the statements written, so the
+  next failure identifies the leaking write instead of only saying one happened.
 - **ADDED (gate):** `scripts/reject-unsafe.sh` rejects void casts (`static_cast<void>(…)` and C-style
   `(void)expr`) in C++ files under `include/`, `src/` and `tests/`, so the rule is enforced at
   commit time and in CI, not just written down. Empty parameter lists (`int f(void)`), function types

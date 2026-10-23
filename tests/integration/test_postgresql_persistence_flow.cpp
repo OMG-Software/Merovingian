@@ -1840,6 +1840,13 @@ SCENARIO("DB-6 PostgreSQL inbound admission rejects escaped NUL state keys befor
                     CHECK(rejected.accepted_stream_ordering == 0U);
                     CHECK(rejected.accepted_sync_stream_id == 0U);
                     CHECK(runtime.database.next_stream_ordering == next_stream_before);
+                    // Name what was written, so a failure here says which write leaked.
+                    auto captured_names = std::string{};
+                    for (auto const& statement : runtime.database.persistent_store.captured_statements)
+                    {
+                        captured_names += statement.name + " ";
+                    }
+                    INFO("statements written while rejecting: " << captured_names);
                     CHECK(runtime.database.persistent_store.captured_statements.empty());
                     CHECK(bool{pg_admission_snapshot(runtime.database.persistent_store) == before});
                     db::enable_statement_capture(runtime.database.persistent_store, 0U);
