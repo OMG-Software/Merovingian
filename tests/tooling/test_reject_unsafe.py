@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +13,23 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GATE = REPO_ROOT / "scripts" / "reject-unsafe.sh"
 
 
+def pcre_grep_available() -> bool:
+    """True when the gate can find a grep with -P, as it looks for one: grep, then ggrep.
+
+    The BSD greps have no -P (NetBSD, FreeBSD and OpenBSD CI hosts), and there the
+    gate refuses to run at all; see RejectUnsafeNeedsPcreGrepTests.
+    """
+    for candidate in ("grep", "ggrep"):
+        path = shutil.which(candidate)
+        if path is None:
+            continue
+        probe = subprocess.run([path, "-qP", "x"], input="x\n", text=True, capture_output=True, check=False)
+        if probe.returncode == 0:
+            return True
+    return False
+
+
+@unittest.skipUnless(pcre_grep_available(), "no grep with -P on this host; the gate refuses to run here")
 class RejectUnsafeVoidCastTests(unittest.TestCase):
     """reject-unsafe.sh refuses void-cast discards (AGENTS.md: use std::ignore).
 
@@ -131,6 +149,58 @@ class RejectUnsafeVoidCastTests(unittest.TestCase):
     # The repository's own tree is not scanned here: the pre-commit hook and the
     # CI jobs already run the gate over it, and doing it again on a slow mount
     # costs longer than this suite's timeout.
+
+
+class RejectUnsafeNeedsPcreGrepTests(unittest.TestCase):
+    """Without a grep that has -P the gate fails closed instead of checking nothing.
+
+    Every rule uses -P. A BSD grep exits 2 for each pattern, which the rules would
+    read as "no match", so the gate passed on NetBSD without checking anything.
+    """
+
+    def test_gate_refuses_to_run_without_a_pcre_grep(self) -> None:
+        bash = shutil.which("bash")
+        real_grep = shutil.which("grep")
+        if bash is None or real_grep is None:
+            self.skipTest("bash or grep is not available")
+        with tempfile.TemporaryDirectory(prefix="reject-unsafe-nopcre-") as scratch:
+            root = Path(scratch)
+            # GIVEN a host whose grep and ggrep both refuse -P, as the BSD greps do.
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            for name in ("grep", "ggrep"):
+                fake = fake_bin / name
+                fake.write_text(
+                    "#!/bin/sh\n"
+                    'for arg in "$@"; do\n'
+                    '  case "$arg" in -P|--perl-regexp|-[A-Za-z]*P*) '
+                    'echo "grep: The -P option is not supported" >&2; exit 2;; esac\n'
+                    "done\n"
+                    f'exec "{real_grep}" "$@"\n',
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                fake.chmod(0o755)
+            # AND a tree with nothing to reject, so a silent pass would look like success.
+            for directory in ("include", "src", "tests"):
+                (root / "tree" / directory).mkdir(parents=True)
+            (root / "tree" / "src" / "a.cpp").write_text("int f() { return 0; }\n", encoding="utf-8")
+            environment = dict(os.environ, PATH=f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+            # WHEN the gate runs.
+            result = subprocess.run(
+                [bash, str(GATE)],
+                cwd=root / "tree",
+                env=environment,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+
+        # THEN it fails and says why, rather than passing without checking.
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("grep with -P", result.stdout)
 
 
 if __name__ == "__main__":

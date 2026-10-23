@@ -55,6 +55,13 @@ served by the candidate, in CI (ADR-0216).
   (`R"tag(...)tag"`) are read whole the same way; C files are out of scope (C has no
   `std::ignore`). `tests/tooling/test_reject_unsafe.py` (`reject-unsafe-tooling`) runs the gate on
   planted files; it also rejects every void cast that was on `main` before this change.
+- **FIXED (gate passed without checking on the BSDs):** every `reject-unsafe.sh` rule used `grep -P`,
+  which the NetBSD, FreeBSD and OpenBSD greps do not have. Each such grep exited 2, the rules read
+  that as "no match", and the gate passed on those hosts while checking nothing (CI enforcement was
+  unaffected: the gate itself only runs on the Ubuntu jobs). The gate now uses `grep`, else `ggrep`
+  (GNU grep on the BSDs), and refuses to run (exit 2) when neither has `-P`. Found when its new tooling
+  test failed on the NetBSD VM; the rule tests now skip on a host without such a grep, and a test that
+  puts a `-P`-less grep on `PATH` checks the refusal everywhere.
 - **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
   `/publicRooms`. Since migration 018 a room is listed only when published, so a room upgraded from
   0.11 is unlisted until a room administrator publishes it again. There are no deployments yet and

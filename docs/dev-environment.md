@@ -316,6 +316,11 @@ FreeBSD and HardenedBSD use `pkg`. OpenBSD uses `pkg_add`. NetBSD prefers `pkgin
 
 Some BSD releases ship a base compiler and package LLVM separately. The script installs the packaged LLVM toolchain so clang-format, clang-tidy, and current C++ compiler support are available for project checks.
 
+`scripts/reject-unsafe.sh` (the pre-commit safety gate) needs a grep with `-P`. The BSD base greps
+have none, so install GNU grep (the `ggrep` package; the gate uses it automatically). Without it the
+gate refuses to run rather than passing without checking. Its tooling test skips its rule tests on
+such a host and checks only that refusal.
+
 FreeBSD, OpenBSD, and NetBSD are Tier 1 platforms: each builds and runs the full
 test suite per pull request through `scripts/build-bsd.sh` on a CI VM. See
 [platform-support.md](platform-support.md) for the full support-tier matrix and
