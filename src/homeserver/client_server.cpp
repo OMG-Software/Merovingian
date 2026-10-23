@@ -51,6 +51,7 @@
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/stored_push_rules.hpp"
 #include "merovingian/homeserver/stored_room_version.hpp"
+#include "merovingian/homeserver/url_preview_service.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -225,18 +226,43 @@ namespace
     // §"Serving inline content" against stored XSS through uploaded files.
     // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
     //
-    // No filename parameter is emitted: this server does not yet persist the
-    // upload filename, and the spec permits omitting it when unavailable ("When
-    // the header is not supplied, or does not supply a filename, the local
-    // download response does not include a filename").
-    auto apply_media_security_headers(LocalHttpResponse& response, std::string_view content_type) -> void
+    // R17: "If the upload was made with a filename, this header MUST contain the
+    // same filename", and the {fileName} download routes replace it with the
+    // caller's. `filename` is empty when neither applies, and the header then
+    // carries no filename, as the spec says.
+    auto apply_media_security_headers(LocalHttpResponse& response, std::string_view content_type,
+                                      std::string_view filename = {}) -> void
     {
         append_header_if_missing(response.headers, "Content-Security-Policy",
                                  "sandbox; default-src 'none'; script-src 'none'; plugin-types application/pdf; "
                                  "style-src 'unsafe-inline'; object-src 'self';");
         append_header_if_missing(response.headers, "Cross-Origin-Resource-Policy", "cross-origin");
         append_header_if_missing(response.headers, "Content-Disposition",
-                                 media::content_type_is_inline_safe(content_type) ? "inline" : "attachment");
+                                 media::media_content_disposition(content_type, filename));
+    }
+
+    // R17: the percent-decoded {fileName} of GET .../download/{serverName}/{mediaId}/{fileName},
+    // or empty for the two-segment route and every other one.
+    [[nodiscard]] auto download_route_filename(std::string_view target) -> std::string
+    {
+        auto const path = target.substr(0U, target.find('?'));
+        for (auto const prefix :
+             {std::string_view{"/_matrix/client/v1/media/download/"}, std::string_view{"/_matrix/media/v3/download/"}})
+        {
+            if (!path.starts_with(prefix))
+            {
+                continue;
+            }
+            auto const rest = path.substr(prefix.size());
+            auto const first = rest.find('/');
+            auto const second = first == std::string_view::npos ? first : rest.find('/', first + 1U);
+            if (second == std::string_view::npos)
+            {
+                return {};
+            }
+            return core::percent_decode_path_component(rest.substr(second + 1U));
+        }
+        return {};
     }
 
     auto apply_cors_headers(LocalHttpRequest const& req, LocalHttpResponse& response, config::CorsConfig const& cors)
@@ -3210,18 +3236,31 @@ namespace
                 return false;
             }
             auto const action = rest.substr(0U, action_end);
-            if (action != "download" && action != "thumbnail")
+            if (action != "download" && action != "thumbnail" && action != "upload")
             {
                 return false;
             }
             auto const media_path = rest.substr(action_end + 1U);
             auto const media_slash = media_path.find('/');
-            if (media_slash == std::string_view::npos || !has_one_segment(media_path.substr(0U, media_slash)) ||
-                !has_one_segment(media_path.substr(media_slash + 1U)))
+            if (media_slash == std::string_view::npos || !has_one_segment(media_path.substr(0U, media_slash)))
             {
                 return false;
             }
-            out = std::string{prefix} + std::string{action} + "/{server}/{mediaId}";
+            auto const id_and_name = media_path.substr(media_slash + 1U);
+            if (has_one_segment(id_and_name))
+            {
+                out = std::string{prefix} + std::string{action} + "/{server}/{mediaId}";
+                return true;
+            }
+            // R17: a download may name the file, {server}/{mediaId}/{fileName}.
+            auto const name_slash = id_and_name.find('/');
+            if (action != "download" || name_slash == std::string_view::npos ||
+                !has_one_segment(id_and_name.substr(0U, name_slash)) ||
+                !has_one_segment(id_and_name.substr(name_slash + 1U)))
+            {
+                return false;
+            }
+            out = std::string{prefix} + "download/{server}/{mediaId}/{fileName}";
             return true;
         };
 
@@ -3462,8 +3501,11 @@ namespace
             "/_matrix/client/v3/thirdparty/user",
             "/_matrix/media/v3/config",
             "/_matrix/media/v3/upload",
+            "/_matrix/media/v1/create",
+            "/_matrix/media/v3/preview_url",
             "/_matrix/client/v1/media/config",
             "/_matrix/client/v1/media/upload",
+            "/_matrix/client/v1/media/preview_url",
             "/_matrix/client/v3/voip/turnServer",
             "/_matrix/client/v3/room_keys/version",
             "/_matrix/client/v3/room_keys/keys",
@@ -8928,6 +8970,28 @@ namespace
         return json_serialize(json_obj(std::move(members)));
     }
 
+    // A refused upload, create or reserved upload as the client sees it. The
+    // media service names the spec's errcode where one applies; the internal
+    // statuses for a disallowed file type (415) and an exhausted quota (507)
+    // become the spec's 403 M_FORBIDDEN ("The server does not permit the file
+    // type", "The user has reached a quota for uploaded content").
+    [[nodiscard]] auto media_upload_refusal(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                            LocalHttpResponse const& refused) -> DispatchResult
+    {
+        if (refused.status == 401U)
+        {
+            return dispatch_err(req, rt, 401U, "M_UNKNOWN_TOKEN", refused.body);
+        }
+        auto const status = refused.status == 415U || refused.status == 507U ? std::uint16_t{403U} : refused.status;
+        // A failure on this server's side (5xx) is M_UNKNOWN, never a client error code.
+        auto const errcode = !refused.errcode.empty() ? std::string_view{refused.errcode}
+                             : status == 403U         ? std::string_view{"M_FORBIDDEN"}
+                             : status == 413U         ? std::string_view{"M_TOO_LARGE"}
+                             : status >= 500U         ? std::string_view{"M_UNKNOWN"}
+                                                      : std::string_view{"M_BAD_REQUEST"};
+        return dispatch_err(req, rt, status, errcode, refused.body);
+    }
+
     [[nodiscard]] auto media_upload_response_json(std::string_view operation_value) -> std::string
     {
         auto const content_uri_end = operation_value.find('|');
@@ -8992,8 +9056,11 @@ namespace
                 // payload as an error message or permit thumbnail processing.
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "media was not admitted");
             }
-            return dispatch_err(req, rt, local_response.status,
-                                local_response.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", local_response.body);
+            // ADR-0212: 504 carries M_NOT_YET_UPLOADED from the media service.
+            auto const errcode = !local_response.errcode.empty() ? std::string_view{local_response.errcode}
+                                 : local_response.status == 404U ? std::string_view{"M_NOT_FOUND"}
+                                                                 : std::string_view{"M_UNKNOWN"};
+            return dispatch_err(req, rt, local_response.status, errcode, local_response.body);
         }
         auto const pipe_pos = local_response.body.find('|');
         if (pipe_pos == std::string::npos)
@@ -9002,8 +9069,14 @@ namespace
         }
         auto const content_type = std::string_view{local_response.body}.substr(0U, pipe_pos);
         auto const bytes = std::string_view{local_response.body}.substr(pipe_pos + 1U);
+        // R17: the route's {fileName} replaces the stored filename.
+        auto filename = download_route_filename(req.target);
+        if (filename.empty())
+        {
+            filename = local_response.media_filename;
+        }
         auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
-        apply_media_security_headers(response, content_type);
+        apply_media_security_headers(response, content_type, filename);
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
@@ -10342,10 +10415,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Media upload routes are governed by security.media.max_upload_size rather
     // than the smaller general client-API body cap (64 KiB).  Check which limit
     // applies before enforcing the gate.
-    auto const is_media_upload = req.method == "POST" && (req.target == "/_matrix/media/v3/upload" ||
-                                                          starts_with(req.target, "/_matrix/media/v3/upload?") ||
-                                                          req.target == "/_matrix/client/v1/media/upload" ||
-                                                          starts_with(req.target, "/_matrix/client/v1/media/upload?"));
+    auto const is_media_upload =
+        (req.method == "POST" &&
+         (req.target == "/_matrix/media/v3/upload" || starts_with(req.target, "/_matrix/media/v3/upload?") ||
+          req.target == "/_matrix/client/v1/media/upload" ||
+          starts_with(req.target, "/_matrix/client/v1/media/upload?"))) ||
+        // ADR-0212: content for a reserved mxc:// URI.
+        (req.method == "PUT" && starts_with(req.target, "/_matrix/media/v3/upload/"));
     auto const body_limit = [&]() -> std::size_t {
         if (is_media_upload)
         {
@@ -12139,6 +12215,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
+    // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}
     // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
     // Authenticated media endpoints (MSC3860 / Matrix v1.11). The v1 routes
     // require an access token per spec v1.19 §13.8, so they are dispatched after
@@ -12152,6 +12229,36 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && starts_with(req.target, media_v1_thumbnail_prefix))
     {
         return media_download_dispatch_result(req, rt, call_local(req));
+    }
+
+    // GET /_matrix/client/v1/media/preview_url and the deprecated
+    // GET /_matrix/media/v3/preview_url (ADR-0213). Both require
+    // authentication, so they sit behind the auth gate, like the other v3
+    // media routes this server still serves. Off unless
+    // security.media.url_preview_enabled.
+    if (req.method == "GET" &&
+        (request_path == "/_matrix/client/v1/media/preview_url" || request_path == "/_matrix/media/v3/preview_url"))
+    {
+        // `ts` is optional; when given it must be an integer. Any cached
+        // preview satisfies it: "The server may return a newer version".
+        if (auto const ts = query_param_value(req.target, "ts");
+            ts.has_value() && (ts->empty() || ts->size() > 19U || !std::ranges::all_of(*ts, [](char c) {
+                                   return c >= '0' && c <= '9';
+                               })))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "ts must be an integer");
+        }
+        auto context = RemoteMediaRequestContext{};
+        context.client_key = rate_limit_client_key(req, rt.homeserver.config.server());
+        context.requester = *user;
+        auto const preview =
+            preview_url(rt.homeserver, *user, query_param_value(req.target, "url").value_or(std::string{}), context);
+        if (preview.ok)
+        {
+            return dispatch_resp(req, rt, 200U, preview.value);
+        }
+        return dispatch_err(req, rt, preview.status, preview.errcode.empty() ? "M_UNKNOWN" : preview.errcode,
+                            preview.reason, preview.retry_after_ms);
     }
 
     if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/logout/all")
@@ -13657,6 +13764,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const scanner_verdict = media::content_matches_eicar_test_signature(req.body) ? "dirty" : "clean";
         auto inner = req;
         inner.target = "/_matrix/media/v3/upload";
+        // R17: the `filename` query parameter is stored with the upload and
+        // served back in Content-Disposition.
+        if (auto const filename = query_param_value(req.target, "filename"); filename.has_value())
+        {
+            inner.target += "?filename=" + core::percent_encode_path_component(*filename);
+        }
         inner.body = std::string{declared_mime} + "|" + sniffed_mime + "|" + scanner_verdict + "|" + req.body;
         auto const r = call_local(inner);
         // 200: stored; 202: stored but quarantined by server policy.
@@ -13666,7 +13779,78 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 200U, media_upload_response_json(r.body));
         }
-        return dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_BAD_REQUEST", r.body);
+        return media_upload_refusal(req, rt, r);
+    }
+
+    // POST /_matrix/media/v1/create (ADR-0212): reserves an mxc:// URI whose
+    // content is uploaded later with PUT /_matrix/media/v3/upload/{serverName}/{mediaId}.
+    if (req.method == "POST" && request_path == "/_matrix/media/v1/create")
+    {
+        auto inner = req;
+        inner.target = "/_matrix/media/v1/create";
+        inner.body.clear();
+        auto const r = call_local(inner);
+        if (r.status != 200U)
+        {
+            return media_upload_refusal(req, rt, r);
+        }
+        auto const separator = r.body.find('|');
+        auto expires_at = std::int64_t{0};
+        if (separator == std::string::npos ||
+            std::from_chars(r.body.data() + separator + 1U, r.body.data() + r.body.size(), expires_at).ec !=
+                std::errc{})
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "malformed media reservation");
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member("content_uri", json_str(std::string_view{r.body}.substr(0U, separator))),
+                                 json_member("unused_expires_at", json_int(expires_at)),
+                             })));
+    }
+
+    // PUT /_matrix/media/v3/upload/{serverName}/{mediaId} (ADR-0212): the same
+    // body translation, MIME sniffing and scanner verdict as POST /upload.
+    auto constexpr reserved_upload_prefix = std::string_view{"/_matrix/media/v3/upload/"};
+    if (req.method == "PUT" && starts_with(request_path, reserved_upload_prefix))
+    {
+        auto const rest = request_path.substr(reserved_upload_prefix.size());
+        auto const slash = rest.find('/');
+        if (slash == std::string_view::npos || slash == 0U || slash + 1U >= rest.size() ||
+            rest.find('/', slash + 1U) != std::string_view::npos)
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "Unknown media ID");
+        }
+        auto const server_name = core::percent_decode_path_component(rest.substr(0U, slash));
+        auto const media_id = core::percent_decode_path_component(rest.substr(slash + 1U));
+        // Spec: 404 M_NOT_FOUND for an MXC ID not created with /create; one on
+        // another server never was.
+        if (server_name != rt.homeserver.config.server().server_name ||
+            media_id.find_first_of("|?/") != std::string::npos)
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "Unknown media ID");
+        }
+        auto const ct = request_header(req, "Content-Type");
+        auto const declared_mime = ct.empty() ? std::string_view{"application/octet-stream"} : ct;
+        if (declared_mime.find('|') != std::string_view::npos)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_REQUEST", "Content-Type must not contain '|'");
+        }
+        auto const sniffed_mime = media::sniff_mime_type(req.body);
+        auto const scanner_verdict = media::content_matches_eicar_test_signature(req.body) ? "dirty" : "clean";
+        auto inner = req;
+        inner.target = std::string{reserved_upload_prefix} + core::percent_encode_path_component(media_id);
+        if (auto const filename = query_param_value(req.target, "filename"); filename.has_value())
+        {
+            inner.target += "?filename=" + core::percent_encode_path_component(*filename);
+        }
+        inner.body = std::string{declared_mime} + "|" + sniffed_mime + "|" + scanner_verdict + "|" + req.body;
+        auto const r = call_local(inner);
+        if (r.status == 200U || r.status == 202U)
+        {
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        return media_upload_refusal(req, rt, r);
     }
 
     // GET /_matrix/client/v3/voip/turnServer

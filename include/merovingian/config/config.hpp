@@ -603,6 +603,27 @@ struct MediaSecurityConfig final
     // thumbnail decodes one requester may run at once.
     std::string thumbnail_cache_size{"64MiB"};
     std::uint32_t thumbnail_max_concurrent_per_user{2U};
+    // ADR-0212: asynchronous uploads (POST /_matrix/media/v1/create, PUT
+    // /_matrix/media/v3/upload/{serverName}/{mediaId}). The spec recommends a
+    // 24 hour unused-ID lifetime. A user past max_pending_uploads_per_user, or
+    // the server past max_pending_uploads, gets 429 M_LIMIT_EXCEEDED. A
+    // download of a reserved ID waits at most pending_upload_max_wait_ms (and
+    // never longer than the request's timeout_ms) for the content.
+    std::uint32_t pending_upload_ttl_seconds{86400U};
+    std::uint32_t max_pending_uploads_per_user{10U};
+    std::uint64_t max_pending_uploads{10000U};
+    std::uint32_t pending_upload_max_wait_ms{20000U};
+    // ADR-0213: URL previews (GET /_matrix/client/v1/media/preview_url). The
+    // server fetches a URL a client names, so it is off by default. Fetches are
+    // SSRF-gated on every redirect hop and capped in bytes, time and hops;
+    // results are cached in memory.
+    bool url_preview_enabled{false};
+    std::string url_preview_max_page_size{"1MiB"};
+    std::string url_preview_max_image_size{"5MiB"};
+    std::uint32_t url_preview_timeout_seconds{10U};
+    std::uint32_t url_preview_max_redirects{3U};
+    std::uint32_t url_preview_cache_ttl_seconds{3600U};
+    std::uint32_t url_preview_cache_max_entries{1000U};
 };
 
 struct TrustSafetySecurityConfig final

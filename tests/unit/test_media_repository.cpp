@@ -1272,3 +1272,115 @@ SCENARIO("A local account whose owner string looks like the remote-media owner i
         }
     }
 }
+
+// ADR-0212: reservations made by POST /_matrix/media/v1/create.
+SCENARIO("Pending upload reservations are bounded per user and server-wide", "[media][repository][async-upload]")
+{
+    GIVEN("a repository allowing two pending uploads per user and three in all")
+    {
+        auto repository = test_repository();
+        repository.config.max_pending_uploads_per_user = 2U;
+        repository.config.max_pending_uploads = 3U;
+        repository.config.pending_upload_ttl_ms = 1000U;
+        auto const reserve = [&repository](std::string const& user, std::uint64_t now) {
+            auto plan = merovingian::media::plan_pending_media_upload(repository, user, now);
+            if (plan.ok)
+            {
+                merovingian::media::apply_pending_media_upload(repository, plan);
+            }
+            return plan;
+        };
+
+        WHEN("users reserve past the caps")
+        {
+            auto const alice_first = reserve("@alice:example.org", 10U);
+            auto const alice_second = reserve("@alice:example.org", 10U);
+            auto const alice_third = reserve("@alice:example.org", 10U);
+            auto const bob_first = reserve("@bob:example.org", 10U);
+            auto const carol_first = reserve("@carol:example.org", 10U);
+
+            THEN("the per-user and server caps refuse with 429 and reserve nothing")
+            {
+                REQUIRE(alice_first.ok);
+                REQUIRE(alice_second.ok);
+                REQUIRE_FALSE(alice_third.ok);
+                REQUIRE(alice_third.status == 429U);
+                REQUIRE(bob_first.ok);
+                REQUIRE_FALSE(carol_first.ok);
+                REQUIRE(carol_first.status == 429U);
+                REQUIRE(repository.pending_uploads.size() == 3U);
+            }
+
+            THEN("each reservation expires one TTL after it was made")
+            {
+                REQUIRE(alice_first.reservation.expires_at_ms == 1010U);
+                REQUIRE(merovingian::media::find_pending_media_upload(repository, alice_first.reservation.media_id,
+                                                                      1009U) != nullptr);
+                REQUIRE(merovingian::media::find_pending_media_upload(repository, alice_first.reservation.media_id,
+                                                                      1010U) == nullptr);
+            }
+
+            AND_WHEN("the reservations expire and alice reserves again")
+            {
+                auto const later = reserve("@alice:example.org", 5000U);
+
+                THEN("the expired reservations are listed for deletion and no longer count")
+                {
+                    REQUIRE(later.ok);
+                    REQUIRE(later.expired_media_ids.size() == 3U);
+                    REQUIRE(repository.pending_uploads.size() == 1U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Content for a reservation is admitted only from its creator, once", "[media][repository][async-upload]")
+{
+    GIVEN("alice's reservation")
+    {
+        auto repository = test_repository();
+        auto plan = merovingian::media::plan_pending_media_upload(repository, "@alice:example.org", 10U);
+        REQUIRE(plan.ok);
+        merovingian::media::apply_pending_media_upload(repository, plan);
+        auto const media_id = plan.reservation.media_id;
+
+        THEN("alice is admitted, bob is forbidden, and an unknown or expired ID is not found")
+        {
+            using merovingian::media::PendingUploadAdmission;
+            REQUIRE(merovingian::media::admit_pending_media_upload(repository, media_id, "@alice:example.org", 20U) ==
+                    PendingUploadAdmission::accepted);
+            REQUIRE(merovingian::media::admit_pending_media_upload(repository, media_id, "@bob:example.org", 20U) ==
+                    PendingUploadAdmission::forbidden);
+            REQUIRE(merovingian::media::admit_pending_media_upload(repository, "unknownMediaId", "@alice:example.org",
+                                                                   20U) == PendingUploadAdmission::not_found);
+            REQUIRE(merovingian::media::admit_pending_media_upload(repository, media_id, "@alice:example.org",
+                                                                   plan.reservation.expires_at_ms) ==
+                    PendingUploadAdmission::not_found);
+        }
+
+        WHEN("alice's content is stored under the reserved ID")
+        {
+            auto request = merovingian::media::LocalMediaUploadRequest{"@alice:example.org", "text/plain", "text/plain",
+                                                                       "hello", true};
+            request.media_id = media_id;
+            auto const stored = merovingian::media::upload_local_media(repository, "example.org", request);
+            merovingian::media::complete_pending_media_upload(repository, media_id);
+
+            THEN("the record has the reserved ID and a second upload to it is refused")
+            {
+                REQUIRE(stored.ok);
+                REQUIRE(stored.media_id == media_id);
+                REQUIRE(stored.content_uri == "mxc://example.org/" + media_id);
+                REQUIRE(
+                    merovingian::media::admit_pending_media_upload(repository, media_id, "@alice:example.org", 20U) ==
+                    merovingian::media::PendingUploadAdmission::already_uploaded);
+                REQUIRE(merovingian::media::admit_pending_media_upload(repository, media_id, "@bob:example.org", 20U) ==
+                        merovingian::media::PendingUploadAdmission::forbidden);
+                auto const again = merovingian::media::upload_local_media(repository, "example.org", request);
+                REQUIRE_FALSE(again.ok);
+                REQUIRE(again.status == 409U);
+            }
+        }
+    }
+}

@@ -1070,20 +1070,40 @@ namespace
 
         if (table_load_profile_includes("media", profile))
         {
-            auto media =
-                query_rows(connection, "postgresql_load_media",
-                           "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, "
-                           "digest, quarantined, removed, legacy_endpoint_visible FROM media ORDER BY media_id");
+            auto media = query_rows(connection, "postgresql_load_media",
+                                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, "
+                                    "digest, quarantined, removed, legacy_endpoint_visible, upload_name "
+                                    "FROM media ORDER BY media_id");
             if (!media.ok)
             {
                 return false;
             }
             for (auto const& row : media.rows)
             {
-                if (row.size() >= 9U)
+                if (row.size() >= 10U)
                 {
                     store.local_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], row[5],
-                                                 text_is_true(row[6]), text_is_true(row[7]), text_is_true(row[8])});
+                                                 text_is_true(row[6]), text_is_true(row[7]), text_is_true(row[8]),
+                                                 row[9]});
+                }
+            }
+        }
+
+        // Migration 026 (ADR-0212): reserved mxc:// URIs awaiting content.
+        if (table_load_profile_includes("media_pending_uploads", profile))
+        {
+            auto pending = query_rows(connection, "postgresql_load_media_pending_uploads",
+                                      "SELECT media_id, owner_user_id, created_at_ms, expires_at_ms FROM "
+                                      "media_pending_uploads ORDER BY media_id");
+            if (!pending.ok)
+            {
+                return false;
+            }
+            for (auto const& row : pending.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.pending_media_uploads.push_back({row[0], row[1], parse_u64(row[2]), parse_u64(row[3])});
                 }
             }
         }

@@ -7485,11 +7485,14 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} returns 404 M
 
 // --- GET /_matrix/media/v3/preview_url ----------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3preview_url
-// IMPLEMENTATION GAP: URL preview not yet implemented.
-SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][media]")
+// URL previews make the server fetch a URL a client names, so they are off
+// unless security.media.url_preview_enabled is set (ADR-0213). While off the
+// endpoint answers as an unimplemented one; the enabled behaviour is covered
+// by tests/integration/test_url_preview_flow.cpp and the scenario below.
+SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED while URL previews are disabled",
+         "[conformance][client-server][media][preview]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with the default configuration and a logged-in user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -7500,9 +7503,8 @@ SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED (implementation g
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/media/v3/preview_url?url=https://matrix.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 404 M_UNRECOGNIZED: previews are off by default")
             {
-                // IMPLEMENTATION GAP: URL preview not supported.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
@@ -7585,9 +7587,11 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 for missing
 
 // --- PUT /_matrix/media/v3/upload/{serverName}/{mediaId} ---------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixmediav3uploadservernamemediaid
-// IMPLEMENTATION GAP: asynchronous media upload by MXC not yet implemented.
-SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][media]")
+// Implemented in 0.12.41 (ADR-0212); the full contract is in
+// test_content_repository_conformance.cpp. Spec 404: "The MXC ID was not
+// created with POST /_matrix/media/v1/create", errcode M_NOT_FOUND.
+SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} refuses a media ID that was never created",
+         "[conformance][client-server][media][async-upload]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -7600,14 +7604,14 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} returns 404 M_UNRECOGNIZED
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"PUT", "/_matrix/media/v3/upload/example.org/abc", token, "data"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                // IMPLEMENTATION GAP: async media upload by MXC not supported.
+                // Spec MUST: 404 M_NOT_FOUND for an MXC ID not created with POST /create.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -7615,8 +7619,11 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} returns 404 M_UNRECOGNIZED
 
 // --- POST /_matrix/media/v1/create --------------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixmediav1create
-// IMPLEMENTATION GAP: async media reservation not yet implemented.
-SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][media]")
+// Implemented in 0.12.41 (ADR-0212); the full contract is in
+// test_content_repository_conformance.cpp. Spec 200: content_uri (Required)
+// and unused_expires_at (integer, optional).
+SCENARIO("POST /media/v1/create returns a content_uri on this server",
+         "[conformance][client-server][media][async-upload]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -7629,14 +7636,14 @@ SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)"
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/media/v1/create", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with an mxc:// content_uri")
             {
-                // IMPLEMENTATION GAP: async media creation not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: 200 with the required content_uri, an mxc:// URI.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* content_uri = string_member(body, "content_uri");
+                REQUIRE(content_uri != nullptr);
+                REQUIRE(content_uri->starts_with("mxc://"));
             }
         }
     }
@@ -7764,11 +7771,11 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId}/{fileName} returns 404 f
 
 // --- GET /_matrix/client/v1/media/preview_url ---------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediapreview_url
-// IMPLEMENTATION GAP: authenticated URL preview not yet implemented.
-SCENARIO("GET /v1/media/preview_url returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][media]")
+// Off unless security.media.url_preview_enabled (ADR-0213); see the v3 scenario.
+SCENARIO("GET /v1/media/preview_url returns 404 M_UNRECOGNIZED while URL previews are disabled",
+         "[conformance][client-server][media][preview]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with the default configuration and a logged-in user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -7779,14 +7786,66 @@ SCENARIO("GET /v1/media/preview_url returns 404 M_UNRECOGNIZED (implementation g
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v1/media/preview_url?url=https://matrix.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 404 M_UNRECOGNIZED: previews are off by default")
             {
-                // IMPLEMENTATION GAP: authenticated URL preview not supported.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_UNRECOGNIZED");
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediapreview_url
+// "url — Required: The URL to get a preview of." (a URI); "ts — integer";
+// "Requires authentication: Yes". With previews enabled, a request whose
+// parameters are malformed is refused before anything is fetched.
+SCENARIO("GET /v1/media/preview_url validates its parameters when URL previews are enabled",
+         "[conformance][client-server][media][preview]")
+{
+    GIVEN("a running client-server with URL previews enabled and a logged-in user")
+    {
+        auto config = conformance_config();
+        config.security().media.url_preview_enabled = true;
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const get = [&started, &token](std::string const& target) {
+            return merovingian::homeserver::handle_client_server_request(started.runtime, {"GET", target, token, {}});
+        };
+
+        WHEN("url is missing, is not http(s), or ts is not an integer")
+        {
+            auto const missing = get("/_matrix/client/v1/media/preview_url");
+            auto const scheme = get("/_matrix/client/v1/media/preview_url?url=ftp://example.com/");
+            auto const ts = get("/_matrix/client/v1/media/preview_url?url=https://example.com/&ts=yesterday");
+
+            THEN("each is refused with 400")
+            {
+                // Spec MUST: `url` is "Required"; M_MISSING_PARAM is "A required parameter was missing".
+                REQUIRE(missing.response.status == 400U);
+                REQUIRE(*string_member(parse_object(missing.response.body), "errcode") == "M_MISSING_PARAM");
+                // Spec MUST: M_INVALID_PARAM is "A parameter that was specified has the wrong value";
+                // Project policy: only http and https URLs are previewed (ADR-0213).
+                REQUIRE(scheme.response.status == 400U);
+                REQUIRE(*string_member(parse_object(scheme.response.body), "errcode") == "M_INVALID_PARAM");
+                // Spec MUST: `ts` is an integer, so a string is "the wrong value" (M_INVALID_PARAM).
+                REQUIRE(ts.response.status == 400U);
+                REQUIRE(*string_member(parse_object(ts.response.body), "errcode") == "M_INVALID_PARAM");
+            }
+        }
+
+        WHEN("the request carries no access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/media/preview_url?url=https://example.com/", {}, {}});
+
+            THEN("it is refused as unauthenticated")
+            {
+                // Spec MUST: "Requires authentication: Yes"; missing credentials return 401.
+                REQUIRE(response.response.status == 401U);
             }
         }
     }

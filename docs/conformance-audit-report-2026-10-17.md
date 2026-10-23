@@ -31,7 +31,7 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 | R12 | P2 | Registration rejects an omitted username instead of generating one | Fixed 0.12.38 (ADR-0198) |
 | R13 | P2 | Local typing never expires; non-boolean `typing` is treated as true | Fixed 0.12.38 (ADR-0199) |
 | R15 | P2 | Unread counts ignore push-rule notify/highlight actions | Fixed 0.12.40 (ADR-0205) |
-| R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Open — media wave (0.12.40) |
+| R17 | P2 | Authenticated `{fileName}` media downloads fail for existing media | Fixed 0.12.41 (ADR-0211) |
 | R19 | P2 | Push-rule mutation APIs are absent; delivery uses read-only defaults | Fixed 0.12.40 (ADR-0204) |
 | R20 | P2 | `POST /register` runs User-Interactive Authentication before the username checks | Open — unscheduled |
 | R14 | P3 | Failed push notifications are never retried (spec SHOULD) | Fixed 0.12.40 (ADR-0206) |
@@ -50,6 +50,13 @@ interoperability or validation defect; **P3** lower priority or recommendation l
 - **R10, R19 and several endpoint gaps** have conformance scenarios that assert
   `404 M_UNRECOGNIZED` as the expected result. Each is replaced by normative success assertions
   as the feature lands.
+
+### Found while fixing R17 (fixed in 0.12.41, ADR-0211)
+
+- An upload's `filename` was discarded, so no download carried it in `Content-Disposition`,
+  which the spec requires ("this header MUST contain the same `filename`").
+- Upload refusals for an exhausted quota (`507`) and a type the server does not permit (`415`)
+  used statuses the spec does not list; both are `403 M_FORBIDDEN`.
 
 ### Found while fixing R02 (fixed in 0.12.28, ADR-0166)
 
@@ -104,8 +111,8 @@ unsupported, not as a violation.
 | `POST /_matrix/client/v1/appservice/{appserviceId}/ping` | Fixed 0.12.37 |
 | `PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}` | Fixed 0.12.37 (ADR-0192) |
 | `GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event` | Open — wave 6 (to decide) |
-| `POST /_matrix/media/v1/create` and `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}` | Open — wave 6 (to decide) |
-| `GET /_matrix/client/v1/media/preview_url` | Open — wave 6 (optional; SSRF boundary) |
+| `POST /_matrix/media/v1/create` and `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}` | Fixed 0.12.41 (ADR-0212) |
+| `GET /_matrix/client/v1/media/preview_url` | Fixed 0.12.41, off by default (ADR-0213, ADR-0214) |
 | `GET /_matrix/client/v3/presence/{userId}/status` | Open — wave 6 (to decide) |
 | `POST /_matrix/client/v1/login/get_token` | Optional; `m.get_login_token` stays disabled |
 | Deprecated `/events`, `/events/{eventId}`, `/initialSync` | Compatibility omissions |
@@ -136,6 +143,6 @@ branch CI run 39053180514 shows OpenBSD at 58 Ok, 0 Fail.
 | 1 | 0.12.28 | R01, R02, R03, to-device message IDs |
 | 2 | 0.12.36 | R04, R05, R06, R18 (federation) |
 | 3 | 0.12.37 | R07, R08, R09, appservice ping and network directory, `create_room` appservice delivery |
-| 4 | 0.12.38 | R10, R11, R12, R13, R16 (client API); R17 moved to the media wave (0.12.40); R20 found |
+| 4 | 0.12.38 | R10, R11, R12, R13, R16 (client API); R17 moved to the media wave (0.12.41); R20 found |
 | 5 | 0.12.40 | R19, then R15 and R14 (push rules, counts, retry) |
 | 6 | — | Optional endpoint gaps, after a decision on each |

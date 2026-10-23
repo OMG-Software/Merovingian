@@ -381,7 +381,7 @@ federation.worker.apply_hardening=true
 security.media.max_upload_size=50MiB
 # Local media capacity, in the database: media bytes are read per request and
 # are not held in memory, so these bound storage. An upload past any limit is
-# refused with 507 M_LIMIT_EXCEEDED. Keep max_size_per_user at or above
+# refused with 403 M_FORBIDDEN. Keep max_size_per_user at or above
 # max_upload_size. Each record's metadata is held in memory, so max_records
 # also bounds memory (about 400 MB at 1,000,000). Sizes take B, KiB, MiB or
 # GiB; empty (or 0 for max_records) means no limit. Cached remote media is not
@@ -402,6 +402,25 @@ security.media.remote_media_cache_max_size=25GiB
 # decodes one requester may run at once (over it: 429).
 # security.media.thumbnail_cache_size=64MiB
 # security.media.thumbnail_max_concurrent_per_user=2
+# Asynchronous uploads (POST /_matrix/media/v1/create): how long a reserved
+# mxc:// URI stays usable without content, how many one user and the server may
+# hold (over either: 429), and the longest a download of a reserved URI waits
+# for its content before 504 M_NOT_YET_UPLOADED.
+# security.media.pending_upload_ttl_seconds=86400
+# security.media.max_pending_uploads_per_user=10
+# security.media.max_pending_uploads=10000
+# security.media.pending_upload_max_wait_ms=20000
+# URL previews (GET /_matrix/client/v1/media/preview_url) make this server
+# fetch URLs your users name. Off by default. Every fetch and redirect is
+# refused if it resolves to a private, loopback, link-local or reserved
+# address, or one in security.federation.deny_ip_ranges.
+# security.media.url_preview_enabled=false
+# security.media.url_preview_max_page_size=1MiB
+# security.media.url_preview_max_image_size=5MiB
+# security.media.url_preview_timeout_seconds=10
+# security.media.url_preview_max_redirects=3
+# security.media.url_preview_cache_ttl_seconds=3600
+# security.media.url_preview_cache_max_entries=1000
 # allowed_mime_types is a comma-separated allow-list. When empty (the default),
 # Merovingian uses its built-in default list, which includes image/png,
 # image/jpeg, image/gif, text/plain, application/pdf, and application/octet-stream

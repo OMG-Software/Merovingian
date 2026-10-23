@@ -15,7 +15,9 @@ This is the largest and most complex module — read this file carefully before 
 | `runtime_mutex.cpp` | The recursive mutex guarding `HomeserverRuntime` (ADR-0002) |
 | `request_lock.cpp` | `RequestLockScope` / `RuntimeLockRelease` — releases the runtime lock around blocking calls (see below) |
 | `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
-| `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch |
+| `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch, asynchronous uploads (`create_pending_media_upload`, `upload_pending_media`) and waits for not-yet-uploaded media (ADR-0212) |
+| `media_upload_notifier.cpp` | `MediaUploadNotifier`: wakes downloads waiting for a reserved media ID's content. Leaf mutex: never waited on with `runtime.mutex` held (ADR-0212) |
+| `url_preview_service.cpp` | `GET .../preview_url` (ADR-0213): the SSRF gate (`gated_fetch`: resolve, check, pin, follow redirects itself) and the preview cache. Every fetch of a client-named URL goes through it |
 | `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
 | `appservice_delivery.cpp` | Application Service API outbound queue (ADR-0163): `enqueue_appservice_delivery` (request path, no network) and `drain_appservice_queues` (the one drainer thread, run by a `PeriodicJob` from `main.cpp`) |
 | `deferred_pdu_retry.cpp` | Retains federation PDUs that could not yet be placed (`deferred_pdus`) and retries them: `retry_deferred_pdus`, `DeferredPduRetryJob` (R03, ADR-0165). A retry holds no lock across `ingest_pdu_event`; `ingest_pdu_event` writes rows only after signature verification |
@@ -134,6 +136,16 @@ The caps derive from the main request pool size (`server.http.request_threads`, 
 own. A new
 route that proxies to a remote server without one of these three is the defect. See ADR-0079 and
 `docs/http-transport.md` "Client-triggered outbound proxying".
+
+Two more requests defer to the media fetch pool the same way: a download of a reserved media ID
+that waits for its upload (ADR-0212), and a URL preview (ADR-0213). A pending-upload wait is
+admitted before it starts (`await_pending_upload`): under `pending_upload_waits`, at most
+`media_fetch_threads - 1` at once (none with a single worker), and on a request thread with an ADR-0079 slot as well; a wait
+that is not admitted answers `504 M_NOT_YET_UPLOADED` at once. Anything else that would wait on
+the media fetch pool needs the same kind of cap, or it can fill the pool. A URL preview fetches a URL a
+client names: it goes through `gated_fetch` in `url_preview_service.cpp`, which resolves and
+checks every hop (redirects included) and pins the connection, and never through
+`resolve_media_redirect_url` or a client that follows redirects itself.
 
 Remote media is the exception (ADR-0121): the server runs it on the media fetch pool, not the main
 pool. On the main pool `fetch_remote_media_live` runs in `RemoteMediaFetchMode::defer` and, after the

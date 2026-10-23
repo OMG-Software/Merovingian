@@ -1,3 +1,54 @@
+## 0.12.41
+
+Media part of the conformance audit (2026-10-17): R17 and the wave-6 media endpoints.
+
+- **FIXED (R17):** `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}` and the
+  deprecated `/_matrix/media/v3/download/.../{fileName}` answered 404 for media that existed: the
+  local router refused the third path segment. They now serve the media, and `Content-Disposition`
+  names the requested file, as the spec requires. A name is written as an RFC 6266 quoted string
+  (printable ASCII) or `filename*=utf-8''` percent-encoding, and a name with a control character,
+  a path separator or invalid UTF-8 is left out (`media::media_content_disposition`, ADR-0211). The
+  deprecated named route stays frozen for new media (ADR-0068). Named downloads have their own
+  rate-limit bucket (`.../download/{server}/{mediaId}/{fileName}`).
+- **FIXED (found while fixing R17):** an upload's `filename` (`?filename=`) was discarded, so a
+  download's `Content-Disposition` never carried it, although the spec says it "MUST contain the
+  same `filename`". It is now stored (`media.upload_name`) and served back; a remote server's
+  `Content-Disposition` filename is kept with its copy. An upload whose `filename` has a control
+  character, a path separator, invalid UTF-8 or more than 255 bytes is refused with
+  `400 M_INVALID_PARAM` (ADR-0211).
+- **FIXED (found while fixing R17):** an upload over a quota answered `507 M_LIMIT_EXCEEDED` and a
+  file type the server does not permit `415`; the spec answers both with `403 M_FORBIDDEN`. Both
+  upload routes now do, and an oversized upload is `413 M_TOO_LARGE`.
+- **ADDED (wave 6, approved):** asynchronous uploads. `POST /_matrix/media/v1/create` reserves an
+  `mxc://` URI (`unused_expires_at`, 24 hours by default); `PUT /_matrix/media/v3/upload/{serverName}/
+  {mediaId}` fills it once (`409 M_CANNOT_OVERWRITE_MEDIA`, `404` for an unknown or expired ID,
+  `403` for another user's). Reservations are durable rows, capped per user (10) and server-wide
+  (10000), and `create` is rate limited. A download of a reserved ID waits up to
+  `min(timeout_ms, pending_upload_max_wait_ms)` on the media fetch pool, never on a main-pool
+  thread or under `runtime.mutex`, then answers `504 M_NOT_YET_UPLOADED`; the federation route
+  answers `504` at once (ADR-0212). New config keys `security.media.pending_upload_ttl_seconds`,
+  `max_pending_uploads_per_user`, `max_pending_uploads`, `pending_upload_max_wait_ms`.
+- **ADDED (wave 6, approved; off by default):** `GET /_matrix/client/v1/media/preview_url` and the
+  deprecated v3 route, behind `security.media.url_preview_enabled=false`. Every hop (page,
+  redirects, `og:image`) is resolved, refused if any address is private, loopback, link-local,
+  CGNAT, reserved or in `deny_ip_ranges`, and pinned to the checked addresses; redirects are
+  followed by the gate (at most 3), within one deadline (10 s) and byte caps (1 MiB page, 5 MiB
+  image). HTML is scanned by a bounded `og:*`/`<title>` extractor outside the runtime lock; the
+  image is stored through the upload pipeline; every failure is the same `502`. Previews run on the
+  media fetch pool, are rate limited per user, and are cached by URL (ADR-0213, ADR-0214).
+- **Review fixes (PR #524):** a download waiting for a pending upload is admitted first: at most
+  `media_fetch_threads - 1` waits at once (half for one requester), and on a request thread an
+  ADR-0079 client-outbound slot too; otherwise `504 M_NOT_YET_UPLOADED` at once, so waits cannot
+  fill the media fetch pool or hold main-pool workers. An upload the server fails to store answers
+  `500 M_UNKNOWN`, not `M_BAD_REQUEST`. The stored filename crosses from the local router to the
+  client API in a response field, not an internal header. `UrlPreviewCache` cannot be copied
+  (its index holds iterators into its own list). URL previews use the shared UTF-8 validator.
+- **Migration** `026_media_upload_names_and_pending_uploads.sql` (schema v26): `media.upload_name`
+  and the `media_pending_uploads` table. It follows wave 3's `025_appservice_directory.sql`.
+- **FIXED (PR #524 review):** with `server.http.media_fetch_threads = 1` a pending-upload wait could
+  take the media fetch pool's only worker. A single-worker pool now admits no wait: a download of a
+  reserved, empty media ID answers `504 M_NOT_YET_UPLOADED` at once.
+
 ## 0.12.40
 
 Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-report-2026-10-17.md`.

@@ -64,6 +64,11 @@ the directory of one of its networks, one row per
 `federation_worker_table_allowlist`, and `tests/unit/test_worker_db_uri.cpp`
 classifies it as a table the worker never reads.
 
+Schema version `26` (`026_media_upload_names_and_pending_uploads.sql`) ALTERs `upload_name`
+(ADR-0211) onto `media` and adds the `media_pending_uploads` table (ADR-0212), indexed by owner. Main reads and writes it; it is
+not in `federation_worker_table_allowlist`, and `tests/unit/test_worker_db_uri.cpp` classifies it
+as a table the worker never reads.
+
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
 must upgrade in place. Schema version `3` adds the analogous

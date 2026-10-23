@@ -342,12 +342,108 @@ Client-facing download and thumbnail responses previously carried only
   to anything served over federation (audit finding 8). Unknown and
   non-inline-safe types fail closed to `attachment` on both paths.
 
-**Remaining gap: no `filename` parameter is emitted.** This server does not
-persist the upload's original filename, and the spec permits omitting it
-("When the header is not supplied, or does not supply a filename, the local
-download response does not include a filename") — but it means a client
-cannot recover the original filename from a download response either. See
-`docs/todos/capability-gaps.md`.
+### Named downloads (R17, 0.12.41)
+
+`GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}` and the deprecated
+`/_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}` serve the same media as the
+two-segment routes (the router accepts one more non-empty segment; thumbnails take none), and
+their `Content-Disposition` names the file from the path, as the spec requires ("MUST contain
+the file name requested in the path"). The deprecated named route is frozen like the unnamed
+one: media uploaded after the freeze is 404 there (ADR-0068).
+
+`media::media_content_disposition()` (`src/media/security.cpp`) writes the header. A name that
+`media::media_filename_is_valid()` accepts (at most 255 bytes of well-formed UTF-8, no control
+characters, no `/` or `\`) is written as `filename="..."` (with `"` and `\` escaped) when it is
+printable ASCII, and as RFC 5987 `filename*=utf-8''<percent-encoded>` otherwise. Any other
+name is left out, so no byte a client chose can end or extend the header line (ADR-0211).
+Until 0.12.41 the router refused the third segment, so the named routes answered 404 for media
+that existed.
+
+### Upload filenames (0.12.41)
+
+An upload's `filename` query parameter (`POST /upload`, `PUT /upload/{serverName}/{mediaId}`) is
+stored as `media.upload_name` and returned in `Content-Disposition` on download, as the spec
+requires ("If the upload was made with a `filename`, this header MUST contain the same
+`filename`"); without one the header carries no filename. An upload whose `filename` fails
+`media_filename_is_valid` is refused with `400 M_INVALID_PARAM`, so what is stored is always what
+the client sent. A remote server's `Content-Disposition` filename is read by
+`media::content_disposition_filename` (quoted, token or RFC 5987 form, at most 1 KiB scanned, an
+unsafe name dropped) and stored with the remote copy. Inside the process the stored name crosses
+from the local router to the client API in `LocalHttpResponse::media_filename`, a field rather than
+a header, so nothing that writes a local-router response to the wire can leak it (ADR-0211).
+
+## Asynchronous uploads
+
+`POST /_matrix/media/v1/create` reserves an `mxc://` URI and returns it with `unused_expires_at`
+(now plus `security.media.pending_upload_ttl_seconds`, 24 hours by default). The reservation is a
+`media_pending_uploads` row (migration 026) and lives in memory in
+`LocalMediaRepository::pending_uploads`. One user may hold `max_pending_uploads_per_user` (10) live
+reservations and the server `max_pending_uploads` (10000); past either, `create` answers
+`429 M_LIMIT_EXCEEDED`. `create` is also rate limited per user (30 a minute). Expired reservations
+are deleted by the next `create`.
+
+`PUT /_matrix/media/v3/upload/{serverName}/{mediaId}` stores the content for a reservation through
+the same pipeline as `POST /upload` (MIME sniffing, the scanner check, MIME policy, quarantine,
+`max_upload_size`, quotas; pre-body authentication for large bodies), and deletes the reservation
+in the same transaction. It answers `200 {}`; `409 M_CANNOT_OVERWRITE_MEDIA` when the ID already
+has content; `404 M_NOT_FOUND` for an ID never created, expired, or on another server;
+`403 M_FORBIDDEN` when another user created it, when the file type is not permitted, or when a quota
+is exhausted; `413 M_TOO_LARGE` when it is too large. `POST /upload` uses the same 403/413 mapping.
+
+A download of a reserved ID whose content has not arrived waits for it, at most
+`min(timeout_ms, security.media.pending_upload_max_wait_ms)` (20 s by default and at most 60 s),
+then answers `504 M_NOT_YET_UPLOADED`; `timeout_ms=0` answers at once. The wait never runs on a
+main-pool thread: it is handed to the media fetch pool like a remote fetch, and it releases the
+runtime mutex while it sleeps on `MediaUploadNotifier`, which the upload signals after its commit.
+A wait is admitted first: at most `server.http.media_fetch_threads - 1` waits run at once (none with a single worker) (half of
+them for one requester), so the pool always keeps a worker for remote fetches and previews; a
+server with no media fetch pool waits on the request thread and then also needs an ADR-0079
+client-outbound slot. A wait that is not admitted answers `504 M_NOT_YET_UPLOADED` at once.
+The thumbnail routes behave the same way. The federation route
+(`GET /_matrix/federation/v1/media/download/{mediaId}`) answers `504 M_NOT_YET_UPLOADED` at once,
+and the legacy v3 routes never serve such media (ADR-0068, ADR-0212).
+
+## URL previews
+
+`GET /_matrix/client/v1/media/preview_url` and the deprecated `GET /_matrix/media/v3/preview_url`
+are off unless `security.media.url_preview_enabled` is set; while off they answer
+`404 M_UNRECOGNIZED`. Both require authentication and are rate limited per user (30 a minute). The
+design is ADR-0213; in short:
+
+- `url` must be an absolute `http` or `https` URL of at most 2048 bytes (else `400`); `ts` must be
+  an integer and otherwise does not change the answer (ADR-0214).
+- Every fetch, the page and every redirect hop and the `og:image`, goes through one gate: the host
+  is resolved and refused if any address is private, loopback, link-local, CGNAT, NAT64, multicast,
+  reserved or in `security.federation.deny_ip_ranges` (IPv4 and IPv6), and the connection is pinned
+  to the checked addresses. Redirects are followed by the gate, at most
+  `url_preview_max_redirects` (3). One deadline (`url_preview_timeout_seconds`, 10 s) and byte caps
+  (`url_preview_max_page_size` 1 MiB, `url_preview_max_image_size` 5 MiB) bound the whole preview.
+- Only HTML is parsed, by a bounded forward scan for `og:*` meta tags and `<title>` that runs
+  nothing (`media::extract_open_graph`). Other content previews as `{}`.
+- The `og:image` is stored through the upload pipeline as the requesting user's media and
+  returned as an `mxc://` URI with `matrix:image:size`; a refused or quarantined image is left out.
+- Every failure to fetch the target answers the same `502 M_UNKNOWN`, so the endpoint does not
+  reveal which internal names resolve or which addresses answer: a refused address, an unknown
+  name, a timeout, a size cap, too many redirects, an HTTP error, a cached failure, or a coalesced
+  wait that ended without a result. Answers that come before any fetch say nothing about the
+  target and keep their own status:
+
+  | Status | When |
+  | --- | --- |
+  | `200` | The preview; `{}` for content that is not HTML |
+  | `400 M_MISSING_PARAM` | No `url` |
+  | `400 M_INVALID_PARAM` | `url` is not an absolute `http`/`https` URL of at most 2048 bytes, or `ts` is not an integer |
+  | `401` | No valid access token |
+  | `404 M_UNRECOGNIZED` | Previews are disabled (`security.media.url_preview_enabled`) |
+  | `429 M_LIMIT_EXCEEDED` | The per-user rate limit, the media fetch pool's admission caps, or, on a server with no media fetch pool, no ADR-0079 client-outbound slot |
+  | `503 M_UNKNOWN` | The server is shutting down and the handoff to the media fetch pool cannot run |
+
+  The deferral to the media fetch pool is internal: the transport replaces it with the pool's
+  answer, so a client never sees it.
+- The work runs on the media fetch pool, never on a main-pool thread, and DNS, every request
+  and the HTML parse release the runtime mutex. Results, failures included (for at most 5 minutes), are cached in
+  memory by URL (`url_preview_cache_ttl_seconds`, `url_preview_cache_max_entries`), and concurrent
+  previews of one URL share one fetch.
 
 ## Status Codes
 
@@ -358,10 +454,13 @@ The local HTTP router preserves the media repository status code instead of flat
 - `400` for malformed media IDs or malformed media route input.
 - `401` for unauthenticated upload or admin media requests.
 - `404` for missing or removed local media.
+- `409` (`M_CANNOT_OVERWRITE_MEDIA`) for an upload to a reserved media ID that already has content.
+- `504` (`M_NOT_YET_UPLOADED`) for a reserved media ID whose content has not been uploaded in time.
 - `404` for remote media when `security.media.remote_fetch_enabled` is off or the request sets `allow_remote=false`.
 - `429` when the client-outbound in-flight budget is exhausted (`M_LIMIT_EXCEEDED`, `retry_after_ms` 1000).
 - `413` for uploads that exceed the configured size limit.
-- `415` for disallowed MIME types when policy rejects instead of quarantines.
+- `415` for disallowed MIME types when policy rejects instead of quarantines (the client API answers
+  `403 M_FORBIDDEN`, as the spec's upload routes do; likewise `507` for an exhausted quota).
 - `451` for quarantined media download attempts.
 - `502` when the remote media fetch transport is not available (outbound client or
   discovery network not configured in the runtime).
@@ -394,7 +493,8 @@ See [ADR-0094](adr/0094-revive-removed-media-storage-identities.md).
 ## Persistence
 
 The collapsed initial schema includes `media` metadata, `remote_media`
-metadata, and `media_blobs` durable byte storage. New local uploads use
+metadata, and `media_blobs` durable byte storage. Migration 026 adds `media.upload_name` (the
+upload's filename) and the `media_pending_uploads` table of reserved media IDs. New local uploads use
 LibSodium `crypto_generichash` (`blake2b`) for deduplication digests, store the
 blob bytes through `media_blobs`, and hydrate the runtime repository from those
 rows after a SQLite/PostgreSQL restart.

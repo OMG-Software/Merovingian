@@ -37,6 +37,8 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
     auto const remote_cache_limit = config::parse_size_limit(config.security().media.remote_media_cache_max_size);
     auto const remote_timeout = config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
     auto const thumbnail_cache_limit = config::parse_size_limit(config.security().media.thumbnail_cache_size);
+    auto const preview_page_limit = config::parse_size_limit(config.security().media.url_preview_max_page_size);
+    auto const preview_image_limit = config::parse_size_limit(config.security().media.url_preview_max_image_size);
     auto const& configured_types = config.security().media.allowed_mime_types;
     auto allowed_types =
         configured_types.empty() ? default_allowed_mime_types() : std::vector<std::string>{configured_types};
@@ -71,6 +73,18 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         10U,
         thumbnail_cache_limit.valid ? thumbnail_cache_limit.bytes : 0U,
         config.security().media.thumbnail_max_concurrent_per_user,
+        static_cast<std::uint64_t>(config.security().media.pending_upload_ttl_seconds) * 1000U,
+        config.security().media.max_pending_uploads_per_user,
+        config.security().media.max_pending_uploads,
+        config.security().media.pending_upload_max_wait_ms,
+        config.security().media.url_preview_enabled,
+        // An unparseable size fails closed to the default rather than to "no limit".
+        preview_page_limit.valid && preview_page_limit.bytes > 0U ? preview_page_limit.bytes : 1024U * 1024U,
+        preview_image_limit.valid && preview_image_limit.bytes > 0U ? preview_image_limit.bytes : 5U * 1024U * 1024U,
+        config.security().media.url_preview_timeout_seconds,
+        config.security().media.url_preview_max_redirects,
+        config.security().media.url_preview_cache_ttl_seconds,
+        config.security().media.url_preview_cache_max_entries,
     };
 }
 
@@ -90,7 +104,9 @@ auto media_summary(RuntimeMediaConfig const& config) -> std::string
            " private_address_fetches_blocked=" +
            std::string{config.private_address_fetches_blocked ? "true" : "false"} +
            " decode_in_sandbox=" + std::string{config.decode_in_sandbox ? "true" : "false"} +
-           " thumbnailing_enabled=" + std::string{config.thumbnailing_enabled ? "true" : "false"};
+           " thumbnailing_enabled=" + std::string{config.thumbnailing_enabled ? "true" : "false"} +
+           " max_pending_uploads_per_user=" + std::to_string(config.max_pending_uploads_per_user) +
+           " url_preview_enabled=" + std::string{config.url_preview_enabled ? "true" : "false"};
 }
 
 } // namespace merovingian::media

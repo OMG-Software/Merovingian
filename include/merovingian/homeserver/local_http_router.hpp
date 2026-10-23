@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -55,6 +56,10 @@ struct LocalHttpResponse final
     // the client API can return it rather than one guessed from the status.
     // Internal only: never written to the wire by format_response.
     std::string errcode{};
+    // A media download's stored upload filename (ADR-0211), for the client API
+    // to put in Content-Disposition. Internal only, like errcode: a field, not a
+    // header, so no caller that writes `headers` to the wire can leak it.
+    std::string media_filename{};
 };
 
 // Resolves the client address to attribute a request to, honouring

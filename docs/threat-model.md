@@ -27,6 +27,7 @@
 - Media handling
 - Image decoding (thumbnail generation; isolated in a sandboxed worker)
 - Outbound requests (SSRF via federation discovery and remote media fetch)
+- URL previews (`preview_url`: the server fetches a URL any authenticated user names; off by default)
 - Application Service API (outbound transaction delivery, deliberately not
   SSRF-filtered; namespace matching; masquerading)
 - Identity Service client (outbound `store-invite`/`bind`/`unbind`/`requestToken`)
@@ -2445,3 +2446,34 @@ Security audit run-1 (2026-10-20) found six LOW issues, all fixed in 0.12.34.
   notifications, 32 per recipient) that drops rather than blocks, eight retries at most, one job
   thread that sends them one at a time, and no `runtime.mutex` across the network call
   (ADR-0206). Residual risk: a recipient's failing gateway can fill that recipient's share.
+
+### Media: header injection, asynchronous uploads and URL previews (0.12.41)
+
+- **Upload filename in `Content-Disposition` (R17).** A client-chosen `filename` is now served
+  back in a response header. **Mitigation:** a filename with control characters, path separators,
+  invalid UTF-8 or more than 255 bytes is refused at upload (`400 M_INVALID_PARAM`); a remote
+  server's filename or a `{fileName}` path segment that fails the same check is left out; the header is
+  written in RFC 6266 form (quoted ASCII or `filename*=utf-8''`) (ADR-0211).
+- **Asynchronous uploads.** `POST /_matrix/media/v1/create` lets a client create durable rows,
+  and a download of a reserved ID may wait. **Mitigation:** reservations are capped per user and
+  server-wide (`429 M_LIMIT_EXCEEDED`), expire, and are rate limited; waits are bounded by
+  `pending_upload_max_wait_ms`, run on the media fetch pool under its admission caps, and never
+  hold `runtime.mutex`; federation answers `504` at once (ADR-0212).
+- **URL previews (SSRF).** `preview_url` makes the server fetch an arbitrary URL, follow its
+  redirects and fetch the image it names: loopback services, cloud metadata (169.254.169.254),
+  RFC 1918, CGNAT, IPv6 ULA and link-local hosts are all targets, by literal address, by a name
+  that resolves to one, by redirect, or by DNS rebinding between check and connect.
+  **Mitigation:** off by default (`security.media.url_preview_enabled`); http/https only, strict
+  URL parsing; every hop resolved and refused if any address is private, loopback, link-local,
+  CGNAT, NAT64, multicast, reserved or in `security.federation.deny_ip_ranges` (IPv4 and IPv6),
+  then pinned to the checked addresses; redirects followed by our gate (at most 5), never by the
+  HTTP client; one deadline (at most 30 s) and byte caps on page and image; the same `502` for
+  every failure to fetch the target, so the endpoint is not an oracle (answers given before any
+  fetch, such as `404` while disabled or `429` from admission, say nothing about the target);
+  per-user rate limit and the media fetch pool's
+  admission caps; failures cached. Fetched HTML is only scanned by a bounded, non-recursive
+  `og:*`/`<title>` extractor that runs nothing; the image goes through the upload pipeline (MIME
+  policy, quarantine, size cap, the requester's quota) (ADR-0213, ADR-0214). **Residual risk:**
+  with previews enabled the server makes requests to public hosts on users' behalf, revealing its
+  address to them and letting a user point it at any public service within the caps; `http`
+  previews can be altered in transit (the content is treated as hostile either way).

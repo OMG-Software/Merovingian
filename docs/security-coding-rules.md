@@ -752,6 +752,27 @@ quickly finding everything a given `AGENTS.md` file contributed.
   and the condition under which this exemption must be revisited.
   Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.
 
+- **A URL a client names is fetched only through the URL preview gate
+  (`gated_fetch` in `src/homeserver/url_preview_service.cpp`).** It resolves and checks every
+  hop, redirects and images included, pins the connection to the checked addresses, and follows
+  redirects itself. Its use of `allow_cleartext_http` is the second, and last, sanctioned one: the
+  request carries no credential and the address pin applies to cleartext too. Every failure to
+  fetch the target (refused address, unknown name, timeout, size, redirects, HTTP error) answers
+  the same `502 M_UNKNOWN`. Answers given before any fetch keep their own status and say nothing
+  about the target: `400` for bad parameters, `404` while previews are disabled, `429` from the
+  rate limit or admission caps (the full list is in `docs/media-repository.md`).
+  Why: a client-named URL is the classic SSRF vector; checking only the first hop, letting the
+  HTTP client follow redirects, or resolving twice (DNS rebinding) each reopens it, and distinct
+  errors turn the endpoint into an internal-network oracle (ADR-0213).
+  Source: `src/homeserver/AGENTS.md`.
+
+- **An upload's `filename` is validated at upload (`400 M_INVALID_PARAM` when
+  `media::media_filename_is_valid` refuses it), so what is stored is what the client sent.**
+  Why: the spec requires the download to carry the same filename, and a stored name later lands in
+  a response header, where a CR or LF would split the response (CWE-113 Improper Neutralization
+  of CRLF Sequences in HTTP Headers) (ADR-0211).
+  Source: `src/media/AGENTS.md`.
+
 - **Accepted client sockets must be `SOCK_CLOEXEC`** (both the plain-HTTP and TLS accept
   loops use `accept4(..., SOCK_CLOEXEC)`).
   Why: see the general CLOEXEC rule under "Memory safety and resource ownership" above — this
@@ -1005,6 +1026,22 @@ media-fetch-pool task.
   Why: a local account with that name imitated the remote media owner and escaped local quotas
   (ADR-0178).
   Source: `src/media/AGENTS.md`.
+
+- **A file name reaches `Content-Disposition` only through `media::media_content_disposition`,
+  which leaves out a name `media::media_filename_is_valid` refuses and encodes the rest.**
+  Why: the name comes from a client (or a remote server) and is written into a response
+  header; a CR or LF in it would split the response (CWE-113 Improper Neutralization of CRLF
+  Sequences in HTTP Headers) (ADR-0211).
+  Source: `src/media/AGENTS.md`.
+
+- **A download that waits for a pending upload is admitted before it waits: at most
+  `media_fetch_threads - 1` waits at once (none with a single worker) (half for one requester),
+  and an ADR-0079 slot when it waits on a request thread; otherwise it answers
+  `504 M_NOT_YET_UPLOADED` at once.**
+  Why: a wait holds a worker for up to 20 s, and a client can create pending IDs freely; uncapped
+  waits fill the media fetch pool and starve remote fetches, or hold main-pool workers with no
+  admission (CWE-770 Allocation of Resources Without Limits or Throttling) (ADR-0212).
+  Source: `src/homeserver/AGENTS.md`.
 
 ## Platform hardening
 

@@ -244,7 +244,8 @@ namespace
             {
                 continue;
             }
-            if (find_record(repository, *encoded) != nullptr)
+            // ADR-0212: a reserved ID is taken even though no record holds it yet.
+            if (find_record(repository, *encoded) != nullptr || repository.pending_uploads.contains(*encoded))
             {
                 continue;
             }
@@ -418,7 +419,8 @@ namespace
         auto total = std::uint64_t{0U};
         for (auto const& record : repository.records)
         {
-            if (record.owner_user_id == owner_user_id && record.state != LocalMediaState::removed)
+            if (record.owner_user_id == owner_user_id && record.state != LocalMediaState::removed &&
+                !is_remote_cache_record(record))
             {
                 total += record.size_bytes;
             }
@@ -695,6 +697,15 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 decoder_decision.reason};
     }
 
+    // ADR-0212: content for a reserved ID may be stored only once.
+    if (!request.media_id.empty() &&
+        (!media_id_is_safe(request.media_id) || find_record(repository, request.media_id) != nullptr))
+    {
+        ++repository.metrics.uploads_rejected;
+        return {
+            false, 409U, {}, {}, content_type, size_bytes, "blake2b", digest, false, false, "media already uploaded"};
+    }
+
     // 0.12.5 audit, finding 19: refuse before storing anything. Refusing rather
     // than evicting is deliberate — a client already holds an mxc:// URI for
     // everything in here, so dropping the oldest blob would silently break
@@ -749,7 +760,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     }
 
     auto record = LocalMediaRecord{};
-    record.media_id = make_media_id(repository);
+    record.media_id = request.media_id.empty() ? make_media_id(repository) : request.media_id;
     if (record.media_id.empty())
     {
         // This is only reachable if the CSPRNG or base64 encoder failed
@@ -788,6 +799,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     record.quarantine_reason = decision.reason;
     // New uploads are invisible to the legacy unauthenticated endpoints.
     record.legacy_endpoint_visible = false;
+    record.upload_name = media_filename_is_valid(request.upload_name) ? request.upload_name : std::string{};
     auto const media_id = record.media_id;
     auto const record_index = repository.records.size();
     repository.records.push_back(std::move(record));
@@ -847,6 +859,119 @@ auto rollback_local_media_upload(LocalMediaRepository& repository, std::string_v
     }
     ++repository.metrics.uploads_rejected;
     return true;
+}
+
+auto plan_pending_media_upload(LocalMediaRepository& repository, std::string_view owner_user_id, std::uint64_t now_ms)
+    -> PendingMediaUploadPlan
+{
+    auto plan = PendingMediaUploadPlan{};
+    auto live_total = std::uint64_t{0U};
+    auto live_for_owner = std::uint64_t{0U};
+    // Linear in the reservations held, which max_pending_uploads bounds.
+    for (auto const& [media_id, reservation] : repository.pending_uploads)
+    {
+        if (reservation.expires_at_ms <= now_ms)
+        {
+            plan.expired_media_ids.push_back(media_id);
+            continue;
+        }
+        ++live_total;
+        if (reservation.owner_user_id == owner_user_id)
+        {
+            ++live_for_owner;
+        }
+    }
+    auto const& config = repository.config;
+    if (live_for_owner >= std::max<std::uint64_t>(config.max_pending_uploads_per_user, 1U))
+    {
+        plan.status = 429U;
+        plan.reason = "too many pending media uploads";
+        return plan;
+    }
+    if (live_total >= std::max<std::uint64_t>(config.max_pending_uploads, 1U))
+    {
+        plan.status = 429U;
+        plan.reason = "too many pending media uploads on this server";
+        return plan;
+    }
+    auto media_id = make_media_id(repository);
+    if (media_id.empty())
+    {
+        plan.status = 500U;
+        plan.reason = "media id generation failed";
+        return plan;
+    }
+    auto const ttl_ms = std::max<std::uint64_t>(config.pending_upload_ttl_ms, 1U);
+    plan.ok = true;
+    plan.status = 200U;
+    plan.reservation = {std::move(media_id), std::string{owner_user_id}, now_ms, now_ms + ttl_ms};
+    return plan;
+}
+
+auto apply_pending_media_upload(LocalMediaRepository& repository, PendingMediaUploadPlan const& plan) -> void
+{
+    for (auto const& expired : plan.expired_media_ids)
+    {
+        repository.pending_uploads.erase(expired);
+    }
+    if (plan.ok)
+    {
+        repository.pending_uploads.insert_or_assign(plan.reservation.media_id, plan.reservation);
+    }
+}
+
+auto restore_pending_media_uploads(LocalMediaRepository& repository, std::vector<PendingMediaUpload> reservations)
+    -> void
+{
+    repository.pending_uploads.clear();
+    for (auto& reservation : reservations)
+    {
+        // A reservation whose content is already stored was completed; the
+        // record wins.
+        if (find_record(repository, reservation.media_id) == nullptr && media_id_is_safe(reservation.media_id))
+        {
+            auto key = reservation.media_id;
+            repository.pending_uploads.insert_or_assign(std::move(key), std::move(reservation));
+        }
+    }
+}
+
+auto find_pending_media_upload(LocalMediaRepository const& repository, std::string_view media_id,
+                               std::uint64_t now_ms) noexcept -> PendingMediaUpload const*
+{
+    auto const found = repository.pending_uploads.find(std::string{media_id});
+    if (found == repository.pending_uploads.end() || found->second.expires_at_ms <= now_ms)
+    {
+        return nullptr;
+    }
+    return &found->second;
+}
+
+auto admit_pending_media_upload(LocalMediaRepository& repository, std::string_view media_id, std::string_view user_id,
+                                std::uint64_t now_ms) -> PendingUploadAdmission
+{
+    if (!media_id_is_safe(media_id))
+    {
+        return PendingUploadAdmission::not_found;
+    }
+    if (auto const* record = find_record(repository, media_id); record != nullptr)
+    {
+        // Content is already there. Only its uploader learns that; to anyone
+        // else this is someone else's media ID.
+        return record->owner_user_id == user_id && !record->from_remote_fetch ? PendingUploadAdmission::already_uploaded
+                                                                              : PendingUploadAdmission::forbidden;
+    }
+    auto const* reservation = find_pending_media_upload(repository, media_id, now_ms);
+    if (reservation == nullptr)
+    {
+        return PendingUploadAdmission::not_found;
+    }
+    return reservation->owner_user_id == user_id ? PendingUploadAdmission::accepted : PendingUploadAdmission::forbidden;
+}
+
+auto complete_pending_media_upload(LocalMediaRepository& repository, std::string_view media_id) -> void
+{
+    repository.pending_uploads.erase(std::string{media_id});
 }
 
 auto resolve_local_media_download(LocalMediaRepository& repository, std::string_view media_id, bool legacy_endpoint)
@@ -1295,6 +1420,7 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
     upload.animation_frame_count = request.animation_frame_count;
     upload.decoder_marked_safe = request.decoder_marked_safe;
     upload.from_remote_fetch = true;
+    upload.upload_name = request.upload_name;
     auto const result = upload_local_media(repository, request.origin_server, upload);
     if (!result.ok)
     {

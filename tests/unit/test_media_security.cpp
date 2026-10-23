@@ -959,3 +959,108 @@ SCENARIO("evaluate_media_upload quarantines content whose sniffed type does not 
         }
     }
 }
+
+// R17 (conformance audit 2026-10-17). Spec: Client-Server API v1.19, GET
+// /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}: the
+// Content-Disposition "MUST be one of inline or attachment, and MUST contain the
+// file name requested in the path". The name reaches a response header, so it is
+// encoded (RFC 6266) and a name no header could carry safely is left out.
+SCENARIO("media_content_disposition names a file without letting the name break the header", "[media][security][r17]")
+{
+    GIVEN("an inline-safe and an unsafe content type")
+    {
+        WHEN("no file name is given")
+        {
+            THEN("the disposition carries no filename parameter")
+            {
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition("text/html", "") == "attachment");
+            }
+        }
+
+        WHEN("a printable ASCII file name is given")
+        {
+            THEN("it is a quoted string, with quote and backslash escaped")
+            {
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "holiday.png") ==
+                        R"(inline; filename="holiday.png")");
+                REQUIRE(merovingian::media::media_content_disposition("text/html", R"(a"b.html)") ==
+                        R"(attachment; filename="a\"b.html")");
+            }
+        }
+
+        WHEN("a non-ASCII UTF-8 file name is given")
+        {
+            THEN("it is given in the RFC 5987 extended form, percent-encoded")
+            {
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "caf\xC3\xA9 1.png") ==
+                        "inline; filename*=utf-8''caf%C3%A9%201.png");
+            }
+        }
+
+        WHEN("the file name contains a control character, a path separator or invalid UTF-8, or is too long")
+        {
+            THEN("the name is left out rather than written into the header")
+            {
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "a\r\nSet-Cookie: x") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "dir/a.png") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition("image/png", R"(dir\a.png)") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "bell\a.png") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition("image/png", "bad\xC3.png") == "inline");
+                REQUIRE(merovingian::media::media_content_disposition(
+                            "image/png", std::string(merovingian::media::max_media_filename_bytes + 1U, 'a')) ==
+                        "inline");
+            }
+        }
+    }
+}
+
+SCENARIO("media_filename_is_valid accepts only names a Content-Disposition header can carry", "[media][security][r17]")
+{
+    GIVEN("candidate file names")
+    {
+        WHEN("each is checked")
+        {
+            THEN("ordinary names, including UTF-8, are valid and unsafe or empty ones are not")
+            {
+                REQUIRE(merovingian::media::media_filename_is_valid("report.pdf"));
+                REQUIRE(merovingian::media::media_filename_is_valid("caf\xC3\xA9.png"));
+                REQUIRE(merovingian::media::media_filename_is_valid(
+                    std::string(merovingian::media::max_media_filename_bytes, 'a')));
+                REQUIRE_FALSE(merovingian::media::media_filename_is_valid(""));
+                REQUIRE_FALSE(merovingian::media::media_filename_is_valid("a\x7F"));
+                REQUIRE_FALSE(merovingian::media::media_filename_is_valid(std::string{"a\0b", 3U}));
+                REQUIRE_FALSE(merovingian::media::media_filename_is_valid("\xC0\xAF"));
+            }
+        }
+    }
+}
+
+// Spec: a remote media download's Content-Disposition "filename" is used as the
+// filename instead (Client-Server API v1.19, GET .../download/{serverName}/{mediaId}).
+// The remote server is untrusted, so its header is read strictly (ADR-0211).
+SCENARIO("A remote Content-Disposition filename is read strictly", "[media][security][r17]")
+{
+    GIVEN("Content-Disposition values a remote server might send")
+    {
+        WHEN("the file name is read from each")
+        {
+            THEN("quoted, token and RFC 5987 forms are read, the extended form wins, and unsafe names are dropped")
+            {
+                REQUIRE(merovingian::media::content_disposition_filename(R"(inline; filename="photo.jpg")") ==
+                        "photo.jpg");
+                REQUIRE(merovingian::media::content_disposition_filename("attachment; filename=report.pdf") ==
+                        "report.pdf");
+                REQUIRE(merovingian::media::content_disposition_filename(
+                            R"(inline; filename="fallback.txt"; filename*=UTF-8''caf%C3%A9.txt)") == "caf\xC3\xA9.txt");
+                REQUIRE(merovingian::media::content_disposition_filename(R"(inline; filename="semi;colon.txt")") ==
+                        "semi;colon.txt");
+                REQUIRE(merovingian::media::content_disposition_filename("inline").empty());
+                REQUIRE(merovingian::media::content_disposition_filename("inline; filename*=utf-8''a%0D%0Ab").empty());
+                REQUIRE(
+                    merovingian::media::content_disposition_filename("inline; filename*=iso-8859-1''a.txt").empty());
+                REQUIRE(merovingian::media::content_disposition_filename(R"(inline; filename="../../x")").empty());
+            }
+        }
+    }
+}

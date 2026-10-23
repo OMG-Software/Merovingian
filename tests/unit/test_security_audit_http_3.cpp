@@ -391,6 +391,13 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
          "/_matrix/client/v1/appservice/two/ping"                                                                                                                                                                                              },
         {"/_matrix/client/v3/directory/list/appservice/{networkId}/{roomId}",
          "/_matrix/client/v3/directory/list/appservice/irc/%21a%3Aexample.org",                                                              "/_matrix/client/v3/directory/list/appservice/gitter/%21b%3Aexample.org"                          },
+        {"/_matrix/client/v1/media/download/{server}/{mediaId}/{fileName}",
+         "/_matrix/client/v1/media/download/example.org/one/a.png",                                                                          "/_matrix/client/v1/media/download/example.org/two/b.png"                                         },
+        {"/_matrix/media/v3/download/{server}/{mediaId}/{fileName}",                "/_matrix/media/v3/download/example.org/one/a.png",
+         "/_matrix/media/v3/download/example.org/two/b.png"                                                                                                                                                                                    },
+        // ADR-0212: the reserved-ID upload.
+        {"/_matrix/media/v3/upload/{server}/{mediaId}",                             "/_matrix/media/v3/upload/example.org/one",
+         "/_matrix/media/v3/upload/example.org/two"                                                                                                                                                                                            },
     };
 
     GIVEN("a one-request operator cap keyed on each route template")
@@ -410,6 +417,40 @@ SCENARIO("HTTP-3 gives every implemented dynamic client route its own coalesced 
                  "nor mints a bucket per identifier")
             {
                 for (auto const& route : cases)
+                {
+                    INFO(route.route_template);
+                    CHECK(request(runtime, route.first_path) != 429U);
+                    CHECK(request(runtime, route.second_path) == 429U);
+                }
+            }
+        }
+    }
+
+    // The table's named-download rows vary mediaId and fileName; these vary only the server, so a
+    // normalizer that stopped coalescing {server} would mint a bucket per remote server. A template
+    // can appear once in the table (its bucket is shared across rows), hence a fresh runtime here.
+    GIVEN("a one-request cap on each named download template, and paths that differ only in the server")
+    {
+        auto const server_cases = std::vector<RouteCase>{
+            {"/_matrix/client/v1/media/download/{server}/{mediaId}/{fileName}",
+             "/_matrix/client/v1/media/download/example.org/one/a.png", "/_matrix/client/v1/media/download/other.example/one/a.png"},
+            {"/_matrix/media/v3/download/{server}/{mediaId}/{fileName}",
+             "/_matrix/media/v3/download/example.org/one/a.png",        "/_matrix/media/v3/download/other.example/one/a.png"       },
+        };
+        auto policies = RatePolicies{};
+        for (auto const& route : server_cases)
+        {
+            policies.emplace(route.route_template, merovingian::http::RateLimitPolicy{1U, 60U});
+        }
+        auto started = start_with_limits(std::move(policies));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("each named download route is called once per server")
+        {
+            THEN("both servers share the template's bucket: the first call is admitted and the second refused")
+            {
+                for (auto const& route : server_cases)
                 {
                     INFO(route.route_template);
                     CHECK(request(runtime, route.first_path) != 429U);

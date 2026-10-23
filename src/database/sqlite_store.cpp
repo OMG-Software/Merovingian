@@ -869,14 +869,22 @@ namespace
                load_rows(
                    connection,
                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, quarantined, "
-                   "removed, legacy_endpoint_visible FROM media",
+                   "removed, legacy_endpoint_visible, upload_name FROM media",
                    [&store](sqlite3_stmt& row) {
                        store.local_media.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                                     parse_u64(column_text(row, 3)), column_text(row, 4),
                                                     column_text(row, 5), text_is_true(column_text(row, 6)),
                                                     text_is_true(column_text(row, 7)),
-                                                    text_is_true(column_text(row, 8))});
+                                                    text_is_true(column_text(row, 8)), column_text(row, 9)});
                    }) &&
+               // Migration 026 (ADR-0212): reserved mxc:// URIs awaiting content.
+               load_rows(connection,
+                         "SELECT media_id, owner_user_id, created_at_ms, expires_at_ms FROM media_pending_uploads",
+                         [&store](sqlite3_stmt& row) {
+                             store.pending_media_uploads.push_back({column_text(row, 0), column_text(row, 1),
+                                                                    parse_u64(column_text(row, 2)),
+                                                                    parse_u64(column_text(row, 3))});
+                         }) &&
                // ADR-0119: metadata only. The bytes are read per request
                // (read_media_blob), so memory does not grow with stored media.
                load_rows(connection,

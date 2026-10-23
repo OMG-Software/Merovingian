@@ -74,6 +74,23 @@ struct RuntimeMediaConfig final
     // per-requester cap on concurrent decodes.
     std::uint64_t thumbnail_cache_max_bytes{64U * 1024U * 1024U};
     std::uint32_t thumbnail_max_concurrent_per_user{2U};
+    // ADR-0212: asynchronous uploads (POST /_matrix/media/v1/create). How long
+    // a reserved media ID lives unused, how many live reservations one user
+    // and the whole server may hold, and the longest a download of a reserved
+    // ID waits for its content.
+    std::uint64_t pending_upload_ttl_ms{86400000U};
+    std::uint32_t max_pending_uploads_per_user{10U};
+    std::uint64_t max_pending_uploads{10000U};
+    std::uint32_t pending_upload_max_wait_ms{20000U};
+    // ADR-0213: URL previews (GET /_matrix/client/v1/media/preview_url). Off
+    // unless the operator enables them.
+    bool url_preview_enabled{false};
+    std::uint64_t url_preview_max_page_bytes{1024U * 1024U};
+    std::uint64_t url_preview_max_image_bytes{5U * 1024U * 1024U};
+    std::uint32_t url_preview_timeout_seconds{10U};
+    std::uint32_t url_preview_max_redirects{3U};
+    std::uint32_t url_preview_cache_ttl_seconds{3600U};
+    std::uint32_t url_preview_cache_max_entries{1000U};
 };
 
 [[nodiscard]] auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConfig;

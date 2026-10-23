@@ -1377,6 +1377,54 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"security.media.thumbnail_max_concurrent_per_user", "must be between 1 and 64"});
     }
+    // ADR-0212: asynchronous uploads are bounded per user and server-wide; a
+    // zero cap would refuse every create, and an unbounded one is the defect
+    // the caps exist to prevent.
+    auto const& media = config.security().media;
+    if (media.pending_upload_ttl_seconds < 60U || media.pending_upload_ttl_seconds > 604800U)
+    {
+        findings.push_back({"security.media.pending_upload_ttl_seconds", "must be between 60 and 604800"});
+    }
+    if (media.max_pending_uploads_per_user == 0U || media.max_pending_uploads_per_user > 1000U)
+    {
+        findings.push_back({"security.media.max_pending_uploads_per_user", "must be between 1 and 1000"});
+    }
+    if (media.max_pending_uploads == 0U || media.max_pending_uploads > 1000000U)
+    {
+        findings.push_back({"security.media.max_pending_uploads", "must be between 1 and 1000000"});
+    }
+    if (media.pending_upload_max_wait_ms > 60000U)
+    {
+        findings.push_back({"security.media.pending_upload_max_wait_ms", "must be between 0 and 60000"});
+    }
+    // ADR-0213: URL preview fetches are bounded in bytes, time and hops.
+    for (auto const& [field, value] : {
+             std::pair{"security.media.url_preview_max_page_size",  &media.url_preview_max_page_size },
+             std::pair{"security.media.url_preview_max_image_size", &media.url_preview_max_image_size},
+    })
+    {
+        auto const parsed = parse_size_limit(*value);
+        if (!parsed.valid || parsed.bytes == 0U || parsed.bytes > 64U * 1024U * 1024U)
+        {
+            findings.push_back({field, "must be a positive size no larger than 64MiB, such as 1MiB"});
+        }
+    }
+    if (media.url_preview_timeout_seconds == 0U || media.url_preview_timeout_seconds > 30U)
+    {
+        findings.push_back({"security.media.url_preview_timeout_seconds", "must be between 1 and 30"});
+    }
+    if (media.url_preview_max_redirects > 5U)
+    {
+        findings.push_back({"security.media.url_preview_max_redirects", "must be between 0 and 5"});
+    }
+    if (media.url_preview_cache_ttl_seconds > 86400U)
+    {
+        findings.push_back({"security.media.url_preview_cache_ttl_seconds", "must be between 0 and 86400"});
+    }
+    if (media.url_preview_cache_max_entries > 100000U)
+    {
+        findings.push_back({"security.media.url_preview_cache_max_entries", "must be between 0 and 100000"});
+    }
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)
     {

@@ -1848,6 +1848,12 @@ namespace
             {
                 return {451U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
             }
+            // ADR-0212: a reserved media ID whose content has not been
+            // uploaded. Spec: 504 with errcode M_NOT_YET_UPLOADED.
+            if (result.status == 504U)
+            {
+                return {504U, homeserver::matrix_error("M_NOT_YET_UPLOADED", result.reason)};
+            }
             return {result.status, homeserver::matrix_error("M_UNKNOWN", result.reason)};
         }
         auto envelope = media::build_federation_media_download_body(result.content_type, result.bytes);

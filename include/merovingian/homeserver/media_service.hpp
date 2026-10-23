@@ -13,9 +13,26 @@
 namespace merovingian::homeserver
 {
 
+// `upload_name` is the upload's `filename` query parameter (R17); one that
+// fails media::media_filename_is_valid is refused with 400 M_INVALID_PARAM.
 [[nodiscard]] auto upload_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                       std::string_view declared_mime_type, std::string_view sniffed_mime_type,
-                                      bool scanner_clean, std::string_view bytes) -> OperationResult;
+                                      bool scanner_clean, std::string_view bytes, std::string_view upload_name = {})
+    -> OperationResult;
+// ADR-0212: POST /_matrix/media/v1/create. On success `value` is
+// "<content_uri>|<unused_expires_at>"; 429 (errcode M_LIMIT_EXCEEDED) when the
+// user or the server holds too many pending uploads.
+[[nodiscard]] auto create_pending_media_upload(HomeserverRuntime& runtime, std::string_view access_token)
+    -> OperationResult;
+// ADR-0212: PUT /_matrix/media/v3/upload/{serverName}/{mediaId} for a local
+// `media_id`. Same MIME policy, quarantine, size limits and quotas as
+// upload_local_media. Refusals carry the spec's errcode: 404 M_NOT_FOUND (not
+// reserved, or expired), 403 M_FORBIDDEN (reserved by someone else), 409
+// M_CANNOT_OVERWRITE_MEDIA (content already uploaded).
+[[nodiscard]] auto upload_pending_media(HomeserverRuntime& runtime, std::string_view access_token,
+                                        std::string_view media_id, std::string_view declared_mime_type,
+                                        std::string_view sniffed_mime_type, bool scanner_clean, std::string_view bytes,
+                                        std::string_view upload_name = {}) -> OperationResult;
 // What a remote-media request carries beyond the media it names. Ignored for
 // media hosted on this server.
 struct RemoteMediaRequestContext final
@@ -31,6 +48,10 @@ struct RemoteMediaRequestContext final
     // The `allow_remote` query parameter (default true). False means the caller
     // does not want this server to go and fetch remote media (OUT-7).
     bool allow_remote{true};
+    // ADR-0212: the `timeout_ms` query parameter (spec default 20000): how long
+    // a download of a reserved but not yet uploaded local media ID may wait.
+    // Capped by security.media.pending_upload_max_wait_ms.
+    std::uint32_t timeout_ms{20000U};
 };
 
 // Download / thumbnail of `server_name`/`media_id`. For a remote `server_name`:
@@ -58,6 +79,14 @@ struct RemoteMediaRequestContext final
                                             std::string_view media_id, std::string_view reason) -> OperationResult;
 [[nodiscard]] auto remote_media_fetch_disabled(HomeserverRuntime& runtime, std::string_view origin_server,
                                                std::string_view media_id) -> OperationResult;
+// ADR-0213: stores bytes this server fetched on `owner_user_id`'s behalf (a
+// URL preview's og:image) through the same pipeline as an upload: MIME
+// sniffing, the scanner check, MIME policy, quarantine, the size limit and the
+// owner's quotas. On success `value` is "<content_uri>|<size_bytes>|<content_type>";
+// quarantined media is stored but refused (451) so it is never advertised.
+[[nodiscard]] auto store_fetched_media_for_user(HomeserverRuntime& runtime, std::string_view owner_user_id,
+                                                std::string_view declared_mime_type, std::string_view bytes)
+    -> OperationResult;
 // Builds the deprecated, unauthenticated federation media download URL:
 // /_matrix/media/v3/download/{serverName}/{mediaId}
 // (server-server-api.md#get_matrixmediav3downloadservernamemediaid). origin_server
@@ -93,6 +122,8 @@ struct FederationMediaPart final
     std::string content_type{};
     std::string bytes{};
     std::string location{};
+    // R17: the filename in the media part's Content-Disposition, if any.
+    std::string filename{};
 };
 
 // Parses the multipart/mixed body of a /_matrix/federation/v1/media/download/{mediaId}

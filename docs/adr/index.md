@@ -195,6 +195,10 @@
 * [0205 - Count unread notifications by the user's push rules at read time, from the start of their join](0205-count-unread-notifications-by-push-rules-at-read-time.md)
 * [0206 - Retry failed push notifications from a bounded in-memory queue on one job thread](0206-retry-failed-push-notifications-from-a-bounded-in-memory-queue.md)
 * [0207 - Count the push badge in one bounded walk of the store, and saturate it](0207-saturate-the-push-badge-unread-count.md)
+* [0211 - Media file names are validated and encoded before they reach a header](0211-media-file-names-are-validated-and-encoded-before-they-reach-a-header.md)
+* [0212 - Asynchronous uploads reserve media IDs durably and wait for content on the media fetch pool](0212-asynchronous-uploads-reserve-durably-and-wait-on-the-media-fetch-pool.md)
+* [0213 - URL previews are off by default and fetch only through one SSRF gate](0213-url-previews-fetch-through-one-ssrf-gate.md)
+* [0214 - The URL preview cache is keyed by URL alone and caches failures](0214-url-preview-cache-is-keyed-by-url-and-caches-failures.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
 
 ## Proposed Records

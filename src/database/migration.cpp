@@ -731,6 +731,32 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {24U, "drop_appservice_directory", std::move(statements), MigrationDirection::downgrade};
 }
 
+// Migration 026 (025 on its own branch; renumbered after 025_appservice_directory).
+// ADR-0211: the filename an upload was made with, served back in
+// Content-Disposition. ADR-0212: the mxc:// URIs POST /_matrix/media/v1/create
+// reserves.
+[[nodiscard]] auto upgrade_media_upload_names_and_pending_uploads_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "add_media_upload_name_column", "ALTER TABLE media ADD COLUMN upload_name TEXT NOT NULL DEFAULT ''", {}});
+    statements.push_back(make_create_table_statement(schema_table_definition("media_pending_uploads").value()).value());
+    statements.push_back(
+        PreparedStatement{"create_media_pending_uploads_owner_index",
+                          "CREATE INDEX idx_media_pending_uploads_owner ON media_pending_uploads (owner_user_id)",
+                          {}});
+    return {26U, "media_upload_names_and_pending_uploads", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v26 -> v25: drop the pending uploads table and the upload_name column.
+[[nodiscard]] auto downgrade_media_upload_names_and_pending_uploads_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("media_pending_uploads").value());
+    statements.push_back(
+        PreparedStatement{"drop_media_upload_name_column", "ALTER TABLE media DROP COLUMN upload_name", {}});
+    return {25U, "drop_media_upload_names_and_pending_uploads", std::move(statements), MigrationDirection::downgrade};
+}
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -757,7 +783,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_appservice_outbox_migration(),
             upgrade_deferred_pdus_migration(),
             upgrade_receipts_migration(),
-            upgrade_appservice_directory_migration()};
+            upgrade_appservice_directory_migration(),
+            upgrade_media_upload_names_and_pending_uploads_migration()};
 }
 
 // v17 -> v16: drop the token-rotation lineage columns added by v17.
@@ -908,7 +935,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_appservice_directory_migration(),
+    return {downgrade_media_upload_names_and_pending_uploads_migration(),
+            downgrade_appservice_directory_migration(),
             downgrade_receipts_migration(),
             downgrade_deferred_pdus_migration(),
             downgrade_appservice_outbox_migration(),

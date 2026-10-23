@@ -3,6 +3,7 @@
 
 #include "merovingian/media/security.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -27,22 +28,93 @@ auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool
     }
 
     static constexpr auto inline_safe = std::array{
-        std::string_view{"text/css"},        std::string_view{"text/plain"},
-        std::string_view{"text/csv"},        std::string_view{"application/json"},
+        std::string_view{"text/css"},
+        std::string_view{"text/plain"},
+        std::string_view{"text/csv"},
+        std::string_view{"application/json"},
         std::string_view{"application/ld+json"},
-        std::string_view{"image/jpeg"},      std::string_view{"image/gif"},
-        std::string_view{"image/png"},       std::string_view{"image/apng"},
-        std::string_view{"image/webp"},      std::string_view{"image/avif"},
-        std::string_view{"video/mp4"},       std::string_view{"video/webm"},
-        std::string_view{"video/ogg"},       std::string_view{"video/quicktime"},
-        std::string_view{"audio/mp4"},       std::string_view{"audio/webm"},
-        std::string_view{"audio/aac"},       std::string_view{"audio/mpeg"},
-        std::string_view{"audio/ogg"},       std::string_view{"audio/wave"},
-        std::string_view{"audio/wav"},       std::string_view{"audio/x-wav"},
-        std::string_view{"audio/x-pn-wav"},  std::string_view{"audio/flac"},
+        std::string_view{"image/jpeg"},
+        std::string_view{"image/gif"},
+        std::string_view{"image/png"},
+        std::string_view{"image/apng"},
+        std::string_view{"image/webp"},
+        std::string_view{"image/avif"},
+        std::string_view{"video/mp4"},
+        std::string_view{"video/webm"},
+        std::string_view{"video/ogg"},
+        std::string_view{"video/quicktime"},
+        std::string_view{"audio/mp4"},
+        std::string_view{"audio/webm"},
+        std::string_view{"audio/aac"},
+        std::string_view{"audio/mpeg"},
+        std::string_view{"audio/ogg"},
+        std::string_view{"audio/wave"},
+        std::string_view{"audio/wav"},
+        std::string_view{"audio/x-wav"},
+        std::string_view{"audio/x-pn-wav"},
+        std::string_view{"audio/flac"},
         std::string_view{"audio/x-flac"},
     };
     return std::ranges::find(inline_safe, media_type) != inline_safe.end();
+}
+
+auto media_filename_is_valid(std::string_view filename) noexcept -> bool
+{
+    if (filename.empty() || filename.size() > max_media_filename_bytes || !canonicaljson::utf8_is_valid(filename))
+    {
+        return false;
+    }
+    return std::ranges::none_of(filename, [](char c) {
+        auto const byte = static_cast<unsigned char>(c);
+        return byte < 0x20U || byte == 0x7FU || c == '/' || c == '\\';
+    });
+}
+
+auto media_content_disposition(std::string_view content_type, std::string_view filename) -> std::string
+{
+    auto disposition = std::string{content_type_is_inline_safe(content_type) ? "inline" : "attachment"};
+    if (!media_filename_is_valid(filename))
+    {
+        return disposition;
+    }
+    auto const printable_ascii = std::ranges::all_of(filename, [](char c) {
+        return static_cast<unsigned char>(c) >= 0x20U && static_cast<unsigned char>(c) < 0x7FU;
+    });
+    if (printable_ascii)
+    {
+        // RFC 6266 quoted-string: only `"` and `\` need escaping.
+        disposition += "; filename=\"";
+        for (auto const c : filename)
+        {
+            if (c == '"' || c == '\\')
+            {
+                disposition += '\\';
+            }
+            disposition += c;
+        }
+        disposition += '"';
+        return disposition;
+    }
+    // RFC 5987 ext-value. attr-char is ALPHA / DIGIT / "!" / "#" / "$" / "&" /
+    // "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"; every other byte is
+    // percent-encoded, so the value is printable ASCII whatever the name holds.
+    constexpr auto hex = std::string_view{"0123456789ABCDEF"};
+    constexpr auto attr_punctuation = std::string_view{"!#$&+-.^_`|~"};
+    disposition += "; filename*=utf-8''";
+    for (auto const c : filename)
+    {
+        auto const byte = static_cast<unsigned char>(c);
+        auto const alnum = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (alnum || (byte < 0x80U && attr_punctuation.find(c) != std::string_view::npos))
+        {
+            disposition += c;
+            continue;
+        }
+        disposition += '%';
+        disposition += hex[byte >> 4U];
+        disposition += hex[byte & 0x0FU];
+    }
+    return disposition;
 }
 
 namespace
@@ -458,6 +530,157 @@ auto admin_quarantine_policy(AdminQuarantineRequest const& request) -> MediaPoli
     }
 
     return {MediaDisposition::accept, {}};
+}
+
+namespace
+{
+
+    [[nodiscard]] auto ascii_lower(std::string_view text) -> std::string
+    {
+        auto lowered = std::string{text};
+        std::ranges::transform(lowered, lowered.begin(), [](char c) {
+            return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+        });
+        return lowered;
+    }
+
+    [[nodiscard]] auto trim_spaces(std::string_view text) noexcept -> std::string_view
+    {
+        while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
+        {
+            text.remove_prefix(1U);
+        }
+        while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+        {
+            text.remove_suffix(1U);
+        }
+        return text;
+    }
+
+    [[nodiscard]] auto hex_value(char c) noexcept -> int
+    {
+        if (c >= '0' && c <= '9')
+        {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f')
+        {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F')
+        {
+            return c - 'A' + 10;
+        }
+        return -1;
+    }
+
+    // RFC 5987 ext-value: charset'language'percent-encoded. Only UTF-8 (and its
+    // ASCII subset) is accepted; anything malformed yields empty.
+    [[nodiscard]] auto decode_ext_value(std::string_view value) -> std::string
+    {
+        auto const first = value.find('\'');
+        auto const second = first == std::string_view::npos ? first : value.find('\'', first + 1U);
+        if (second == std::string_view::npos)
+        {
+            return {};
+        }
+        auto const charset = ascii_lower(value.substr(0U, first));
+        if (charset != "utf-8" && charset != "us-ascii")
+        {
+            return {};
+        }
+        auto const encoded = value.substr(second + 1U);
+        auto decoded = std::string{};
+        for (auto index = std::size_t{0U}; index < encoded.size(); ++index)
+        {
+            if (encoded[index] != '%')
+            {
+                decoded += encoded[index];
+                continue;
+            }
+            if (index + 2U >= encoded.size())
+            {
+                return {};
+            }
+            auto const high = hex_value(encoded[index + 1U]);
+            auto const low = hex_value(encoded[index + 2U]);
+            if (high < 0 || low < 0)
+            {
+                return {};
+            }
+            decoded += static_cast<char>((high << 4) | low);
+            index += 2U;
+        }
+        return decoded;
+    }
+
+} // namespace
+
+auto content_disposition_filename(std::string_view header_value) -> std::string
+{
+    constexpr auto max_scanned = std::size_t{1024U};
+    auto remaining = header_value.substr(0U, std::min(header_value.size(), max_scanned));
+    auto plain = std::string{};
+    auto extended = std::string{};
+    // One linear pass over at most max_scanned bytes: split on ';' outside
+    // quoted strings.
+    while (!remaining.empty())
+    {
+        auto in_quotes = false;
+        auto end = std::size_t{0U};
+        for (; end < remaining.size(); ++end)
+        {
+            auto const c = remaining[end];
+            if (c == '\\' && in_quotes && end + 1U < remaining.size())
+            {
+                ++end;
+                continue;
+            }
+            if (c == '"')
+            {
+                in_quotes = !in_quotes;
+            }
+            else if (c == ';' && !in_quotes)
+            {
+                break;
+            }
+        }
+        auto const parameter = trim_spaces(remaining.substr(0U, end));
+        remaining = end < remaining.size() ? remaining.substr(end + 1U) : std::string_view{};
+        auto const equals = parameter.find('=');
+        if (equals == std::string_view::npos)
+        {
+            continue;
+        }
+        auto const name = ascii_lower(trim_spaces(parameter.substr(0U, equals)));
+        auto value = trim_spaces(parameter.substr(equals + 1U));
+        if (name == "filename*")
+        {
+            extended = decode_ext_value(value);
+        }
+        else if (name == "filename")
+        {
+            if (value.size() >= 2U && value.front() == '"' && value.back() == '"')
+            {
+                value = value.substr(1U, value.size() - 2U);
+                plain.clear();
+                for (auto index = std::size_t{0U}; index < value.size(); ++index)
+                {
+                    if (value[index] == '\\' && index + 1U < value.size())
+                    {
+                        ++index;
+                    }
+                    plain += value[index];
+                }
+            }
+            else
+            {
+                plain = std::string{value};
+            }
+        }
+    }
+    auto const& chosen = extended.empty() ? plain : extended;
+    return media_filename_is_valid(chosen) ? chosen : std::string{};
 }
 
 auto media_security_boundary_notes() -> std::vector<std::string>

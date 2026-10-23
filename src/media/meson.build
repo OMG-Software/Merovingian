@@ -5,6 +5,7 @@ media_sources = files(
   'security.cpp',
   'thumbnail_cache.cpp',
   'thumbnailer.cpp',
+  'url_preview.cpp',
 )
 
 # Default install location of the out-of-process thumbnail worker. The runtime

@@ -264,6 +264,9 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
         // ADR-0192: rooms an appservice published to one of its networks. Main only; the worker serves no
         // client directory.
         "appservice_directory",
+        // ADR-0212: mxc:// URIs reserved by POST /_matrix/media/v1/create.
+        // The client API and the federation media download run in main.
+        "media_pending_uploads",
         // Vestigial: declared in src/database/schema.cpp's DDL but never
         // populated or queried by any runtime code path, main's or the
         // worker's (confirmed by grep finding no reference outside

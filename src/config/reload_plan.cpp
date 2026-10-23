@@ -420,6 +420,52 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.remote_media_cache_max_entries");
     }
+    auto const& current_media = current.security().media;
+    auto const& next_media = next.security().media;
+    if (current_media.pending_upload_ttl_seconds != next_media.pending_upload_ttl_seconds)
+    {
+        add_change(plan, "security.media.pending_upload_ttl_seconds");
+    }
+    if (current_media.max_pending_uploads_per_user != next_media.max_pending_uploads_per_user)
+    {
+        add_change(plan, "security.media.max_pending_uploads_per_user");
+    }
+    if (current_media.max_pending_uploads != next_media.max_pending_uploads)
+    {
+        add_change(plan, "security.media.max_pending_uploads");
+    }
+    if (current_media.pending_upload_max_wait_ms != next_media.pending_upload_max_wait_ms)
+    {
+        add_change(plan, "security.media.pending_upload_max_wait_ms");
+    }
+    if (current_media.url_preview_enabled != next_media.url_preview_enabled)
+    {
+        add_change(plan, "security.media.url_preview_enabled");
+    }
+    if (current_media.url_preview_max_page_size != next_media.url_preview_max_page_size)
+    {
+        add_change(plan, "security.media.url_preview_max_page_size");
+    }
+    if (current_media.url_preview_max_image_size != next_media.url_preview_max_image_size)
+    {
+        add_change(plan, "security.media.url_preview_max_image_size");
+    }
+    if (current_media.url_preview_timeout_seconds != next_media.url_preview_timeout_seconds)
+    {
+        add_change(plan, "security.media.url_preview_timeout_seconds");
+    }
+    if (current_media.url_preview_max_redirects != next_media.url_preview_max_redirects)
+    {
+        add_change(plan, "security.media.url_preview_max_redirects");
+    }
+    if (current_media.url_preview_cache_ttl_seconds != next_media.url_preview_cache_ttl_seconds)
+    {
+        add_change(plan, "security.media.url_preview_cache_ttl_seconds");
+    }
+    if (current_media.url_preview_cache_max_entries != next_media.url_preview_cache_max_entries)
+    {
+        add_change(plan, "security.media.url_preview_cache_max_entries");
+    }
 
     if (current.security().logging.redact_tokens != next.security().logging.redact_tokens)
     {

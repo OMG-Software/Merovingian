@@ -72,18 +72,23 @@ struct OutboundRequest final
     // Empty means "use system trust". Production federation traffic leaves
     // this empty; tests and pinned-CA deployments populate it.
     std::string trusted_ca_pem{};
-    // Opt-in escape hatch from the https-only invariant above. MUST be left
-    // false for every URL that is attacker/client-influenced in any way
-    // (federation destinations, a pusher's registered gateway URL, an
-    // identity server named by a client) — those stay https-only,
-    // unconditionally, with no way to override it here. The only sanctioned
-    // use is a destination the OPERATOR configured out-of-band (a local
-    // filesystem artifact, not something a network peer can point at): an
-    // appservice registration file's `url`, which the Matrix Application
-    // Service API's own canonical example (and most real-world bridges)
-    // gives as a plain `http://` localhost address. When true, `url` may be
-    // `http://` OR `https://`; TLS verification still applies whenever the
-    // connection does end up being TLS.
+    // Opt-in escape hatch from the https-only invariant above. There are
+    // exactly two sanctioned uses:
+    //   1. A destination the OPERATOR configured out-of-band (a local
+    //      filesystem artifact, not something a network peer can point at):
+    //      an appservice registration file's `url`, which the Matrix
+    //      Application Service API's own canonical example (and most
+    //      real-world bridges) gives as a plain `http://` localhost address.
+    //   2. A URL preview hop (ADR-0213), made only through the preview gate
+    //      (`gated_fetch` in homeserver/url_preview_service.cpp). It is
+    //      client-named, but carries no credential, and the gate checks and
+    //      pins its addresses like any other request.
+    // It MUST be left false for every other URL that is attacker- or
+    // client-influenced in any way (federation destinations, a pusher's
+    // registered gateway URL, an identity server named by a client): those
+    // stay https-only. When true, `url` may be `http://` OR `https://`; TLS
+    // verification still applies whenever the connection does end up being
+    // TLS.
     bool allow_cleartext_http{false};
 };
 
@@ -148,8 +153,8 @@ struct SystemCaTrust final
 // userinfo, fragments, control bytes, backslashes, encoded authority bytes,
 // invalid IP literals, and malformed ports. This performs no DNS or network
 // I/O and shares its parser and rules with OutboundClient::perform().
-[[nodiscard]] auto parse_outbound_url(std::string_view url,
-                                      bool allow_cleartext_http = false) -> std::optional<ParsedOutboundUrl>;
+[[nodiscard]] auto parse_outbound_url(std::string_view url, bool allow_cleartext_http = false)
+    -> std::optional<ParsedOutboundUrl>;
 
 // Pure validator. Returns OutboundError::none when the request is well-formed.
 // Does not perform DNS, TLS, or any network I/O.

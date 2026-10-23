@@ -14,6 +14,16 @@ Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-reposi
 | `thumbnail_worker_main.cpp` | Out-of-process thumbnail worker entry point (sandboxed); thin — hardening logic lives in `decoder_hardening.cpp` |
 | `decoder_hardening.cpp` | Fail-closed hardening sequence for the thumbnail decoder worker: resource limits + platform sandbox (seccomp/pledge/cap_enter), behind an injectable `DecoderHardeningOps` function table |
 | `runtime_media.cpp` | Wires the media service into the runtime |
+| `url_preview.cpp` | URL previews' pure parts (ADR-0213): the bounded, non-recursive `og:*`/`<title>` extractor, `resolve_preview_reference` and the bounded `UrlPreviewCache`. No I/O; fetching lives in `homeserver/url_preview_service.cpp` |
+
+## Upload names and reserved IDs
+
+- An upload's `filename` is checked with `media_filename_is_valid` (an invalid one is refused, not
+  cleaned) and stored as `LocalMediaRecord::upload_name`; it reaches a header only through
+  `media_content_disposition` (ADR-0211).
+- `pending_uploads` holds IDs reserved by `POST /_matrix/media/v1/create`; `make_media_id` never
+  mints one of them, and `upload_local_media` with `LocalMediaUploadRequest::media_id` fills one
+  only once (ADR-0212).
 
 ## Internal body format
 
@@ -51,6 +61,14 @@ set from the upload request (only the remote fetch sets it) and rebuilt on hydra
 `is_remote_cache_owner(owner, local server name)`. Never classify a record by its owner string
 alone: a local account could imitate `@remote-media:` (ADR-0178), and the localpart `remote-media`
 is reserved (`auth::localpart_is_reserved`).
+
+## File names in Content-Disposition (ADR-0211)
+
+A file name (the `{fileName}` of a named download) is client-chosen text that lands in a
+response header. Write `Content-Disposition` only with `media::media_content_disposition()`
+(`security.cpp`): it leaves out a name that `media_filename_is_valid()` refuses (control
+characters, `/`, `\`, invalid UTF-8, over 255 bytes) and encodes the rest per RFC 6266. Never
+concatenate a name into a header value anywhere else.
 
 ## Thumbnail worker
 
