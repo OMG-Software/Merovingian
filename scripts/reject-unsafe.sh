@@ -39,12 +39,15 @@ reject_pattern '\bfree\s*\(' 'free'
 # Two forms: static_cast<void>(...) and a C-style (void) cast. The C-style
 # pattern needs the character before "(void)" not to be part of a name, ")" or
 # ">", so empty parameter lists (`int f(void)`, `void (*p)(void)`) and function
-# types (`std::function<void(int)>`) are not casts. Any "//" earlier on the line
-# makes the match a comment. C++ files only: C has no std::ignore, and the one C
-# source (yyjson_adapter.c) is outside this rule.
+# types (`std::function<void(int)>`) are not casts. The line is read up to the
+# match a token at a time: a whole "..." or '...' literal (escapes included) is
+# stepped over, so a "//" inside one (a URL) does not hide a later cast and a
+# cast spelled inside a string is not flagged; a "//" outside a literal starts a
+# comment, which ends the search. (\x27 is the single quote.) C++ files only: C
+# has no std::ignore, and the one C source (yyjson_adapter.c) is outside this rule.
 VOID_CAST_HITS=$(grep -Rn --perl-regexp \
   --include='*.cpp' --include='*.hpp' --include='*.cc' \
-  '^(?:(?!//).)*?(static_cast\s*<\s*void\s*>|(?<![\w)>\]])\(\s*void\s*\)(?=\s*[\w:(*&!~"]))' \
+  '^(?:"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27|(?!//)[^"\x27])*?(static_cast\s*<\s*void\s*>|(?<![\w)>\]])\(\s*void\s*\)(?=\s*[\w:(*&!~"]))' \
   "${ROOTS[@]}" || true)
 if [ -n "$VOID_CAST_HITS" ]; then
   printf '%s\n' "$VOID_CAST_HITS"

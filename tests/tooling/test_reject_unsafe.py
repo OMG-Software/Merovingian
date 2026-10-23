@@ -70,6 +70,18 @@ class RejectUnsafeVoidCastTests(unittest.TestCase):
         self.assert_rejected({"src/a.cpp": "auto g() { return (void) compute(); }\n"})
         self.assert_rejected({"src/b.cpp": "void h() { if (x) static_cast< void >(compute()); }\n"})
 
+    def test_void_cast_after_a_string_holding_double_slash_is_rejected(self) -> None:
+        # GIVEN a void cast after a string or character literal that contains "//",
+        # which is not a comment.
+        # WHEN the gate runs.
+        # THEN the cast is still rejected.
+        self.assert_rejected(
+            {"src/a.cpp": 'void f() { auto url = "https://example.org"; (void)write(fd, data, size); }\n'}
+        )
+        self.assert_rejected(
+            {"src/b.cpp": 'void g() { auto s = "a \\" // b"; static_cast<void>(compute()); }\n'}
+        )
+
     def test_std_ignore_and_void_in_types_are_accepted(self) -> None:
         # GIVEN std::ignore discards, function types and C-style empty parameter lists.
         source = (
@@ -95,6 +107,16 @@ class RejectUnsafeVoidCastTests(unittest.TestCase):
         )
         # WHEN the gate runs.
         # THEN comments are not code and are not rejected.
+        self.assert_accepted({"src/a.cpp": source})
+
+    def test_cast_spelled_inside_a_string_is_accepted(self) -> None:
+        # GIVEN string and character literals that merely spell the banned forms.
+        source = (
+            'auto const message = "write std::ignore, not static_cast<void>(x) or (void)x";\n'
+            "char const quote = '\"'; int y = 0; // (void)y\n"
+        )
+        # WHEN the gate runs.
+        # THEN text inside a literal is not code and is not rejected.
         self.assert_accepted({"src/a.cpp": source})
 
     # The repository's own tree is not scanned here: the pre-commit hook and the

@@ -50,7 +50,8 @@ served by the candidate, in CI (ADR-0216).
 - **ADDED (gate):** `scripts/reject-unsafe.sh` rejects void casts (`static_cast<void>(…)` and C-style
   `(void)expr`) in C++ files under `include/`, `src/` and `tests/`, so the rule is enforced at
   commit time and in CI, not just written down. Empty parameter lists (`int f(void)`), function types
-  (`std::function<void(int)>`) and comments are not flagged; C files are out of scope (C has no
+  (`std::function<void(int)>`), comments and text inside string or character literals are not
+  flagged, and a `//` inside a literal (a URL) does not hide a later cast; C files are out of scope (C has no
   `std::ignore`). `tests/tooling/test_reject_unsafe.py` (`reject-unsafe-tooling`) runs the gate on
   planted files; it also rejects every void cast that was on `main` before this change.
 - **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
