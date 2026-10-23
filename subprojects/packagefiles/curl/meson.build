@@ -16,7 +16,6 @@ curl_project = external_project.add_project(
     '--without-zlib',
     '--without-zstd',
     '--without-libpsl',
-    '--without-librtmp',
     '--without-libidn2',
     '--without-nghttp2',
     '--without-nghttp3',

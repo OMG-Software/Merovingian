@@ -4,7 +4,7 @@ shell = find_program('sh')
   wrapped_runtime_env = environment()
   wrapped_runtime_env.prepend(
     'LD_LIBRARY_PATH',
-    meson.project_build_root() / 'subprojects' / 'curl-8.20.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
+    meson.project_build_root() / 'subprojects' / 'curl-8.23.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
     separator: ':',
   )
   add_test_setup('wrappedruntime', env: wrapped_runtime_env, is_default: true)

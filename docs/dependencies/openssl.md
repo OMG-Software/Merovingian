@@ -35,6 +35,20 @@ The same OS-supplied dynamic-link policy now applies to LibSodium and
 PostgreSQL libpq. Linux and Fedora CI install `libssl-dev` or `openssl-devel`;
 FreeBSD CI installs the `openssl` package.
 
+The OS package must be an OpenSSL branch that still receives security fixes:
+the current upstream LTS (3.5), a newer supported release, or a distribution
+package whose vendor backports fixes to an older branch. Upstream support for
+the OpenSSL 3.0 LTS line has ended, so an unpatched upstream 3.0 build is not
+acceptable for a deployment. OpenBSD builds against its base-system LibreSSL,
+which follows the OpenBSD release's own support window.
+
+There is no `subprojects/openssl.wrap`: a wrap for an `allow_fallback: false`
+dependency is never fetched, so it would only be an unmaintained pin
+([ADR-0218](../adr/0218-os-supplied-dependencies-carry-no-wrap.md)). For the
+same reason nothing under the project's `include/` directory may shadow an
+OpenSSL header, since every target compiles with `-I include` ahead of the
+system include path.
+
 ## License
 
 OpenSSL is dual-licensed under the Apache-2.0 license and the OpenSSL-3.0

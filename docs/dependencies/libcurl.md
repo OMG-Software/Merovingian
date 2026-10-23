@@ -49,11 +49,18 @@ dependency so deployments receive distro security updates. The TLS backend
 follows the host libcurl's OpenSSL/LibreSSL selection; the OutboundClient
 integration suite catches backend behavior drift across supported platforms.
 
-The portable static (musl) build links Alpine's static libcurl
-(`curl-static`) together with its static transitive dependencies. The
-`subprojects/curl.wrap` source-build fallback is no longer used by the build
-(the dependency is `allow_fallback: false`); `<curl/curl.h>` resolves from the
-system include root the same way on Linux and BSD.
+The portable static (musl) build is the one exception. Alpine's `libcurl.a`
+pulls in libpsl, libidn2 and libunistring, whose static archives Alpine does
+not ship, so `scripts/build-static-linux.sh` passes `-Dstatic_curl_wrap=true`
+and builds curl from `subprojects/curl.wrap` (curl 8.23.0) instead.
+`subprojects/packagefiles/curl/meson.build` runs curl's own `configure` as a
+Meson external project, static only, against the host OpenSSL, with every
+optional backend it does not need turned off (`--without-libpsl`,
+`--without-libidn2`, compression, HTTP/2 and HTTP/3, SSH, GSS-API). Check its
+`configure` options against each new curl release: autoconf only warns about an
+option it no longer knows, so a removed one fails silently (RTMP support, and
+with it `--without-librtmp`, was removed in curl 8.20.0). `<curl/curl.h>`
+resolves from the installed include root the same way on Linux and BSD.
 
 ## License
 

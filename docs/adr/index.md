@@ -200,6 +200,7 @@
 * [0213 - URL previews are off by default and fetch only through one SSRF gate](0213-url-previews-fetch-through-one-ssrf-gate.md)
 * [0214 - The URL preview cache is keyed by URL alone and caches failures](0214-url-preview-cache-is-keyed-by-url-and-caches-failures.md)
 * [0215 - The event table owns its rows and indexes them by event ID and by stream order through positions](0215-the-event-table-indexes-by-id-and-by-stream-order-through-positions.md)
+* [0218 - OS-supplied dependencies carry no wrap file](0218-os-supplied-dependencies-carry-no-wrap.md)
 
 ## Proposed Records
 

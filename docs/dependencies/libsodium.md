@@ -30,7 +30,9 @@ and Ed25519 operations across Linux and BSD package managers.
 LibSodium is resolved from the operating-system package and linked dynamically.
 The top-level Meson dependency sets `allow_fallback: false`, so clean builds
 must provide `libsodium.pc` through the host package manager even when the
-wrapper scripts use Meson's `forcefallback` mode for other dependencies.
+wrapper scripts use Meson's `forcefallback` mode for other dependencies. There
+is no `subprojects/libsodium.wrap`
+([ADR-0218](../adr/0218-os-supplied-dependencies-carry-no-wrap.md)).
 
 Supported development paths install the OS development package explicitly:
 Debian-family hosts use `libsodium-dev`, Fedora-family hosts use

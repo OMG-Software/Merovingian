@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.12.41',
+  version: '0.12.43',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -40,7 +40,7 @@ sqlite_dep = dependency(
 )
 yyjson_dep = dependency(
   'yyjson',
-  version: '>=0.12.0',
+  version: '>=0.13.0',
   required: false,
   fallback: ['yyjson', 'yyjson_dep'],
 )

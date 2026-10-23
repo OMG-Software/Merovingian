@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.41
+Version:        0.12.43
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.43-1
+- Update the SQLite, yyjson, Catch2 and curl wrap pins; remove the unused OpenSSL, LibSodium and libpq wraps.
+
 * Fri Oct 23 2026 James Chapman <claude@ping.me.uk> - 0.12.41-1
 - Serve named media downloads and upload filenames; add asynchronous uploads and opt-in URL previews (conformance audit, media).
 

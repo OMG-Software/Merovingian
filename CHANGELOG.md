@@ -1,3 +1,37 @@
+## 0.12.43
+
+Meson wrap pins brought up to date; unused wraps for OS-supplied dependencies removed.
+
+- **CHANGED:** `subprojects/sqlite3.wrap` pins SQLite 3.54.1 (WrapDB `3.54.1-1`, was 3.53.1),
+  `subprojects/yyjson.wrap` yyjson 0.13.0 (was 0.12.0), `subprojects/catch2.wrap` Catch2 3.16.1
+  (was 3.14.0) and `subprojects/curl.wrap` curl 8.23.0 (was 8.20.0; used only by the static musl
+  build). Every `source_hash` and the SQLite `patch_hash` were computed from the downloaded
+  archives; the SQLite and curl archives were identical from both mirrors, and the curl tarball's
+  signature verifies against Daniel Stenberg's key.
+- **CHANGED:** `meson.build` accepts a system yyjson only at `>=0.13.0` (was `>=0.12.0`). yyjson
+  0.13.0 fixes an uninitialised read and an integer truncation in number parsing, both reachable
+  from untrusted canonical JSON. The adapter needed no change: 0.13.0 keeps the read API and error
+  codes 0-14, and its new `YYJSON_READ_ERROR_DEPTH` only fires when `YYJSON_READER_DEPTH_LIMIT`
+  is set, which it is not; the canonical JSON parser keeps enforcing its own 64-level limit.
+- **REMOVED:** `subprojects/openssl.wrap` (OpenSSL 3.0.20, a line upstream no longer supports),
+  `subprojects/libsodium.wrap`, `subprojects/libpq.wrap` (PostgreSQL 18.0) and their
+  `subprojects/packagefiles/` directories. These dependencies are `allow_fallback: false`, so no
+  build ever fetched them (ADR-0218).
+- **FIXED:** a committed `include/openssl/configuration.h`, generated from an OpenSSL 3.0.20 wrap
+  build, shadowed the OS package's own header, because every target compiles with `-I include`
+  ahead of the system include path. It is deleted, and a tooling test keeps `include/openssl/`
+  from coming back.
+- **FIXED:** the curl packagefile passed `--without-librtmp`, an option curl removed with RTMP
+  support in 8.20.0; autoconf only warned about it. It is dropped.
+- **CHANGED:** the curl source directory in `tests/meson.build` and
+  `scripts/validate-phase1-config.sh` moves to `curl-8.23.0`, and the tooling tests now read it
+  from `curl.wrap` instead of hard-coding a version. `.gitignore` ignores extracted wrap sources
+  of any version.
+- **DOCS:** `docs/dependencies/` records the new pins; `openssl.md` states that the OS OpenSSL
+  must be a branch that still receives security fixes (3.5 LTS or newer, or a vendor-backported
+  older branch); `libcurl.md` no longer claims the static build uses Alpine's `curl-static`, which
+  it cannot (`-Dstatic_curl_wrap=true`).
+
 ## 0.12.41
 
 Media part of the conformance audit (2026-10-17): R17 and the wave-6 media endpoints.
