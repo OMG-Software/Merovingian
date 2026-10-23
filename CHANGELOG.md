@@ -21,6 +21,10 @@ Meson wrap pins brought up to date; unused wraps for OS-supplied dependencies re
   build, shadowed the OS package's own header, because every target compiles with `-I include`
   ahead of the system include path. It is deleted, and a tooling test keeps `include/openssl/`
   from coming back.
+- **FIXED (found by this PR's CI):** `scripts/check-startup-hardening-gate.sh` could fail a healthy
+  server with "server exited with status  on SIGTERM". Its wrapper wrote the exit status with a
+  redirect, which creates the file before writing the number, and the gate stops waiting as soon
+  as the file exists. The status is now written to a temporary file and renamed into place.
 - **FIXED:** the curl packagefile passed `--without-librtmp`, an option curl removed with RTMP
   support in 8.20.0; autoconf only warned about it. It is dropped.
 - **CHANGED:** the curl source directory in `tests/meson.build` and

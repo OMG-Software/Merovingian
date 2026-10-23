@@ -294,6 +294,20 @@ class StartupHardeningGatePortabilityTests(unittest.TestCase):
         gnu_alternation = [line for line in commands if "\\|" in line]
         self.assertEqual(gnu_alternation, [])
 
+    def test_publishes_the_server_exit_status_atomically(self) -> None:
+        # GIVEN the gate waits for the status file to exist and then reads the
+        # exit status out of it.
+        script = GATE_SCRIPT.read_text(encoding="utf-8")
+        commands = [line.strip() for line in script.splitlines() if not line.lstrip().startswith("#")]
+
+        # WHEN the wrapper records the server's exit status.
+        # THEN it writes a temporary file and renames it into place, because a
+        # redirect creates the file before writing it and a reader polling for
+        # existence can read it empty ("server exited with status  on SIGTERM").
+        direct_writes = [line for line in commands if '>"$status_file"' in line]
+        self.assertEqual(direct_writes, [])
+        self.assertIn('mv "$status_file.tmp" "$status_file"', script)
+
 
 if __name__ == "__main__":
     unittest.main()
