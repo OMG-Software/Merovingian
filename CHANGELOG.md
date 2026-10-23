@@ -89,6 +89,10 @@ Conformance audit wave 5 (push): R19, R15 and R14 of `docs/conformance-audit-rep
   settled: past a non-join membership change, or at a join under the unthreaded read marker. An
   uncapped badge equals `/sync`'s count. A capped one counts only events above the lowest row
   visited, so it never counts one `/sync` would not (ADR-0207, amended).
+- **CHANGED (PR #523 review, one history filter per request):** `build_room_response`'s
+  convenience overload built a `HistoryVisibility` for the request and then a classifier that
+  built a second one of its own. The classifier now borrows the request's filter, so the two share
+  one set of lazy indexes. Counts are unchanged.
 - **DOCS (PR #523 review):** `docs/todos/capability-gaps.md` described `counts.unread` as the sum of
   `/sync`'s per-room counts and said unread counts skip the history-visibility filter.
   `src/sync/AGENTS.md` listed the push badge among the counts made by `count_unread_by_thread()`.

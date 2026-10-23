@@ -538,9 +538,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                          std::unordered_set<std::string> const& lazy_members_already_sent,
                          std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncRoomResponse
 {
+    // One filter for the request: the classifier borrows it, so both share its lazy indexes.
     auto visibility = HistoryVisibility{store, user};
     auto const unread = homeserver::PushRuleUnreadClassifier{
-        store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user)};
+        store, user, static_cast<std::size_t>(rt.config.server().client_api.max_push_rules_per_user), visibility};
     return build_room_response(rt, room_id, user, sub, room_since_event_ordering, is_initial, store,
                                lazy_members_already_sent, ignored_senders, visibility, unread);
 }
