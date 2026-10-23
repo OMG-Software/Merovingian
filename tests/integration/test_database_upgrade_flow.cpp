@@ -518,7 +518,9 @@ struct FixtureView final
     Response media{};
     Response device_keys{};
     Response sync_since_old_token{};
+    Response replay_old_transaction{};
     Response send_into_old_room{};
+    Response read_new_event{};
 };
 
 [[nodiscard]] auto request(merovingian::homeserver::ClientServerRuntime& runtime, std::string method,
@@ -553,9 +555,20 @@ struct FixtureView final
                                R"({"device_keys":{")" + expected.alice_user_id + R"(":[]}})");
     view.sync_since_old_token =
         request(runtime, "GET", "/_matrix/client/v3/sync?timeout=0&since=" + expected.next_batch, alice);
-    view.send_into_old_room = request(
+    // The old release sent the first fixture message as `upgrade-txn-1` from this
+    // device, so repeating it must replay that event, not create one.
+    view.replay_old_transaction = request(
         runtime, "PUT", "/_matrix/client/v3/rooms/" + expected.private_room_id + "/send/m.room.message/upgrade-txn-1",
-        alice, R"({"msgtype":"m.text","body":"sent after the upgrade"})");
+        alice, R"({"msgtype":"m.text","body":")" + expected.messages.front().body + R"("})");
+    // A transaction ID the old release never saw, so a new event is created and signed.
+    view.send_into_old_room =
+        request(runtime, "PUT",
+                "/_matrix/client/v3/rooms/" + expected.private_room_id + "/send/m.room.message/after-upgrade-txn-1",
+                alice, R"({"msgtype":"m.text","body":"sent after the upgrade"})");
+    view.read_new_event = request(runtime, "GET",
+                                  "/_matrix/client/v3/rooms/" + expected.private_room_id + "/event/" +
+                                      json_string_field(view.send_into_old_room.body, "event_id"),
+                                  alice);
     return view;
 }
 
@@ -589,9 +602,18 @@ auto require_fixture_served(FixtureView const& view, FixtureExpectations const& 
     REQUIRE(view.device_keys.body.find(expected.device_ed25519_key) != std::string::npos);
     // A client that synced against the old release carries on from its token.
     REQUIRE(view.sync_since_old_token.status == 200U);
+    // The old release's transaction IDs still deduplicate: a retried send replays its event.
+    REQUIRE(view.replay_old_transaction.status == 200U);
+    REQUIRE(json_string_field(view.replay_old_transaction.body, "event_id") == expected.messages.front().event_id);
     // A new event in an old room needs the old signing secret, decrypted.
     REQUIRE(view.send_into_old_room.status == 200U);
-    REQUIRE(view.send_into_old_room.body.find("\"event_id\"") != std::string::npos);
+    auto const new_event_id = json_string_field(view.send_into_old_room.body, "event_id");
+    REQUIRE_FALSE(new_event_id.empty());
+    REQUIRE(std::ranges::none_of(expected.messages, [&new_event_id](FixtureMessage const& message) {
+        return message.event_id == new_event_id;
+    }));
+    REQUIRE(view.read_new_event.status == 200U);
+    REQUIRE(view.read_new_event.body.find("sent after the upgrade") != std::string::npos);
 }
 
 } // namespace
