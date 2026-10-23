@@ -32,7 +32,9 @@ class CoverageWorkflowTests(unittest.TestCase):
         # THEN the compiler's exception edges are left out (ADR-0217): a call that
         # may throw gets an unwinding branch no test reaches without injecting
         # allocation failures, so counting it marks executed lines as partial.
-        self.assertIn("--exclude-throw-branches", workflow)
+        # Matched as an argument line of the gcovr call, so the explanatory
+        # comment above it in the workflow cannot satisfy this on its own.
+        self.assertRegex(workflow, r"(?m)^[ \t]+--exclude-throw-branches[ \t]*\\[ \t]*$")
 
     def test_coverage_upload_excludes_the_real_server_entrypoint(self) -> None:
         # GIVEN the coverage workflow and the repository Codecov config.

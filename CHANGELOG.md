@@ -31,6 +31,8 @@ served by the candidate, in CI (ADR-0216).
   edge clang adds to every call that may throw made executed lines read as partial, since only an
   injected allocation failure reaches it. Decision branches still count. Branch figures rise
   project-wide in the first report after this change because the measurement changed, not the tests.
+  `tests/tooling/test_coverage_workflow.py` pins the flag as a gcovr argument line, so the comment
+  explaining it cannot satisfy the check alone.
 - **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
   `/publicRooms`. Since migration 018 a room is listed only when published, so a room upgraded from
   0.11 is unlisted until a room administrator publishes it again. There are no deployments yet and
