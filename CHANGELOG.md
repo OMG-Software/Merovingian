@@ -39,7 +39,10 @@ served by the candidate, in CI (ADR-0216).
 - **FIXED (first GCC build):** the 30 `static_cast<void>(…)` / `(void)…` discards left in the tests are
   now `std::ignore = …`, as the coding rules require. GCC, unlike clang, does not let a void cast
   silence `warn_unused_result` (`sodium_init`, POSIX `write`), so `-Werror` stopped the GCC
-  coverage build on them.
+  coverage build on them. GCC also rejected (`-Wtype-limits`) a conformance assertion that could
+  never fail: `REQUIRE(envelope->depth >= 0U)` on an unsigned field, under "depth is populated".
+  It now requires the fixture PDU's actual depth (`== 5U`), so it tests what it claims. A local
+  GCC 14 build with `ninja -k 0` found no other GCC-only error.
 - **ADDED (gate):** `scripts/reject-unsafe.sh` rejects void casts (`static_cast<void>(…)` and C-style
   `(void)expr`) in C++ files under `include/`, `src/` and `tests/`, so the rule is enforced at
   commit time and in CI, not just written down. Empty parameter lists (`int f(void)`), function types
