@@ -23,6 +23,17 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("--filter 'include/merovingian/'", workflow)
         self.assertNotIn("--filter 'include/'", workflow)
 
+    def test_branch_coverage_counts_decisions_not_exception_edges(self) -> None:
+        # GIVEN the dedicated coverage workflow.
+        self.assertTrue(COVERAGE_WORKFLOW.is_file(), "coverage workflow is missing")
+        workflow = COVERAGE_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN gcovr reports branch coverage for the Codecov upload.
+        # THEN the compiler's exception edges are left out (ADR-0217): a call that
+        # may throw gets an unwinding branch no test reaches without injecting
+        # allocation failures, so counting it marks executed lines as partial.
+        self.assertIn("--exclude-throw-branches", workflow)
+
     def test_coverage_upload_excludes_the_real_server_entrypoint(self) -> None:
         # GIVEN the coverage workflow and the repository Codecov config.
         self.assertTrue(COVERAGE_WORKFLOW.is_file(), "coverage workflow is missing")

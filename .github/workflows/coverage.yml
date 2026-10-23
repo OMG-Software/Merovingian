@@ -179,10 +179,15 @@ jobs:
           # to the build directory so it does not traverse the whole repo tree.
           # Restrict header coverage to Merovingian's own public API so vendored
           # or platform headers staged under include/ do not dilute the report.
+          # --exclude-throw-branches drops the compiler's exception edges
+          # (ADR-0217): every call that may throw gets an unwinding branch that
+          # only an injected allocation failure reaches, so counting them marks
+          # executed lines as partial. Decision branches are still counted.
           gcovr \
             --root . \
             --gcov-executable "llvm-cov gcov" \
             --gcov-ignore-parse-errors \
+            --exclude-throw-branches \
             --filter 'src/' \
             --filter 'include/merovingian/' \
             --exclude 'src/main.cpp' \

@@ -27,6 +27,10 @@ served by the candidate, in CI (ADR-0216).
 - **FIXED (found by the upgrade test):** both stores read the migration ledger ordered by its `TEXT`
   `version` column, so `'10'` sorted before `'9'` and a reloaded ledger's last entry was not the
   newest migration. The ledger is now read in numeric order.
+- **CHANGED (coverage):** gcovr runs with `--exclude-throw-branches` (ADR-0217). The unwinding
+  edge clang adds to every call that may throw made executed lines read as partial, since only an
+  injected allocation failure reaches it. Decision branches still count. Branch figures rise
+  project-wide in the first report after this change because the measurement changed, not the tests.
 - **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
   `/publicRooms`. Since migration 018 a room is listed only when published, so a room upgraded from
   0.11 is unlisted until a room administrator publishes it again. There are no deployments yet and
