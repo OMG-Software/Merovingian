@@ -35,6 +35,7 @@
 #include <array>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include <sodium.h>
@@ -67,7 +68,7 @@ public:
         {
             return {{}, "invalid secret key length"};
         }
-        static_cast<void>(key_handle);
+        std::ignore = key_handle;
         auto sig = std::string(64U, '\0');
         if (crypto_sign_ed25519_detached(reinterpret_cast<unsigned char*>(sig.data()), nullptr,
                                          reinterpret_cast<unsigned char const*>(message.data()), message.size(),
@@ -480,7 +481,7 @@ namespace
 // Hardcoded to avoid any base64-decode variant ambiguity.
 [[nodiscard]] auto spec_seed_keypair() -> merovingian::federation::test::SigningKeypair
 {
-    static_cast<void>(sodium_init());
+    std::ignore = sodium_init();
     // YJDBA9Xnr2sVqXD9Vj7XVUnmFZcZrlw8Md7kMW+3XA1 base64-decoded (standard, no padding)
     auto constexpr seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{
         0x60, 0x90, 0xc1, 0x03, 0xd5, 0xe7, 0xaf, 0x6b, 0x15, 0xa9, 0x70, 0xfd, 0x56, 0x3e, 0xd7, 0x55,

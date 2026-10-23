@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <tuple>
 
 extern "C" auto LLVMFuzzerTestOneInput(std::uint8_t const* data, std::size_t size) -> int
 {
@@ -20,7 +21,7 @@ extern "C" auto LLVMFuzzerTestOneInput(std::uint8_t const* data, std::size_t siz
     if (parsed.error == merovingian::canonicaljson::ParseError::none)
     {
         auto const result = merovingian::canonicaljson::serialize_canonical(parsed.value);
-        static_cast<void>(result);
+        std::ignore = result;
     }
     return 0;
 }

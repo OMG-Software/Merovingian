@@ -36,6 +36,10 @@ served by the candidate, in CI (ADR-0216).
   this because the measurement changed, not the tests. `tests/tooling/test_coverage_workflow.py`
   pins the flag, the compiler and the gcov executable as real configuration lines, so a comment
   cannot satisfy the check and none of the three can change alone.
+- **FIXED (first GCC build):** the 30 `static_cast<void>(…)` / `(void)…` discards left in the tests are
+  now `std::ignore = …`, as the coding rules require. GCC, unlike clang, does not let a void cast
+  silence `warn_unused_result` (`sodium_init`, POSIX `write`), so `-Werror` stopped the GCC
+  coverage build on them.
 - **KNOWN, not carried over:** 0.11 listed every room whose join rule was `public` in
   `/publicRooms`. Since migration 018 a room is listed only when published, so a room upgraded from
   0.11 is unlisted until a room administrator publishes it again. There are no deployments yet and

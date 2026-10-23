@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -89,7 +90,7 @@ public:
     auto add(StateEventReference const& ref) -> StateEventReference const&
     {
         auto [it, inserted] = events_.emplace(ref.event_id, ref);
-        (void)inserted;
+        std::ignore = inserted;
         return it->second;
     }
 

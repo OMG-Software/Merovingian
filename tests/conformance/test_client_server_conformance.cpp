@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -2641,7 +2642,7 @@ SCENARIO("GET /sync incremental timeline reports limited=false when no events ar
 
         WHEN("one new message arrives and an incremental sync uses a small timeline limit")
         {
-            (void)send_text(started.runtime, token, room_id, "m_one", "first");
+            std::ignore = send_text(started.runtime, token, room_id, "m_one", "first");
 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
@@ -16555,7 +16556,7 @@ SCENARIO("POST /user_directory/search finds users whose user_id matches the sear
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const alice = logged_in_token(rt);
-        (void)register_and_login(rt, "bob");
+        std::ignore = register_and_login(rt, "bob");
 
         WHEN("alice searches for 'alice'")
         {

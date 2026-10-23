@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <tuple>
 
 #include <linux/seccomp.h>
 #include <signal.h>
@@ -124,7 +125,7 @@ extern "C" auto on_seccomp_sigsys(int /*signum*/, siginfo_t* info, void* /*ucont
     if (wr >= 0)
     {
         auto const written = ::write(wr, msg, static_cast<std::size_t>(msg_len));
-        (void)written;
+        std::ignore = written;
     }
 
     if (report_count >= k_max_sigsys_reports)

@@ -40,6 +40,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -82,7 +83,7 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
     {
         *captured_request = request_bytes;
     }
-    static_cast<void>(::write(client_fd, http_response.data(), http_response.size()));
+    std::ignore = ::write(client_fd, http_response.data(), http_response.size());
     ::close(client_fd);
 }
 
@@ -119,8 +120,8 @@ auto run_one_shot_appservice_server(merovingian::net::TcpAcceptor& acceptor, std
 // loopback mock appservice, and returns a Config wired to load it.
 [[nodiscard]] auto config_with_appservice(std::filesystem::path const& registration_path, std::string const& id,
                                           std::string const& as_token, std::string const& hs_token,
-                                          std::uint16_t mock_port,
-                                          std::vector<std::string> const& protocols) -> merovingian::config::Config
+                                          std::uint16_t mock_port, std::vector<std::string> const& protocols)
+    -> merovingian::config::Config
 {
     auto protocols_json = std::string{"["};
     for (auto index = std::size_t{0U}; index < protocols.size(); ++index)
