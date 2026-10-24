@@ -223,6 +223,8 @@ SCENARIO("An SMTP relay URL names a scheme, a host and at most a port", "[email]
     }
 }
 
+// ADR-0219: the email carries the unread count and the server name only, as a plain US-ASCII
+// RFC 5322 message whose headers address it from the configured sender to the user.
 SCENARIO("A notification email reports an unread count and nothing a user was sent", "[email][notification-email]")
 {
     GIVEN("three unread notifications for an address on example.org")
@@ -307,7 +309,13 @@ SCENARIO("A notification email reports an unread count and nothing a user was se
             }
         }
     }
+}
 
+// Refuse, never repair (src/email/AGENTS.md rule 1): an input that could end a header or a
+// Message-ID early, or a count of zero, means no message at all rather than a cleaned-up one.
+SCENARIO("A notification email is not built from inputs that cannot be written safely",
+         "[email][notification-email][security]")
+{
     GIVEN("inputs that cannot be written safely")
     {
         WHEN("the recipient carries a header injection")

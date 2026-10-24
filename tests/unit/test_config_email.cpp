@@ -367,7 +367,9 @@ SCENARIO("username is printable ASCII without spaces and at most 256 bytes", "[c
     }
 }
 
-SCENARIO("require_tls=false is allowed only for a cleartext loopback relay without credentials", "[config][email]")
+// ADR-0220: cleartext SMTP is allowed only to a relay on this machine, named by a loopback IP literal
+// (DNS decides where a name goes), and never with credentials.
+SCENARIO("require_tls=false is allowed for a cleartext loopback relay without credentials", "[config][email]")
 {
     GIVEN("a cleartext smtp relay at a loopback IPv4 literal with no credentials")
     {
@@ -400,6 +402,24 @@ SCENARIO("require_tls=false is allowed only for a cleartext loopback relay witho
         }
     }
 
+    GIVEN("require_tls=false and no relay")
+    {
+        WHEN("validated")
+        {
+            auto const result = parse("server.email.require_tls=false\n");
+
+            THEN("nothing is reported, because email is off")
+            {
+                REQUIRE_FALSE(contains_finding(result.findings, "server.email.require_tls"));
+            }
+        }
+    }
+}
+
+// The same rule, from the other side: every cleartext configuration it does not allow is a finding.
+SCENARIO("require_tls=false is refused for a remote, named or implicit-TLS relay, or with credentials",
+         "[config][email]")
+{
     GIVEN("a cleartext smtp relay at a remote host name")
     {
         WHEN("validated")
@@ -457,19 +477,6 @@ SCENARIO("require_tls=false is allowed only for a cleartext loopback relay witho
             {
                 REQUIRE(contains_finding(result.findings, "server.email.username"));
                 REQUIRE_FALSE(merovingian::config::is_valid(result.config));
-            }
-        }
-    }
-
-    GIVEN("require_tls=false and no relay")
-    {
-        WHEN("validated")
-        {
-            auto const result = parse("server.email.require_tls=false\n");
-
-            THEN("nothing is reported, because email is off")
-            {
-                REQUIRE_FALSE(contains_finding(result.findings, "server.email.require_tls"));
             }
         }
     }

@@ -49,6 +49,10 @@ without one they are refused as before (ADR-0219, ADR-0220).
   assertion that a session happened now waits, at most ten seconds, for it to be recorded, and
   every assertion that the relay was never contacted reads a count of connections taken as
   `accept()` returns (found in review: the recorded sessions could miss one still in progress).
+- **FIXED (found by this PR's CI):** CodeQL flagged three long functions with few comments
+  (`cpp/poorly-documented-function`). `send_smtp_message` now applies its libcurl options through a
+  `configure_session` helper whose groups each name the ADR-0220 rule they enforce, and two long
+  test scenarios are split into accepted and refused cases.
 - **FIXED (found by this PR's CI):** `rhel-build-and-test` failed every email scenario that needs an
   SMTP session: AlmaLinux 10 links `libcurl-minimal`, built without SMTP, so no session could
   start. The server already refuses to start with such a relay; the scenarios now skip, naming

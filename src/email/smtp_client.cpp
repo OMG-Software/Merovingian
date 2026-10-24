@@ -240,6 +240,72 @@ namespace
                curl_easy_setopt(handle, CURLOPT_CAPATH, ca_trust.bundle_dir.c_str()) == CURLE_OK;
     }
 
+    // What one session sends, gathered so configure_session can apply it. libcurl copies string
+    // options but keeps pointers to the two lists and to `source` until the transfer ends, so the
+    // caller keeps every one of these alive until curl_easy_perform returns.
+    struct SessionParts final
+    {
+        std::string const& url;
+        std::string const& envelope_from;
+        CurlSlist const& recipients;
+        CurlSlist const& pins;
+        UploadSource& source;
+        std::optional<core::SecretBuffer> const& password;
+        bool cleartext;
+        std::size_t message_bytes;
+    };
+
+    // Applies every option of one SMTP session to `curl`. False if libcurl refused any of them; the
+    // caller then sends nothing. Each group below is a rule from ADR-0220.
+    [[nodiscard]] auto configure_session(CURL* curl, SmtpSettings const& settings, SessionParts const& parts) -> bool
+    {
+        // Only the configured scheme may be spoken: never a redirect to another protocol.
+        auto const* const protocols = settings.endpoint.implicit_tls ? "smtps" : "smtp";
+        // TLS before anything else is sent (STARTTLS for smtp://), unless the operator chose a
+        // cleartext loopback relay; verified peer and host name; never older than TLS 1.2.
+        auto const use_ssl = parts.cleartext ? static_cast<long>(CURLUSESSL_NONE) : static_cast<long>(CURLUSESSL_ALL);
+        auto ok = curl_easy_setopt(curl, CURLOPT_URL, parts.url.c_str()) == CURLE_OK &&
+                  curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, protocols) == CURLE_OK &&
+                  curl_easy_setopt(curl, CURLOPT_USE_SSL, use_ssl) == CURLE_OK &&
+                  curl_easy_setopt(curl, CURLOPT_SSLVERSION, static_cast<long>(CURL_SSLVERSION_TLSv1_2)) == CURLE_OK &&
+                  curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L) == CURLE_OK &&
+                  curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L) == CURLE_OK && set_trust(curl, settings);
+
+        // No signals (the server is multi-threaded), no proxy from the environment, a fresh
+        // connection that is never reused, and both timeouts.
+        ok = ok && curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_PROXY, "") == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(settings.connect_timeout_seconds)) ==
+                 CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(settings.total_timeout_seconds)) == CURLE_OK;
+
+        // The envelope (one sender, one recipient) and the message, uploaded as the DATA section.
+        ok = ok && curl_easy_setopt(curl, CURLOPT_MAIL_FROM, parts.envelope_from.c_str()) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, parts.recipients.get()) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_READFUNCTION, &read_message) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_READDATA, &parts.source) == CURLE_OK &&
+             curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, static_cast<curl_off_t>(parts.message_bytes)) == CURLE_OK;
+
+        // Test-only address pins (empty in production).
+        if (ok && parts.pins != nullptr)
+        {
+            ok = curl_easy_setopt(curl, CURLOPT_RESOLVE, parts.pins.get()) == CURLE_OK;
+        }
+
+        // SMTP AUTH, only ever after TLS (send_smtp_message refuses credentials on cleartext).
+        if (ok && parts.password.has_value())
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): libcurl takes a C string.
+            auto const* const password_text = reinterpret_cast<char const*>(parts.password->bytes().data());
+            ok = curl_easy_setopt(curl, CURLOPT_USERNAME, settings.username.c_str()) == CURLE_OK &&
+                 curl_easy_setopt(curl, CURLOPT_PASSWORD, password_text) == CURLE_OK;
+        }
+        return ok;
+    }
+
 } // namespace
 
 auto smtp_protocol_available(bool implicit_tls) noexcept -> bool
@@ -311,43 +377,14 @@ auto send_smtp_message(SmtpSettings const& settings, std::string_view recipient,
     }
     auto source = UploadSource{message};
 
-    auto const use_ssl = cleartext ? static_cast<long>(CURLUSESSL_NONE) : static_cast<long>(CURLUSESSL_ALL);
-    auto ok =
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str()) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, settings.endpoint.implicit_tls ? "smtps" : "smtp") == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_USE_SSL, use_ssl) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_SSLVERSION, static_cast<long>(CURL_SSLVERSION_TLSv1_2)) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L) == CURLE_OK && set_trust(curl, settings) &&
-        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_PROXY, "") == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(settings.connect_timeout_seconds)) ==
-            CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(settings.total_timeout_seconds)) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_MAIL_FROM, envelope_from.c_str()) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, recipients.get()) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_READFUNCTION, &read_message) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_READDATA, &source) == CURLE_OK &&
-        curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, static_cast<curl_off_t>(message.size())) == CURLE_OK;
-    if (ok && pins != nullptr)
-    {
-        ok = curl_easy_setopt(curl, CURLOPT_RESOLVE, pins.get()) == CURLE_OK;
-    }
-    if (ok && password.has_value())
-    {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): libcurl takes a C string.
-        auto const* const password_text = reinterpret_cast<char const*>(password->bytes().data());
-        ok = curl_easy_setopt(curl, CURLOPT_USERNAME, settings.username.c_str()) == CURLE_OK &&
-             curl_easy_setopt(curl, CURLOPT_PASSWORD, password_text) == CURLE_OK;
-    }
-    if (!ok)
+    auto const parts = SessionParts{url, envelope_from, recipients, pins, source, password, cleartext, message.size()};
+    if (!configure_session(curl, settings, parts))
     {
         return failed("could not configure the SMTP session");
     }
 
+    // One SMTP session: connect, (START)TLS, EHLO, AUTH when configured, MAIL FROM, RCPT TO, DATA,
+    // QUIT. Blocking, bounded by the connect and total timeouts set above.
     auto const code = curl_easy_perform(curl);
     if (code == CURLE_OK)
     {
