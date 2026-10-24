@@ -203,6 +203,8 @@
 * [0216 - The upgrade path is tested from a forward-only schema seam and a database the previous release wrote](0216-upgrade-path-is-tested-from-a-forward-only-seam-and-a-real-previous-release-fixture.md)
 * [0217 - Branch coverage excludes the compiler's exception edges](0217-branch-coverage-excludes-compiler-exception-edges.md)
 * [0218 - OS-supplied dependencies carry no wrap file](0218-os-supplied-dependencies-carry-no-wrap.md)
+* [0219 - Email pushers mail only the account's own addresses, an unread count, in a delayed digest](0219-email-pushers-mail-only-the-accounts-own-addresses-an-unread-count-in-a-delayed-digest.md)
+* [0220 - SMTP goes through libcurl, with TLS required except to a loopback literal](0220-smtp-goes-through-libcurl-with-tls-required-except-to-a-loopback-literal.md)
 
 ## Proposed Records
 

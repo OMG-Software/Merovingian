@@ -3,11 +3,15 @@ subdir('crypto')
 subdir('canonicaljson')
 subdir('auth')
 subdir('core')
+# http and platform before email, and email before config: config validation
+# calls email's address and relay-URL checks, and email sends through libcurl.
+subdir('http')
+subdir('platform')
+subdir('email')
 subdir('config')
 subdir('database')
 subdir('rooms')
 subdir('events')
-subdir('http')
 subdir('identity')
 subdir('federation')
 subdir('ipc')
@@ -16,7 +20,6 @@ subdir('homeserver')
 subdir('media')
 subdir('net')
 subdir('observability')
-subdir('platform')
 subdir('push')
 subdir('sync')
 subdir('trust_safety')
@@ -28,7 +31,7 @@ server_exe = executable(
   sources: files('main.cpp'),
   include_directories: inc,
   dependencies: [thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-  link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+  link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, email_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   install: true,
 )
 

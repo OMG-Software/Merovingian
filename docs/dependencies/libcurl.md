@@ -5,7 +5,8 @@ This note records the dependency review for libcurl.
 ## Decision
 
 libcurl is accepted as the selected HTTP transport for the federation
-outbound HTTP client. It is wrapped behind `merovingian::http::OutboundClient`
+outbound HTTP client, and (since 0.12.44) as the SMTP client for email
+pushers (`src/email/smtp_client.cpp`, ADR-0220). It is wrapped behind `merovingian::http::OutboundClient`
 and must not leak `CURL*`, `CURLcode`, or `curl_slist*` types into routing,
 federation logic, room logic, or any caller above the HTTP transport
 boundary.
@@ -37,6 +38,21 @@ supported Linux and BSD targets, and ships in mainline distributions.
 - 3xx responses are not followed; they surface as
   `OutboundError::redirect_rejected` with the status and headers preserved
   on the result for audit.
+
+### SMTP (email pushers)
+
+`src/email/smtp_client.cpp` is the second, and only other, place `CURL*` and
+`curl_slist*` appear, under the same RAII rules. Each email is one easy handle,
+destroyed when the send ends, with `CURLOPT_PROTOCOLS_STR` restricted to the
+configured `smtps` or `smtp`, `CURLOPT_USE_SSL=CURLUSESSL_ALL` unless the
+operator chose a cleartext loopback relay, peer and host verification on,
+`CURLOPT_SSLVERSION` at least TLS 1.2, no proxy, and no connection reuse. Startup
+refuses a configured relay whose scheme `curl_version_info` does not list, so the
+static build's default protocol set (SMTP included) is now relied on; a
+`--disable-smtp` build would refuse to start with a relay configured rather than
+accept email pushers it cannot deliver. See ADR-0220. RHEL-compatible distributions install
+`libcurl-minimal` (no SMTP) by default; operators who want email install the full `libcurl`,
+and the integration scenarios that need an SMTP session skip where it is missing.
 
 ## Maintenance and platform posture
 

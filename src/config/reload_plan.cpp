@@ -564,6 +564,44 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.push.total_timeout_seconds");
     }
 
+    // Outbound email for email pushers: the SMTP client is configured at startup; every field restarts.
+    if (current.server().email.smtp_url != next.server().email.smtp_url)
+    {
+        add_change(plan, "server.email.smtp_url");
+    }
+    if (current.server().email.require_tls != next.server().email.require_tls)
+    {
+        add_change(plan, "server.email.require_tls");
+    }
+    if (current.server().email.from != next.server().email.from)
+    {
+        add_change(plan, "server.email.from");
+    }
+    if (current.server().email.username != next.server().email.username)
+    {
+        add_change(plan, "server.email.username");
+    }
+    if (current.server().email.password_file != next.server().email.password_file)
+    {
+        add_change(plan, "server.email.password_file");
+    }
+    if (current.server().email.connect_timeout_seconds != next.server().email.connect_timeout_seconds)
+    {
+        add_change(plan, "server.email.connect_timeout_seconds");
+    }
+    if (current.server().email.total_timeout_seconds != next.server().email.total_timeout_seconds)
+    {
+        add_change(plan, "server.email.total_timeout_seconds");
+    }
+    if (current.server().email.notification_delay_seconds != next.server().email.notification_delay_seconds)
+    {
+        add_change(plan, "server.email.notification_delay_seconds");
+    }
+    if (current.server().email.notification_throttle_seconds != next.server().email.notification_throttle_seconds)
+    {
+        add_change(plan, "server.email.notification_throttle_seconds");
+    }
+
     if (current.security().secrets.master_key_file != next.security().secrets.master_key_file)
     {
         add_change(plan, "security.secrets.master_key_file");

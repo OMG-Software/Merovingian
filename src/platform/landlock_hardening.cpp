@@ -398,7 +398,8 @@ auto worker_landlock_secret_paths(config::Config const& config) -> std::vector<s
     for (auto const* path :
          {&config.security().secrets.master_key_file, &config.listeners().client.tls_private_key_file,
           &config.listeners().federation.tls_private_key_file, &config.database().uri_file,
-          &config.federation_worker().database_uri_file, &config.security().registration.token_file})
+          &config.federation_worker().database_uri_file, &config.security().registration.token_file,
+          &config.server().email.password_file})
     {
         if (!path->empty())
         {

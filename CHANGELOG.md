@@ -1,3 +1,80 @@
+## 0.12.44
+
+Email pushers are delivered. With an SMTP relay configured (`server.email.*`), `kind: "email"`
+pushers send a delayed, throttled digest of the unread count to the account's own email address;
+without one they are refused as before (ADR-0219, ADR-0220).
+
+- **ADDED:** `server.email.*` config: `smtp_url` (`smtps://` or `smtp://` with mandatory
+  STARTTLS), `require_tls` (`false` only for a cleartext relay at a loopback IP literal, never with
+  credentials), `from`, `username` and `password_file` (an owner-only secret file read for each
+  email), connect and total timeouts, `notification_delay_seconds` (600) and
+  `notification_throttle_seconds` (3600). Every key requires a restart; startup refuses a relay
+  whose scheme the linked libcurl cannot speak.
+- **ADDED:** `src/email/`, a module for outbound email: `is_safe_mailbox_address` (refuses, never
+  repairs, any address that could inject an SMTP command or header), `parse_smtp_url`,
+  `build_unread_notification_email` (RFC 5322, US-ASCII, the unread count and server name only)
+  and `send_smtp_message` (one libcurl SMTP session: TLS 1.2 or later, verification on, no proxy,
+  no connection reuse).
+- **ADDED:** `push::EmailDigestQueue` and the `email-push` job thread (`homeserver/email_push.cpp`).
+  A notification schedules one email per pusher after the delay, never sooner than the throttle
+  after the last; more notifications fold into it; an email that finds nothing unread when due is
+  not sent. A failed send is retried after 1, 2, 4, 8 and 16 minutes and given up at the sixth
+  failed attempt, about half an hour after the first. The queue is in memory and holds at most
+  4096 pushers.
+- **CHANGED:** `POST /_matrix/client/v3/pushers/set` accepts `kind: "email"` when `smtp_url` is
+  set, with `app_id` `m.email` (spec) and a `pushkey` that is an email 3PID already on the account
+  (compared case-insensitively); anything else is 400 `M_INVALID_PARAM`. Without a relay the
+  0.12.3 refusal is unchanged. Deleting an email pusher also drops any email due to it, and a
+  `kind: null` delete for `app_id` `m.email` matches the address in any letter case, so every
+  email pusher for that address goes (found in review). Every other `app_id` still matches exactly.
+- **CHANGED:** `POST /_matrix/client/v3/account/3pid/delete` deletes the account's email pushers for
+  the address it removes, and answers 500 `M_UNKNOWN` instead of 200 when the 3PID or one of those
+  pushers could not be deleted (the 3PID's result was discarded before; found in review). A retry
+  finishes the removal. The email job re-checks the pusher, the 3PID and the account before each
+  send, deletes a pusher whose address has left the account, and never mails a deactivated account.
+- **CHANGED:** push delivery computes the Push Gateway badge count only when an `http` pusher will
+  carry it.
+- **SECURITY:** the federation worker clears `server.email` in its config copy, so no worker code
+  path can send email or open the SMTP password file. `server.email.password_file` is also in
+  `platform::worker_landlock_secret_paths`, so the worker refuses to start when a Landlock rule
+  (such as the SQLite database directory grant) would cover it (found in review).
+- **CHANGED:** `src/meson.build` builds `http`, `platform` and the new `email` module before
+  `config`, whose validation calls email's address and URL checks.
+- **FIXED (found by this PR's CI):** `src/email/smtp_endpoint.cpp` did not compile on FreeBSD or
+  OpenBSD: it relied on glibc's `<arpa/inet.h>` declaring `AF_INET`/`AF_INET6`, which POSIX puts
+  in `<sys/socket.h>`. It now includes `<sys/socket.h>`.
+- **FIXED (found by this PR's CI):** `test_email_push_flow.cpp` failed under ASan. The mock relay
+  records a session after answering `QUIT`, and libcurl returns as soon as it reads that answer,
+  so the test could check for a delivered email before the relay thread had recorded it. Every
+  assertion that a session happened now waits, at most ten seconds, for it to be recorded, and
+  every assertion that the relay was never contacted reads a count of connections taken as
+  `accept()` returns (found in review: the recorded sessions could miss one still in progress).
+- **FIXED (found by this PR's CI):** CodeQL flagged three long functions with few comments
+  (`cpp/poorly-documented-function`). `send_smtp_message` now applies its libcurl options through a
+  `configure_session` helper whose groups each name the ADR-0220 rule they enforce, and two long
+  test scenarios are split into accepted and refused cases.
+- **FIXED (found by this PR's CI):** `rhel-build-and-test` failed every email scenario that needs an
+  SMTP session: AlmaLinux 10 links `libcurl-minimal`, built without SMTP, so no session could
+  start. The server already refuses to start with such a relay; the scenarios now skip, naming
+  the reason, when the linked libcurl lacks the protocol. `docs/user-manual.md`,
+  `docs/platform-support.md` and `docs/dependencies/libcurl.md` tell RHEL operators to install
+  the full `libcurl` for email.
+- **TESTS (new):** `tests/unit/test_email.cpp`, `tests/unit/test_push_email_digest_queue.cpp`,
+  `tests/unit/test_config_email.cpp`, `tests/integration/test_email_push_flow.cpp` (real SMTP
+  sessions against a loopback mock relay: implicit TLS with AUTH, STARTTLS, a relay without
+  STARTTLS, cleartext loopback; read-before-due; address removed; pusher deleted with an email
+  due; deactivated account; unreadable password file; stop requested mid-batch).
+  **TESTS (changed):**
+  `tests/conformance/test_client_server_conformance.cpp` gains the relay-configured
+  `[email-pusher]` scenario; `tests/unit/test_worker_landlock.cpp` gains an SMTP password file
+  beside the SQLite database scenario, and the shipped layout lists seven secrets.
+- **DOCS:** ADR-0219, ADR-0220; `docs/user-manual.md` (`server.email.*`),
+  `config/merovingian.conf.example`, `docs/architecture.md`, `docs/threat-model.md`,
+  `docs/observability-audit.md` (`push.email.*` events), `docs/security-coding-rules.md`,
+  `docs/dependencies/libcurl.md`, `src/email/AGENTS.md`. `docs/todos/production-milestone.md` no
+  longer lists email pushers as a 1.0.0 blocker: the refusal in 0.12.3 already met that row, which
+  stayed listed by mistake. `docs/todos/capability-gaps.md` marks email pushers `runtime-wired`.
+
 ## 0.12.43
 
 Meson wrap pins brought up to date; unused wraps for OS-supplied dependencies removed.

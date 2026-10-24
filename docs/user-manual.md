@@ -700,6 +700,31 @@ client-supplied gateway URLs on upgrade.
 | `server.push.connect_timeout_seconds` | `10` | Outbound connect timeout when contacting a pusher's gateway URL (client-supplied, untrusted). |
 | `server.push.total_timeout_seconds` | `30` | Outbound total timeout for a gateway push request. Must be `>=` `connect_timeout_seconds`. |
 
+#### Email notifications — `server.email.*`
+
+Email pushers (`kind: "email"` in `POST /pushers/set`) are **refused unless
+`server.email.smtp_url` is set**; the section is independent of
+`server.push.enabled`. Only an email address already added to the account as a
+3PID can receive notification emails, and an email carries only an unread count,
+never message content, room names or sender names. Every key requires a restart.
+
+The libcurl the server links must support `smtp`/`smtps`; the server refuses to start with a
+relay it cannot speak. RHEL 10, AlmaLinux 10 and Fedora install `libcurl-minimal` by default,
+which has no SMTP: replace it with the full library (`dnf swap libcurl-minimal libcurl`) before
+setting `smtp_url`. `curl --version` lists the protocols on its `Protocols:` line.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.email.smtp_url` | empty | `smtps://host[:port]` (TLS from the first byte, port 465) or `smtp://host[:port]` (STARTTLS, port 587). No userinfo, path or query. Empty disables email pushers. |
+| `server.email.require_tls` | `true` | Set `false` only for a cleartext `smtp://` relay at a loopback IP literal (`127.0.0.0/8` or `[::1]`, a local MTA) with no credentials. A name such as `localhost` does not qualify. |
+| `server.email.from` | empty | Envelope sender and `From:` address, a plain `local@domain`. Required when `smtp_url` is set. |
+| `server.email.username` | empty | SMTP AUTH user name (printable ASCII, no spaces, at most 256 bytes). Set together with `password_file`. |
+| `server.email.password_file` | empty | Owner-only file holding the SMTP AUTH password, read for each email. Set together with `username`. |
+| `server.email.connect_timeout_seconds` | `10` | Outbound connect timeout for the relay (1..300). |
+| `server.email.total_timeout_seconds` | `30` | Outbound total timeout for one email (1..600). Must be `>=` `connect_timeout_seconds`. |
+| `server.email.notification_delay_seconds` | `600` | Seconds after a notification before the email is sent (0..86,400). If the user has read everything by then, none is sent. |
+| `server.email.notification_throttle_seconds` | `3600` | Least time between two emails to one address (0..604,800). |
+
 #### SSO login — `server.sso.*`
 
 `m.login.sso` is **disabled by default**; `GET /login` does not advertise it
@@ -1478,6 +1503,7 @@ only reports what *would* happen.
 | `server.http.*` | Restart required |
 | `server.identity_server.*` | Restart required |
 | `server.push.*` | Restart required |
+| `server.email.*` | Restart required |
 | `appservice.*` | Restart required |
 | `database.pool_size` | Restart required |
 | `server.turn.*` | Reloadable |

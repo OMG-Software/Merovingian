@@ -8,6 +8,7 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/email/smtp_client.hpp"
 #include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/edu_idempotence.hpp"
@@ -26,6 +27,7 @@
 #include "merovingian/observability/audit_rate_gate.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/push/email_digest_queue.hpp"
 #include "merovingian/push/gateway_circuit_breaker.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/push/push_retry_queue.hpp"
@@ -373,6 +375,10 @@ struct HomeserverRuntime final
     // PushGatewayClient::notify() to pin a local mock gateway + in-memory CA
     // bundle in tests (discovery rejects loopback and never sets a CA bundle).
     std::map<std::string, push::TestForcedPushGatewayResolution> test_forced_push_gateway_resolution{};
+    // Test-only: when set, the email job connects to these addresses instead of resolving
+    // server.email.smtp_url's host, and trusts this PEM instead of the system CA store, so tests
+    // can stand up a local mock relay. Always empty in production.
+    std::optional<email::SmtpTestResolution> test_forced_smtp_resolution{};
     // Test-only: when set, every event this runtime composes carries this
     // origin_server_ts (Unix ms) instead of the system clock's reading — a
     // clock that stands still, as two requests inside one millisecond see it,
@@ -591,6 +597,11 @@ struct HomeserverRuntime final
     // retry_due_push_deliveries. In memory only: a restart forgets pending retries. Behind a
     // pointer so the runtime stays movable.
     std::unique_ptr<push::PushRetryQueue> push_retry_queue_{std::make_unique<push::PushRetryQueue>()};
+    // ADR-0219: kind "email" pushers with a notification email due, and when each last sent one.
+    // Internally locked; push delivery notes notifications (under runtime.mutex) and the email job
+    // (main.cpp) sends through send_due_email_notifications. In memory only. Behind a pointer so the
+    // runtime stays movable.
+    std::unique_ptr<push::EmailDigestQueue> email_digest_queue_{std::make_unique<push::EmailDigestQueue>()};
 };
 
 // Removes every already-completed future from `futures` in place, preserving

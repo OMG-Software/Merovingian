@@ -36,6 +36,14 @@ Push retries (R14, ADR-0206) log under the `rooms` logger, never with a gateway 
 `push.delivery.circuit_open` (warning) carries `gateway_host` and `recipient` when a delivery or
 retry is skipped because the gateway's circuit is open; the skipped notification is retried.
 
+Email pushers (ADR-0219, ADR-0220) log under the `rooms` logger with `recipient` (the user ID),
+never the email address, the relay URL or credentials: `push.email.sent` (debug, with `unread`);
+`push.email.failed` (warning, with `result` and, from libcurl, `detail`) when an email could not be
+built or sent; `push.email.abandoned` (warning, with `attempts`) after the last retry;
+`push.email.pusher_removed` (info, with `reason`) when a pusher is deleted because its address is
+no longer the user's 3PID; and `push.email.dropped` (warning, with `reason`) when the email queue
+is full.
+
 
 - Admin health summaries through `/_merovingian/admin/health`.
 - Admin metrics summaries through `/_merovingian/admin/metrics`.

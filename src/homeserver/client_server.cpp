@@ -39,6 +39,7 @@
 #include "merovingian/homeserver/appservice_ephemeral.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_outbound_proxy.hpp"
+#include "merovingian/homeserver/email_push.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -1903,6 +1904,23 @@ namespace
             return to_lower(address);
         }
         return std::string{address};
+    }
+
+    // Removes a 3PID from `user_id`'s account (write-through), and with an email address every email
+    // pusher that sends to it: the user no longer holds the address, so nothing may be mailed there
+    // on their behalf (ADR-0219). `address` is normalised. Returns false when a write failed: the 3PID
+    // is then kept with its pushers, or (if a pusher failed after it) the pushers are left for a
+    // retry, which finds the 3PID gone and removes them. A 3PID that was not there is not a failure.
+    [[nodiscard]] auto remove_account_threepid(ClientServerRuntime& rt, std::string_view user_id,
+                                               std::string_view medium, std::string_view address) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        if (database::find_account_threepid(store, user_id, medium, address).has_value() &&
+            !database::delete_account_threepid(store, user_id, medium, address))
+        {
+            return false;
+        }
+        return medium != "email" || remove_email_pushers_for_address(rt.homeserver, user_id, address);
     }
 
     [[nodiscard]] auto find_registration_validation_session_by_sid(
@@ -12836,8 +12854,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *record->id_server);
             if (!trusted_base.has_value())
             {
-                std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user,
-                                                                body->medium, normalized_address);
+                if (!remove_account_threepid(rt, *user, body->medium, normalized_address))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to remove the 3PID and its email pushers");
+                }
                 return dispatch_resp(
                     req, rt, 200U,
                     json_serialize(json_obj({json_member("id_server_unbind_result", json_str("no-support"))})));
@@ -12873,15 +12893,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto const result_str =
                 (is_result.status == 200U) ? std::string_view{"success"} : std::string_view{"no-support"};
-            std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user,
-                                                            body->medium, normalized_address);
+            if (!remove_account_threepid(rt, *user, body->medium, normalized_address))
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to remove the 3PID and its email pushers");
+            }
             return dispatch_resp(
                 req, rt, 200U,
                 json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result_str))})));
         }
         // Write-through delete: remove the binding from the backend and the mirror.
-        std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user, body->medium,
-                                                        normalized_address);
+        if (!remove_account_threepid(rt, *user, body->medium, normalized_address))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to remove the 3PID and its email pushers");
+        }
         return dispatch_resp(
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));
     }
@@ -12934,18 +12958,36 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 "pusher body must contain app_id, pushkey, and kind with required fields");
         }
         // Matrix v1.19 defines kind "email" as a pusher that emails unread
-        // notifications. This homeserver implements no email transport, and
-        // accepting one anyway was the worst of the three options: the pusher
-        // was stored, listed back by GET /pushers, and then skipped at delivery
-        // time, so the user believed notifications were configured and none
-        // ever arrived. Refuse it instead — the spec's 400 for this endpoint is
-        // "one or more of the pusher values were invalid" with no mandated
-        // errcode, so the message says which value and why.
+        // notifications, its pushkey "the email address to send notifications
+        // to". Without an SMTP relay (server.email.smtp_url) it is refused:
+        // accepting one would store a pusher that never delivers, so the user
+        // believes notifications are configured and none ever arrive. The
+        // spec's 400 for this endpoint is "one or more of the pusher values
+        // were invalid" with no mandated errcode, so the message says which
+        // value and why.
         if (body->kind.has_value() && *body->kind == "email")
         {
-            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
-                                "email pushers are not supported by this homeserver: no email transport is "
-                                "configured, so an email pusher would be stored but never delivered");
+            if (!email_push_configured(rt.homeserver.config))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "email pushers are not supported by this homeserver: no email transport is "
+                                    "configured, so an email pusher would be stored but never delivered");
+            }
+            // Spec: "If the kind is "email", this is "m.email"."
+            if (body->app_id != "m.email")
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "an email pusher's app_id must be m.email");
+            }
+            // ADR-0219: this server mails only the account's own addresses.
+            // Any other pushkey would let one account make the server send
+            // mail to strangers, so the address must be an email 3PID already
+            // added to the account (and so validated by its owner).
+            if (!owned_email_pusher_address(rt.homeserver.database.persistent_store, *user, body->pushkey).has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                    "an email pusher's pushkey must be an email address already added to this "
+                                    "account");
+            }
         }
         auto& store = rt.homeserver.database.persistent_store;
         if (!body->kind.has_value())
@@ -12958,10 +13000,44 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // client was told "done" even when the delete failed and the
             // pusher stayed live, still receiving pushes despite the user
             // believing they had disabled notifications.
-            auto const existed = database::find_pusher(store, *user, body->app_id, body->pushkey).has_value();
-            if (existed && !database::delete_pusher(store, *user, body->app_id, body->pushkey))
+            //
+            // The stored pushkeys to delete. Exact for every app_id but
+            // m.email: an email pusher's pushkey is an address this server
+            // already compares case-insensitively when deciding who may be
+            // mailed (ADR-0219), so a delete naming the address in another
+            // case removes every email pusher for it. Otherwise the client is
+            // told the pusher is gone while it keeps mailing, and a second
+            // pusher registered in another case would survive the delete.
+            auto matching = std::vector<std::string>{};
+            if (body->app_id == "m.email")
             {
-                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete pusher");
+                auto const address = to_lower(body->pushkey);
+                for (auto const& existing : database::list_pushers_for_user(store, *user))
+                {
+                    if (existing.app_id == body->app_id &&
+                        (existing.pushkey == body->pushkey ||
+                         (existing.kind == "email" && to_lower(existing.pushkey) == address)))
+                    {
+                        matching.push_back(existing.pushkey);
+                    }
+                }
+            }
+            else if (database::find_pusher(store, *user, body->app_id, body->pushkey).has_value())
+            {
+                matching.push_back(body->pushkey);
+            }
+            for (auto const& pushkey : matching)
+            {
+                if (!database::delete_pusher(store, *user, body->app_id, pushkey))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete pusher");
+                }
+                // An email already due for a deleted email pusher is dropped
+                // now rather than when the email job finds the pusher gone.
+                if (rt.homeserver.email_digest_queue_ != nullptr)
+                {
+                    rt.homeserver.email_digest_queue_->forget(push::EmailDigestKey{*user, pushkey});
+                }
             }
             return dispatch_resp(req, rt, 200U, "{}");
         }

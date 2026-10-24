@@ -1205,6 +1205,25 @@ media-fetch-pool task.
   bounds rather than block. Why: a failing gateway must not hold delivery slots, threads or
   unbounded memory (CWE-400, ADR-0206).
   Source: `src/push/AGENTS.md`.
+- **An email pusher mails only an email 3PID the account holds, re-checked before every send.**
+  Registration refuses any other `pushkey`; the email job deletes a pusher whose address has left
+  the account and never mails a deactivated one. Why: otherwise any account can make the server
+  send mail to an arbitrary address, an open relay with this server's reputation (CWE-441,
+  ADR-0219).
+  Source: `src/push/AGENTS.md`, `src/homeserver/AGENTS.md`.
+- **An email address or server name that fails its check is refused, never escaped or repaired,
+  before it reaches libcurl or a header.** Why: a CR, LF, NUL or `>` in an address is SMTP command
+  or header injection, and a repaired address may belong to someone else (CWE-93, CWE-147).
+  Source: `src/email/AGENTS.md`.
+- **SMTP requires TLS (`CURLUSESSL_ALL`, verification on, TLS 1.2 minimum) except to a loopback IP
+  literal with `require_tls=false`, and credentials are never sent without it.** Why:
+  opportunistic STARTTLS can be stripped by anyone on the path, exposing the recipient and the
+  password (CWE-319, ADR-0220).
+  Source: `src/email/AGENTS.md`.
+- **A notification email carries the unread count and server name only.** Why: room, sender and
+  message content would be copied into mail infrastructure this server cannot delete from
+  (CWE-359, ADR-0219).
+  Source: `src/email/AGENTS.md`.
 
 ## Trust and safety
 
@@ -1372,6 +1391,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/federation_worker/AGENTS.md` | Platform hardening |
 | `src/sync/AGENTS.md` | Sync |
 | `src/push/AGENTS.md` | Push notifications |
+| `src/email/AGENTS.md` | Push notifications |
 | `src/trust_safety/AGENTS.md` | Trust and safety |
 | `packaging/AGENTS.md` | Packaging and deployment |
 | `scripts/AGENTS.md` | Memory safety; Process |

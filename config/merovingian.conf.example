@@ -487,6 +487,29 @@ security.media.decode_in_sandbox=true
 # server.push.connect_timeout_seconds=10
 # server.push.total_timeout_seconds=30
 
+# Email notifications (kind "email" pushers)
+# Commented out by default: with smtp_url empty, POST /pushers/set refuses kind
+# "email". Independent of server.push.enabled. Every key needs a restart.
+# smtps://host[:port] (TLS from the first byte, port 465) or smtp://host[:port]
+# (STARTTLS, port 587). No userinfo, path or query.
+# server.email.smtp_url=smtps://smtp.example.org
+# true (default) refuses a relay without TLS; false allows a cleartext smtp://
+# relay only at a loopback IP literal (127.0.0.0/8 or [::1]), never with credentials.
+# server.email.require_tls=true
+# Envelope sender and From: address; required when smtp_url is set.
+# server.email.from=noreply@example.org
+# SMTP AUTH: set both or neither. The password is read from an owner-only file.
+# server.email.username=
+# server.email.password_file=
+# Connect timeout (1..300) and total timeout (1..600, >= connect) per email.
+# server.email.connect_timeout_seconds=10
+# server.email.total_timeout_seconds=30
+# Seconds after a notification before the email is sent (0..86400); none is sent
+# if the user has read everything by then.
+# server.email.notification_delay_seconds=600
+# Least seconds between two emails to one address (0..604800).
+# server.email.notification_throttle_seconds=3600
+
 # SSO login (m.login.sso)
 # Disabled by default and fails closed: with enabled=false the flow is not
 # advertised by GET /login and GET /login/sso/redirect[/{idpId}] returns 404,

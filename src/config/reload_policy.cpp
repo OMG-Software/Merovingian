@@ -83,6 +83,13 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // Outbound email for email pushers: the SMTP relay, credentials file and timeouts are read
+    // at startup. SIGHUP does not rebuild them.
+    if (starts_with(key, "server.email."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     // Application Service API: the AppserviceRegistry is parsed from the
     // configured registration files once at start_runtime() time and handed
     // out as an immutable, read-only snapshot to every request. SIGHUP does

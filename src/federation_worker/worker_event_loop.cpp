@@ -599,6 +599,9 @@ auto WorkerEventLoop::run() -> void
     // master key configured" on an empty path; see docs/threat-model.md,
     // "Worker trust boundary".
     federation_worker::clear_master_key_file(config_);
+    // The same for the SMTP relay (ADR-0220): only main sends email, so the worker's copy names no
+    // relay and no password file, and nothing started in this process can send or open one.
+    config_.server().email = config::EmailConfig{};
 
     // ADR-0062 part 2 (finding N1): apply a separate, least-privilege
     // database connection URI when main delivered one. An invalid db_uri_fd_

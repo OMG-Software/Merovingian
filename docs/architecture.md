@@ -108,7 +108,8 @@ flowchart TB
         federation["federation"]
         identity["identity"]
         media["media"]
-        push["push<br/>push rules, gateway client"]
+        push["push<br/>push rules, gateway client, email digest queue"]
+        email["email<br/>SMTP client, notification email"]
         sync["sync"]
         trust_safety["trust_safety"]
     end
@@ -124,10 +125,12 @@ flowchart TB
 
     net --> homeserver
     fedworker_mod --> homeserver & federation & ipc & net
-    homeserver --> auth & rooms & events & federation & media & push & sync & trust_safety & identity & appservice
+    homeserver --> auth & rooms & events & federation & media & push & email & sync & trust_safety & identity & appservice
     federation --> http
     identity --> http
     push --> http & federation
+    email --> http & platform
+    config --> email
     sync --> trust_safety
     services --> database
     events --> crypto & canonicaljson & rooms
@@ -555,7 +558,7 @@ Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in 
 - **Directory**: `GET/POST /publicRooms`, `GET/PUT /directory/room/{alias}`, `GET /joined_rooms`
 - **Media**: `POST /media/v3/upload`, `GET /media/v3/download/{server}/{mediaId}`, `GET /media/v3/thumbnail/{server}/{mediaId}`, `GET /media/v3/config`
 - **Admin**: `GET /admin/safety/reports`, quarantine/release/remove media
-- **Push notifications**: `GET /pushers`, `POST /pushers/set`, the Push Rules API (`GET`/`PUT`/`DELETE /pushrules/...`; a user's rules are their `m.push_rules` account data applied over the server defaults by `push::UserPushRules`, ADR-0204), `GET /notifications`. Unread counts are decided by the same rules (`homeserver::PushRuleUnreadClassifier`, ADR-0205), and a failed notification is retried with backoff by the `push-retry` job thread from a bounded in-memory queue (`push::PushRetryQueue`, ADR-0206). Gateway delivery is gated on `server.push.enabled` (default `false`); when enabled, `room_service.cpp`'s `send_event()` evaluates each local joined recipient's push rules and dispatches Push Gateway API notifications asynchronously — see "Fire-and-forget background work" above and `push` in the module diagram. `GET /notifications` history recording (`database::store_notification`, a synchronous local write, not gateway I/O) happens in that same rule-evaluation step regardless of `push.enabled` or whether the recipient has a pusher — a user with push turned off still needs to see their notifications.
+- **Push notifications**: `GET /pushers`, `POST /pushers/set`, the Push Rules API (`GET`/`PUT`/`DELETE /pushrules/...`; a user's rules are their `m.push_rules` account data applied over the server defaults by `push::UserPushRules`, ADR-0204), `GET /notifications`. Unread counts are decided by the same rules (`homeserver::PushRuleUnreadClassifier`, ADR-0205), and a failed notification is retried with backoff by the `push-retry` job thread from a bounded in-memory queue (`push::PushRetryQueue`, ADR-0206). Gateway delivery is gated on `server.push.enabled` (default `false`); when enabled, `room_service.cpp`'s `send_event()` evaluates each local joined recipient's push rules and dispatches Push Gateway API notifications asynchronously — see "Fire-and-forget background work" above and `push` in the module diagram. `GET /notifications` history recording (`database::store_notification`, a synchronous local write, not gateway I/O) happens in that same rule-evaluation step regardless of `push.enabled` or whether the recipient has a pusher — a user with push turned off still needs to see their notifications. Kind `"email"` pushers have their own switch, `server.email.smtp_url` (ADR-0219, ADR-0220): the same step notes a notification in `push::EmailDigestQueue` (no network), and the `email-push` job thread (`homeserver/email_push.cpp`) sends each due digest, re-reading the pusher, the account's email 3PID and the badge count under `runtime.mutex` and sending through `email::send_smtp_message` with the mutex released. Only the main process sends email; the federation worker clears `server.email` in its config copy.
 - **Search**: `POST /search` — in-memory full-text search (`content.body`/`content.name`/`content.topic`) over `PersistentStore::events`, scoped to the caller's currently-joined, unencrypted rooms; bounded by `ClientApiLimits::max_search_events_scanned` rather than a SQL full-text index (SQLite FTS5/PostgreSQL `tsvector`), to avoid a second, divergent search backend in an architecture that does not otherwise read events from SQL at request time. See `docs/todos/capability-gaps.md` for the deliberately-left-out spec corners.
 - **Other**: `GET /capabilities`, `GET /voip/turnServer`, MSC2965 OIDC discovery
 
