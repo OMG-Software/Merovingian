@@ -177,7 +177,7 @@ test(
 server_library_log_checks = []
 foreach library_name : ['libsodium', 'OpenSSL', 'libpq', 'SQLite', 'libcurl', 'yyjson']
   server_library_log_checks += ('echo "$output" | grep -qE "^.*Library ' + library_name
-    + ' .*\\((static|dynamic)[,)]"')
+    + ' .*\\((static|dynamic)[,;)]"')
 endforeach
 test(
   'server-library-versions-log-smoke-test',
@@ -202,8 +202,8 @@ if thumbnail_worker_available
       '-c',
       'output=$(' + thumbnail_worker_exe.full_path() + ' --version 2>&1); status=$? && '
         + 'echo "$output" | grep -q "^merovingian-thumbnail-worker ' + meson.project_version() + '$" && '
-        + 'echo "$output" | grep -qE "^libpng .*\\((static|dynamic)[,)]" && '
-        + 'echo "$output" | grep -qE "^libjpeg-turbo .*\\((static|dynamic)[,)]"'
+        + 'echo "$output" | grep -qE "^libpng .*\\((static|dynamic)[,;)]" && '
+        + 'echo "$output" | grep -qE "^libjpeg-turbo .*\\((static|dynamic)[,;)]"'
         + thumbnail_worker_exit_check,
     ],
   )
