@@ -8,6 +8,7 @@ that it fails, rather than hangs or passes, on every other outcome.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -293,6 +294,23 @@ class StartupHardeningGatePortabilityTests(unittest.TestCase):
         commands = [line.strip() for line in script.splitlines() if not line.lstrip().startswith("#")]
         gnu_alternation = [line for line in commands if "\\|" in line]
         self.assertEqual(gnu_alternation, [])
+
+    def test_publishes_the_server_exit_status_atomically(self) -> None:
+        # GIVEN the gate waits for the status file to exist and then reads the
+        # exit status out of it.
+        script = GATE_SCRIPT.read_text(encoding="utf-8")
+        commands = [line.strip() for line in script.splitlines() if not line.lstrip().startswith("#")]
+
+        # WHEN the wrapper records the server's exit status.
+        # THEN it writes a temporary file and renames it into place, because a
+        # redirect creates the file before writing it and a reader polling for
+        # existence can read it empty ("server exited with status  on SIGTERM").
+        # Any redirect (`>` or `>>`, with or without a space) whose target is
+        # the status file itself, as opposed to "$status_file.tmp".
+        direct_write = re.compile(r'>>?\s*"?\$\{?status_file\}?(?=["\s;)]|$)')
+        direct_writes = [line for line in commands if direct_write.search(line)]
+        self.assertEqual(direct_writes, [])
+        self.assertIn('mv "$status_file.tmp" "$status_file"', script)
 
 
 if __name__ == "__main__":

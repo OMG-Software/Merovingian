@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import fnmatch
 import sys
 import unittest
 from pathlib import Path
@@ -41,6 +42,16 @@ DOC_REVIEWS = {
     "yyjson": REPO_ROOT / "docs" / "dependencies" / "yyjson.md",
     "catch2": REPO_ROOT / "docs" / "dependencies" / "catch2.md",
 }
+
+OS_SUPPLIED_DEPENDENCIES = ("openssl", "libsodium", "libpq")
+
+
+def wrap_field(wrap_path: Path, key: str) -> str:
+    for line in wrap_path.read_text(encoding="utf-8").splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == key:
+            return value.strip()
+    raise AssertionError(f"{wrap_path.name} has no {key} field")
 
 
 class DependencyWrapTests(unittest.TestCase):
@@ -396,10 +407,67 @@ class DependencyWrapTests(unittest.TestCase):
 
         # WHEN Fedora executes binaries from Meson's test harness.
         # THEN the default test setup exposes staged external-project library
-        # directories through LD_LIBRARY_PATH.
+        # directories through LD_LIBRARY_PATH, naming the directory the pinned
+        # curl wrap extracts to.
+        curl_directory = wrap_field(WRAPS["libcurl"], "directory")
         self.assertIn("wrapped_runtime_env.prepend(", tests_meson)
         self.assertIn("'LD_LIBRARY_PATH'", tests_meson)
+        self.assertIn(f"'subprojects' / '{curl_directory}' / 'dist'", tests_meson)
         self.assertIn("add_test_setup('wrappedruntime', env: wrapped_runtime_env, is_default: true)", tests_meson)
+
+    def test_os_supplied_libraries_carry_no_wrap(self) -> None:
+        # GIVEN OpenSSL, LibSodium, and libpq always come from OS packages
+        # (allow_fallback: false), so a wrap for them is never used (ADR-0218).
+        for dependency_name in OS_SUPPLIED_DEPENDENCIES:
+            # WHEN the subprojects directory is inspected.
+            wrap_path = REPO_ROOT / "subprojects" / f"{dependency_name}.wrap"
+            packagefile_dir = REPO_ROOT / "subprojects" / "packagefiles" / dependency_name
+
+            # THEN no wrap or packagefile pins a source that no build fetches.
+            self.assertFalse(wrap_path.exists(), f"{wrap_path.name} pins a source no build uses")
+            self.assertFalse(packagefile_dir.exists(), f"packagefiles/{dependency_name} is unused")
+
+    def test_project_include_root_does_not_shadow_os_openssl_headers(self) -> None:
+        # GIVEN every target compiles with -I include, which is searched before
+        # the system include directories.
+        include_root = REPO_ROOT / "include"
+
+        # WHEN OpenSSL's own headers include <openssl/...>.
+        # THEN no file under include/openssl/ can replace the OS package's
+        # header, such as a configuration.h generated for another release.
+        self.assertFalse((include_root / "openssl").exists(), "include/openssl/ shadows the OS OpenSSL headers")
+
+    def test_yyjson_floor_and_packagefile_match_the_pinned_wrap(self) -> None:
+        # GIVEN the pinned yyjson wrap.
+        wrap_version = wrap_field(WRAPS["yyjson"], "directory").removeprefix("yyjson-")
+        meson_build = MESON_BUILD.read_text(encoding="utf-8")
+        packagefile = (REPO_ROOT / "subprojects" / "packagefiles" / "yyjson" / "meson.build").read_text(
+            encoding="utf-8"
+        )
+
+        # WHEN Meson resolves yyjson from either the OS or the wrap.
+        # THEN the accepted floor is the pinned release, so a system yyjson
+        # without the pinned release's parser fixes is refused, and the
+        # packagefile reports the version it builds.
+        self.assertIn(f"version: '>={wrap_version}'", meson_build)
+        self.assertIn(f"version: '{wrap_version}'", packagefile)
+
+    def test_gitignore_covers_every_pinned_wrap_source_directory(self) -> None:
+        # GIVEN Meson extracts each pinned wrap into subprojects/<directory>/.
+        patterns = [
+            line
+            for line in (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+            if line.startswith("/subprojects/")
+        ]
+        for dependency_name, wrap_path in WRAPS.items():
+            # WHEN the extracted source tree sits in the checkout.
+            directory = f"/subprojects/{wrap_field(wrap_path, 'directory')}/"
+
+            # THEN a .gitignore pattern ignores it.
+            self.assertTrue(
+                any(fnmatch.fnmatchcase(directory, pattern) for pattern in patterns),
+                f"{dependency_name} source directory {directory} is not gitignored",
+            )
 
     def test_aggregate_unit_test_binary_has_ci_sized_timeout(self) -> None:
         # GIVEN the full Catch2 unit suite runs as one aggregate Meson test.
@@ -419,10 +487,12 @@ class DependencyWrapTests(unittest.TestCase):
 
         # WHEN fallback external projects install shared libraries under the build tree.
         # THEN the script adds staged library directories to LD_LIBRARY_PATH before dry runs.
+        # The staged directory is the one the pinned curl wrap extracts to.
+        curl_directory = wrap_field(WRAPS["libcurl"], "directory")
         self.assertIn("runtime_library_dirs=(", script)
-        self.assertIn("subprojects/curl-8.20.0/dist/usr/local/lib64", script)
-        self.assertNotIn("subprojects/postgresql-18.0/dist/usr/local", script)
-        self.assertNotIn("subprojects/libsodium-1.0.22/dist/usr/local", script)
+        self.assertIn(f"subprojects/{curl_directory}/dist/usr/local/lib64", script)
+        self.assertNotIn("subprojects/postgresql-", script)
+        self.assertNotIn("subprojects/libsodium-", script)
         self.assertIn("export LD_LIBRARY_PATH", script)
 
     def test_setup_scripts_install_the_extra_tools_needed_by_wrapped_sources(self) -> None:

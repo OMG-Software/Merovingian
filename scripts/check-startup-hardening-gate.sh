@@ -151,13 +151,16 @@ chmod 0400 "$master_key"
 chmod 0644 "$config"
 
 # Run the server from a wrapper that records its exit status, so a server that
-# dies is noticed at once rather than mistaken for a live, unreaped child.
+# dies is noticed at once rather than mistaken for a live, unreaped child. The
+# status is renamed into place: the checks below wait for the file to exist and
+# then read it, and a redirect creates the file before it writes the number.
 (
     "$server" --config "$config" >"$log" 2>&1 &
     echo "$!" >"$pid_file"
     status=0
     wait "$!" || status=$?
-    echo "$status" >"$status_file"
+    echo "$status" >"$status_file.tmp"
+    mv "$status_file.tmp" "$status_file"
 ) &
 wrapper_pid=$!
 

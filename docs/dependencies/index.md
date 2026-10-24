@@ -30,7 +30,10 @@ or tooling boundary so upstream APIs do not leak across the homeserver.
   (`allow_fallback: false`), as are the **libpng** and **libjpeg-turbo** image
   codecs used by the sandboxed thumbnail worker. Only **SQLite**, **yyjson**,
   and the **Catch2** test framework build from source-pinned wraps when no
-  system copy is present. See [platform-support.md](../platform-support.md) for
+  system copy is present (the build wrappers always use the wraps). The
+  OS-supplied dependencies have no wrap file
+  ([ADR-0218](../adr/0218-os-supplied-dependencies-carry-no-wrap.md)), except
+  libcurl, whose wrap only the static musl build uses. See [platform-support.md](../platform-support.md) for
   per-platform package names.
 - Direct dependencies must be pinned immutably. Source-pinned dependencies use
   Meson `[wrap-file]` entries with SHA-256 hashes. See the per-dependency review

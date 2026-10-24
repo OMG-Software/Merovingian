@@ -46,7 +46,8 @@ management, parameterized execution, and PostgreSQL error reporting.
 linked dynamically. The top-level Meson dependency sets `allow_fallback: false`,
 so clean builds must provide `libpq.pc` through the host package manager even
 when the wrapper scripts use Meson's `forcefallback` mode for other
-dependencies.
+dependencies. There is no `subprojects/libpq.wrap`
+([ADR-0218](../adr/0218-os-supplied-dependencies-carry-no-wrap.md)).
 
 Supported development paths install the OS development package explicitly:
 Debian-family hosts use `libpq-dev`, Fedora-family hosts use `libpq-devel`,

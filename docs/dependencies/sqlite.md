@@ -25,7 +25,7 @@ process restart and provides a practical development path for contributors.
 ## Maintenance and platform posture
 
 SQLite is pinned through `subprojects/sqlite3.wrap`, currently targeting the
-WrapDB-packaged `3.53.1-1` source release. It remains isolated to the database
+WrapDB-packaged `3.54.1-1` source release (SQLite 3.54.1). It remains isolated to the database
 backend module even though the default build path now resolves it from the
 committed wrap rather than the host package manager. The Meson fallback is
 forced to a static library so sanitizer jobs link the sanitizer runtime through
