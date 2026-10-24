@@ -28,7 +28,9 @@ without one they are refused as before (ADR-0219, ADR-0220).
   `kind: null` delete for `app_id` `m.email` matches the address in any letter case, so every
   email pusher for that address goes (found in review). Every other `app_id` still matches exactly.
 - **CHANGED:** `POST /_matrix/client/v3/account/3pid/delete` deletes the account's email pushers for
-  the address it removes. The email job re-checks the pusher, the 3PID and the account before each
+  the address it removes, and answers 500 `M_UNKNOWN` instead of 200 when the 3PID or one of those
+  pushers could not be deleted (the 3PID's result was discarded before; found in review). A retry
+  finishes the removal. The email job re-checks the pusher, the 3PID and the account before each
   send, deletes a pusher whose address has left the account, and never mails a deactivated account.
 - **CHANGED:** push delivery computes the Push Gateway badge count only when an `http` pusher will
   carry it.

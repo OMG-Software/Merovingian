@@ -1908,16 +1908,19 @@ namespace
 
     // Removes a 3PID from `user_id`'s account (write-through), and with an email address every email
     // pusher that sends to it: the user no longer holds the address, so nothing may be mailed there
-    // on their behalf (ADR-0219). `address` is normalised.
-    auto remove_account_threepid(ClientServerRuntime& rt, std::string_view user_id, std::string_view medium,
-                                 std::string_view address) -> void
+    // on their behalf (ADR-0219). `address` is normalised. Returns false when a write failed: the 3PID
+    // is then kept with its pushers, or (if a pusher failed after it) the pushers are left for a
+    // retry, which finds the 3PID gone and removes them. A 3PID that was not there is not a failure.
+    [[nodiscard]] auto remove_account_threepid(ClientServerRuntime& rt, std::string_view user_id,
+                                               std::string_view medium, std::string_view address) -> bool
     {
-        std::ignore =
-            database::delete_account_threepid(rt.homeserver.database.persistent_store, user_id, medium, address);
-        if (medium == "email")
+        auto& store = rt.homeserver.database.persistent_store;
+        if (database::find_account_threepid(store, user_id, medium, address).has_value() &&
+            !database::delete_account_threepid(store, user_id, medium, address))
         {
-            remove_email_pushers_for_address(rt.homeserver, user_id, address);
+            return false;
         }
+        return medium != "email" || remove_email_pushers_for_address(rt.homeserver, user_id, address);
     }
 
     [[nodiscard]] auto find_registration_validation_session_by_sid(
@@ -12851,7 +12854,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *record->id_server);
             if (!trusted_base.has_value())
             {
-                remove_account_threepid(rt, *user, body->medium, normalized_address);
+                if (!remove_account_threepid(rt, *user, body->medium, normalized_address))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to remove the 3PID and its email pushers");
+                }
                 return dispatch_resp(
                     req, rt, 200U,
                     json_serialize(json_obj({json_member("id_server_unbind_result", json_str("no-support"))})));
@@ -12887,13 +12893,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto const result_str =
                 (is_result.status == 200U) ? std::string_view{"success"} : std::string_view{"no-support"};
-            remove_account_threepid(rt, *user, body->medium, normalized_address);
+            if (!remove_account_threepid(rt, *user, body->medium, normalized_address))
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to remove the 3PID and its email pushers");
+            }
             return dispatch_resp(
                 req, rt, 200U,
                 json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result_str))})));
         }
         // Write-through delete: remove the binding from the backend and the mirror.
-        remove_account_threepid(rt, *user, body->medium, normalized_address);
+        if (!remove_account_threepid(rt, *user, body->medium, normalized_address))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to remove the 3PID and its email pushers");
+        }
         return dispatch_resp(
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));
     }

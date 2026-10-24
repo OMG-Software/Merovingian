@@ -42,16 +42,19 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include <poll.h>
+#include <sqlite3.h>
 #include <sys/socket.h>
 
 namespace
@@ -421,7 +424,8 @@ constexpr auto smtp_unsupported =
     "the linked libcurl was built without SMTP (e.g. RHEL's libcurl-minimal); the server refuses to start "
     "with a relay it cannot speak, so there is no SMTP session to test";
 
-[[nodiscard]] auto email_test_config() -> merovingian::config::Config
+[[nodiscard]] auto email_test_config(merovingian::config::DatabaseConfig database =
+                                         merovingian::tests::in_memory_database_config()) -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
     // A runtime refuses to mint a signing secret it cannot encrypt at rest (0.12.5 audit,
@@ -431,12 +435,114 @@ constexpr auto smtp_unsupported =
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
-        merovingian::tests::in_memory_database_config(),
+        std::move(database),
         security,
         merovingian::config::ClientRateLimitsConfig{},
         merovingian::config::LogModulesConfig{},
     };
 }
+
+// A SQLite database file of its own, removed when the scenario ends.
+class TemporarySqliteDatabase final
+{
+public:
+    TemporarySqliteDatabase()
+        : path_{merovingian::tests::temporary_directory() /
+                ("merovingian-email-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                 ".sqlite3")}
+    {
+    }
+
+    ~TemporarySqliteDatabase()
+    {
+        for (auto const* suffix : {"", "-journal", "-wal", "-shm"})
+        {
+            auto ignored = std::error_code{};
+            std::filesystem::remove(path_.string() + suffix, ignored);
+        }
+    }
+
+    TemporarySqliteDatabase(TemporarySqliteDatabase const&) = delete;
+    auto operator=(TemporarySqliteDatabase const&) -> TemporarySqliteDatabase& = delete;
+    TemporarySqliteDatabase(TemporarySqliteDatabase&&) = delete;
+    auto operator=(TemporarySqliteDatabase&&) -> TemporarySqliteDatabase& = delete;
+
+    [[nodiscard]] auto path() const -> std::filesystem::path const&
+    {
+        return path_;
+    }
+
+    [[nodiscard]] auto config() const -> merovingian::config::DatabaseConfig
+    {
+        auto database = merovingian::config::DatabaseConfig{};
+        database.backend = merovingian::config::DatabaseBackend::sqlite;
+        database.sqlite_path = path_.string();
+        return database;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+struct SqliteConnectionCloser final
+{
+    auto operator()(sqlite3* connection) const noexcept -> void
+    {
+        if (connection != nullptr)
+        {
+            std::ignore = sqlite3_close(connection);
+        }
+    }
+};
+
+// Makes every DELETE from one table of the server's database fail, from a second connection, so
+// the server's own write aborts and rolls back as a failed commit would. clear() lifts it so a
+// retry can succeed; the destructor lifts it too. (tests/support/sqlite_insert_fault.hpp does the
+// same for INSERT.)
+class SqliteDeleteFault final
+{
+public:
+    SqliteDeleteFault(std::filesystem::path const& path, std::string_view table)
+        : drop_sql_{"DROP TRIGGER IF EXISTS email_test_delete_fault"}
+    {
+        auto* raw_connection = static_cast<sqlite3*>(nullptr);
+        auto const status = sqlite3_open(path.string().c_str(), &raw_connection);
+        connection_.reset(raw_connection);
+        REQUIRE(status == SQLITE_OK);
+        REQUIRE(execute("CREATE TRIGGER email_test_delete_fault BEFORE DELETE ON " + std::string{table} +
+                        " BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END"));
+        active_ = true;
+    }
+
+    ~SqliteDeleteFault()
+    {
+        if (active_)
+        {
+            std::ignore = execute(drop_sql_);
+        }
+    }
+
+    SqliteDeleteFault(SqliteDeleteFault const&) = delete;
+    auto operator=(SqliteDeleteFault const&) -> SqliteDeleteFault& = delete;
+    SqliteDeleteFault(SqliteDeleteFault&&) = delete;
+    auto operator=(SqliteDeleteFault&&) -> SqliteDeleteFault& = delete;
+
+    auto clear() -> void
+    {
+        REQUIRE(execute(drop_sql_));
+        active_ = false;
+    }
+
+private:
+    [[nodiscard]] auto execute(std::string const& sql) const -> bool
+    {
+        return sqlite3_exec(connection_.get(), sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
+    }
+
+    std::unique_ptr<sqlite3, SqliteConnectionCloser> connection_{};
+    std::string drop_sql_{};
+    bool active_{false};
+};
 
 [[nodiscard]] auto register_and_login(ClientServerRuntime& runtime, std::string const& localpart) -> std::string
 {
@@ -728,6 +834,88 @@ SCENARIO("Deleting an email pusher matches its address in any letter case", "[in
                             .empty());
                 REQUIRE_FALSE(runtime.homeserver.email_digest_queue_->next_due().has_value());
                 REQUIRE(relay.connections() == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Removing an email address reports a failed write and a retry finishes the job",
+         "[integration][push][email][sqlite]")
+{
+    GIVEN("a SQLite-backed server where Alice holds alice@example.net with an email pusher for it")
+    {
+        auto const database = TemporarySqliteDatabase{};
+        auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
+        auto started = merovingian::homeserver::start_client_server(email_test_config(database.config()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        auto const fixture = alice_with_email_pusher(runtime);
+        auto const remove_address = [&runtime, &fixture]() {
+            return merovingian::homeserver::handle_client_server_request(
+                       runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", fixture.alice,
+                                 R"({"medium":"email","address":"alice@example.net"})"})
+                .response.status;
+        };
+        auto const pusher_count = [&runtime]() {
+            return merovingian::database::list_pushers_for_user(runtime.homeserver.database.persistent_store,
+                                                                "@alice:example.org")
+                .size();
+        };
+        auto const holds_address = [&runtime]() {
+            return merovingian::database::find_account_threepid(runtime.homeserver.database.persistent_store,
+                                                                "@alice:example.org", "email", alice_address)
+                .has_value();
+        };
+
+        WHEN("the 3PID cannot be deleted")
+        {
+            auto fault = SqliteDeleteFault{database.path(), "account_threepids"};
+            auto const status = remove_address();
+
+            THEN("the failure is reported, and the address and its pusher are both kept")
+            {
+                REQUIRE(status == 500U);
+                REQUIRE(holds_address());
+                REQUIRE(pusher_count() == 1U);
+            }
+
+            AND_WHEN("the write works again and Alice retries")
+            {
+                fault.clear();
+                auto const retried = remove_address();
+
+                THEN("the address and its pusher are both gone")
+                {
+                    REQUIRE(retried == 200U);
+                    REQUIRE_FALSE(holds_address());
+                    REQUIRE(pusher_count() == 0U);
+                }
+            }
+        }
+
+        WHEN("the email pusher cannot be deleted after the 3PID is")
+        {
+            auto fault = SqliteDeleteFault{database.path(), "pushers"};
+            auto const status = remove_address();
+
+            THEN("the failure is reported rather than a success with the pusher left behind")
+            {
+                REQUIRE(status == 500U);
+                REQUIRE_FALSE(holds_address());
+                REQUIRE(pusher_count() == 1U);
+            }
+
+            AND_WHEN("the write works again and Alice retries")
+            {
+                fault.clear();
+                auto const retried = remove_address();
+
+                THEN("the pusher is removed too")
+                {
+                    REQUIRE(retried == 200U);
+                    REQUIRE(pusher_count() == 0U);
+                }
             }
         }
     }

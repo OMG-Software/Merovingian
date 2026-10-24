@@ -50,9 +50,11 @@ inline constexpr auto email_push_idle_delay = std::chrono::minutes{5};
                                               std::string_view pushkey) -> std::optional<std::string>;
 
 // Deletes `user_id`'s email pushers whose pushkey names `address` (a lower-case email address the
-// user no longer holds as a 3PID), and forgets any email due to them. Call under runtime.mutex.
-auto remove_email_pushers_for_address(HomeserverRuntime& runtime, std::string_view user_id, std::string_view address)
-    -> void;
+// user no longer holds as a 3PID), and forgets any email due to them. Returns false when a pusher
+// could not be deleted (it stays, still matching, so a retry finishes the job). Call under
+// runtime.mutex.
+[[nodiscard]] auto remove_email_pushers_for_address(HomeserverRuntime& runtime, std::string_view user_id,
+                                                    std::string_view address) -> bool;
 
 // The email job's body: sends the emails due at `now` (at most email_push_batch), checking `stop`
 // between them. For each it re-reads, under runtime.mutex, that the pusher is still registered and

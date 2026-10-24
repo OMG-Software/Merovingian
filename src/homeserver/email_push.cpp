@@ -91,7 +91,9 @@ namespace
         {
             // The address is no longer the user's own 3PID (removed, or the account deactivated by
             // a path that does not remove pushers). The pusher must not send anywhere again.
-            remove_email_pushers_for_address(runtime, key.user_id, to_lower_ascii(key.pushkey));
+            // A pusher that could not be deleted is still abandoned here, and the same check
+            // finds and deletes it again before any later email.
+            std::ignore = remove_email_pushers_for_address(runtime, key.user_id, to_lower_ascii(key.pushkey));
             log_email_push("push.email.pusher_removed",
                            {
                                {"recipient", key.user_id,                       false},
@@ -242,9 +244,10 @@ auto owned_email_pusher_address(database::PersistentStore const& store, std::str
 }
 
 auto remove_email_pushers_for_address(HomeserverRuntime& runtime, std::string_view user_id, std::string_view address)
-    -> void
+    -> bool
 {
     auto& store = runtime.database.persistent_store;
+    auto all_deleted = true;
     // A copy: delete_pusher erases from the store's mirror.
     auto const pushers = database::list_pushers_for_user(store, user_id);
     for (auto const& pusher : pushers)
@@ -253,12 +256,17 @@ auto remove_email_pushers_for_address(HomeserverRuntime& runtime, std::string_vi
         {
             continue;
         }
-        std::ignore = database::delete_pusher(store, user_id, pusher.app_id, pusher.pushkey);
+        if (!database::delete_pusher(store, user_id, pusher.app_id, pusher.pushkey))
+        {
+            all_deleted = false;
+            continue;
+        }
         if (runtime.email_digest_queue_ != nullptr)
         {
             runtime.email_digest_queue_->forget(push::EmailDigestKey{std::string{user_id}, pusher.pushkey});
         }
     }
+    return all_deleted;
 }
 
 auto send_due_email_notifications(HomeserverRuntime& runtime, StopFlag const& stop,
