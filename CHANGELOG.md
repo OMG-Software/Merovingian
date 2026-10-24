@@ -39,11 +39,16 @@ without one they are refused as before (ADR-0219, ADR-0220).
 - **FIXED (found by this PR's CI):** `src/email/smtp_endpoint.cpp` did not compile on FreeBSD or
   OpenBSD: it relied on glibc's `<arpa/inet.h>` declaring `AF_INET`/`AF_INET6`, which POSIX puts
   in `<sys/socket.h>`. It now includes `<sys/socket.h>`.
+- **FIXED (found by this PR's CI):** `test_email_push_flow.cpp` failed under ASan. The mock relay
+  records a session after answering `QUIT`, and libcurl returns as soon as it reads that answer,
+  so the test could check for a delivered email before the relay thread had recorded it. Every
+  assertion that a session happened now waits, at most ten seconds, for it to be recorded.
 - **TESTS (new):** `tests/unit/test_email.cpp`, `tests/unit/test_push_email_digest_queue.cpp`,
   `tests/unit/test_config_email.cpp`, `tests/integration/test_email_push_flow.cpp` (real SMTP
   sessions against a loopback mock relay: implicit TLS with AUTH, STARTTLS, a relay without
   STARTTLS, cleartext loopback; read-before-due; address removed; pusher deleted with an email
-  due). **TESTS (changed):**
+  due; deactivated account; unreadable password file; stop requested mid-batch).
+  **TESTS (changed):**
   `tests/conformance/test_client_server_conformance.cpp` gains the relay-configured
   `[email-pusher]` scenario; `tests/unit/test_worker_landlock.cpp` gains an SMTP password file
   beside the SQLite database scenario, and the shipped layout lists seven secrets.

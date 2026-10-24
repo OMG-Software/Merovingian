@@ -37,6 +37,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -150,17 +151,32 @@ public:
             merovingian::email::SmtpTestResolution{{"127.0.0.1"}, certificate_.certificate_pem};
     }
 
+    // The sessions recorded so far, without waiting: for asserting that the relay was never
+    // contacted.
     [[nodiscard]] auto sessions() const -> std::vector<SmtpSession>
     {
         auto const lock = std::lock_guard<std::mutex>{mutex_};
         return sessions_;
     }
 
-    // Sessions in which a message was accepted (DATA ended with 250).
+    // The sessions recorded once at least `count` have been, or after ten seconds. A session is
+    // recorded after the relay answers QUIT, and libcurl returns as soon as it reads that answer,
+    // so the email job can finish before the serving thread records the session it just had.
+    // Every assertion that a session happened goes through here.
+    [[nodiscard]] auto wait_for_sessions(std::size_t count) const -> std::vector<SmtpSession>
+    {
+        auto lock = std::unique_lock<std::mutex>{mutex_};
+        std::ignore = recorded_.wait_for(lock, std::chrono::seconds{10}, [this, count] {
+            return sessions_.size() >= count;
+        });
+        return sessions_;
+    }
+
+    // Sessions in which a message was accepted (DATA ended with 250), once one session is recorded.
     [[nodiscard]] auto delivered() const -> std::vector<SmtpSession>
     {
         auto delivered = std::vector<SmtpSession>{};
-        for (auto const& session : sessions())
+        for (auto const& session : wait_for_sessions(1U))
         {
             if (session.message_accepted)
             {
@@ -289,8 +305,11 @@ private:
         auto session = SmtpSession{};
         auto channel = Channel{client_fd};
         auto const record = [this, &session]() {
-            auto const lock = std::lock_guard<std::mutex>{mutex_};
-            sessions_.push_back(session);
+            {
+                auto const lock = std::lock_guard<std::mutex>{mutex_};
+                sessions_.push_back(session);
+            }
+            recorded_.notify_all();
         };
         if (mode_ == RelayMode::implicit_tls && !channel.start_tls(*tls_.context))
         {
@@ -379,6 +398,7 @@ private:
     merovingian::net::TcpAcceptor acceptor_{};
     std::atomic<bool> stop_{false};
     mutable std::mutex mutex_{};
+    mutable std::condition_variable recorded_{};
     std::vector<SmtpSession> sessions_{};
     std::thread thread_{};
 };
@@ -647,6 +667,91 @@ SCENARIO("Deleting an email pusher drops the email due to it", "[integration][pu
     }
 }
 
+SCENARIO("A deactivated account is never mailed", "[integration][push][email][security]")
+{
+    GIVEN("a relay and Alice's email pusher with a notification due")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        auto const fixture = alice_with_email_pusher(runtime);
+        std::ignore = bob_says(runtime, fixture, "txn1", "hello");
+
+        WHEN("Alice deactivates her account, keeping the pusher and the address, and the job runs")
+        {
+            auto const deactivated = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/deactivate", fixture.alice,
+                          R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+            run_email_job(runtime);
+
+            THEN("the relay is never contacted and nothing is left due")
+            {
+                REQUIRE(deactivated.response.status == 200U);
+                REQUIRE(relay.sessions().empty());
+                REQUIRE_FALSE(runtime.homeserver.email_digest_queue_->next_due().has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("An unreadable SMTP password file sends nothing and keeps the email due",
+         "[integration][push][email][security]")
+{
+    GIVEN("a relay with SMTP AUTH whose password file has gone, and a notification due")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime, true);
+        runtime.homeserver.config.server().email.password_file =
+            (merovingian::tests::temporary_directory() / "merovingian-no-such-smtp-password").string();
+        auto const fixture = alice_with_email_pusher(runtime);
+        std::ignore = bob_says(runtime, fixture, "txn1", "hello");
+
+        WHEN("the email job runs")
+        {
+            run_email_job(runtime);
+
+            THEN("the relay is never contacted and the email is due again later")
+            {
+                REQUIRE(relay.sessions().empty());
+                REQUIRE(runtime.homeserver.email_digest_queue_->next_due().has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("An email job asked to stop sends nothing and keeps the email due", "[integration][push][email]")
+{
+    GIVEN("a relay and Alice's email pusher with a notification due")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        auto const fixture = alice_with_email_pusher(runtime);
+        std::ignore = bob_says(runtime, fixture, "txn1", "hello");
+
+        WHEN("the job runs with a stop already requested")
+        {
+            auto stop = merovingian::homeserver::StopFlag{};
+            stop.request_stop();
+            std::ignore = merovingian::homeserver::send_due_email_notifications(
+                runtime.homeserver, stop, std::chrono::steady_clock::now() + std::chrono::hours{2});
+
+            THEN("the relay is never contacted and the email is put back to be sent later")
+            {
+                REQUIRE(relay.sessions().empty());
+                REQUIRE(runtime.homeserver.email_digest_queue_->next_due().has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("A submission relay must start TLS before mail is sent to it", "[integration][push][email][security]")
 {
     GIVEN("a relay that offers STARTTLS")
@@ -693,8 +798,9 @@ SCENARIO("A submission relay must start TLS before mail is sent to it", "[integr
 
             THEN("no envelope or message is sent in cleartext, and the email is due again later")
             {
-                REQUIRE_FALSE(relay.sessions().empty());
-                for (auto const& session : relay.sessions())
+                auto const sessions = relay.wait_for_sessions(1U);
+                REQUIRE_FALSE(sessions.empty());
+                for (auto const& session : sessions)
                 {
                     REQUIRE_FALSE(session.message_accepted);
                     REQUIRE_FALSE(contains(session.commands, "MAIL FROM"));
