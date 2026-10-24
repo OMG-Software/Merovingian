@@ -84,8 +84,9 @@ struct SmtpSession final
 };
 
 // A relay on a real loopback socket. It serves sessions until destroyed and records each one;
-// the serving thread makes no assertions (Catch2 is not thread-safe), tests read sessions() from
-// the main thread. Each session ends after QUIT, a closed connection, or five quiet seconds.
+// the serving thread makes no assertions (Catch2 is not thread-safe), tests read connections() and
+// wait_for_sessions() from the main thread. Each session ends after QUIT, a closed connection, or
+// five quiet seconds.
 class MockSmtpRelay final
 {
 public:
@@ -151,12 +152,14 @@ public:
             merovingian::email::SmtpTestResolution{{"127.0.0.1"}, certificate_.certificate_pem};
     }
 
-    // The sessions recorded so far, without waiting: for asserting that the relay was never
-    // contacted.
-    [[nodiscard]] auto sessions() const -> std::vector<SmtpSession>
+    // Connections accepted so far: for asserting that the relay was never contacted. Counted as
+    // accept() returns, before the relay sends its greeting (or, for implicit TLS, completes the
+    // handshake), and libcurl can finish nothing before then; so once the email job has returned,
+    // every connection it made is counted. Recorded sessions are not enough for this: a session is
+    // recorded only after QUIT, which can be after the job has returned.
+    [[nodiscard]] auto connections() const noexcept -> std::size_t
     {
-        auto const lock = std::lock_guard<std::mutex>{mutex_};
-        return sessions_;
+        return accepted_.load();
     }
 
     // The sessions recorded once at least `count` have been, or after ten seconds. A session is
@@ -288,6 +291,7 @@ private:
             {
                 continue;
             }
+            ++accepted_;
             auto const owned = merovingian::core::SocketHandle{client_fd};
             try
             {
@@ -397,6 +401,7 @@ private:
     merovingian::homeserver::TlsServerContextResult tls_;
     merovingian::net::TcpAcceptor acceptor_{};
     std::atomic<bool> stop_{false};
+    std::atomic<std::size_t> accepted_{0U};
     mutable std::mutex mutex_{};
     mutable std::condition_variable recorded_{};
     std::vector<SmtpSession> sessions_{};
@@ -527,7 +532,7 @@ SCENARIO("A notification for an email pusher is mailed, as an unread count only,
         WHEN("Bob sends a message and the email job runs once the delay has passed")
         {
             std::ignore = bob_says(runtime, fixture, "txn1", "secret lunch plans");
-            REQUIRE(relay.sessions().empty());
+            REQUIRE(relay.connections() == 0U);
             run_email_job(runtime);
             auto const delivered = relay.delivered();
 
@@ -596,7 +601,7 @@ SCENARIO("No email is sent when the user has read everything before it is due", 
 
             THEN("the relay is never contacted and nothing is left due")
             {
-                REQUIRE(relay.sessions().empty());
+                REQUIRE(relay.connections() == 0U);
                 REQUIRE_FALSE(runtime.homeserver.email_digest_queue_->next_due().has_value());
             }
         }
@@ -626,7 +631,7 @@ SCENARIO("An email pusher whose address has left the account sends nothing and i
 
             THEN("no email is sent and the pusher is gone")
             {
-                REQUIRE(relay.sessions().empty());
+                REQUIRE(relay.connections() == 0U);
                 REQUIRE(merovingian::database::list_pushers_for_user(runtime.homeserver.database.persistent_store,
                                                                      "@alice:example.org")
                             .empty());
@@ -661,7 +666,7 @@ SCENARIO("Deleting an email pusher drops the email due to it", "[integration][pu
                 REQUIRE(due_before_delete);
                 REQUIRE(deleted.response.status == 200U);
                 REQUIRE_FALSE(due_after_delete);
-                REQUIRE(relay.sessions().empty());
+                REQUIRE(relay.connections() == 0U);
             }
         }
     }
@@ -689,7 +694,7 @@ SCENARIO("A deactivated account is never mailed", "[integration][push][email][se
             THEN("the relay is never contacted and nothing is left due")
             {
                 REQUIRE(deactivated.response.status == 200U);
-                REQUIRE(relay.sessions().empty());
+                REQUIRE(relay.connections() == 0U);
                 REQUIRE_FALSE(runtime.homeserver.email_digest_queue_->next_due().has_value());
             }
         }
@@ -717,7 +722,7 @@ SCENARIO("An unreadable SMTP password file sends nothing and keeps the email due
 
             THEN("the relay is never contacted and the email is due again later")
             {
-                REQUIRE(relay.sessions().empty());
+                REQUIRE(relay.connections() == 0U);
                 REQUIRE(runtime.homeserver.email_digest_queue_->next_due().has_value());
             }
         }
@@ -745,7 +750,7 @@ SCENARIO("An email job asked to stop sends nothing and keeps the email due", "[i
 
             THEN("the relay is never contacted and the email is put back to be sent later")
             {
-                REQUIRE(relay.sessions().empty());
+                REQUIRE(relay.connections() == 0U);
                 REQUIRE(runtime.homeserver.email_digest_queue_->next_due().has_value());
             }
         }

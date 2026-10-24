@@ -42,7 +42,9 @@ without one they are refused as before (ADR-0219, ADR-0220).
 - **FIXED (found by this PR's CI):** `test_email_push_flow.cpp` failed under ASan. The mock relay
   records a session after answering `QUIT`, and libcurl returns as soon as it reads that answer,
   so the test could check for a delivered email before the relay thread had recorded it. Every
-  assertion that a session happened now waits, at most ten seconds, for it to be recorded.
+  assertion that a session happened now waits, at most ten seconds, for it to be recorded, and
+  every assertion that the relay was never contacted reads a count of connections taken as
+  `accept()` returns (found in review: the recorded sessions could miss one still in progress).
 - **TESTS (new):** `tests/unit/test_email.cpp`, `tests/unit/test_push_email_digest_queue.cpp`,
   `tests/unit/test_config_email.cpp`, `tests/integration/test_email_push_flow.cpp` (real SMTP
   sessions against a loopback mock relay: implicit TLS with AUTH, STARTTLS, a relay without
