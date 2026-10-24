@@ -24,7 +24,9 @@ without one they are refused as before (ADR-0219, ADR-0220).
 - **CHANGED:** `POST /_matrix/client/v3/pushers/set` accepts `kind: "email"` when `smtp_url` is
   set, with `app_id` `m.email` (spec) and a `pushkey` that is an email 3PID already on the account
   (compared case-insensitively); anything else is 400 `M_INVALID_PARAM`. Without a relay the
-  0.12.3 refusal is unchanged. Deleting an email pusher also drops any email due to it.
+  0.12.3 refusal is unchanged. Deleting an email pusher also drops any email due to it, and a
+  `kind: null` delete for `app_id` `m.email` matches the address in any letter case, so every
+  email pusher for that address goes (found in review). Every other `app_id` still matches exactly.
 - **CHANGED:** `POST /_matrix/client/v3/account/3pid/delete` deletes the account's email pushers for
   the address it removes. The email job re-checks the pusher, the 3PID and the account before each
   send, deletes a pusher whose address has left the account, and never mails a deactivated account.

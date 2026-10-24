@@ -12988,16 +12988,44 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             // client was told "done" even when the delete failed and the
             // pusher stayed live, still receiving pushes despite the user
             // believing they had disabled notifications.
-            auto const existed = database::find_pusher(store, *user, body->app_id, body->pushkey).has_value();
-            if (existed && !database::delete_pusher(store, *user, body->app_id, body->pushkey))
+            //
+            // The stored pushkeys to delete. Exact for every app_id but
+            // m.email: an email pusher's pushkey is an address this server
+            // already compares case-insensitively when deciding who may be
+            // mailed (ADR-0219), so a delete naming the address in another
+            // case removes every email pusher for it. Otherwise the client is
+            // told the pusher is gone while it keeps mailing, and a second
+            // pusher registered in another case would survive the delete.
+            auto matching = std::vector<std::string>{};
+            if (body->app_id == "m.email")
             {
-                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete pusher");
+                auto const address = to_lower(body->pushkey);
+                for (auto const& existing : database::list_pushers_for_user(store, *user))
+                {
+                    if (existing.app_id == body->app_id &&
+                        (existing.pushkey == body->pushkey ||
+                         (existing.kind == "email" && to_lower(existing.pushkey) == address)))
+                    {
+                        matching.push_back(existing.pushkey);
+                    }
+                }
             }
-            // An email already due for a deleted email pusher is dropped now
-            // rather than when the email job finds the pusher gone.
-            if (rt.homeserver.email_digest_queue_ != nullptr)
+            else if (database::find_pusher(store, *user, body->app_id, body->pushkey).has_value())
             {
-                rt.homeserver.email_digest_queue_->forget(push::EmailDigestKey{*user, body->pushkey});
+                matching.push_back(body->pushkey);
+            }
+            for (auto const& pushkey : matching)
+            {
+                if (!database::delete_pusher(store, *user, body->app_id, pushkey))
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete pusher");
+                }
+                // An email already due for a deleted email pusher is dropped
+                // now rather than when the email job finds the pusher gone.
+                if (rt.homeserver.email_digest_queue_ != nullptr)
+                {
+                    rt.homeserver.email_digest_queue_->forget(push::EmailDigestKey{*user, pushkey});
+                }
             }
             return dispatch_resp(req, rt, 200U, "{}");
         }

@@ -690,6 +690,49 @@ SCENARIO("Deleting an email pusher drops the email due to it", "[integration][pu
     }
 }
 
+SCENARIO("Deleting an email pusher matches its address in any letter case", "[integration][push][email]")
+{
+    GIVEN("Alice's email pusher and a second one for the same address in another case, with an email due")
+    {
+        auto const relay = MockSmtpRelay{RelayMode::implicit_tls};
+        auto started = merovingian::homeserver::start_client_server(email_test_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        relay.install(runtime);
+        auto const fixture = alice_with_email_pusher(runtime);
+        auto const second = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/pushers/set", fixture.alice,
+                      R"({"app_display_name":"Mail","app_id":"m.email","data":{},"device_display_name":"Inbox",)"
+                      R"("kind":"email","lang":"en","pushkey":"Alice@Example.net","append":true})"});
+        std::ignore = bob_says(runtime, fixture, "txn1", "hello");
+        auto const pushers_before = merovingian::database::list_pushers_for_user(
+                                        runtime.homeserver.database.persistent_store, "@alice:example.org")
+                                        .size();
+        auto const due_before_delete = runtime.homeserver.email_digest_queue_->next_due().has_value();
+
+        WHEN("Alice deletes it with kind null, naming the address in yet another case, and the job runs")
+        {
+            auto const deleted = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", fixture.alice,
+                          R"({"app_id":"m.email","kind":null,"pushkey":"ALICE@EXAMPLE.NET"})"});
+            run_email_job(runtime);
+
+            THEN("every email pusher for that address is gone, nothing is due, and nothing is sent")
+            {
+                REQUIRE(second.response.status == 200U);
+                REQUIRE(pushers_before == 2U);
+                REQUIRE(due_before_delete);
+                REQUIRE(deleted.response.status == 200U);
+                REQUIRE(merovingian::database::list_pushers_for_user(runtime.homeserver.database.persistent_store,
+                                                                     "@alice:example.org")
+                            .empty());
+                REQUIRE_FALSE(runtime.homeserver.email_digest_queue_->next_due().has_value());
+                REQUIRE(relay.connections() == 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("A deactivated account is never mailed", "[integration][push][email][security]")
 {
     GIVEN("a relay and Alice's email pusher with a notification due")
