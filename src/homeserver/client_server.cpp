@@ -6043,15 +6043,17 @@ namespace
         auto next_state = sync::SlidingSyncPendingResponse{};
         next_state.request_pos = requested_pos;
         next_state.response_pos = new_pos;
-        next_state.list_prev_windows = conn.list_prev_windows;
-        next_state.rooms_seen = conn.rooms_seen;
-        next_state.lazy_members_sent = conn.lazy_members_sent;
-        next_state.room_timeline_limits = conn.room_timeline_limits;
-        next_state.list_configs = conn.list_configs;
+        // MSC4186 request lists are not sticky: a list this request left out is gone, and the same
+        // name sent later is a new list. Only this request's lists carry over (list_prev_windows from
+        // list_results below), so a re-sent list is windowed afresh and client-chosen list names
+        // cannot grow the connection state (PR #530 review).
         for (auto const& [list_name, list] : ssreq.lists)
         {
             next_state.list_configs[list_name] = list;
         }
+        next_state.rooms_seen = conn.rooms_seen;
+        next_state.lazy_members_sent = conn.lazy_members_sent;
+        next_state.room_timeline_limits = conn.room_timeline_limits;
         for (auto const& [room_id, limit] : room_timeline_limits_built)
         {
             next_state.room_timeline_limits[room_id] = limit;

@@ -60,7 +60,9 @@ effective limit of every room built, or the next request expands it again.
 
 Which list rooms can expand is read from each list's previous window while its config is
 unchanged (`list_configs`). A list that is new or changed is computed before the long-poll
-decision, because its window can hold a sent room its previous window lacked. Do not compute
+decision, because its window can hold a sent room its previous window lacked. Lists are not
+sticky (MSC4186), so a response keeps only its own request's lists in `list_configs` and
+`list_prev_windows`; a list dropped and sent again is new. Do not compute
 every list before that decision: ranking the room list walks the unread counts under
 `runtime.mutex`, and an idle long-poll is woken by every unrelated stream bump.
 

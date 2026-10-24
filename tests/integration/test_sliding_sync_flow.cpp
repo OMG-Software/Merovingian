@@ -733,6 +733,58 @@ SCENARIO("A list added on a long-poll that grows a sent room's timeline_limit se
     }
 }
 
+// MSC4186 request lists are not sticky (the proposal dropped "Make the `lists` request field
+// sticky"): a list a request leaves out is gone, and the same list sent again later is new. Its old
+// window must not decide whether a sent room it now holds has a grown timeline_limit (PR #530 review).
+SCENARIO("A list dropped and sent again unchanged is windowed afresh before the long-poll decision",
+         "[homeserver][sliding-sync][integration][timeline-gap]")
+{
+    GIVEN("a \"recent\" list of one room with timeline_limit 50 whose window held room A, then a request without it")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_b = create_room(rt, token);
+        auto const room_a = create_room(rt, token);
+        send_numbered_messages(rt, token, room_a, 3);
+
+        auto const with_recent = std::string{R"({"lists":{"all":{"ranges":[[0,9]],"timeline_limit":1},)"} +
+                                 R"("recent":{"ranges":[[0,0]],"timeline_limit":50}}})";
+        auto const without_recent = std::string{R"({"lists":{"all":{"ranges":[[0,9]],"timeline_limit":1}}})"};
+
+        auto const first = sliding_sync(rt, token, with_recent);
+        REQUIRE(first.response.status == 200U);
+        REQUIRE(synced_room(first.response.body, room_a).timeline.size() > 1U);
+
+        // Room B becomes the most recent, and is sent through "all" alone, at timeline_limit 1.
+        send_numbered_messages(rt, token, room_b, 1);
+        auto const second = sliding_sync(rt, token, without_recent, sliding_sync_pos(first.response.body));
+        REQUIRE(second.response.status == 200U);
+        REQUIRE(synced_room(second.response.body, room_b).timeline.size() == 1U);
+        auto const pos = sliding_sync_pos(second.response.body);
+
+        WHEN("a long-poll sends the \"recent\" list again, unchanged, now that its window holds room B")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos + "&timeout=30000", token,
+                 with_recent},
+                /*can_wait=*/true);
+
+            THEN("it answers at once with room B's history, flagged as an expanded timeline")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                auto const room = synced_room(result.response.body, room_b);
+                REQUIRE(room.expanded_timeline);
+                REQUIRE(room.timeline.size() > 1U);
+            }
+        }
+    }
+}
+
 // ── Incremental sync ──────────────────────────────────────────────────────────
 
 SCENARIO("MSC4186 incremental sync does not mark a previously-seen room as initial",

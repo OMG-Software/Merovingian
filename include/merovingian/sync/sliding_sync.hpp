@@ -359,6 +359,8 @@ struct SlidingSyncConnectionState final
     // under the unread sort), and the request is answered when that change ends the long-poll,
     // or at its timeout; so its previous window says which of its rooms a grown timeline_limit
     // expands. A list that is new or changed is computed before the long-poll decision instead.
+    // Both maps hold only the lists of the last acknowledged request: MSC4186 lists are not
+    // sticky, so a list left out is gone and the same name sent again is new.
     std::map<std::string, SlidingSyncList> list_configs{};
     // Stream position at the end of the last acknowledged response.
     std::uint64_t last_event_ordering{0U};

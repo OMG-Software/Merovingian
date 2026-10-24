@@ -19,6 +19,8 @@ room's delta floor.
   repeat at a `pos` no stream advanced cannot spin the client (ADR-0221). A list that is new or
   whose config changed is windowed before that decision, so a sent room it newly holds with a
   larger limit is answered at once too (PR #530 review); an unchanged list uses its previous window.
+  A connection keeps only the lists of its last request (MSC4186 lists are not sticky), so a list
+  dropped and sent again is windowed afresh and list names cannot grow the connection state.
 - **FIXED:** `num_live` counts the timeline's events after the connection's last send of the room
   (it was always 0); a room's first send on a connection has none.
 - **CHANGED:** `SlidingSyncConnectionState` and `SlidingSyncPendingResponse` record each room's
@@ -32,9 +34,10 @@ room's delta floor.
   from another device: Element X's room list gets the newest with `limited` and a `prev_batch`
   that `/messages` pages back from) and "Opening a room in Element X sends its latest 50 messages
   at once" (a `room_subscriptions` limit of 50 on a long-poll answers at once with the latest 50,
-  `expanded_timeline`, and a `prev_batch` to the other ten; the same request repeated long-polls)
-  and "A list added on a long-poll that grows a sent room's timeline_limit sends its history at
-  once".
+  `expanded_timeline`, and a `prev_batch` to the other ten; the same request repeated long-polls).
+  It also gains "A list added on a long-poll that grows a sent room's timeline_limit sends its
+  history at once" and "A list dropped and sent again unchanged is windowed afresh before the
+  long-poll decision".
   **TESTS (changed):** "MSC4186 timeline_limit caps the number of timeline events returned per
   room" looked for a `/v3/sync`-shaped `timeline.events` object and so asserted nothing; it now
   requires the `timeline` array to hold exactly one event.
@@ -66,8 +69,8 @@ Every process also logs the libraries it runs at startup, each marked static or 
   gains "the sandboxed worker reports the image libraries it runs" and "a thumbnail worker that
   cannot run reports no libraries". Smoke: `server-library-versions-log-smoke-test` and
   `thumbnail-worker-version-smoke-test`.
-- **CHANGED:** the README shows a CodeRabbit pull-request reviews badge beside the code-scanning
-  badge.
+- **CHANGED:** the README shows a CodeRabbit pull-request reviews badge, linked to coderabbit.ai,
+  beside the code-scanning badge.
 
 ## 0.12.44
 
