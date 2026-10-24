@@ -750,9 +750,13 @@ SCENARIO("A list dropped and sent again unchanged is windowed afresh before the 
         auto const room_a = create_room(rt, token);
         send_numbered_messages(rt, token, room_a, 3);
 
-        auto const with_recent = std::string{R"({"lists":{"all":{"ranges":[[0,9]],"timeline_limit":1},)"} +
-                                 R"("recent":{"ranges":[[0,0]],"timeline_limit":50}}})";
-        auto const without_recent = std::string{R"({"lists":{"all":{"ranges":[[0,9]],"timeline_limit":1}}})"};
+        // Sorted by recency so "recent" holds the most recent room; with no sort the list orders by
+        // room ID, which is random from run to run.
+        auto const with_recent =
+            std::string{R"({"lists":{"all":{"ranges":[[0,9]],"sort":["by_recency"],"timeline_limit":1},)"} +
+            R"("recent":{"ranges":[[0,0]],"sort":["by_recency"],"timeline_limit":50}}})";
+        auto const without_recent =
+            std::string{R"({"lists":{"all":{"ranges":[[0,9]],"sort":["by_recency"],"timeline_limit":1}}})"};
 
         auto const first = sliding_sync(rt, token, with_recent);
         REQUIRE(first.response.status == 200U);

@@ -68,7 +68,9 @@ Every process also logs the libraries it runs at startup, each marked static or 
   numbers, the worker report's framing and refusals). `tests/integration/test_media_thumbnail_flow.cpp`
   gains "the sandboxed worker reports the image libraries it runs" and "a thumbnail worker that
   cannot run reports no libraries". Smoke: `server-library-versions-log-smoke-test` and
-  `thumbnail-worker-version-smoke-test`.
+  `thumbnail-worker-version-smoke-test` (which, in a `-Db_coverage=true` build, checks only the
+  output: the decoder sandbox refuses the coverage data written at exit, so the worker ends with
+  SIGSYS after printing).
 - **CHANGED:** the README shows a CodeRabbit pull-request reviews badge, linked to coderabbit.ai,
   beside the code-scanning badge.
 
