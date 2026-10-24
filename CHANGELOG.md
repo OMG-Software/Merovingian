@@ -33,6 +33,9 @@ without one they are refused as before (ADR-0219, ADR-0220).
   path can send email or open the SMTP password file.
 - **CHANGED:** `src/meson.build` builds `http`, `platform` and the new `email` module before
   `config`, whose validation calls email's address and URL checks.
+- **FIXED (found by this PR's CI):** `src/email/smtp_endpoint.cpp` did not compile on FreeBSD or
+  OpenBSD: it relied on glibc's `<arpa/inet.h>` declaring `AF_INET`/`AF_INET6`, which POSIX puts
+  in `<sys/socket.h>`. It now includes `<sys/socket.h>`.
 - **TESTS (new):** `tests/unit/test_email.cpp`, `tests/unit/test_push_email_digest_queue.cpp`,
   `tests/unit/test_config_email.cpp`, `tests/integration/test_email_push_flow.cpp` (real SMTP
   sessions against a loopback mock relay: implicit TLS with AUTH, STARTTLS, a relay without
