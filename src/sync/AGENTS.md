@@ -41,6 +41,23 @@ MSC4186 tracks per-connection state keyed by `conn_id`. On a no-`pos` poll, the 
 uses `conn.last_event_ordering` as the since-baseline so repeated `timeout=0` polls return
 a delta (empty rooms, same pos) rather than re-sending the full initial sync.
 
+## Sliding sync timelines
+
+A room's `timeline` is the newest `timeline_limit` events the user may see, after its delta
+floor unless the room is initial or expanded. Whenever it holds fewer events than it could,
+`build_room_response` sets `limited`. Every non-empty timeline gets `prev_batch`, the stream
+ordering of its oldest event, because `/messages?dir=b` returns events strictly older than
+`from`. Never truncate a timeline without both: a client takes an unflagged timeline for the
+room's whole history (Element X's room list asks for `timeline_limit: 1`; 0.12.45).
+
+When a request raises a seen room's effective `timeline_limit` past
+`room_timeline_limits[room]` (`timeline_limit_expands`), the room is built with
+`TimelineExpansion::expand`: the latest events are resent and `expanded_timeline` is set if any
+predates the last send. `required_state` keeps its floor. The handler skips the long-poll for such
+a request, but only once per request `pos` (`expansions_answered`, ADR-0221). A pos no stream
+advanced is not acknowledged by a repeat, so skipping again would spin the client. Record the
+effective limit of every room built, or the next request expands it again.
+
 ## Sliding sync room access
 
 A sliding sync request names rooms in `room_subscriptions` and in the `receipts`/`typing`

@@ -1,3 +1,40 @@
+## 0.12.45
+
+Sliding sync tells the client when a room's timeline is truncated. Element X, whose room list asks
+for `timeline_limit: 1`, showed only the newest message of a conversation written on another
+client: the server cut each timeline to its limit but sent neither MSC4186 `limited` nor
+`prev_batch`, so the client took the one event for the room's whole history and had no token to
+page back from. Opening the room raised the limit, but the server resent nothing older than the
+room's delta floor.
+
+- **FIXED:** a sliding sync room whose timeline holds fewer events than are visible to the user
+  (an initial or expanded room) or than arrived since its last send (an incremental one) carries
+  `limited: true`. Every non-empty timeline carries `prev_batch`, the stream ordering of its oldest
+  event, which `GET /rooms/{roomId}/messages?dir=b&from=` pages back from without a gap or repeat;
+  a `timeline_limit` of 0 gives one past the newest event withheld.
+- **FIXED:** when a request raises a seen room's `timeline_limit` past the limit the connection
+  last built it with (or no limit is recorded), the room's latest events are resent, flagged
+  `expanded_timeline: true` when any predates its last send (MSC4186 "Changes to
+  `timeline_limit`"). Such a request answers without long-polling, once per request `pos`, so a
+  repeat at a `pos` no stream advanced cannot spin the client (ADR-0221).
+- **FIXED:** `num_live` counts the timeline's events after the connection's last send of the room
+  (it was always 0); a room's first send on a connection has none.
+- **CHANGED:** `SlidingSyncConnectionState` and `SlidingSyncPendingResponse` record each room's
+  effective `timeline_limit` (`room_timeline_limits`); the pending response records the expansions
+  it answered at once (`expansions_answered`). `sync::build_room_response` takes a
+  `TimelineExpansion`, and `sync::timeline_limit_expands` decides it from the connection.
+- **TESTS (new):** `tests/unit/test_sliding_sync_timeline_gap.cpp` (`[timeline-gap]`: `limited` and
+  `prev_batch` on initial, incremental, expanded and zero-limit timelines; `num_live`;
+  `expanded_timeline`; when a limit grows). `tests/integration/test_sliding_sync_flow.cpp` gains
+  "Element X can show the latest 50 messages of a conversation another client wrote" (60 messages
+  from another device: Element X's room list gets the newest with `limited` and a `prev_batch`
+  that `/messages` pages back from) and "Opening a room in Element X sends its latest 50 messages
+  at once" (a `room_subscriptions` limit of 50 on a long-poll answers at once with the latest 50,
+  `expanded_timeline`, and a `prev_batch` to the other ten; the same request repeated long-polls).
+  **TESTS (changed):** "MSC4186 timeline_limit caps the number of timeline events returned per
+  room" looked for a `/v3/sync`-shaped `timeline.events` object and so asserted nothing; it now
+  requires the `timeline` array to hold exactly one event.
+
 ## 0.12.44
 
 Email pushers are delivered. With an SMTP relay configured (`server.email.*`), `kind: "email"`
