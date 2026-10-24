@@ -433,21 +433,253 @@ SCENARIO("MSC4186 timeline_limit caps the number of timeline events returned per
         {
             auto const result = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]],"timeline_limit":1}}})");
 
-            THEN("the timeline for the room contains at most 1 event")
+            THEN("the timeline for the room contains exactly the newest event")
             {
                 REQUIRE(result.response.status == 200U);
                 auto const rooms = rooms_object(result.response.body);
                 auto const* rm = object_member_as_object(rooms, room_id);
                 REQUIRE(rm != nullptr);
-                auto const* tl = object_member_as_object(*rm, "timeline");
-                if (tl != nullptr)
+                // MSC4186 §rooms[roomId].timeline is an [Event] array, newest last. This used to look
+                // for a /v3/sync-shaped {"events":[...]} object and so asserted nothing.
+                auto const* events = object_member_as_array(*rm, "timeline");
+                REQUIRE(events != nullptr);
+                REQUIRE(events->size() == 1U);
+            }
+        }
+    }
+}
+
+// ── Truncated timelines: limited, prev_batch, expanded_timeline ───────────────
+//
+// Regression (0.12.45): sliding sync cut each room to its timeline_limit but sent neither `limited`
+// nor `prev_batch`, so Element X, whose room list asks for `timeline_limit: 1`, took the one event
+// it was sent for the whole conversation, and opening the room never showed what came before it.
+
+namespace
+{
+
+// Send `count` messages "message 1" .. "message <count>" from token into room_id, each under its
+// own transaction ID so none is deduplicated.
+auto send_numbered_messages(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                            std::string const& room_id, int count) -> void
+{
+    for (auto n = 1; n <= count; ++n)
+    {
+        auto const resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/numbered-" + std::to_string(n),
+                 token, R"({"msgtype":"m.text","body":"message )" + std::to_string(n) + "\"}"});
+        REQUIRE(resp.response.status == 200U);
+    }
+}
+
+// The bodies of the m.room.message events in `events`, in array order; other events are skipped.
+[[nodiscard]] auto message_bodies(merovingian::canonicaljson::Array const& events) -> std::vector<std::string>
+{
+    auto bodies = std::vector<std::string>{};
+    for (auto const& value : events)
+    {
+        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+        REQUIRE(event != nullptr);
+        auto const* type = string_member(*event, "type");
+        auto const* content = object_member_as_object(*event, "content");
+        auto const* body = content != nullptr ? string_member(*content, "body") : nullptr;
+        if (type != nullptr && *type == "m.room.message" && body != nullptr)
+        {
+            bodies.push_back(*body);
+        }
+    }
+    return bodies;
+}
+
+// "message <first>" .. "message <last>", oldest first.
+[[nodiscard]] auto numbered_bodies(int first, int last) -> std::vector<std::string>
+{
+    auto bodies = std::vector<std::string>{};
+    for (auto n = first; n <= last; ++n)
+    {
+        bodies.push_back("message " + std::to_string(n));
+    }
+    return bodies;
+}
+
+// GET /rooms/{roomId}/messages?dir=b from `from`; returns the chunk, newest first as the spec orders it.
+[[nodiscard]] auto messages_before(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                                   std::string const& room_id, std::string const& from, int limit)
+    -> merovingian::canonicaljson::Array
+{
+    auto const resp = merovingian::homeserver::handle_client_server_request(
+        rt, {"GET",
+             "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&from=" + from + "&limit=" + std::to_string(limit),
+             token,
+             {}});
+    REQUIRE(resp.response.status == 200U);
+    auto const body = parse_object(resp.response.body);
+    auto const* chunk = object_member_as_array(body, "chunk");
+    REQUIRE(chunk != nullptr);
+    return *chunk;
+}
+
+// One room of a sliding sync response, copied out of the parse tree.
+struct SyncedRoom final
+{
+    merovingian::canonicaljson::Array timeline{};
+    bool limited{false};
+    bool expanded_timeline{false};
+    std::optional<std::string> prev_batch{};
+};
+
+[[nodiscard]] auto synced_room(std::string const& response_body, std::string const& room_id) -> SyncedRoom
+{
+    auto const rooms = rooms_object(response_body);
+    auto const* room = object_member_as_object(rooms, room_id);
+    REQUIRE(room != nullptr);
+    auto synced = SyncedRoom{};
+    if (auto const* timeline = object_member_as_array(*room, "timeline"); timeline != nullptr)
+    {
+        synced.timeline = *timeline;
+    }
+    // MSC4186: `limited` "Absence means `false`".
+    if (auto const* limited = bool_member(*room, "limited"); limited != nullptr)
+    {
+        synced.limited = *limited;
+    }
+    if (auto const* expanded = bool_member(*room, "expanded_timeline"); expanded != nullptr)
+    {
+        synced.expanded_timeline = *expanded;
+    }
+    if (auto const* prev_batch = string_member(*room, "prev_batch"); prev_batch != nullptr)
+    {
+        synced.prev_batch = *prev_batch;
+    }
+    return synced;
+}
+
+// Element X's room-list body plus a room_subscription for room_id, as matrix-rust-sdk sends it when
+// the room is opened.
+[[nodiscard]] auto element_x_open_room_body(std::string const& room_id, int timeline_limit) -> std::string
+{
+    auto body = element_x_room_list_body();
+    body.pop_back(); // the closing brace
+    return body + R"(,"room_subscriptions":{")" + room_id + R"(":{"required_state":[)" + element_x_required_state +
+           R"(],"timeline_limit":)" + std::to_string(timeline_limit) + "}}}";
+}
+
+} // namespace
+
+// MSC4186 §rooms[roomId]: `limited` "True if there are more events since the previous sync than were
+// included in the `timeline` field, or that the client should paginate to fetch more events";
+// `prev_batch` "A token that can be passed as a start parameter to the `/rooms/<room_id>/messages`
+// API to retrieve earlier messages". CS API GET /rooms/{roomId}/messages `from`: "The token to start
+// returning events from."
+SCENARIO("Element X can show the latest 50 messages of a conversation another client wrote",
+         "[homeserver][sliding-sync][integration][timeline-gap]")
+{
+    GIVEN("60 messages sent from alice's desktop device into a room")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const desktop = register_and_login(rt, "alice", "CorrectHorse7!", "DESKTOP");
+        auto const room_id = create_room(rt, desktop);
+        send_numbered_messages(rt, desktop, room_id, 60);
+        auto const mobile = login(rt, "alice", "CorrectHorse7!", "ELEMENTX");
+
+        WHEN("Element X's room-list connection syncs for the first time with timeline_limit 1")
+        {
+            auto const result = sliding_sync(rt, mobile, element_x_room_list_body());
+            REQUIRE(result.response.status == 200U);
+            auto const room = synced_room(result.response.body, room_id);
+
+            THEN("the room shows the newest message and says there is history before it")
+            {
+                REQUIRE(message_bodies(room.timeline) == std::vector<std::string>{"message 60"});
+                REQUIRE(room.limited);
+                REQUIRE(room.prev_batch.has_value());
+            }
+
+            THEN("paging back from prev_batch returns the 49 messages before it, with no gap or repeat")
+            {
+                REQUIRE(room.prev_batch.has_value());
+                auto older = message_bodies(messages_before(rt, mobile, room_id, *room.prev_batch, 49));
+                std::ranges::reverse(older); // /messages?dir=b is newest first
+                REQUIRE(older == numbered_bodies(11, 59));
+            }
+        }
+    }
+}
+
+// MSC4186 "Changes to `timeline_limit`": "if the `timeline_limit` has increased (to say `N`) and the
+// server has not previously sent down all of the latest `N` events on the connection, the server
+// SHOULD send down the latest `N` events even if *some* of the events have previously been sent."
+// "If the server does return events that predate the last time the room was sent to the client, it
+// MUST set the `expanded_timeline` to `true`." "The server should return rooms that have expanded
+// timelines immediately, rather than waiting for the next update to the room."
+SCENARIO("Opening a room in Element X sends its latest 50 messages at once",
+         "[homeserver][sliding-sync][integration][timeline-gap]")
+{
+    GIVEN("Element X has synced a 60-message room through its room list, with timeline_limit 1")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const desktop = register_and_login(rt, "alice", "CorrectHorse7!", "DESKTOP");
+        auto const room_id = create_room(rt, desktop);
+        send_numbered_messages(rt, desktop, room_id, 60);
+        auto const mobile = login(rt, "alice", "CorrectHorse7!", "ELEMENTX");
+
+        auto const first = sliding_sync(rt, mobile, element_x_room_list_body());
+        REQUIRE(first.response.status == 200U);
+        auto const pos = sliding_sync_pos(first.response.body);
+        auto const open_target = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos + "&timeout=30000";
+
+        WHEN("the room is opened: a room_subscription raises its timeline_limit to 50 on a long-poll")
+        {
+            auto const opened = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", open_target, mobile, element_x_open_room_body(room_id, 50)}, /*can_wait=*/true);
+
+            THEN("the long-poll answers at once with the latest 50 messages, flagged as an expanded timeline")
+            {
+                REQUIRE(opened.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(opened.response.status == 200U);
+                auto const room = synced_room(opened.response.body, room_id);
+                REQUIRE(message_bodies(room.timeline) == numbered_bodies(11, 60));
+                REQUIRE(room.expanded_timeline);
+                REQUIRE(room.limited);
+                REQUIRE(room.prev_batch.has_value());
+            }
+
+            THEN("paging back from its prev_batch returns the remaining ten messages")
+            {
+                auto const room = synced_room(opened.response.body, room_id);
+                REQUIRE(room.prev_batch.has_value());
+                auto older = message_bodies(messages_before(rt, mobile, room_id, *room.prev_batch, 50));
+                std::ranges::reverse(older);
+                REQUIRE(older == numbered_bodies(1, 10));
+            }
+
+            AND_WHEN("the same request is repeated before anything new happens in the room")
+            {
+                REQUIRE(opened.status == merovingian::homeserver::DispatchResult::Status::complete);
+                auto const repeated = merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", open_target, mobile, element_x_open_room_body(room_id, 50)}, /*can_wait=*/true);
+
+                THEN("it long-polls instead of answering again at once, so the client cannot spin")
                 {
-                    auto const* events = object_member_as_array(*tl, "events");
-                    if (events != nullptr)
-                    {
-                        REQUIRE(events->size() <= 1U);
-                    }
+                    REQUIRE(repeated.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
                 }
+            }
+        }
+
+        WHEN("the room is opened with a timeline_limit no larger than the room list's")
+        {
+            auto const opened = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", open_target, mobile, element_x_open_room_body(room_id, 1)}, /*can_wait=*/true);
+
+            THEN("there is nothing new to send, so the request long-polls")
+            {
+                REQUIRE(opened.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
             }
         }
     }

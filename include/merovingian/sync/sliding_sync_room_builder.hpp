@@ -19,6 +19,22 @@
 namespace merovingian::sync
 {
 
+// Whether a room's timeline is built from its delta floor or resent from its latest events.
+// MSC4186 "Changes to `timeline_limit`": when a request raises a seen room's timeline_limit the
+// server SHOULD send the latest N events even if some were sent before (timeline_limit_expands).
+enum class TimelineExpansion : std::uint8_t
+{
+    none,   // events after room_since_event_ordering only
+    expand, // the latest timeline_limit events, whatever was sent before
+};
+
+// True when `room_id` has been sent on this connection and `timeline_limit` is larger than the
+// limit it was last built with, or no limit was recorded for it ("If the server does not know if
+// it has sent down all events it SHOULD send down the latest `N` events"). A room never sent is
+// initial, not expanded.
+[[nodiscard]] auto timeline_limit_expands(SlidingSyncConnectionState const& conn, std::string_view room_id,
+                                          std::uint64_t timeline_limit) -> bool;
+
 // Build the per-room response for one room that appears in a windowed list or
 // a room subscription.
 //
@@ -46,12 +62,21 @@ namespace merovingian::sync
 // from an ignored sender are withheld; state events are still delivered per
 // spec ("Servers must still send state events sent by ignored users to
 // clients").
+// `expansion` — TimelineExpansion::expand resends the room's latest
+//                timeline_limit events instead of only those after the floor;
+//                required_state keeps the floor. Ignored for an initial room.
+//
+// The timeline is the newest timeline_limit visible events. `limited` is set when
+// older visible events exist that it does not hold (after the floor, or at all for
+// an initial or expanded room), and `prev_batch` names the position /messages
+// pages back from.
 [[nodiscard]] auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id,
                                        std::string_view user, SlidingSyncRoomSubscription const& sub,
                                        std::uint64_t room_since_event_ordering, bool is_initial,
                                        database::PersistentStore const& store,
                                        std::unordered_set<std::string> const& lazy_members_already_sent = {},
-                                       std::unordered_set<std::string> const& ignored_senders = {})
+                                       std::unordered_set<std::string> const& ignored_senders = {},
+                                       TimelineExpansion expansion = TimelineExpansion::none)
     -> SlidingSyncRoomResponse;
 
 // As above, with the request's shared `visibility` filter (CSAZ-3). A sliding sync request
@@ -66,7 +91,8 @@ namespace merovingian::sync
                                        database::PersistentStore const& store,
                                        std::unordered_set<std::string> const& lazy_members_already_sent,
                                        std::unordered_set<std::string> const& ignored_senders,
-                                       HistoryVisibility& visibility, UnreadEventClassifier const& unread)
+                                       HistoryVisibility& visibility, UnreadEventClassifier const& unread,
+                                       TimelineExpansion expansion = TimelineExpansion::none)
     -> SlidingSyncRoomResponse;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186
